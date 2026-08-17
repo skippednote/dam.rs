@@ -7,6 +7,7 @@
 )]
 
 pub mod migrate;
+pub mod tenant_conn;
 
 #[cfg(feature = "testing")]
 pub mod testing;
@@ -24,8 +25,16 @@ pub enum Error {
     #[error("test harness: {0}")]
     Harness(String),
 
+    /// The tenant's schema does not exist. Its own variant because "not provisioned"
+    /// and "query failed" need different handling: the first is a 404 or a
+    /// provisioning bug, the second is an incident.
+    #[error("tenant schema `{0}` does not exist — tenant not provisioned")]
+    TenantNotProvisioned(String),
+
     #[error(transparent)]
     Core(#[from] dam_core::Error),
 }
+
+pub use tenant_conn::TenantConn;
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;

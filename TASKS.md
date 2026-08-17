@@ -61,10 +61,14 @@ Rules for autonomous runs:
   `refused_by_constraint()` asserts SQLSTATE 23/P0001 and panics on class 42.
   See DECISIONS.md.
 
-- [ ] **0.7 `TenantConn`.** Cannot be constructed outside a transaction. Schema
-  name via `quote_ident`, never interpolation.
-  *Test first:* path does not leak post-commit; a bad slug is rejected;
-  cross-tenant read is impossible.
+- [x] **0.7 `TenantConn`.** Done — one constructor, and it begins a transaction. 8
+  integration tests: no leak after commit or rollback, drop rolls back, cross-tenant
+  read impossible, 20 concurrent writes across two tenants stay separate, missing
+  schema fails at `begin`.
+  *Surprise:* the dam-core length test asserted a single-char slug was valid while
+  citing the regex that forbids it (`{1,38}` is a minimum of one *additional* char).
+  Replaced with a cross-check that feeds 16 inputs to both the Rust validator and
+  Postgres's own regex. See DECISIONS.md.
 
 - [ ] **0.8 Tenant provisioning.** `damctl provision-tenant --slug` → row, schema,
   migrations, seeded defaults (field defs, starter taxonomy, `everyone` group,

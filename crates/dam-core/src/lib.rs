@@ -13,7 +13,9 @@
 pub mod config;
 pub mod error;
 pub mod secret;
+pub mod tenant;
 
 pub use config::Config;
 pub use error::{Error, ResourceKind, Result};
 pub use secret::Secret;
+pub use tenant::TenantSlug;

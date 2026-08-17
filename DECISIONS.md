@@ -286,3 +286,49 @@ committed.
 **`PgSslMode::Prefer`, not `Require`.** Loopback testcontainers and the dev stack
 speak plain TCP; deployed Postgres should be behind TLS. A caller that must mandate
 it puts `sslmode=require` in the URL, which wins. Reversible: yes.
+
+## 2026-08-17 — task 0.7: `TenantConn`, and a test that was wrong about its own regex
+
+**`TenantConn` has exactly one constructor and it begins a transaction.** No
+`from_pool`, no `set_schema`, no escape hatch. `SET LOCAL` outside a transaction is a
+silent no-op, so a `TenantConn` that could exist outside one would be a cross-tenant
+read with no error attached. The gate suite already showed how easy that mistake is;
+this makes it unavailable rather than discouraged. Reversible: no — adding a
+non-transactional constructor would remove the only guarantee the type provides.
+
+Cost: every tenant-scoped read runs in a transaction, single-statement ones included.
+In Postgres that is close to free, and it buys an invariant nobody can forget under
+deadline.
+
+**`begin()` checks the schema exists before setting the path.** A missing schema is
+silently ignored in a `search_path`, so setting it first would hide an unprovisioned
+tenant behind a series of confusing "relation does not exist" errors, one per query.
+New `Error::TenantNotProvisioned` because "not provisioned" is a 404 or a
+provisioning bug while "query failed" is an incident.
+
+**`TenantSlug` in dam-core is the only way to obtain a schema name.** The slug reaches
+DDL and `SET LOCAL`, neither of which takes bind parameters, so validation cannot be
+deferred to the query layer. Deserialisation goes through the same constructor, so a
+slug arriving from JSON is validated rather than trusted.
+
+### The test was wrong, not the code
+
+`the_length_limit_matches_the_database_check_constraint` asserted a single-character
+slug was valid, **citing the very regex that forbids it**: `^[a-z][a-z0-9_]{1,38}$`
+is one leading letter *plus one to thirty-eight more*, so the floor is two characters.
+Misreading a quantifier as covering the whole pattern is an easy error, and it was
+sitting inside a test whose entire purpose was to pin the constraint.
+
+That is a warning about the class of test that asserts agreement between two layers
+by restating one of them from memory. Replaced with
+`the_rust_validator_and_the_database_check_agree`, which feeds sixteen inputs to
+`TenantSlug::new` **and** to Postgres's own `~ '^[a-z][a-z0-9_]{1,38}$'`, and fails
+on any disagreement. Reserved names are the one permitted asymmetry — Rust refuses
+`extensions` and `public` although the regex accepts them, because a tenant schema
+shadowing either would break every qualified type reference in the tenant migrations.
+
+Reversible: no. Do not replace the cross-check with a restated regex.
+
+**`executor()` not `as_mut()`.** Clippy flagged the shadowing of
+`std::convert::AsMut::as_mut`; the new name also reads better at the call site.
+Reversible: yes.
