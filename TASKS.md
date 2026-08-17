@@ -77,10 +77,14 @@ Rules for autonomous runs:
   leaves an inert schema rather than a tenant row pointing at nothing. Idempotent
   rather than transactional. Index dir deferred to M2 with Tantivy.
 
-- [ ] **0.9 Job queue.** `FOR UPDATE SKIP LOCKED`, leases, dedupe, backoff,
-  per-tenant round-robin fairness.
-  *Test first:* concurrent workers never double-claim; a dead worker's lease is
-  reclaimed; dedupe holds; fairness holds under a single-tenant flood.
+- [x] **0.9 Job queue.** Done — 13 tests, incl. 10 workers × 50 jobs with no
+  double-claim and no loss.
+  *Surprise, and the best find of the night:* a mandatory per-tenant cap of 4 made a
+  worker claim 5 of a requested 10 while 200 jobs waited — the cap starved the
+  **worker**, not the greedy tenant. Fairness now comes from rank ordering alone, which
+  gives fairness *and* full utilisation. Also: `SKIP LOCKED` is unavailable alongside
+  window functions, so correctness rests on the UPDATE's own `state='queued'` predicate
+  being re-evaluated under READ COMMITTED. See DECISIONS.md.
 
 - [ ] **0.10 ABAC predicate compiler.** One predicate → SQL fragment + Tantivy
   filter. Query-time, never post-filter.

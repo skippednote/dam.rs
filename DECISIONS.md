@@ -372,3 +372,52 @@ block the fleet's upgrade (§5.3). Reversible: yes.
 Driven end to end against the dev stack: `migrate`, `provision-tenant` (twice —
 returned the same id), a second tenant, `migrate --all` across both, and an
 injection-shaped slug refused with the constraint message.
+
+## 2026-08-17 — task 0.9: the fairness cap starved the worker, not the greedy tenant
+
+**The most useful failure of the night.** My first design made `per_tenant` a mandatory
+cap of 4 alongside `limit = 10`. The fairness test then showed a worker claiming
+**5 jobs out of a requested 10 while 200 sat queued** — because the cap bound before
+the limit did. That does not throttle the flooding tenant; it idles capacity while the
+backlog grows. A queue that refuses to hand out available work is worse than an unfair
+one.
+
+**Fairness comes from rank ordering, not from a cap.** `row_number() OVER (PARTITION BY
+tenant_id ORDER BY priority, run_after, id)`, and the batch is taken in rank order —
+every tenant's next job before any tenant's job after that. That gives both properties
+at once:
+
+- one tenant alone fills the batch (10 of 10), so fairness costs no throughput;
+- a quiet tenant's single job is rank 1 and lands in the first batch even behind 200;
+- three tenants and `limit = 9` gives exactly 3 each.
+
+`per_tenant` survives as an optional safety valve for a pathological tenant, defaulting
+to `None`. Reversible: yes, but do not make it mandatory again.
+
+**No `SKIP LOCKED`, and that is not a compromise.** Postgres rejects `FOR UPDATE` in
+any query containing a window function, so the fair ranking rules it out. Correctness
+comes from the `UPDATE`'s own `WHERE j.state = 'queued'`: under `READ COMMITTED` an
+`UPDATE` re-evaluates its predicate after taking the row lock, so the second worker to
+reach a row sees `'running'`, fails the predicate, and is excluded from `RETURNING`. Ten
+workers over fifty jobs claim each exactly once
+(`concurrent_workers_never_claim_the_same_job`). The loser gets a smaller batch and
+asks again. Reversible: no — reintroducing `SKIP LOCKED` means giving up fairness.
+
+**`reclaim_expired` promotes an out-of-attempts job to `dead`, not back to `queued`.**
+A job that reliably kills its worker would otherwise be reclaimed forever, taking a
+worker down each time. Reversible: no.
+
+**`heartbeat` checks `locked_by`.** Without it a worker whose lease was already
+reclaimed could keep renewing a job another worker now owns, and the two would race
+with no error anywhere. New `Error::LeaseLost` so the caller knows to stop work rather
+than retry.
+
+**Backoff is capped at one hour.** The cap matters more than the curve: uncapped
+doubling reaches days, by which point a transient outage has effectively lost the work.
+
+### Two test bugs, both mine
+
+- `queue_db(&["a", "b", "c"])` — single-character slugs, which `TenantSlug` correctly
+  rejects (minimum is two). My own validator from 0.7 caught my test from 0.9.
+- `EXTRACT(EPOCH FROM interval)` returns `NUMERIC` in modern Postgres, not `FLOAT8`.
+  Needed an explicit `::double precision`.

@@ -6,6 +6,7 @@
     allow(clippy::expect_used, clippy::unwrap_used, clippy::result_large_err)
 )]
 
+pub mod jobs;
 pub mod migrate;
 pub mod provision;
 pub mod tenant_conn;
@@ -31,6 +32,12 @@ pub enum Error {
     /// provisioning bug, the second is an incident.
     #[error("tenant schema `{0}` does not exist — tenant not provisioned")]
     TenantNotProvisioned(String),
+
+    /// A worker tried to extend or finish a job it no longer holds — its lease was
+    /// reclaimed and another worker may now own the job. Its own variant because the
+    /// worker must stop work immediately rather than retry.
+    #[error("lease lost for job {job_id} (worker {worker}); another worker may own it")]
+    LeaseLost { job_id: uuid::Uuid, worker: String },
 
     #[error(transparent)]
     Core(#[from] dam_core::Error),
