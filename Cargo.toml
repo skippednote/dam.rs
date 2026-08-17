@@ -135,10 +135,11 @@ proptest = "1"
 criterion = "0.5"
 wiremock = "0.6"        # stub the Anthropic API in tests
 # Every test that touches Postgres or S3 runs against a real container (D17).
-# Garage has no testcontainers module, so it uses the GenericImage API — see
-# crates/dam-store/tests/support/garage.rs. Garage does NOT implement storage
-# classes, RestoreObject, versioning, or object lock, so the tiering state
-# machine is tested against FakeS3Store instead (ARCHITECTURE §20.2).
+# Three S3 backends, none of them optional (ARCHITECTURE §20.2-20.3):
+#   Garage      wire protocol — multipart, presign, SigV4, ranged GET
+#   SeaweedFS   object lock + versioning, which a fake cannot credibly prove
+#   FakeS3Store tiering state machine, needs a controllable clock
+# Neither Garage nor SeaweedFS has a testcontainers module; both use GenericImage.
 testcontainers = "0.28"
 testcontainers-modules = { version = "0.15", features = ["postgres"] }
 

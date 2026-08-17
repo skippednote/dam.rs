@@ -104,3 +104,46 @@ Also installed: `rustfmt` and `clippy` components were missing from the toolchai
 Reversible: all of it. Nothing here is a design change — the design was right, the
 version numbers were guesses, and guessing version numbers is what a first build
 is for.
+
+## 2026-08-17 — D18: local S3 landscape checked; adding SeaweedFS, keeping Garage
+
+Asked whether a different local S3 closes Garage's four gaps. Short answer: the
+two obvious candidates no longer exist as open source.
+
+- **MinIO community edition archived 25 April 2026.** Maintenance mode from
+  December 2025, admin console already removed from CE, AGPL, no community
+  binaries, engineering moved to the paid AIStor product. Not a dependency to take
+  on in August 2026.
+- **LocalStack archived its OSS repo March 2026**, consolidated behind one
+  authenticated image. Glacier restore was Pro-only anyway.
+
+That makes Garage a good call rather than a compromise — it is one of the few
+genuinely maintained OSS S3 servers left.
+
+**Decision: add SeaweedFS as a second CI backend, keep Garage as the dev stack.**
+
+SeaweedFS (Apache 2.0, actively maintained) has real object lock — GOVERNANCE and
+COMPLIANCE retention modes plus legal holds — and versioning. That closes the one
+hole `FakeS3Store` genuinely cannot: object lock's whole point is that *the server*
+refuses the delete, so a fake that refuses proves nothing about a real server. It
+also gives a second independent implementation for the conformance suite, catching
+places where the driver is coded to Garage's quirks rather than to S3.
+
+**Rejected: moto.** Its `restore_object` is real, but the fake is strictly better
+for restore, because restore is a *timing* problem — the temporary copy expiring
+mid-download, minimum-duration blocking a re-tier — and a controllable clock is an
+in-process concern no emulator provides.
+
+**Rejected: Ceph RGW.** Closest to AWS parity, and needs 3 nodes at 4+ GB each.
+Not a test dependency.
+
+**Noted, not adopted: RustFS**, a Rust MinIO replacement that appeared after the
+wind-down. Philosophically appealing for this project; months old.
+
+The alternative worth revisiting: consolidate entirely on SeaweedFS — one backend,
+a superset of Garage's surface, Apache 2.0 rather than AGPL. Rejected for now only
+because Garage is a single small binary that starts faster, and every suite boots
+one. If SeaweedFS turns out fast enough to be both, drop Garage.
+
+Reversible: yes. All three sit behind the `BlobStore` trait, which is what makes
+swapping test infra a harness change rather than a code change.

@@ -1045,7 +1045,7 @@ keeps each layer honest:
 5. **Then the feature layers**, each starting from a failing integration test that
    exercises the HTTP surface rather than the function.
 
-### 20.2 Garage's limits, and why there are two S3 drivers
+### 20.2 Garage's limits, and why there are three test backends
 
 Garage implements the S3 data plane well — multipart upload, presigned URLs,
 prefix listing, SigV4, path-style addressing. It does **not** implement storage
@@ -1071,9 +1071,54 @@ fake cannot quietly diverge from real S3 behaviour. Against AWS proper, the same
 suite runs in CI nightly, gated on credentials, as the only place the real Glacier
 semantics are exercised end to end.
 
-Consequence worth stating: **object lock is unavailable locally**, so the
-immutable-pool and legal-hold paths are covered by the fake plus the nightly AWS
-run, never by the dev stack. That is a known hole, not an oversight.
+### 20.3 Why not a different local S3 (and what closes the object-lock hole)
+
+The obvious alternatives are gone. **MinIO's community edition was archived on
+25 April 2026** — read-only, no releases, no community binaries, the admin console
+already stripped, engineering moved to the paid AIStor product. **LocalStack
+archived its open-source repository in March 2026** and consolidated behind a
+single authenticated image; its Glacier restore support was Pro-only regardless.
+Neither is a defensible dependency for a project starting now, which retroactively
+makes Garage a good call rather than a compromise.
+
+What remains, measured against the four features Garage lacks:
+
+| Backend | Object lock | Versioning | Storage classes | RestoreObject | Notes |
+|---|---|---|---|---|---|
+| **Garage** | ✗ | ✗ | ✗ | ✗ | Rust, single binary, fast start. AGPL. Alive and maintained. |
+| **SeaweedFS** | ✓ GOVERNANCE + COMPLIANCE, legal holds | ✓ | ✗ | ✗ | Apache 2.0, actively maintained, real storage engine |
+| **Ceph RGW** | ✓ | ✓ | ✓ | ✓ | Closest to AWS parity — and needs 3 nodes, 4+ GB each. Not a test dependency. |
+| **moto** (server mode) | ✓ | ✓ | partial | ✓ | Purpose-built test emulator, healthiest maintenance of the LocalStack replacements. Emulator, not a storage server. |
+| **AWS S3** | ✓ | ✓ | ✓ | ✓ | The only real semantics; nightly, credential-gated |
+
+**D18: add SeaweedFS as a second CI backend; keep Garage as the dev stack.**
+
+SeaweedFS closes the one hole the fake genuinely cannot: object lock's whole point
+is that *the server* refuses the delete, so a fake that refuses proves nothing
+about a real server. It also gives a second independent implementation for the
+conformance suite, which catches places where the driver has been coded to
+Garage's quirks rather than to S3.
+
+moto is **not** added. Its `restore_object` is real, but `FakeS3Store` is strictly
+better for restore testing because restore is a *timing* problem — "the temporary
+copy expires while a download is in flight", "minimum-duration blocks a re-tier" —
+and a controllable clock is an in-process concern no emulator can give us.
+
+| Layer | Backend | Proves |
+|---|---|---|
+| Dev stack (`mise run up`) | Garage | Daily driver; wire protocol |
+| CI: wire conformance | Garage | Multipart, presign, SigV4, ranged GET, path-style |
+| CI: lock + versioning | **SeaweedFS** | Legal hold, GOVERNANCE/COMPLIANCE retention, version history |
+| CI: tiering state machine | `FakeS3Store` | Class transitions, `InvalidObjectState`, restore lifecycle, expiry, min-duration |
+| Nightly, credential-gated | AWS S3 | Real Glacier |
+
+Consolidating entirely on SeaweedFS is the defensible alternative — one backend, a
+superset of Garage's S3 surface, Apache 2.0 rather than AGPL. It is rejected only
+because Garage is a single small binary that starts faster, which matters when
+every test suite boots one. Revisit if SeaweedFS proves fast enough to be both.
+
+**RustFS** — a Rust MinIO replacement that appeared after MinIO's wind-down — is
+worth watching and too young to depend on.
 
 ---
 

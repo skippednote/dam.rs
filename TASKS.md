@@ -78,6 +78,11 @@ Rules for autonomous runs:
 - [ ] **1.1 `BlobStore` trait + conformance suite.** One suite, two drivers.
 - [ ] **1.2 `S3Store` on `aws-sdk-s3`.** Garage harness via `GenericImage`
   (no testcontainers module exists). Path-style, SigV4, multipart, presign.
+- [ ] **1.2b SeaweedFS harness (D18).** Second CI backend via `GenericImage`.
+  Runs the shared conformance suite, plus the object-lock and versioning cases
+  Garage cannot express: legal hold, GOVERNANCE vs COMPLIANCE retention, version
+  history. *Why a real server:* object lock means the **server** refuses the
+  delete — a fake that refuses proves nothing.
 - [ ] **1.3 `FakeS3Store`.** Controllable clock; the full tiering state machine
   Garage cannot express — class transitions, `InvalidObjectState`, `RestoreObject`,
   `x-amz-restore`, restore expiry, minimum-duration charges. ARCHITECTURE §20.2.
