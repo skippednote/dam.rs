@@ -698,3 +698,20 @@ produce an object whose digest matches nothing the client can compute. Reversibl
 
 **A completion short of the declared length fails but leaves the session Active.** The client may
 still send the rest; marking it failed would turn a slow upload into a lost one. Reversible: yes.
+
+**Upload validation happens at finalisation, never at mint.** A presigned `PUT` hands the client
+a URL and steps aside: S3 will not cap the size, will not constrain the type, and does not report
+what arrived. So the checks that matter run after the bytes land at a staging key and before
+promotion to a content-addressed key, because promotion is what makes an object real. The
+declared MIME is compared and recorded; the declared *size* is enforced, since on the presigned
+path it is the only cross-check available. Reversible: no — this is the security boundary.
+
+**A refused upload's staged bytes are destroyed immediately.** Every other failure leaves staging
+for the reaper, because those bytes may be retryable. A refusal is different: until the reaper
+runs, a refused executable stays retrievable at a key the uploader already knows. The delete is
+best-effort so a cleanup failure cannot mask the reason for the refusal. Reversible: yes.
+
+**`Policy` is a value, not a set of constants.** Size caps and the executable refusal differ by
+tenant and by plan, and a safe default that cannot be overridden becomes a support ticket. The
+defaults are the safe ones, and a unit test asserts `refuse_executables` is on — a careless edit
+to `Default` would otherwise be invisible. Reversible: yes.

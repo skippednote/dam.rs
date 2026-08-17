@@ -193,8 +193,17 @@ Rules for autonomous runs:
   5 MiB except the last, so chunks accumulate into a **tail** held *in object storage* — a
   process-local buffer would make resumption sticky to one node. Mutation-checked: reversing
   the tail/chunk order fails 3 tests, removing the offset-conflict check fails 2.
-  *Still to do:* the TUS HTTP surface and its `upload_sessions` table, presigned
-  direct-to-S3, and the staging reaper.
+  *Part done:* `dam-media::ingest::finalize` — sniff, hash, promote (9 cases). This is the
+  single validation point every upload path shares, and the **presigned** path is why it has
+  to exist: a presigned `PUT` cannot cap the size, cannot constrain the type, and does not
+  report what arrived, so nothing checked at mint time is more than advisory. A refused upload
+  has its staged bytes destroyed rather than left for the reaper — until the reaper runs, a
+  refused executable stays retrievable at a key the uploader knows. Mutation-checked.
+  *Note:* one of my test names over-claimed — "hashed in bounded chunks not buffered whole"
+  only proves the digest is right under a small window; boundedness is structural and not
+  observable from a test. Renamed to what it actually checks.
+  *Still to do:* the TUS HTTP surface and its `upload_sessions` table, minting the presigned
+  URL itself, and the staging reaper.
 - [ ] **1.7 Probe + derivatives.** libvips primary, `image` fallback. Subprocesses
   with rlimits, wall-clock, and an escape-proof temp dir.
 - [ ] **1.8 Master proxy.** The §2 invariant. *Test first:* `enrichment_runs.used_original`

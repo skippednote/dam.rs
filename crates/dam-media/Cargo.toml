@@ -16,11 +16,19 @@ fast_image_resize = { workspace = true }
 kamadak-exif = { workspace = true }
 image_hasher = { workspace = true }
 infer = { workspace = true }
+uuid = { workspace = true }
 symphonia = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 bytes = { workspace = true }
+
+[dev-dependencies]
+# The SeaweedFS harness: finalising is validated against a real server, since the ranged
+# reads it relies on are exactly what a fake would get wrong for free.
+dam-store = { path = "../dam-store", features = ["testing"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+uuid = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"
