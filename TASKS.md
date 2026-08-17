@@ -159,6 +159,22 @@ Rules for autonomous runs:
   and `StreamHasher` are the pieces; the promotion belongs with TUS.
 - [ ] **1.6 Upload.** TUS resumable + presigned direct-to-S3. Magic-byte sniffing
   via `infer` — never trust client `Content-Type`.
+  *Part done:* staging-key promotion (the piece 1.5 deferred). A streamed upload lands at
+  `<tenant>/staging/<upload_id>` and is promoted to its content key by a **server-side**
+  copy once the digest is known, so the bytes never cross the client twice. `copy` is now a
+  `BlobStore` method covered by the shared conformance suite — it was otherwise the one
+  trait method the suite did not exercise, which is how the fake diverges.
+  *Note:* S3 rejects `CopyObject` above 5 GiB, so promoting a §18.3 file is a multipart
+  copy of ranged parts, not a rename. `copy_part_ranges` is unit-tested for contiguity at
+  200 GB (40 parts, no gaps, no overlaps) and grows the part size rather than exceeding the
+  10,000-part cap — a plan S3 would otherwise reject at completion, after every part copy
+  had been paid for. The >5 GiB path itself only runs in the AWS nightly.
+  *Note:* staging is deleted only **after** the content object exists. It is the sole copy
+  of the bytes until then, so an early delete would destroy a retryable upload; an
+  abandoned staging object is reaped on a timer instead — a leak that costs storage beats a
+  loss that costs the upload.
+  *Still to do:* TUS protocol surface, presigned direct-to-S3, magic-byte sniffing, and the
+  staging reaper.
 - [ ] **1.7 Probe + derivatives.** libvips primary, `image` fallback. Subprocesses
   with rlimits, wall-clock, and an escape-proof temp dir.
 - [ ] **1.8 Master proxy.** The §2 invariant. *Test first:* `enrichment_runs.used_original`

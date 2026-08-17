@@ -168,6 +168,126 @@ impl S3Store {
         }
     }
 
+    /// Server-side copy. Bytes never traverse the client.
+    ///
+    /// S3 rejects `CopyObject` above 5 GiB, so this is only the small path — see
+    /// `content::promote`, which chooses between this and a multipart copy.
+    pub async fn copy_object(&self, from: &Key, to: &Key, class: StorageClass) -> Result<()> {
+        let mut req = self
+            .client
+            .copy_object()
+            .bucket(&self.bucket)
+            // The source is `bucket/key`, URL-encoded. Our keys are hex, UUIDs and slashes,
+            // so nothing here needs escaping — but a key that did would silently copy the
+            // wrong object, which is why keys are ours and validated (see `Key`).
+            .copy_source(format!("{}/{}", self.bucket, from.as_str()))
+            .key(to.as_str());
+        if self.capabilities.storage_classes {
+            req = req.storage_class(Self::to_sdk_class(class));
+        }
+        req.send()
+            .await
+            .map_err(|e| self.map_err(from, &e))
+            .map(|_| ())
+    }
+
+    /// Server-side copy of a large object, as a multipart upload of ranged part copies.
+    ///
+    /// `ranges` are inclusive byte ranges covering the whole object, as produced by
+    /// `content::copy_part_ranges`. On any failure the upload is aborted, so no orphan parts
+    /// are left accruing charges.
+    pub async fn copy_object_multipart(
+        &self,
+        from: &Key,
+        to: &Key,
+        ranges: &[(u64, u64)],
+        class: StorageClass,
+    ) -> Result<()> {
+        if ranges.is_empty() {
+            return Err(Error::Backend(
+                "a multipart copy needs at least one part range".into(),
+            ));
+        }
+        let mut create = self
+            .client
+            .create_multipart_upload()
+            .bucket(&self.bucket)
+            .key(to.as_str());
+        if self.capabilities.storage_classes {
+            create = create.storage_class(Self::to_sdk_class(class));
+        }
+        let upload_id = create
+            .send()
+            .await
+            .map_err(|e| self.map_err(to, &e))?
+            .upload_id()
+            .ok_or_else(|| Error::Backend("create_multipart_upload returned no upload id".into()))?
+            .to_owned();
+
+        let source = format!("{}/{}", self.bucket, from.as_str());
+        let mut parts = Vec::with_capacity(ranges.len());
+        for (index, (start, end)) in ranges.iter().enumerate() {
+            let part_number = i32::try_from(index + 1)
+                .map_err(|_| Error::Backend("part count overflowed".into()))?;
+            let copied = self
+                .client
+                .upload_part_copy()
+                .bucket(&self.bucket)
+                .key(to.as_str())
+                .upload_id(&upload_id)
+                .part_number(part_number)
+                .copy_source(&source)
+                .copy_source_range(format!("bytes={start}-{end}"))
+                .send()
+                .await;
+            match copied {
+                Ok(out) => {
+                    let e_tag = out
+                        .copy_part_result()
+                        .and_then(|r| r.e_tag())
+                        .ok_or_else(|| {
+                            Error::Backend(format!("part {part_number} copy returned no ETag"))
+                        })?
+                        .to_owned();
+                    parts.push(
+                        aws_sdk_s3::types::CompletedPart::builder()
+                            .part_number(part_number)
+                            .e_tag(e_tag)
+                            .build(),
+                    );
+                }
+                Err(e) => {
+                    // Abort before returning: parts already copied are billed until the
+                    // upload is aborted or a lifecycle rule expires it.
+                    let _ = self
+                        .client
+                        .abort_multipart_upload()
+                        .bucket(&self.bucket)
+                        .key(to.as_str())
+                        .upload_id(&upload_id)
+                        .send()
+                        .await;
+                    return Err(self.map_err(from, &e));
+                }
+            }
+        }
+
+        self.client
+            .complete_multipart_upload()
+            .bucket(&self.bucket)
+            .key(to.as_str())
+            .upload_id(&upload_id)
+            .multipart_upload(
+                aws_sdk_s3::types::CompletedMultipartUpload::builder()
+                    .set_parts(Some(parts))
+                    .build(),
+            )
+            .send()
+            .await
+            .map_err(|e| self.map_err(to, &e))
+            .map(|_| ())
+    }
+
     /// Renders a bucket-level SDK error with its cause.
     ///
     /// `Display` on `SdkError` is just "service error" — the code and message live in the
@@ -507,6 +627,17 @@ impl BlobStore for S3Store {
             ),
             expires_at: after.restore_expires_at,
         })
+    }
+
+    async fn copy(&self, from: &Key, to: &Key, size: u64, class: StorageClass) -> Result<()> {
+        // The threshold lives here, not in the caller: 5 GiB is S3's limit, and a driver for
+        // a backend with a different one would choose differently.
+        let ranges = crate::content::copy_part_ranges(size, crate::content::MAX_COPY_PART);
+        if ranges.is_empty() {
+            self.copy_object(from, to, class).await
+        } else {
+            self.copy_object_multipart(from, to, &ranges, class).await
+        }
     }
 
     async fn presign_get(&self, key: &Key, ttl: Duration) -> Result<String> {

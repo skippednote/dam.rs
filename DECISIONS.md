@@ -637,3 +637,22 @@ it a key. The refusal has to sit where the upload is accepted. Reversible: yes.
 second key for identical content, defeating deduplication. Making it unrepresentable beats
 asking every call site to remember — `Key`'s own lowercase check stays as a second line.
 Reversible: no.
+
+**Promotion deletes staging only after the content object exists.** Until the copy succeeds,
+the staging object is the only copy of the bytes. Deleting it first — or on a failed
+promotion — destroys an upload that could have been retried or inspected. So a failed
+promotion leaves the staged bytes in place and a timed reaper cleans up abandoned uploads: a
+leak that costs storage, rather than a loss that costs the upload. Reversible: yes.
+
+**`copy` is a `BlobStore` method, not an `S3Store` one.** A server-side copy is a data-plane
+primitive both drivers can implement honestly, unlike object lock — and putting it on the
+trait means the shared conformance suite covers it. It was otherwise the only trait method
+the suite did not exercise, which is precisely how `FakeS3Store` would drift. The suite
+asserts a copy leaves its source intact, because a driver that moved instead of copying would
+destroy the only remaining bytes on a partial failure. The 5 GiB multipart threshold lives in
+the driver, since it is S3's limit rather than every caller's problem. Reversible: yes.
+
+**An upload id is ours and validated like a digest.** `Key::staging` refuses anything but
+1–64 alphanumeric, `-` or `_` characters. Object keys are generated, never client-supplied, so
+this is the one place a caller could otherwise steer a write outside its own tenant prefix.
+Reversible: no.

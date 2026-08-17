@@ -223,6 +223,116 @@ pub async fn ingest<S: BlobStore + ?Sized>(
     Ok(Ingested::Stored(placement))
 }
 
+/// S3's `CopyObject` size limit. Above this a copy must be a multipart copy of ranged
+/// parts — the reason promoting a large upload is more than a rename.
+pub const MAX_COPY_PART: u64 = 5 * 1024 * 1024 * 1024;
+
+/// S3's hard cap on parts in one multipart upload.
+const MAX_PARTS: u64 = 10_000;
+
+/// Inclusive byte ranges covering `size`, each at most `part_size` bytes.
+///
+/// Empty when a single `CopyObject` suffices, so a caller branches on the emptiness rather
+/// than duplicating the threshold.
+///
+/// `part_size` is grown if it would produce more than [`MAX_PARTS`] parts. A caller passing a
+/// small part size for a huge object would otherwise build a plan S3 rejects at completion —
+/// after every part copy has been paid for.
+pub fn copy_part_ranges(size: u64, part_size: u64) -> Vec<(u64, u64)> {
+    if size <= MAX_COPY_PART {
+        return Vec::new();
+    }
+    let part_size = part_size
+        .clamp(5 * 1024 * 1024, MAX_COPY_PART)
+        .max(size.div_ceil(MAX_PARTS));
+
+    let mut ranges = Vec::with_capacity(usize::try_from(size.div_ceil(part_size)).unwrap_or(0));
+    let mut start = 0;
+    while start < size {
+        let end = (start + part_size).min(size) - 1;
+        ranges.push((start, end));
+        start = end + 1;
+    }
+    ranges
+}
+
+/// Promotes a staged upload to its content-addressed key.
+///
+/// The staging object holds bytes whose digest was computed while streaming. Promotion is a
+/// **server-side** copy, so the bytes never cross the client's connection twice, and it
+/// becomes a multipart copy above [`MAX_COPY_PART`].
+///
+/// Ordering matters on failure: the staging object is deleted only after the content object
+/// exists. Staging is the sole copy of the bytes until then, and deleting it early would
+/// destroy an upload that could have been retried. An abandoned staging object is reaped on
+/// a timer instead — a leak that costs storage, versus a loss that costs the upload.
+pub async fn promote<S: BlobStore + ?Sized>(
+    store: &S,
+    tenant: Uuid,
+    staging: &Key,
+    digest: &Digest,
+    declared_size: u64,
+    class: StorageClass,
+) -> Result<Ingested> {
+    let staged = store.head(staging).await?;
+    if staged.size != declared_size {
+        // The client said one thing and delivered another: a truncated stream, or a bug in
+        // the caller's accounting. Either way the digest cannot be trusted to describe the
+        // bytes, and promoting would give a fragment a valid content key.
+        return Err(Error::Backend(format!(
+            "staged object {staging} is {} bytes but {declared_size} were declared — the \
+             upload was truncated or the declared length is wrong",
+            staged.size
+        )));
+    }
+
+    let key = digest.original_key(tenant)?;
+
+    // Already there? Skip the copy. For a duplicate 200 GB upload this is the difference
+    // between a HeadObject and a 200 GB server-side copy.
+    let already = match store.head(&key).await {
+        Ok(existing) if existing.size == declared_size => true,
+        Ok(existing) => {
+            tracing::warn!(
+                key = %key,
+                expected = declared_size,
+                found = existing.size,
+                "object exists at its content-addressed key with the wrong size; overwriting \
+                 from staging"
+            );
+            false
+        }
+        Err(Error::NotFound(_)) => false,
+        Err(e) => return Err(e),
+    };
+
+    if !already {
+        store.copy(staging, &key, declared_size, class).await?;
+    }
+
+    // Only now is the staging copy redundant.
+    store.delete(staging).await?;
+
+    if already {
+        Ok(Ingested::AlreadyPresent {
+            key,
+            size: declared_size,
+        })
+    } else {
+        let state = store.head(&key).await?;
+        Ok(Ingested::Stored(Placement {
+            key,
+            size: state.size,
+            storage_class: state.storage_class,
+            etag: state.etag,
+            // A promotion is a copy, so any checksum here would be the server's, not the
+            // BLAKE3 the caller computed while streaming. The caller already holds that.
+            checksum: None,
+            version_id: None,
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,6 +352,13 @@ mod tests {
         // Documents the trap: hashing nothing succeeds, which is exactly why the refusal
         // has to live at the ingest boundary rather than in the hash.
         assert_eq!(Digest::of(b"").as_hex().len(), 64);
+    }
+
+    #[test]
+    fn a_copy_at_or_below_the_limit_needs_no_part_plan() {
+        assert!(copy_part_ranges(1, MAX_COPY_PART).is_empty());
+        assert!(copy_part_ranges(MAX_COPY_PART, MAX_COPY_PART).is_empty());
+        assert!(!copy_part_ranges(MAX_COPY_PART + 1, MAX_COPY_PART).is_empty());
     }
 
     #[test]

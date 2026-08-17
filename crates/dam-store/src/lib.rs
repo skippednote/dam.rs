@@ -297,6 +297,14 @@ pub trait BlobStore: Send + Sync {
     /// Moves an object between storage classes.
     async fn transition(&self, key: &Key, to: StorageClass) -> Result<()>;
 
+    /// Server-side copy: the bytes never traverse the client.
+    ///
+    /// `size` is the source's length, which the caller already knows — passed in rather than
+    /// re-headed because an implementation may need it to choose a strategy. On S3 a copy
+    /// above 5 GiB must become a multipart copy of ranged parts, and that threshold belongs
+    /// to the driver rather than to every caller.
+    async fn copy(&self, from: &Key, to: &Key, size: u64, class: StorageClass) -> Result<()>;
+
     /// Requests a temporary copy of an archived object.
     ///
     /// Returns immediately with a ticket; the copy is not available yet. Calling it

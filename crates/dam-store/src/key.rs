@@ -96,6 +96,32 @@ impl Key {
         Self::new(format!("{tenant}/c2pa/{h}/manifest.c2pa"))
     }
 
+    /// A streamed upload before its digest is known: `<tenant>/staging/<upload_id>`.
+    ///
+    /// Its own namespace so a reaper can find abandoned uploads by prefix without consulting
+    /// the database — an upload that died mid-stream may have no row at all.
+    ///
+    /// `upload_id` is ours (a ULID), not a client's, so it is validated as strictly as a
+    /// digest: a client-supplied id would make this the one place a caller could steer a
+    /// write outside its own prefix.
+    pub fn staging(tenant: Uuid, upload_id: &str) -> Result<Self, Error> {
+        if upload_id.is_empty() || upload_id.len() > 64 {
+            return Err(Error::Backend(format!(
+                "upload id must be 1-64 characters, got {}",
+                upload_id.len()
+            )));
+        }
+        if !upload_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(Error::Backend(format!(
+                "upload id must be alphanumeric, '-' or '_': {upload_id:?}"
+            )));
+        }
+        Self::new(format!("{tenant}/staging/{upload_id}"))
+    }
+
     /// Whether this key is in a namespace the lifecycle engine must never tier.
     ///
     /// Derived from the key rather than looked up, so the rule holds even for an object
@@ -104,8 +130,12 @@ impl Key {
         let Some((_, rest)) = self.0.split_once('/') else {
             return false;
         };
-        // p/ = master proxy, t/ = thumbnails, c2pa/ = detached manifests.
-        rest.starts_with("p/") || rest.starts_with("t/") || rest.starts_with("c2pa/")
+        // p/ = master proxy, t/ = thumbnails, c2pa/ = detached manifests,
+        // staging/ = an upload in flight, which lives for minutes.
+        rest.starts_with("p/")
+            || rest.starts_with("t/")
+            || rest.starts_with("c2pa/")
+            || rest.starts_with("staging/")
     }
 
     /// The class this key may be tiered to, if any.
@@ -176,6 +206,13 @@ mod tests {
                 .is_tier_exempt()
         );
         assert!(Key::manifest(tenant(), H).expect("k").is_tier_exempt());
+        assert!(
+            Key::staging(tenant(), "01J8Z9QX4E")
+                .expect("k")
+                .is_tier_exempt(),
+            "a staging object is deleted within minutes; a minimum-duration charge on it \
+             is pure waste"
+        );
         // A derivative is not exempt: a rare 40-minute ProRes export is worth tiering.
         assert!(
             !Key::derivative(tenant(), H, "abc", "mov")
@@ -197,6 +234,17 @@ mod tests {
             original.permitted_class(StorageClass::DeepArchive),
             StorageClass::DeepArchive
         );
+    }
+
+    #[test]
+    fn an_upload_id_cannot_steer_a_write_out_of_its_prefix() {
+        for bad in ["", "../../etc", "has/slash", "spaces here", &"x".repeat(65)] {
+            assert!(
+                Key::staging(tenant(), bad).is_err(),
+                "{bad:?} must be rejected as an upload id"
+            );
+        }
+        assert!(Key::staging(tenant(), "01J8Z9QX4E7N2VYB3K6M5T8W1R").is_ok());
     }
 
     #[test]

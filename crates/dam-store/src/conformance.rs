@@ -90,12 +90,58 @@ pub async fn run<S: BlobStore>(store: &S) -> Report {
     let caps = store.capabilities();
 
     data_plane(store, &mut r).await;
+    server_side_copy(store, &mut r).await;
     ranged_get(store, caps, &mut r).await;
     presigning(store, caps, &mut r).await;
     listing(store, &mut r).await;
     storage_classes(store, caps, &mut r).await;
     restore_lifecycle(store, caps, &mut r).await;
     r
+}
+
+// ─── server-side copy: every driver must pass this ─────────────────────────
+
+/// A copy is how a staged upload is promoted to its content-addressed key, so both drivers
+/// have to agree on it — including that it leaves the source alone.
+async fn server_side_copy<S: BlobStore>(store: &S, r: &mut Report) {
+    let t = ns();
+    let from = Key::staging(t, "conformance").expect("key");
+    let to = Key::original(t, &digest(7)).expect("key");
+    let body = Bytes::from_static(b"promote me");
+
+    store
+        .put(&from, body.clone(), StorageClass::Standard)
+        .await
+        .expect("stage");
+    store
+        .copy(&from, &to, body.len() as u64, StorageClass::Standard)
+        .await
+        .expect("copy must succeed");
+
+    let copied = store
+        .get(&to, None)
+        .await
+        .expect("get copy")
+        .into_bytes(&to)
+        .expect("hot");
+    assert_eq!(copied, body, "copy corrupted the body");
+    assert!(
+        store.head(&from).await.is_ok(),
+        "a copy must not consume its source — promotion deletes staging only after the \
+         copy has succeeded, and a driver that moved instead of copying would destroy the \
+         only remaining bytes on a partial failure"
+    );
+    r.pass("server-side copy leaves the source intact");
+
+    let missing = Key::staging(t, "absent").expect("key");
+    assert!(
+        matches!(
+            store.copy(&missing, &to, 1, StorageClass::Standard).await,
+            Err(crate::Error::NotFound(_))
+        ),
+        "copying a missing source must be NotFound, not a generic backend error"
+    );
+    r.pass("copying a missing source is NotFound");
 }
 
 // ─── data plane: every driver must pass this ────────────────────────────────

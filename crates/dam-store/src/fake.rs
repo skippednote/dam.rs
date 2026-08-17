@@ -332,6 +332,36 @@ impl BlobStore for FakeS3Store {
         Ok(self.ticket(obj))
     }
 
+    async fn copy(&self, from: &Key, to: &Key, size: u64, class: StorageClass) -> Result<()> {
+        let now = self.clock.now();
+        let mut objects = self.lock();
+        let source = objects
+            .get(from.as_str())
+            .ok_or_else(|| Error::NotFound(from.as_str().to_owned()))?
+            .clone();
+        if source.body.len() as u64 != size {
+            // The same check a real backend would fail at a ranged part copy, surfaced here
+            // so the fake cannot succeed where S3 would not.
+            return Err(Error::Backend(format!(
+                "copy of {from}: source is {} bytes but {size} were declared",
+                source.body.len()
+            )));
+        }
+        objects.insert(
+            to.as_str().to_owned(),
+            Object {
+                body: source.body,
+                storage_class: class,
+                last_modified: now,
+                // A copy is a new object in its target class, so its minimum-duration clock
+                // starts now — copying out of Deep Archive does not inherit its 180 days.
+                class_since: now,
+                restore: None,
+            },
+        );
+        Ok(())
+    }
+
     async fn presign_get(&self, key: &Key, ttl: Duration) -> Result<String> {
         // Shaped like a real presigned URL so a caller parsing one does not behave
         // differently against the fake.
