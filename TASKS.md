@@ -422,7 +422,36 @@ Rules for autonomous runs:
   remembering if a future release starts to care.
   *Bonus:* the Rust doc comments travel through as JSDoc, so the invariants ("only `Present` is
   readable", "unevaluated is not permission") are visible in the editor on the frontend.
-- [ ] **F.4** Asset grid: virtualised, keyboard-navigable, ARIA grid semantics.
+- [x] **F.4** Asset grid: virtualised, keyboard-navigable, ARIA grid semantics. Done — 19 component
+  cases plus 3 end-to-end cases through a real browser, and an `/assets` route so CI exercises it.
+  *The three requirements pull against each other,* which is the whole difficulty: virtualisation
+  removes rows from the DOM and assistive technology reads the DOM. The reconciliation is that the
+  container holds the truth about the collection (`aria-rowcount`, `aria-colcount`) while each
+  rendered row carries its absolute `aria-rowindex`. The bug that prevents: a grid reporting its
+  *rendered* rows announces a hundred-thousand-asset library as twenty items, **with no visual
+  symptom at all**.
+  *Two wire types landed first so the grid is typed off the generated client:* `AssetTier` (derived
+  server-side from storage class + restore state) and `AssetSummary`/`AssetPage`.
+  *The tier derivation carries the trap the schema warns about twice:* an **expired** restore of an
+  archived object is archived again, not restored. Conflating them leaves the download button enabled
+  until the day someone presses it. Nine cases, including a stale `restore_state` on an object since
+  transitioned back to Standard.
+  *Surprises:*
+  1. Chrome re-serialises a large px length in exponential form — `height: 3e+06px`. My first
+     assertion read `style.height` and reported a bug that does not exist; the layout is correct at
+     3,000,000px. Now measured with `getBoundingClientRect`, plus a probe test pinning the platform
+     behaviour so a future clamp would be caught.
+  2. Svelte 5 flushes to the DOM asynchronously, so every synchronous `getAttribute` after a
+     keypress read the *pre-keypress* state. Six tests failed for a reason unrelated to the
+     component; `await tick()` throughout.
+  3. `svelte-ignore` treats **every following token as another rule name**, so an inline explanation
+     became thirty invented rule names and eslint rejected each one. The directive needs its own
+     comment.
+  *Improvement eslint prompted:* selection uses `SvelteSet` rather than cloning a plain `Set`.
+  Cloning is O(n) per click, and a shift-range selection over 40,000 assets does it on every
+  keystroke.
+  *Note:* arrowing past an edge holds position rather than wrapping. In a grid a wrap moves the eye
+  the full width or height of the viewport, which disorients rather than helps.
 
 ---
 

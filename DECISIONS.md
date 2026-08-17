@@ -1003,3 +1003,35 @@ Reversible: yes.
 **The generated client is excluded from Prettier and the CI drift check compares raw generator
 output.** Formatting machine output would make the diff depend on two tools agreeing about formatting
 forever, which is a flake waiting for a Prettier release. Reversible: yes.
+
+**The grid container holds the collection's truth; each row holds its absolute position.** Virtualisation
+removes rows from the DOM and assistive technology reads the DOM, so `aria-rowcount` and `aria-colcount`
+are computed from the total while each rendered row carries an absolute `aria-rowindex`. A grid that
+reported its rendered row count would announce a hundred-thousand-asset library as twenty items, and a
+grid that numbered rendered rows 1..n would claim every scroll position was the top of the list. Neither
+has a visual symptom. Reversible: no.
+
+**The tier a user sees is derived server-side, not in the UI.** It comes from two independent columns —
+storage class and restore state — and the mapping contains the trap the schema warns about twice: a
+restore does not change the storage class, so an *expired* restore of an archived object is archived
+again. Deriving it in TypeScript would mean reimplementing that rule, and getting it wrong leaves the
+download button enabled until the day someone presses it. Reversible: yes.
+
+**Arrowing past an edge holds position rather than wrapping.** In a grid, a wrap moves the eye the full
+width or height of the viewport. The keypress is still consumed so the page underneath does not scroll.
+Reversible: yes.
+
+**Selection uses `SvelteSet` rather than replacing a plain `Set`.** Cloning is O(n) per click, and a
+shift-range selection across 40,000 assets does it on every keystroke — which is exactly the case a 100k
+grid exists to survive. eslint's `prefer-svelte-reactivity` prompted it; the performance argument is what
+settled it. Reversible: yes.
+
+**Keyboard handling lives on the grid container, not on each cell.** That is what the WAI-ARIA grid
+pattern prescribes, and a per-cell handler would double-fire. The `svelte-ignore` this requires must be
+in a comment of its own: the directive treats every following token as another rule name, so an inline
+explanation becomes a list of invented rules. Reversible: no.
+
+**Assert on layout, not on serialised CSS.** Chrome re-serialises a large px length in exponential form
+(`3e+06px`), which reads as invalid CSS while laying out correctly. An assertion on `style.height`
+reported a bug that did not exist. `getBoundingClientRect` is the honest measurement, and a probe test
+pins the platform behaviour so a future clamp is caught rather than assumed. Reversible: no.

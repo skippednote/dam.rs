@@ -25,6 +25,9 @@ use utoipa::OpenApi;
         license(name = "AGPL-3.0-or-later")
     ),
     components(schemas(
+        crate::dto::AssetSummary,
+        crate::dto::AssetPage,
+        dam_core::AssetTier,
         dam_core::RightsState,
         dam_core::ProvenanceState,
         dam_core::StorageClass,

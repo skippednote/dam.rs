@@ -8,6 +8,80 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * @description One page of results.
+         *
+         *     `total` is separate from `items.len()` and load-bearing for accessibility: a virtualised grid must
+         *     report the real row count in `aria-rowcount`, or a screen reader announces "20 items" for a library
+         *     of a hundred thousand.
+         */
+        AssetPage: {
+            items: components["schemas"]["AssetSummary"][];
+            /**
+             * Format: int64
+             * @description Zero-based index of the first item in `items` within the full result set.
+             */
+            offset: number;
+            /**
+             * Format: int64
+             * @description Total matching assets, not the number returned.
+             */
+            total: number;
+        };
+        /**
+         * @description One asset, as the grid renders it.
+         *
+         *     Deliberately small. A 100k-row grid fetches pages of these, so every field here is multiplied by
+         *     the page size — and anything a cell does not draw belongs on the detail endpoint instead.
+         */
+        AssetSummary: {
+            /** Format: int64 */
+            bytes: number;
+            /** @description The name the uploader gave it, preserved verbatim. The stored MIME is sniffed, not this. */
+            filename: string;
+            /** Format: int32 */
+            height?: number | null;
+            /** Format: uuid */
+            id: string;
+            /** @description Sniffed on ingest, never taken from the client (`assets.mime`). */
+            mime: string;
+            provenance_state: components["schemas"]["ProvenanceState"];
+            /**
+             * @description Rights evaluation outcome. A *display* input: enforcement happens at the distribution
+             *     chokepoint (D12), and this field is what dims a button rather than what protects an asset.
+             */
+            rights_state: components["schemas"]["RightsState"];
+            /**
+             * Format: float
+             * @description Model confidence in the asset's automatic tags, 0..1. `None` means nothing scored it — which
+             *     is not the same as zero, and the UI renders it differently.
+             */
+            tag_confidence?: number | null;
+            /** @description URL of the thumbnail. Absent while a newly-uploaded asset is still being processed. */
+            thumbnail_url?: string | null;
+            /**
+             * @description Where the original lives, derived server-side from storage class and restore state so the UI
+             *     never reimplements that mapping.
+             */
+            tier: components["schemas"]["AssetTier"];
+            /**
+             * Format: int32
+             * @description Display dimensions — orientation already applied, so a grid cell can lay out from these
+             *     without knowing about EXIF. `None` for formats with no intrinsic size.
+             */
+            width?: number | null;
+        };
+        /**
+         * @description The tier a user sees.
+         *
+         *     Derived from two independent columns — the object's storage class and the state of any restore —
+         *     and derived **here** rather than in the UI, because the mapping contains a trap: a restore does not
+         *     change an object's storage class, so an *expired* restore of an archived object is archived again.
+         *     The schema says so twice, and reimplementing the rule in TypeScript is how a download button stays
+         *     enabled until the day someone presses it.
+         * @enum {string}
+         */
+        AssetTier: "hot" | "cool" | "archive" | "restoring" | "restored";
+        /**
          * @description How long a `GET` takes to become possible.
          *
          *     The download path and the UI branch on **this**, not on the provider name. That is

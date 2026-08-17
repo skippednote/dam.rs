@@ -87,3 +87,38 @@ test('the state reference page is navigable by heading structure', async ({ page
 	await expect(page.locator('h1')).toHaveCount(1);
 	await expect(page.locator('h2')).toHaveCount(4);
 });
+
+test('the asset grid has no axe violations and reports the real row count', async ({ page }) => {
+	await page.goto('/assets');
+	const grid = page.getByRole('grid');
+	// 120 assets in 4 columns is 30 rows. A virtualised grid that reported its *rendered* rows would
+	// say 5 or 6, and a screen-reader user would have no way to know the rest existed.
+	await expect(grid).toHaveAttribute('aria-rowcount', '30');
+	await expect(grid).toHaveAttribute('aria-colcount', '4');
+
+	const results = await new AxeBuilder({ page }).withTags(WCAG_21_AA).analyze();
+	const detail = results.violations
+		.map((v) => `${v.id} (${v.impact}): ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`)
+		.join('\n');
+	expect(results.violations, `axe violations on /assets:\n${detail}`).toEqual([]);
+});
+
+test('the grid is a single tab stop and the arrow keys move within it', async ({ page }) => {
+	// The roving-tabindex contract, exercised through a real browser rather than synthetic events:
+	// tabbing must reach the grid once, not once per cell.
+	await page.goto('/assets');
+	await page.locator('[role="gridcell"]').first().focus();
+	await expect(page.locator('[role="gridcell"][tabindex="0"]')).toHaveCount(1);
+
+	await page.keyboard.press('ArrowRight');
+	await expect(page.locator('[role="gridcell"]').nth(1)).toBeFocused();
+	await page.keyboard.press('ArrowDown');
+	await expect(page.locator('[role="gridcell"]').nth(5)).toBeFocused();
+	await expect(page.locator('[role="gridcell"][tabindex="0"]')).toHaveCount(1);
+});
+
+test('selecting an asset is announced in a live region', async ({ page }) => {
+	await page.goto('/assets');
+	await page.locator('[role="gridcell"]').first().click();
+	await expect(page.locator('[role="status"]')).toHaveText(/1 of 120 assets selected/i);
+});

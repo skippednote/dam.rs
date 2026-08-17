@@ -23,5 +23,7 @@ pub use config::Config;
 pub use error::{Error, ResourceKind, Result};
 pub use rights::{ProvenanceState, RightsState};
 pub use secret::Secret;
-pub use storage::{LatencyClass, PlacementState, RestoreState, RestoreTier, StorageClass};
+pub use storage::{
+    AssetTier, LatencyClass, PlacementState, RestoreState, RestoreTier, StorageClass,
+};
 pub use tenant::TenantSlug;

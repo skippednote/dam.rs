@@ -11,6 +11,116 @@
   "paths": {},
   "components": {
     "schemas": {
+      "AssetPage": {
+        "type": "object",
+        "description": "One page of results.\n\n`total` is separate from `items.len()` and load-bearing for accessibility: a virtualised grid must\nreport the real row count in `aria-rowcount`, or a screen reader announces \"20 items\" for a library\nof a hundred thousand.",
+        "required": [
+          "items",
+          "total",
+          "offset"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AssetSummary"
+            }
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Zero-based index of the first item in `items` within the full result set."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total matching assets, not the number returned."
+          }
+        }
+      },
+      "AssetSummary": {
+        "type": "object",
+        "description": "One asset, as the grid renders it.\n\nDeliberately small. A 100k-row grid fetches pages of these, so every field here is multiplied by\nthe page size — and anything a cell does not draw belongs on the detail endpoint instead.",
+        "required": [
+          "id",
+          "filename",
+          "mime",
+          "bytes",
+          "tier",
+          "rights_state",
+          "provenance_state"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "filename": {
+            "type": "string",
+            "description": "The name the uploader gave it, preserved verbatim. The stored MIME is sniffed, not this."
+          },
+          "height": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "mime": {
+            "type": "string",
+            "description": "Sniffed on ingest, never taken from the client (`assets.mime`)."
+          },
+          "provenance_state": {
+            "$ref": "#/components/schemas/ProvenanceState"
+          },
+          "rights_state": {
+            "$ref": "#/components/schemas/RightsState",
+            "description": "Rights evaluation outcome. A *display* input: enforcement happens at the distribution\nchokepoint (D12), and this field is what dims a button rather than what protects an asset."
+          },
+          "tag_confidence": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "Model confidence in the asset's automatic tags, 0..1. `None` means nothing scored it — which\nis not the same as zero, and the UI renders it differently."
+          },
+          "thumbnail_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "URL of the thumbnail. Absent while a newly-uploaded asset is still being processed."
+          },
+          "tier": {
+            "$ref": "#/components/schemas/AssetTier",
+            "description": "Where the original lives, derived server-side from storage class and restore state so the UI\nnever reimplements that mapping."
+          },
+          "width": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Display dimensions — orientation already applied, so a grid cell can lay out from these\nwithout knowing about EXIF. `None` for formats with no intrinsic size."
+          }
+        }
+      },
+      "AssetTier": {
+        "type": "string",
+        "description": "The tier a user sees.\n\nDerived from two independent columns — the object's storage class and the state of any restore —\nand derived **here** rather than in the UI, because the mapping contains a trap: a restore does not\nchange an object's storage class, so an *expired* restore of an archived object is archived again.\nThe schema says so twice, and reimplementing the rule in TypeScript is how a download button stays\nenabled until the day someone presses it.",
+        "enum": [
+          "hot",
+          "cool",
+          "archive",
+          "restoring",
+          "restored"
+        ]
+      },
       "LatencyClass": {
         "type": "string",
         "description": "How long a `GET` takes to become possible.\n\nThe download path and the UI branch on **this**, not on the provider name. That is\nwhat lets Azure Archive or LTO tape slot in later without special-casing (§6.1).",

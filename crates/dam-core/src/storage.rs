@@ -211,6 +211,26 @@ pub enum RestoreState {
     Expired,
 }
 
+impl RestoreState {
+    /// The wire and database spelling. Present so a log line or an error message can name the state
+    /// rather than debug-printing it — `restore_state=available` greps, `Available` does not.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Requested => "requested",
+            Self::Ongoing => "ongoing",
+            Self::Available => "available",
+            Self::Expired => "expired",
+        }
+    }
+}
+
+impl std::fmt::Display for RestoreState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -337,6 +357,89 @@ impl std::str::FromStr for PlacementState {
             other => Err(crate::Error::Validation {
                 field: "object_placements.state".into(),
                 reason: format!("unknown placement state {other:?}"),
+            }),
+        }
+    }
+}
+
+/// The tier a user sees.
+///
+/// Derived from two independent columns — the object's storage class and the state of any restore —
+/// and derived **here** rather than in the UI, because the mapping contains a trap: a restore does not
+/// change an object's storage class, so an *expired* restore of an archived object is archived again.
+/// The schema says so twice, and reimplementing the rule in TypeScript is how a download button stays
+/// enabled until the day someone presses it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum AssetTier {
+    /// Instant, no retrieval fee.
+    Hot,
+    /// Instant, but retrieval is billed per GB. The distinction a bulk download cares about.
+    Cool,
+    /// Searchable and previewable from the proxy; the original needs a restore first.
+    Archive,
+    /// A restore is in flight.
+    Restoring,
+    /// A temporary copy of the original is available, and will expire.
+    Restored,
+}
+
+impl AssetTier {
+    /// The tier for a placement.
+    pub fn of(class: StorageClass, restore: RestoreState) -> Self {
+        if !class.requires_restore() {
+            // A stale restore_state left on an object since transitioned back must not make a hot
+            // object look like it is thawing.
+            return if matches!(class, StorageClass::Standard) {
+                Self::Hot
+            } else {
+                Self::Cool
+            };
+        }
+        match restore {
+            RestoreState::Requested | RestoreState::Ongoing => Self::Restoring,
+            RestoreState::Available => Self::Restored,
+            // `None` and `Expired` alike: the object is in its archive class and there is no live
+            // copy. Expired is the one that reads as "restored" if the two columns are conflated.
+            RestoreState::None | RestoreState::Expired => Self::Archive,
+        }
+    }
+
+    /// Whether the original can be downloaded right now. What the download action branches on.
+    pub fn original_available(self) -> bool {
+        matches!(self, Self::Hot | Self::Cool | Self::Restored)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Hot => "hot",
+            Self::Cool => "cool",
+            Self::Archive => "archive",
+            Self::Restoring => "restoring",
+            Self::Restored => "restored",
+        }
+    }
+}
+
+impl std::fmt::Display for AssetTier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for AssetTier {
+    type Err = crate::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "hot" => Ok(Self::Hot),
+            "cool" => Ok(Self::Cool),
+            "archive" => Ok(Self::Archive),
+            "restoring" => Ok(Self::Restoring),
+            "restored" => Ok(Self::Restored),
+            other => Err(crate::Error::Validation {
+                field: "tier".into(),
+                reason: format!("unknown asset tier {other:?}"),
             }),
         }
     }
