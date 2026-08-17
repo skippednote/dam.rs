@@ -143,8 +143,20 @@ Rules for autonomous runs:
   otherwise have compared equal.
   *Decision taken:* `enabled = false` retires a pool from new placements but keeps it
   readable — blocking reads too would turn a config change into a data outage.
-- [ ] **1.5 Content addressing.** Streaming BLAKE3, key layout per §6.2, dedupe on
-  re-upload proven by a test that uploads the same bytes twice.
+- [x] **1.5 Content addressing.** Done — 9 integration cases + 3 unit, including the
+  two-upload dedupe test (second upload transfers nothing, one object under the prefix)
+  and a known-answer vector pinning BLAKE3 so a dependency swap cannot silently change
+  every key in the estate.
+  *Note:* the duplicate check compares **size as well as presence**. A key implies its
+  bytes under content addressing, so a wrong-sized object at that key is corruption, not a
+  cache hit — and treating it as one would make the corruption permanent, because every
+  later upload of the correct bytes would also skip the write. Full digest verification
+  would be stronger but costs a download per duplicate upload.
+  *Note:* `Digest` normalises case at construction rather than validating at use, so an
+  uppercase digest cannot produce a second key for identical content.
+  *Deferred to 1.6:* a streaming upload cannot know its key before it has read the bytes,
+  so the large-file path needs a staging key promoted by a server-side copy. `hash_reader`
+  and `StreamHasher` are the pieces; the promotion belongs with TUS.
 - [ ] **1.6 Upload.** TUS resumable + presigned direct-to-S3. Magic-byte sniffing
   via `infer` — never trust client `Content-Type`.
 - [ ] **1.7 Probe + derivatives.** libvips primary, `image` fallback. Subprocesses

@@ -26,6 +26,7 @@
 )]
 
 pub mod conformance;
+pub mod content;
 pub mod fake;
 pub mod key;
 pub mod multipart;
@@ -36,6 +37,7 @@ pub mod versioning;
 #[cfg(feature = "testing")]
 pub mod testing;
 
+pub use content::{Digest, Ingested, StreamHasher};
 pub use fake::FakeS3Store;
 pub use key::Key;
 pub use multipart::{MIN_PART_SIZE, MultipartUpload};

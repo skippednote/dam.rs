@@ -620,3 +620,20 @@ loads placements and the layer that acts on them; a second definition is how the
 out of step with the `object_placements.state` CHECK. It is an enum rather than a boolean
 because each non-`Present` state implies a different operator action — `Uploading` resolves
 itself, `Missing` needs re-replication, `Corrupt` needs a scrub. Reversible: yes.
+
+**Deduplication compares size, not just presence.** Under content addressing a key implies
+its bytes, so an object of the wrong size at its own content-addressed key is corruption or a
+truncated earlier upload. A presence-only check would read that as a cache hit and make the
+corruption permanent — every subsequent upload of the correct bytes would skip the write too.
+Verifying the full digest would be stronger, but it costs a download of the whole object on
+every duplicate upload; size catches the realistic failure for one `HeadObject`. Reversible:
+yes, by adding an optional deep-verify mode.
+
+**An empty body is refused at the ingest boundary, not in the hasher.** BLAKE3 of nothing is
+a perfectly valid digest, so content addressing alone would store a zero-byte asset and hand
+it a key. The refusal has to sit where the upload is accepted. Reversible: yes.
+
+**`Digest` normalises case instead of validating it.** An uppercase digest would produce a
+second key for identical content, defeating deduplication. Making it unrepresentable beats
+asking every call site to remember — `Key`'s own lowercase check stays as a second line.
+Reversible: no.
