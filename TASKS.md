@@ -316,8 +316,29 @@ Rules for autonomous runs:
   derivatives. *Test first:* `provenance_gaps` is empty after deriving from an
   asset with credentials. **This is D13; a derivative pipeline that strips
   credentials is wrong, not incomplete.**
-- [ ] **1.10 Lifecycle engine.** Dry-run default, `min_duration_until` respected,
-  `pinned` honoured, `max_objects_per_run` halt.
+- [x] **1.10 Lifecycle engine.** Done — 22 cases, pure logic. Dry-run default, `pinned`
+  honoured unconditionally, `min_duration_until` respected with an inclusive boundary,
+  `max_objects_per_run` halting *and reporting how many were left*. Mutation-checked: flipping
+  the dry-run default fails 2 tests; removing the pinned check, the tier-exempt check, the
+  min-duration boundary, or the halt's remaining-count each fail 1.
+  *The engine plans; it never moves anything.* That separation is the deliverable — a plan can be
+  read, diffed and approved before terabytes of a customer's masters go somewhere unreadable for
+  48 hours.
+  *Two defaults chosen to fail safely:*
+  - `LifecyclePolicy::new` sets `dry_run: true`, and there is no `Default` impl and no builder
+    ending in execution, so turning it off shows up in a diff.
+  - Every candidate appears in the plan exactly once, as a transition or as a skip **with a
+    reason**. An object that is neither moved nor explained is indistinguishable from one the
+    engine forgot — there is a test asserting the two counts add up.
+  *Note:* a policy can never move an object toward a warmer tier. Cold→hot is a restore, not a
+  transition, so a configuration typo naming `STANDARD` as the target for archived objects would
+  otherwise produce an enormous surprise bill. Coldness is ranked by retrieval characteristics
+  rather than by name, so a new class slots in by what it costs.
+  *Note:* the `only_superseded` prerequisite I flagged in 1.2 is resolved the honest way rather
+  than guessed. `object_placements` still has no version dimension, so the engine **halts with
+  `Unsupported` and names the gap** instead of matching zero objects — a policy that looks
+  configured while silently doing nothing is the worst of the available outcomes, because a quiet
+  success is never investigated. Adding a version dimension remains a decision for review.
 
 ## Frontend track (parallel, once 0.11 lands)
 

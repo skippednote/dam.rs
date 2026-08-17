@@ -867,3 +867,40 @@ synthetic PNG gradient, which compresses to 187 KB for 12 megapixels: the "maste
 its own proxy and the test failed for a reason unrelated to the code. Correlated noise over a
 gradient, encoded as JPEG, is the fixture that behaves like a photograph. Recorded because it is the
 second time a smooth synthetic fixture has made a test meaningless in this project.
+
+**The lifecycle engine plans; a separate step executes.** A plan can be read, diffed and approved
+before a customer's masters move somewhere they cannot be read back from for 48 hours. `dry_run` is
+`true` in the only constructor, there is no `Default` impl, and no builder ends in execution — so
+turning it off appears in a diff rather than being inherited. Reversible: yes, and it should not be.
+
+**Every candidate appears in the plan exactly once, with a reason if it was skipped.** An object that
+is neither moved nor explained is indistinguishable from one the engine forgot, and a dry run whose
+output cannot be reconciled against a bucket listing is not worth reading. A test asserts
+transitions + skips == candidates. Reversible: no.
+
+**A truncated run reports how much was left.** `HaltReason::ObjectLimit` carries `remaining`, because
+a run that quietly stops at its limit looks exactly like a policy that is working — the first
+thousand objects move every night and the other four million never do. Reversible: no.
+
+**A policy can never move an object toward a warmer tier.** Cold to hot is a restore: it costs
+retrieval fees and, for Glacier and Deep Archive, hours. A tiering policy able to do it by accident
+turns a configuration typo into a very large bill, so the engine refuses and says so. Coldness is
+ranked by retrieval characteristics rather than by class name, so a future class slots in by what it
+actually costs. Reversible: yes.
+
+**The minimum-duration boundary is inclusive.** At the instant the minimum elapses the charge is
+settled and the next hop is free; one second earlier it is not. Rejecting *at* the boundary would
+cost a full minimum period per object, forever, on a schedule nobody would think to question.
+Reversible: no.
+
+**A null `last_accessed_at` ages from `placed_at`.** The two obvious readings are both wrong:
+"infinitely recent" means nothing ever tiers, and "epoch" means everything tiers at once. An object
+nobody has ever opened is precisely what a tiering policy is for, measured from when it arrived.
+Reversible: no.
+
+**An `only_superseded` policy halts as unsupported rather than matching nothing.** `object_placements`
+is keyed `(object_key, pool_id)` with no version dimension, so a noncurrent version cannot be
+identified. Returning zero candidates would be indistinguishable from "nothing is due", and a policy
+that appears configured while doing nothing is never investigated — a quiet success raises no
+questions. The halt names the missing schema. Reversible: yes, by adding the version dimension, which
+is still a decision for review.
