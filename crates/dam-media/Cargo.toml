@@ -1,0 +1,33 @@
+[package]
+name = "dam-media"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+dam-core = { path = "../dam-core" }
+dam-store = { path = "../dam-store" }
+thiserror = { workspace = true }
+image = { workspace = true }
+fast_image_resize = { workspace = true }
+kamadak-exif = { workspace = true }
+image_hasher = { workspace = true }
+infer = { workspace = true }
+symphonia = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+bytes = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+todo = "warn"
+dbg_macro = "deny"
+unwrap_used = "deny"
+expect_used = "warn"

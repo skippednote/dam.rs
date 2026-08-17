@@ -55,3 +55,52 @@ mise / cargo during 0.1.
 ## Autonomous decisions
 
 <!-- Appended during implementation runs. Newest last. -->
+
+## 2026-08-17 — task 0.1: dependency pins were substantially stale
+
+Verified all 31 pins against crates.io. Material drift from the design-time
+guesses, all corrected in `Cargo.toml`:
+
+| Crate | Design pin | Actual |
+|---|---|---|
+| `tantivy` | 0.22 | **0.26** |
+| `rmcp` | 0.8 | **3.1** (the Rust MCP SDK went past 1.0) |
+| `sqlx` | 0.8 | **0.9** |
+| `winnow` | 0.7 | **1.0** |
+| `opentelemetry` (+sdk, otlp) | 0.27 | **0.32** |
+| `tracing-opentelemetry` | 0.28 | 0.33 |
+| `testcontainers` / `-modules` | 0.23 / 0.11 | 0.28 / 0.15 |
+| `governor` | 0.7 | 0.10 |
+| `ndarray` | 0.16 | 0.17 |
+| `fast_image_resize` | 5 | 6 |
+| `libvips` | 1 | 2 |
+| `infer` | 0.16 | 0.22 |
+| `symphonia` | 0.5 | 0.6 |
+| `tokenizers` | 0.21 | 0.23 |
+| `whisper-rs` | 0.14 | 0.16 |
+| `pdfium-render` | 0.8 | 0.9 |
+| `ort` | 2.0.0-rc.10 | 2.0.0-rc.13 (still no stable) |
+
+Three manifest errors the design draft would have hit on first build, all fixed:
+
+1. **`[workspace.dev-dependencies]` is not a real Cargo table.** Dev deps are
+   declared in `[workspace.dependencies]` and inherited by members via
+   `dev-dependencies` + `workspace = true`.
+2. **`optional = true` is invalid in workspace deps.** Optionality is a
+   member-crate concept; the workspace declares the version, members opt in with
+   `{ workspace = true, optional = true }`. Affected libvips, pdfium-render, ort,
+   whisper-rs.
+3. **`utoipa` was referenced by `dam-api` but never declared.** Added, with
+   `utoipa-axum` 0.2 for the router integration.
+
+**sqlx 0.9 split the runtime and TLS features apart.** `runtime-tokio-rustls` no
+longer exists; it is now `runtime-tokio` + a TLS choice. Picked
+`tls-rustls-ring` (ring backend) over `tls-rustls-aws-lc-rs` — ring is the more
+widely deployed of the two and we have no FIPS requirement. Reversible: yes, it is
+a feature flag.
+
+Also installed: `rustfmt` and `clippy` components were missing from the toolchain.
+
+Reversible: all of it. Nothing here is a design change — the design was right, the
+version numbers were guesses, and guessing version numbers is what a first build
+is for.

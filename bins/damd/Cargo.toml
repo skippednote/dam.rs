@@ -1,0 +1,32 @@
+[package]
+name = "damd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+dam-core = { path = "../../crates/dam-core" }
+dam-db = { path = "../../crates/dam-db" }
+dam-store = { path = "../../crates/dam-store" }
+dam-api = { path = "../../crates/dam-api" }
+dam-mcp = { path = "../../crates/dam-mcp" }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+figment = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+todo = "warn"
+dbg_macro = "deny"
+unwrap_used = "deny"
+expect_used = "warn"

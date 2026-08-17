@@ -18,7 +18,13 @@ Rules for autonomous runs:
 
 ## M0 — Foundation
 
-- [ ] **0.1 Workspace skeleton.** All 12 members from ARCHITECTURE §4 with real
+- [x] **0.1 Workspace skeleton.** Done. 12 members build clean; `clippy -D warnings` clean.
+  *Surprise:* 17 of 31 pins had drifted, and three manifest constructs in the design
+  draft were simply invalid Cargo (`[workspace.dev-dependencies]`, `optional` in
+  workspace deps, undeclared `utoipa`). sqlx 0.9 split runtime/TLS features. See
+  DECISIONS.md.
+
+- [x] ~~**0.1 Workspace skeleton.**~~ All 12 members from ARCHITECTURE §4 with real
   `lib.rs`/`main.rs`, `#![forbid(unsafe_code)]`, and the shared lint config.
   *Done when:* `cargo build --workspace` and `cargo clippy -D warnings` are clean.
   *Verify the pinned dep versions against crates.io first* — `ort`, `tantivy`, and

@@ -22,9 +22,10 @@ rust-version = "1.85"
 license = "Apache-2.0"
 repository = "https://github.com/skippednote/damrs"
 
-# Version pins below are the majors intended at design time. Verify each against
-# crates.io before the first `cargo build` — several are moving fast (`ort`,
-# `tantivy`, `rmcp`) and one is pre-1.0 by policy (`ort`).
+# Versions verified against crates.io 2026-08-17 (task 0.1). Notable drift from the
+# design-time pins: tantivy 0.22 -> 0.26, rmcp 0.8 -> 3.1, sqlx 0.8 -> 0.9,
+# winnow 0.7 -> 1.0, opentelemetry 0.27 -> 0.32, testcontainers 0.23 -> 0.28.
+# `ort` has no stable release; rc.13 is pinned exactly.
 [workspace.dependencies]
 
 # ── async runtime + web ───────────────────────────────────────────────────────
@@ -35,11 +36,13 @@ axum-extra = { version = "0.10", features = ["typed-header"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors", "compression-br", "limit", "timeout"] }
 hyper = "1"
+utoipa = { version = "5.5", features = ["axum_extras", "uuid", "chrono"] }
+utoipa-axum = "0.2"
 
 # ── database ──────────────────────────────────────────────────────────────────
 # `migrate` drives both migrations/global and migrations/tenant (see §5.3).
-sqlx = { version = "0.8", default-features = false, features = [
-    "runtime-tokio-rustls", "postgres", "macros", "migrate",
+sqlx = { version = "0.9", default-features = false, features = [
+    "runtime-tokio", "tls-rustls-ring", "postgres", "macros", "migrate",
     "uuid", "chrono", "json", "bigdecimal",
 ] }
 pgvector = { version = "0.4", features = ["sqlx"] }
@@ -53,34 +56,34 @@ aws-credential-types = "1"
 aws-smithy-types = "1"
 
 # ── search ────────────────────────────────────────────────────────────────────
-tantivy = "0.22"
-winnow = "0.7"          # Widen-compatible shorthand query parser -> query IR
+tantivy = "0.26"
+winnow = "1.0"          # Widen-compatible shorthand query parser -> query IR
 
 # ── media ─────────────────────────────────────────────────────────────────────
 # libvips is the primary image path; `image` + fast_image_resize is the fallback
 # and the only path used when libvips is unavailable at build time.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "tiff", "gif", "avif"] }
-fast_image_resize = { version = "5", features = ["image"] }
-libvips = { version = "1", optional = true }
+fast_image_resize = { version = "6", features = ["image"] }
+libvips = { version = "2" }        # members mark this optional
 kamadak-exif = "0.5"
-image_hasher = "3"      # pHash / dHash for near-duplicate detection
-symphonia = { version = "0.5", features = ["all-codecs"] }
-pdfium-render = { version = "0.8", optional = true }
-infer = "0.16"          # magic-byte sniffing; never trust client Content-Type
+image_hasher = "3.1"      # pHash / dHash for near-duplicate detection
+symphonia = { version = "0.6", features = ["all-codecs"] }
+pdfium-render = { version = "0.9" }  # members mark this optional
+infer = "0.22"          # magic-byte sniffing; never trust client Content-Type
 
 # ── AI ────────────────────────────────────────────────────────────────────────
 # ort = ONNX Runtime bindings: SigLIP/CLIP embeddings, OCR, face detect+embed,
 # saliency. Pre-1.0 and the API still shifts between rcs — pin exactly.
-ort = { version = "2.0.0-rc.10", optional = true }
-ndarray = "0.16"
-tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
-whisper-rs = { version = "0.14", optional = true }
+ort = { version = "2.0.0-rc.13" }      # members mark this optional
+ndarray = "0.17"
+tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
+whisper-rs = { version = "0.16" }      # members mark this optional
 # No official Anthropic Rust SDK — dam-ai speaks raw HTTP to /v1/messages.
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "multipart"] }
 eventsource-stream = "0.2"   # SSE for streaming Claude responses
 
 # ── MCP ───────────────────────────────────────────────────────────────────────
-rmcp = { version = "0.8", features = ["server", "transport-streamable-http-server"] }
+rmcp = { version = "3.1", features = ["server", "transport-streamable-http-server"] }
 
 # ── auth ──────────────────────────────────────────────────────────────────────
 openidconnect = { version = "4", default-features = false, features = ["reqwest", "rustls-tls"] }
@@ -105,12 +108,12 @@ mime = "0.3"
 # ── observability ─────────────────────────────────────────────────────────────
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-tracing-opentelemetry = "0.28"
-opentelemetry = "0.27"
-opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
-opentelemetry-otlp = "0.27"
+tracing-opentelemetry = "0.33"
+opentelemetry = "0.32"
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
+opentelemetry-otlp = "0.32"
 metrics = "0.24"
-metrics-exporter-prometheus = "0.16"
+metrics-exporter-prometheus = "0.18"
 
 # ── errors, config, CLI, misc ─────────────────────────────────────────────────
 thiserror = "2"
@@ -118,7 +121,7 @@ anyhow = "1"
 figment = { version = "0.10", features = ["toml", "env"] }
 clap = { version = "4", features = ["derive", "env"] }
 moka = { version = "0.12", features = ["future"] }
-governor = "0.7"        # per-tenant rate limiting
+governor = "0.10"        # per-tenant rate limiting
 futures = "0.3"
 async-trait = "0.1"
 itertools = "0.14"
@@ -126,8 +129,7 @@ regex = "1"
 tempfile = "3"
 rand = "0.9"
 
-# ── dev / test ────────────────────────────────────────────────────────────────
-[workspace.dev-dependencies]
+# ── dev / test (inherited via `dev-dependencies` in members) ──────────────────
 insta = { version = "1", features = ["json", "redactions"] }
 proptest = "1"
 criterion = "0.5"
@@ -137,8 +139,8 @@ wiremock = "0.6"        # stub the Anthropic API in tests
 # crates/dam-store/tests/support/garage.rs. Garage does NOT implement storage
 # classes, RestoreObject, versioning, or object lock, so the tiering state
 # machine is tested against FakeS3Store instead (ARCHITECTURE §20.2).
-testcontainers = "0.23"
-testcontainers-modules = { version = "0.11", features = ["postgres"] }
+testcontainers = "0.28"
+testcontainers-modules = { version = "0.15", features = ["postgres"] }
 
 [profile.release]
 lto = "thin"
