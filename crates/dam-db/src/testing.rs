@@ -64,6 +64,9 @@ impl PostgresHarness {
             .with_wait_for(WaitFor::message_on_stderr(
                 "database system is ready to accept connections",
             ))
+            // See the note in dam-store's harness: a full-workspace run starts several
+            // containers concurrently and the default startup window is tight enough to flake.
+            .with_startup_timeout(Duration::from_secs(120))
             .with_env_var("POSTGRES_USER", USER)
             .with_env_var("POSTGRES_PASSWORD", PASSWORD)
             .with_env_var("POSTGRES_DB", DATABASE)

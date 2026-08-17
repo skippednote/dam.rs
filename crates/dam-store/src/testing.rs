@@ -126,6 +126,11 @@ impl SeaweedfsHarness {
             // because SeaweedFS binds to the container's own IP, so a request to
             // 127.0.0.1 from inside the container is refused.
             .with_wait_for(WaitFor::message_on_stderr("Start Seaweed Master"))
+            // Generous, because the failure mode this prevents is a *flake* rather than a
+            // hang: a full-workspace run starts several containers at once and one observed
+            // startup exceeded the default while passing on its own. A suite that fails one
+            // run in ten teaches people to re-run instead of to read the failure.
+            .with_startup_timeout(Duration::from_secs(120))
             .with_copy_to(CONFIG_PATH, S3_CONFIG.as_bytes().to_vec())
             .with_cmd([
                 "server",

@@ -740,3 +740,38 @@ of step with the CHECK constraints in `0009_uploads.sql`. Reversible: yes.
 **`StorageClass` deliberately has no `Default`.** A test wanted `Default::default()` and it was
 tempting to add; an implicit storage class is how an original silently lands in an archive tier
 and starts a 180-day minimum charge. Every call site states the class. Reversible: yes.
+
+**Subprocess limits are applied by the shell, not by `pre_exec`.** Setting an rlimit on a child
+means `pre_exec`, which is `unsafe`, and the workspace is `#![forbid(unsafe_code)]` throughout. So
+the runner spawns `sh -c 'ulimit …; exec "$0" "$@"' <program> <args…>`: the limits are a fixed
+string built from numbers, and the program and arguments arrive as positional parameters. That is
+what makes argument injection structurally impossible rather than a quoting exercise — `$0` and
+`"$@"` are values to the shell, not text it re-parses, so a filename containing `; rm -rf /` stays
+a filename. Reversible: yes, if the unsafe ban is ever relaxed.
+
+**The sandbox declares which limits the platform actually enforces.** Measured: darwin rejects
+`ulimit -v` and does not constrain the allocation at all, while Linux does both; and `ulimit -f`
+counts 512-byte blocks on busybox but 1024-byte blocks on bash, with `POSIXLY_CORRECT` making no
+difference. Rather than pretend, `capabilities()` states the platform's real behaviour and
+`unenforced()` names every requested limit that is decorative — the same "capabilities declared,
+not probed" discipline as the storage drivers. A protection that exists only in production is
+discovered in production. Reversible: no.
+
+**The file-size ulimit is the coarse bound; a post-run scan is authoritative.** Because the block
+size differs by shell, one divisor is wrong somewhere: 512 under-caps nothing on busybox but lets
+bash allow twice the request. 512 is used (under-capping would fail legitimate large derivatives on
+Linux) and `Sandbox::oversized()` closes the window afterwards, so an overshooting derivative is
+detected rather than stored. Reversible: yes.
+
+**A timed-out subprocess still returns what it printed.** The first version discarded it, which
+leaves an operator with "timed out" and nothing else — and a hung tool's last lines are the
+diagnosis. Capturing it required the pipe readers to accumulate into shared buffers as they read,
+because a sink populated on completion is empty in exactly the case that matters. Reversible: no.
+
+**The child gets an allowlisted environment, not the parent's.** `env_clear()` plus PATH, HOME,
+TMPDIR and `LC_ALL=C`. The parent holds storage credentials — `.mise.toml` alone puts
+`AWS_SECRET_ACCESS_KEY` in the process — and a subprocess that inherits them turns an RCE in a
+media tool into a bucket compromise. The test asserts the child's environment against an allowlist
+rather than looking for specific leaks, because naming the variables we fear only catches the ones
+we thought of. `LC_ALL=C` is not incidental: media tools read locale for number formatting and have
+produced comma-decimal output that downstream parsers rejected. Reversible: yes.

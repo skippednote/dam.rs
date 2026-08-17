@@ -223,6 +223,34 @@ Rules for autonomous runs:
   ask for one is an authorisation decision.
 - [ ] **1.7 Probe + derivatives.** libvips primary, `image` fallback. Subprocesses
   with rlimits, wall-clock, and an escape-proof temp dir.
+  *Part done:* the subprocess sandbox (`dam-media::sandbox`, 14 cases, no media tools
+  needed — it tests the runner). Mutation-checked: interpolating the command line instead of
+  using positional parameters fails 6 tests; dropping `env_clear` fails 1.
+  *Measured platform findings, all of which changed the design:*
+  - **`ulimit -v` does nothing on macOS.** The shell rejects it outright and a 200 MB
+    allocation runs unimpeded under a 50 MB cap; on Linux the same cap makes `dd` fail with
+    "out of memory". So `capabilities()` declares the memory limit Linux-only and
+    `unenforced()` names it — a runner that accepted it on both would create a protection
+    that exists only in production.
+  - **`ulimit -f` block size differs by shell**: 512 bytes on busybox, **1024 on bash**
+    (which is `/bin/sh` on macOS), and `POSIXLY_CORRECT` changes nothing. So the same number
+    means twice the bytes on one platform. The ulimit is the coarse bound; `oversized()` is
+    the authoritative post-run check.
+  - `ulimit -t` works everywhere tested — it killed a spin at exactly 1s.
+  *Note:* rlimits without `unsafe` means letting the shell apply them:
+  `sh -c 'ulimit …; exec "$0" "$@"' prog args…`. Positional parameters make injection
+  structurally impossible rather than a quoting exercise.
+  *Note:* `TimedOut` originally discarded the partial output. A hung tool's last lines are
+  the whole diagnosis, so it now carries them — which needed the readers to accumulate into
+  shared buffers rather than returning at the end, since a sink written on completion is empty
+  exactly when it matters.
+  *Also fixed:* a full-workspace run flaked once on container startup under load. Both
+  harnesses now set a 120s startup timeout — a suite that fails one run in ten teaches people
+  to re-run instead of to read the failure.
+  *Still to do:* the probe itself and derivative generation. **libvips needs a system
+  library** (`brew install vips`), which is not a mise-installable runtime — flagging rather
+  than installing it. The pure-Rust path (`image` + `kamadak-exif` + `image_hasher`) can be
+  built first and is what ARCHITECTURE calls the fallback.
 - [ ] **1.8 Master proxy.** The §2 invariant. *Test first:* `enrichment_runs.used_original`
   is false for every run — the alarm that keeps cold storage viable.
 - [ ] **1.9 C2PA.** Verify on ingest, preserve inbound manifest, re-sign

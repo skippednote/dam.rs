@@ -4,6 +4,7 @@
 //! declaration is evidence and not authority.
 
 pub mod ingest;
+pub mod sandbox;
 pub mod sniff;
 
 pub use sniff::{MediaClass, Sniffed};
