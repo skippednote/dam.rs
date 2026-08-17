@@ -1,0 +1,38 @@
+[tools]
+rust = "1.94.0"          # edition 2024 needs >= 1.85; pinned to what's installed
+node = "24"              # for the Svelte app in web/
+pnpm = "10"
+
+[env]
+# Points sqlx's compile-time macros at the migrated template schema so
+# query! can resolve tenant tables. See ARCHITECTURE.md §5.5.
+DATABASE_URL = "postgres://damrs:damrs@localhost:5433/damrs?options=-c%20search_path%3Dtenant_template,extensions,public"
+SQLX_OFFLINE = "true"    # CI and normal builds use .sqlx/; unset to regenerate
+RUST_LOG = "damrs=debug,sqlx=warn,tower_http=debug"
+
+# Local dev stack (docker/compose.dev.yml). Tests use testcontainers on random
+# ports instead and ignore these.
+DAMRS_S3_ENDPOINT = "http://localhost:3900"
+DAMRS_S3_REGION = "garage"
+DAMRS_S3_BUCKET = "damrs-dev"
+DAMRS_S3_FORCE_PATH_STYLE = "true"
+
+[tasks.up]
+description = "Start local Postgres + Garage"
+run = "docker compose -f docker/compose.dev.yml up -d --wait"
+
+[tasks.down]
+description = "Stop local dev stack"
+run = "docker compose -f docker/compose.dev.yml down -v"
+
+[tasks.migrate]
+description = "Apply global + tenant migrations to the local stack"
+run = "cargo run -q -p damctl -- migrate --all"
+
+[tasks.check]
+description = "The bar: fmt, clippy, test"
+run = [
+  "cargo fmt --all --check",
+  "cargo clippy --all-targets --all-features -- -D warnings",
+  "cargo test --all-features",
+]

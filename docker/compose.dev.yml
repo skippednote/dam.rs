@@ -1,0 +1,53 @@
+# Local development stack. Tests do NOT use this — they spin ephemeral
+# containers via testcontainers on random ports so suites can run in parallel
+# and never collide with a running dev stack.
+#
+# Ports are offset from the defaults (5433, not 5432) so this never fights an
+# existing local Postgres.
+
+name: damrs-dev
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: damrs
+      POSTGRES_PASSWORD: damrs
+      POSTGRES_DB: damrs
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U damrs -d damrs"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Garage — S3-compatible store from Deuxfleurs.
+  # https://git.deuxfleurs.fr/Deuxfleurs/garage
+  #
+  # IMPORTANT: Garage implements the S3 data plane but NOT storage classes,
+  # RestoreObject, object versioning, or object lock. Those are exactly the four
+  # features the tiering design (ARCHITECTURE §6) is built on, so Garage proves
+  # the wire protocol and the FakeS3Store test double proves the tiering state
+  # machine. See ARCHITECTURE §21.2.
+  garage:
+    image: dxflrs/garage:v1.0.1
+    ports:
+      - "3900:3900"   # S3 API
+      - "3903:3903"   # admin API
+    volumes:
+      - ./garage.dev.toml:/etc/garage.toml:ro
+      - garage-meta:/var/lib/garage/meta
+      - garage-data:/var/lib/garage/data
+    healthcheck:
+      test: ["CMD", "/garage", "status"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  pgdata:
+  garage-meta:
+  garage-data:
