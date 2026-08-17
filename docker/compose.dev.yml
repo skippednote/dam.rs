@@ -2,8 +2,9 @@
 # containers via testcontainers on random ports so suites can run in parallel
 # and never collide with a running dev stack.
 #
-# Ports are offset from the defaults (5433, not 5432) so this never fights an
-# existing local Postgres.
+# Ports are offset well clear of the defaults (5440, not 5432) so this never
+# fights a local Postgres or another project's container. 5433 was the first
+# choice and was already taken on this machine — hence the wide offset.
 
 name: damrs-dev
 
@@ -15,7 +16,7 @@ services:
       POSTGRES_PASSWORD: damrs
       POSTGRES_DB: damrs
     ports:
-      - "5433:5432"
+      - "5440:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -24,30 +25,37 @@ services:
       timeout: 3s
       retries: 30
 
-  # Garage — S3-compatible store from Deuxfleurs.
-  # https://git.deuxfleurs.fr/Deuxfleurs/garage
+  # SeaweedFS — S3-compatible store, Apache 2.0.
+  # https://github.com/seaweedfs/seaweedfs
   #
-  # IMPORTANT: Garage implements the S3 data plane but NOT storage classes,
-  # RestoreObject, object versioning, or object lock. Those are exactly the four
-  # features the tiering design (ARCHITECTURE §6) is built on, so Garage proves
-  # the wire protocol and the FakeS3Store test double proves the tiering state
-  # machine. See ARCHITECTURE §21.2.
-  garage:
-    image: dxflrs/garage:v1.0.1
+  # Chosen over Garage after measuring both (DECISIONS.md, D18-revised): one
+  # command vs a six-step cluster bootstrap, and credentials can be PINNED in
+  # config rather than server-generated and parsed out of CLI output — which is
+  # what makes a testcontainers harness reproducible.
+  #
+  # Supports versioning and object lock (GOVERNANCE/COMPLIANCE + legal holds).
+  # Does NOT implement storage-class semantics or RestoreObject: it accepts the
+  # header and ignores it, which is worse than rejecting for test purposes. The
+  # tiering state machine therefore runs against FakeS3Store (ARCHITECTURE §20.2).
+  seaweedfs:
+    image: chrislusf/seaweedfs:latest
+    command: server -s3 -s3.config=/etc/seaweedfs/s3.json -dir=/data -master.volumeSizeLimitMB=64
     ports:
-      - "3900:3900"   # S3 API
-      - "3903:3903"   # admin API
+      - "8333:8333"   # S3 API
+      - "9333:9333"   # master UI
     volumes:
-      - ./garage.dev.toml:/etc/garage.toml:ro
-      - garage-meta:/var/lib/garage/meta
-      - garage-data:/var/lib/garage/data
+      - ./seaweedfs.s3.json:/etc/seaweedfs/s3.json:ro
+      - seaweed-data:/data
     healthcheck:
-      test: ["CMD", "/garage", "status"]
+      # SeaweedFS binds to the container's own IP, not 127.0.0.1, so localhost is
+      # refused from inside the container. An unauthenticated GET to the S3 port
+      # correctly returns 403, which wget reports as failure — so probe the
+      # master's status endpoint on the advertised address instead.
+      test: ["CMD-SHELL", "wget -qO- --timeout=3 \"http://$$(hostname -i | cut -d' ' -f1):9333/cluster/status\" >/dev/null || exit 1"]
       interval: 3s
       timeout: 5s
-      retries: 30
+      retries: 40
 
 volumes:
   pgdata:
-  garage-meta:
-  garage-data:
+  seaweed-data:

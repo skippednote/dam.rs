@@ -25,9 +25,13 @@ Rules for autonomous runs:
   DECISIONS.md.
 
 
-- [ ] **0.2 `dam-core` errors + config.** `thiserror` per crate, `anyhow` only in
-  binaries (owner's call). `figment` config from TOML + env.
-  *Test first:* config precedence — env overrides file overrides default.
+- [x] **0.2 `dam-core` errors + config.** Done. 24 tests; full bar green.
+  *Surprise:* the failing test caught a real bug — `Secret`'s deliberately-lossy
+  `Serialize` round-tripped through figment's `Serialized::defaults`, turning every
+  secret default into the literal `"[REDACTED]"`. Production would have booted with
+  a forgeable URL signing key and no complaint. See DECISIONS.md.
+  Also landed: `Secret<T>` (redacts in Debug/Display/Serialize), domain `Error` with
+  machine-readable denial reasons, `deny_unknown_fields` so typo'd keys fail startup.
 
 - [ ] **0.3 Tracing + OTel.** JSON logs, `RUST_LOG` filter, request-id span
   propagation. Tenant id on every span, never the tenant's data.
@@ -76,16 +80,14 @@ Rules for autonomous runs:
 ## M1 — Ingest and storage
 
 - [ ] **1.1 `BlobStore` trait + conformance suite.** One suite, two drivers.
-- [ ] **1.2 `S3Store` on `aws-sdk-s3`.** Garage harness via `GenericImage`
-  (no testcontainers module exists). Path-style, SigV4, multipart, presign.
-- [ ] **1.2b SeaweedFS harness (D18).** Second CI backend via `GenericImage`.
-  Runs the shared conformance suite, plus the object-lock and versioning cases
-  Garage cannot express: legal hold, GOVERNANCE vs COMPLIANCE retention, version
-  history. *Why a real server:* object lock means the **server** refuses the
-  delete — a fake that refuses proves nothing.
+- [ ] **1.2 `S3Store` on `aws-sdk-s3`.** SeaweedFS harness via `GenericImage`
+  (no testcontainers module exists). Path-style, SigV4, multipart, presign,
+  ranged GET — plus versioning and object lock (GOVERNANCE / COMPLIANCE /
+  legal hold), which is why a real server is in the loop at all.
 - [ ] **1.3 `FakeS3Store`.** Controllable clock; the full tiering state machine
-  Garage cannot express — class transitions, `InvalidObjectState`, `RestoreObject`,
-  `x-amz-restore`, restore expiry, minimum-duration charges. ARCHITECTURE §20.2.
+  no practical local server expresses — class transitions, `InvalidObjectState`,
+  `RestoreObject`, `x-amz-restore`, restore expiry, minimum-duration charges.
+  ARCHITECTURE §20.2.
 - [ ] **1.4 Pool + placement resolution.** Cheapest available placement wins;
   unknown `pool_id` is a hard error, never a silent fallback.
 - [ ] **1.5 Content addressing.** Streaming BLAKE3, key layout per §6.2, dedupe on

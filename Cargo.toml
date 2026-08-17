@@ -118,7 +118,7 @@ metrics-exporter-prometheus = "0.18"
 # ── errors, config, CLI, misc ─────────────────────────────────────────────────
 thiserror = "2"
 anyhow = "1"
-figment = { version = "0.10", features = ["toml", "env"] }
+figment = { version = "0.10", features = ["toml", "env", "test"] }
 clap = { version = "4", features = ["derive", "env"] }
 moka = { version = "0.12", features = ["future"] }
 governor = "0.10"        # per-tenant rate limiting

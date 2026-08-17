@@ -1020,9 +1020,9 @@ running dev stack.
 | Layer | Tooling |
 |---|---|
 | Toolchain | mise — Rust 1.94, Node 24, pnpm 10 (`.mise.toml`) |
-| Dev stack | `docker/compose.dev.yml` — pgvector/pg17 on 5433, Garage on 3900 |
-| Test infra | testcontainers-rs — Postgres + Garage per suite |
-| Local S3 | **Garage** (Deuxfleurs) — see §20.2 |
+| Dev stack | `docker/compose.dev.yml` — pgvector/pg17 on 5433, SeaweedFS on 8333 |
+| Test infra | testcontainers-rs — Postgres + SeaweedFS per suite |
+| Local S3 | **SeaweedFS** (Apache 2.0) — see §20.2 |
 | Commands | `mise run up` / `migrate` / `check` |
 
 ### 20.1 TDD order
@@ -1045,80 +1045,85 @@ keeps each layer honest:
 5. **Then the feature layers**, each starting from a failing integration test that
    exercises the HTTP surface rather than the function.
 
-### 20.2 Garage's limits, and why there are three test backends
+### 20.2 Two S3 drivers, and why no local server can be the only one
 
-Garage implements the S3 data plane well — multipart upload, presigned URLs,
-prefix listing, SigV4, path-style addressing. It does **not** implement storage
-classes, `RestoreObject`, object versioning, or object lock.
-
-Those are precisely the four features the tiering design (§6) is built on, so
-Garage alone cannot test the thing most likely to break. Two drivers behind the
-one `BlobStore` trait:
+No S3-compatible server that is practical as a test dependency implements
+storage-class semantics or `RestoreObject`. SeaweedFS accepts the storage-class
+header and ignores it, which for testing is *worse* than rejecting it — a test
+would pass while proving nothing. Two drivers behind the one `BlobStore` trait:
 
 | Driver | Backed by | Proves |
 |---|---|---|
-| `S3Store` | Garage in testcontainers | Wire protocol: SigV4, endpoint/path-style config, multipart, presign, ranged GET, checksums |
+| `S3Store` | SeaweedFS in testcontainers | Wire protocol: SigV4, path-style, multipart, presign, ranged GET, versioning, object lock (GOVERNANCE / COMPLIANCE / legal hold) |
 | `FakeS3Store` | In-process, controllable clock | Tiering state machine: class transitions, `InvalidObjectState` on a cold GET, `RestoreObject`, `x-amz-restore` polling, restore expiry, minimum-duration charges |
 
-The fake is the better tool for the second column regardless of Garage — you
-cannot wait twelve hours for a Deep Archive restore in a unit test, and LocalStack's
-Glacier emulation is neither fast nor faithful. A controllable clock makes
-"restore expires while a download is in flight" a deterministic test instead of a
-production incident.
+The fake is the right tool for the second column regardless of which server we
+pick — you cannot wait twelve hours for a Deep Archive restore in a unit test, and
+the tests that matter most are timing ones: *the temporary copy expires while a
+download is in flight*, *minimum-duration blocks a re-tier*. A controllable clock
+makes those deterministic instead of a production incident.
 
 Both drivers run the **same conformance suite** for everything they share, so the
-fake cannot quietly diverge from real S3 behaviour. Against AWS proper, the same
-suite runs in CI nightly, gated on credentials, as the only place the real Glacier
-semantics are exercised end to end.
+fake cannot quietly diverge. Against AWS proper, that suite runs in CI nightly,
+gated on credentials, as the only place real Glacier semantics are exercised end
+to end.
 
-### 20.3 Why not a different local S3 (and what closes the object-lock hole)
+### 20.3 Choosing the local S3 — measured, not assumed
 
-The obvious alternatives are gone. **MinIO's community edition was archived on
-25 April 2026** — read-only, no releases, no community binaries, the admin console
+The obvious candidates are gone. **MinIO's community edition was archived on
+25 April 2026** — read-only, no releases, no community binaries, admin console
 already stripped, engineering moved to the paid AIStor product. **LocalStack
 archived its open-source repository in March 2026** and consolidated behind a
-single authenticated image; its Glacier restore support was Pro-only regardless.
-Neither is a defensible dependency for a project starting now, which retroactively
-makes Garage a good call rather than a compromise.
+single authenticated image; its Glacier restore was Pro-only regardless. Neither
+is a defensible dependency for a project starting now.
 
-What remains, measured against the four features Garage lacks:
+What remains, against the features Garage lacks:
 
 | Backend | Object lock | Versioning | Storage classes | RestoreObject | Notes |
 |---|---|---|---|---|---|
-| **Garage** | ✗ | ✗ | ✗ | ✗ | Rust, single binary, fast start. AGPL. Alive and maintained. |
-| **SeaweedFS** | ✓ GOVERNANCE + COMPLIANCE, legal holds | ✓ | ✗ | ✗ | Apache 2.0, actively maintained, real storage engine |
-| **Ceph RGW** | ✓ | ✓ | ✓ | ✓ | Closest to AWS parity — and needs 3 nodes, 4+ GB each. Not a test dependency. |
-| **moto** (server mode) | ✓ | ✓ | partial | ✓ | Purpose-built test emulator, healthiest maintenance of the LocalStack replacements. Emulator, not a storage server. |
-| **AWS S3** | ✓ | ✓ | ✓ | ✓ | The only real semantics; nightly, credential-gated |
+| Garage | ✗ | ✗ (`NotImplemented`) | accepted, ignored | ✗ | Rust, 5 MiB RSS, AGPL |
+| **SeaweedFS** | ✓ GOVERNANCE + COMPLIANCE + legal holds | ✓ | accepted, ignored | ✗ | Apache 2.0, 66 MiB RSS |
+| Ceph RGW | ✓ | ✓ | ✓ | ✓ | Closest to AWS parity; wants 3 nodes at 4+ GB each |
+| moto (server) | ✓ | ✓ | partial | ✓ | Test emulator, not a storage server |
+| AWS S3 | ✓ | ✓ | ✓ | ✓ | Nightly, credential-gated |
 
-**D18: add SeaweedFS as a second CI backend; keep Garage as the dev stack.**
+**D18: SeaweedFS is the local S3. Garage is dropped.**
 
-SeaweedFS closes the one hole the fake genuinely cannot: object lock's whole point
-is that *the server* refuses the delete, so a fake that refuses proves nothing
-about a real server. It also gives a second independent implementation for the
-conformance suite, which catches places where the driver has been coded to
-Garage's quirks rather than to S3.
+An earlier draft of this decision kept Garage as the dev stack on the assumption
+that it was "a single small binary that starts faster". Measuring both killed that
+reasoning:
 
-moto is **not** added. Its `restore_object` is real, but `FakeS3Store` is strictly
-better for restore testing because restore is a *timing* problem — "the temporary
-copy expires while a download is in flight", "minimum-duration blocks a re-tier" —
-and a controllable clock is an in-process concern no emulator can give us.
+- **Bootstrap: one command versus six steps.** SeaweedFS is `server -s3` plus a
+  small JSON credentials file, and it worked first try. Garage needs run → wait →
+  read node id → `layout assign` → `layout apply` → `key create` → parse the
+  generated credentials → `bucket create` → `bucket allow`, and took four attempts
+  across three distinct config failures: an `rpc_secret` of 65 hex chars where
+  exactly 64 is required, metadata and data directories that must pre-exist, and a
+  `key import` that fails silently leaving an empty key list.
+- **Credentials can be pinned.** This is the decisive one. SeaweedFS reads a static
+  access key from config; Garage *generates* one and you must scrape it out of CLI
+  output. A testcontainers harness that has to parse credentials from a subprocess
+  on every suite is fragile in a way that has nothing to do with the code under
+  test.
+- **Versioning works.** `PutBucketVersioning` returns `NotImplemented` on Garage.
+  Object lock requires versioning, so on Garage that whole surface is untestable.
+- **Memory is irrelevant at this scale.** 5 MiB versus 66 MiB decides nothing when
+  the Postgres container alongside it is larger than both.
 
-| Layer | Backend | Proves |
-|---|---|---|
-| Dev stack (`mise run up`) | Garage | Daily driver; wire protocol |
-| CI: wire conformance | Garage | Multipart, presign, SigV4, ranged GET, path-style |
-| CI: lock + versioning | **SeaweedFS** | Legal hold, GOVERNANCE/COMPLIANCE retention, version history |
-| CI: tiering state machine | `FakeS3Store` | Class transitions, `InvalidObjectState`, restore lifecycle, expiry, min-duration |
-| Nightly, credential-gated | AWS S3 | Real Glacier |
+Consolidating collapses the matrix from three backends to two and removes an AGPL
+dependency in favour of Apache 2.0. It also closes the hole an earlier draft
+flagged as unfixable: object lock's whole point is that the *server* refuses the
+delete, so a fake that refuses proves nothing — that now runs against a real
+server.
 
-Consolidating entirely on SeaweedFS is the defensible alternative — one backend, a
-superset of Garage's S3 surface, Apache 2.0 rather than AGPL. It is rejected only
-because Garage is a single small binary that starts faster, which matters when
-every test suite boots one. Revisit if SeaweedFS proves fast enough to be both.
+Honest limit on the measurement: startup time was **not** cleanly compared. Garage
+never reached a working state on a warm image without config errors, and the
+SeaweedFS timing included an image pull. The claim here is about bootstrap
+complexity and credential pinning, which were measured; not about seconds, which
+were not.
 
-**RustFS** — a Rust MinIO replacement that appeared after MinIO's wind-down — is
-worth watching and too young to depend on.
+**Noted, not adopted: RustFS**, a Rust MinIO replacement that appeared after the
+wind-down. Philosophically appealing for this project; months old.
 
 ---
 

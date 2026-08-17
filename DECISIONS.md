@@ -147,3 +147,49 @@ one. If SeaweedFS turns out fast enough to be both, drop Garage.
 
 Reversible: yes. All three sit behind the `BlobStore` trait, which is what makes
 swapping test infra a harness change rather than a code change.
+
+## 2026-08-17 — task 0.2: TDD caught a real bug where two safe decisions collided
+
+The test `production_environment_rejects_the_dev_placeholder_signing_key` failed
+against the first implementation, and the cause was worth the whole exercise.
+
+`Secret<T>` serialises as `"[REDACTED]"` on purpose — config gets `Debug`-logged
+at startup, so a secret that can render itself is a leak waiting to happen.
+Separately, the config loader seeded its defaults with
+`Figment::from(Serialized::defaults(Config::default()))`, which is the documented
+figment pattern.
+
+Together they were a bug: seeding **serialises** the default config, so every
+`Secret` default came back as the literal string `[REDACTED]`. The default database
+URL was unusable, and the production signing-key check compared `"[REDACTED]"`
+against the real placeholder and passed. A production deployment would have booted
+with a forgeable URL signing key and no complaint.
+
+**Fix:** drop the `Serialized::defaults` layer entirely. Every config struct already
+carries `#[serde(default)]`, so serde fills missing keys from `Default` during
+extraction with no serialise round-trip. Locked in by
+`secret_defaults_are_real_values_not_redaction_placeholders`.
+
+Worth noting for later: **any lossy `Serialize` is dangerous in a round-trip.** If
+another type gains redacting serialisation, check it never passes through a
+provider-seeded default.
+
+Two smaller decisions taken along the way:
+
+1. **Config has one code path, not a test-only one.** The first draft took an
+   explicit `&[(&str, &str)]` env slice so tests could avoid `std::env::set_var`
+   (`unsafe` in edition 2024, and unsound under `cargo test`'s threading).
+   That meant tests exercised a path production never took. Replaced with
+   `figment::Jail`, which isolates env and cwd under a mutex — real code path,
+   parallel-safe tests. Reversible: yes, but do not reintroduce the fork.
+2. **Panic lints are relaxed in test code only.** The workspace denies
+   `clippy::unwrap_used` and warns on `expect_used`; in a test, panicking *is* the
+   assertion. Integration tests get a file-level `allow` preamble (they are separate
+   crates and do not inherit `lib.rs` attributes); inline `mod tests` gets
+   `#![cfg_attr(test, allow(...))]` in each `lib.rs`. `result_large_err` is also
+   allowed in tests — it fires on `figment::Jail` closures whose `Err` type we do
+   not control. Production code keeps the deny. Reversible: yes.
+
+Also added, unprompted but cheap: `deny_unknown_fields` on every config struct, so
+a typo'd key (`prot = 9999`) fails startup instead of being silently ignored —
+which is how an operator ends up certain they changed a setting when they did not.

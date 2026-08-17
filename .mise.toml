@@ -6,19 +6,21 @@ pnpm = "10"
 [env]
 # Points sqlx's compile-time macros at the migrated template schema so
 # query! can resolve tenant tables. See ARCHITECTURE.md §5.5.
-DATABASE_URL = "postgres://damrs:damrs@localhost:5433/damrs?options=-c%20search_path%3Dtenant_template,extensions,public"
+DATABASE_URL = "postgres://damrs:damrs@localhost:5440/damrs?options=-c%20search_path%3Dtenant_template,extensions,public"
 SQLX_OFFLINE = "true"    # CI and normal builds use .sqlx/; unset to regenerate
 RUST_LOG = "damrs=debug,sqlx=warn,tower_http=debug"
 
 # Local dev stack (docker/compose.dev.yml). Tests use testcontainers on random
 # ports instead and ignore these.
-DAMRS_S3_ENDPOINT = "http://localhost:3900"
-DAMRS_S3_REGION = "garage"
+DAMRS_S3_ENDPOINT = "http://localhost:8333"
+DAMRS_S3_REGION = "us-east-1"
 DAMRS_S3_BUCKET = "damrs-dev"
 DAMRS_S3_FORCE_PATH_STYLE = "true"
+AWS_ACCESS_KEY_ID = "damrsdev"
+AWS_SECRET_ACCESS_KEY = "damrsdevsecret"
 
 [tasks.up]
-description = "Start local Postgres + Garage"
+description = "Start local Postgres + SeaweedFS"
 run = "docker compose -f docker/compose.dev.yml up -d --wait"
 
 [tasks.down]
