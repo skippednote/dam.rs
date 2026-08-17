@@ -455,6 +455,39 @@ Rules for autonomous runs:
 
 ---
 
+## State at the end of the overnight run
+
+Everything actionable is done. **370 Rust tests + 70 frontend unit/component tests + 11 browser
+a11y/e2e tests**, all green, with `cargo fmt --check`, `clippy -D warnings`, `cargo deny` (advisories,
+bans, licences, sources), `svelte-check`, eslint and Prettier clean. 12 migrations, 17 commits on
+`m0-foundation`, nothing pushed.
+
+**Done:** M0 entirely except 0.10. M1's storage and media track entirely: `BlobStore` + two drivers +
+shared conformance suite, multipart, versioning, object lock, pool/placement resolution, content
+addressing, staging promotion, sniffing, upload finalisation, the resumable-upload engine,
+`upload_sessions` + reaper, the subprocess sandbox, probe, derivatives, the master proxy and its §2
+alarm, and the lifecycle engine. Frontend track F.1–F.4 entirely.
+
+**Blocked on a decision — see NEEDS-REVIEW.md, in the order I would want them answered:**
+
+| # | Task | What it needs |
+|---|---|---|
+| 1 | **0.10 ABAC predicate compiler** | Five access-control decisions, each with a recommendation. This one blocks the most: the API layer sits on top of it. |
+| 2 | **1.6 TUS HTTP surface** | Request authentication and tenant resolution. No M0/M1 task schedules an API skeleton, so building it means inventing an auth model inside a handler. Everything *below* the HTTP layer is finished and tested. |
+| 3 | **1.9 C2PA** | Whose signature it is, where the production certificate comes from, and — the question ARCHITECTURE does not address — what ingest does when an inbound manifest fails validation. |
+
+**Blocked on a system library**, not a decision: 1.7's remainder — RAW/PSD/INDD needs libvips
+(`brew install vips`; **not** in mise's registry, so outside the stated "CLIs via mise" preference) and
+page counts need pdfium or LibreOffice. Video is M3 and out of scope, though note ffmpeg *is*
+mise-installable when that milestone arrives.
+
+**One housekeeping item:** commits are unsigned. 1Password's SSH agent returned "failed to fill whole
+buffer" all night, which is a locked vault rather than a misconfiguration — every prior commit in the
+repository is unsigned too. Re-sign with
+`git rebase --exec 'git commit --amend -S --no-edit' -i e7e30db~1` once it is unlocked.
+
+---
+
 ## Not in scope for the overnight run
 
 M2 onward. If M0 completes and M1 is underway, that is the night's target met —
