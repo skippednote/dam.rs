@@ -332,3 +332,43 @@ Reversible: no. Do not replace the cross-check with a restated regex.
 **`executor()` not `as_mut()`.** Clippy flagged the shadowing of
 `std::convert::AsMut::as_mut`; the new name also reads better at the call site.
 Reversible: yes.
+
+## 2026-08-17 — task 0.8: provisioning order chosen for recoverable partial failure
+
+Provisioning spans four things that cannot be one transaction: a control-plane row, a
+schema, the migrator (its own connections), and seed data.
+
+**Order: schema → migrations → seed → tenant row.** A schema with no tenant row is
+inert — nothing looks for it, and a re-run adopts it. The reverse is actively harmful:
+a tenant row pointing at a missing schema means every request for that tenant fails
+deep in the stack instead of at lookup, and the tenant shows up in listings as though
+it worked. Asserted by `a_failed_provisioning_does_not_leave_a_half_built_tenant`.
+
+**Idempotent rather than transactional.** Every step is `ON CONFLICT DO NOTHING` or an
+existence check, so a crashed CLI or re-run CI job adopts what exists. That is cheaper
+than a rollback path which itself has to be correct under partial failure — the case
+you can least afford to get wrong is the one that runs least often.
+
+**The tenant row and its feature flags commit together**, so a tenant can never exist
+without its DPIA-gated flags. `requires_dpia` is a property of the *feature*, set by
+the seed rather than left to an operator; combined with the CHECK on `feature_flags`
+that makes `face_identify` unenableable without a DPIA reference and a legal basis even
+with direct database access. Verified in the live dev stack:
+`face_identify enabled=false requires_dpia=true`. Reversible: no (D14).
+
+**Seed data is deliberately minimal** — five metadata fields, three roles, one asset
+group. A long opinionated default is something the customer then has to delete.
+`alt_text` is included because accessibility (D10) needs a field for AI-generated alt
+text to land in with provenance, and a tenant should not have to invent it.
+
+**`admin` gets `all_asset_groups = true`, not an enumerated list**, so a group created
+later does not silently fall outside the administrator's reach.
+
+**`damctl migrate --all` records per-tenant failure rather than aborting.** A tenant
+whose migration fails is marked `status = 'migration_failed'` and the run continues;
+the command exits non-zero at the end with a count. One tenant's bad state must not
+block the fleet's upgrade (§5.3). Reversible: yes.
+
+Driven end to end against the dev stack: `migrate`, `provision-tenant` (twice —
+returned the same id), a second tenant, `migrate --all` across both, and an
+injection-shaped slug refused with the constraint message.

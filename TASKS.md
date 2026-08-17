@@ -70,10 +70,12 @@ Rules for autonomous runs:
   Replaced with a cross-check that feeds 16 inputs to both the Rust validator and
   Postgres's own regex. See DECISIONS.md.
 
-- [ ] **0.8 Tenant provisioning.** `damctl provision-tenant --slug` → row, schema,
-  migrations, seeded defaults (field defs, starter taxonomy, `everyone` group,
-  builtin roles, feature flags with `face_identify` **off**), index dir.
-  *Test first:* provision two tenants, assert isolation both ways.
+- [x] **0.8 Tenant provisioning.** Done — 7 tests green first run, plus `damctl
+  migrate`/`provision-tenant`/`migrate --all` driven against the live dev stack.
+  D14 verified in a real database: `face_identify enabled=false requires_dpia=true`.
+  *Note:* order is schema → migrations → seed → tenant row, so a partial failure
+  leaves an inert schema rather than a tenant row pointing at nothing. Idempotent
+  rather than transactional. Index dir deferred to M2 with Tantivy.
 
 - [ ] **0.9 Job queue.** `FOR UPDATE SKIP LOCKED`, leases, dedupe, backoff,
   per-tenant round-robin fairness.
