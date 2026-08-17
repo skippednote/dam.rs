@@ -41,6 +41,41 @@ jobs:
           # strategies when a CI-only container failure needs diagnosing.
           RUST_LOG: testcontainers=info
 
+  # The frontend gate. D10 makes WCAG 2.1 AA a release gate "from the first UI commit",
+  # so axe runs here from the same commit that introduces the UI rather than being added
+  # once violations have accumulated — retrofitting an accessibility gate means fixing a
+  # backlog before the gate can go green, which is how gates end up disabled.
+  web:
+    name: web (typecheck + lint + unit + a11y)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run check
+      - run: pnpm run lint
+      - run: pnpm exec vitest run
+      # Only chromium: the a11y assertions are about the accessibility tree and the DOM, which
+      # do not vary by engine. Cross-browser rendering is a separate concern and a separate cost.
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm exec playwright test
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: web/playwright-report/
+          retention-days: 7
+
   deny:
     name: cargo-deny
     runs-on: ubuntu-latest

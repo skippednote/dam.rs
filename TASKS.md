@@ -351,7 +351,28 @@ Rules for autonomous runs:
   has no row to hang off), or placements gain a version dimension. Decide before
   writing the engine; not decided here.
 
-- [ ] **F.1** SvelteKit + Tailwind 4 + shadcn-svelte/bits-ui scaffold in `web/`.
+- [x] **F.1** SvelteKit + Tailwind 4 + bits-ui scaffold in `web/`. Done — 6 axe/keyboard cases,
+  2 component cases, and a `mise run check:web` gate wired into CI.
+  *Versions the `sv` CLI picked (not guessed):* SvelteKit 2.63, Svelte 5.56, Tailwind 4.3,
+  Vitest 4.1.8 (browser mode via Playwright), Playwright 1.60, TypeScript 6.0.3, Vite 8,
+  bits-ui 2.18, `@tanstack/svelte-virtual` 3.13 ready for F.4.
+  *Surprise, found by the gate on its very first run:* **the SvelteKit scaffold ships with no
+  `<title>`.** axe reported `doc-has-title` (serious, WCAG 2.4.2) — every page would have been
+  announced to a screen reader by its URL. The layout now derives a title from page data with a
+  fallback.
+  *Note:* the scaffold had no `<main>` and no skip link either, so four of the six a11y cases were
+  red before any implementation — which is the point of writing them first. The skip link is
+  positioned off-screen rather than `display: none`: hiding it until focus is the common
+  implementation and it removes the element from the accessibility tree, so the affordance ends up
+  existing only for sighted keyboard users, who need it least.
+  *Note:* `:focus-visible` styling is global rather than per-component. Tailwind's preflight
+  removes the browser outline, and a new component cannot forget a rule it never had to write —
+  nobody tests with a keyboard by accident.
+  *Note:* `check:web` is deliberately **not** folded into `mise run check`. The Rust gate runs on
+  every edit and adding a browser install plus a Vite build to it would make the inner loop
+  minutes long. CI runs both jobs; `mise run check:all` is there for a pre-push sweep.
+  *Deferred to F.2:* shadcn-svelte component adoption. Its `init` writes the token layer, which is
+  exactly what F.2 defines from the UI spec — running it now would mean writing those values twice.
 - [ ] **F.2** Design tokens from the UI spec — the four-dimension state vocabulary
   (tier in form, rights in semantic colour, provenance neutral, confidence as
   bars) as components, with axe-core in CI from the first commit.

@@ -28,6 +28,24 @@ DAMRS_STORAGE__SECRET_ACCESS_KEY = "damrsdevsecret"
 AWS_ACCESS_KEY_ID = "damrsdev"
 AWS_SECRET_ACCESS_KEY = "damrsdevsecret"
 
+[tasks."check:web"]
+description = "Frontend gate: typecheck, lint, unit tests, and the axe a11y suite"
+dir = "web"
+run = """
+pnpm install --frozen-lockfile
+pnpm run check
+pnpm run lint
+pnpm exec vitest run
+pnpm exec playwright test
+"""
+
+# Deliberately not folded into `check`: the Rust gate runs on every edit and adding a
+# browser install plus a Vite build to it would make the inner loop minutes long. CI runs
+# both, and `check:all` is here for a pre-push sweep.
+[tasks."check:all"]
+description = "Everything CI runs"
+depends = ["check", "check:web"]
+
 [tasks.up]
 description = "Start local Postgres + SeaweedFS"
 run = "docker compose -f docker/compose.dev.yml up -d --wait"

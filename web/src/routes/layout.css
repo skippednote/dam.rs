@@ -1,0 +1,45 @@
+@import 'tailwindcss';
+@plugin '@tailwindcss/forms';
+@plugin '@tailwindcss/typography';
+
+/*
+	Minimal tokens so the scaffold's components have something to reference. The real vocabulary —
+	tier in form, rights in semantic colour, provenance neutral, confidence as bars — is F.2, and it
+	belongs in one place because the Drupal picker and the Portals theme both theme against it (§14.1).
+*/
+@theme {
+	--color-bg: oklch(99% 0.002 260);
+	--color-surface: oklch(97% 0.004 260);
+	--color-fg: oklch(24% 0.015 260);
+	--color-muted: oklch(52% 0.012 260);
+	--color-accent: oklch(52% 0.16 258);
+}
+
+@layer base {
+	body {
+		background-color: var(--color-bg);
+		color: var(--color-fg);
+	}
+
+	/*
+		WCAG 2.4.7 needs a visible focus indicator, and Tailwind's preflight removes the browser's
+		default outline. Re-stating it here rather than per-component means a new component cannot
+		forget it — which is the failure mode, since nobody tests with a keyboard by accident.
+
+		`:focus-visible` rather than `:focus` so a mouse click does not leave a ring behind; the
+		offset keeps the ring legible against a focused element's own background.
+	*/
+	:focus-visible {
+		outline: 2px solid var(--color-accent);
+		outline-offset: 2px;
+	}
+
+	/*
+		The main landmark takes focus from the skip link but is not itself interactive, so it must not
+		draw a ring — the ring would appear around the entire page content.
+	*/
+	main:focus,
+	main:focus-visible {
+		outline: none;
+	}
+}

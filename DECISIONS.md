@@ -904,3 +904,37 @@ identified. Returning zero candidates would be indistinguishable from "nothing i
 that appears configured while doing nothing is never investigated — a quiet success raises no
 questions. The halt names the missing schema. Reversible: yes, by adding the version dimension, which
 is still a decision for review.
+
+**The accessibility gate exists from the first UI commit, not the first audit.** D10 says WCAG 2.1 AA
+is a release gate from the first UI commit, and the CI job was added in the same commit that
+introduced the UI. Retrofitting an a11y gate means fixing a backlog before it can go green, and a gate
+that cannot go green gets disabled. It earned its place immediately: on its first run axe found that
+the SvelteKit scaffold ships with no `<title>` (WCAG 2.4.2), so every page would have been announced
+to a screen reader by its URL. Reversible: no.
+
+**The a11y suite asserts structure axe cannot see.** §14.2 is explicit that automated scanning catches
+roughly 40% and is "nowhere near sufficient". A scan passes happily on a page with no landmarks and no
+skip link, so the suite also asserts that the skip link is the first focusable element, that
+activating it *moves focus* rather than only scrolling, that there is exactly one `main` and one `h1`,
+and that the viewport permits zoom. Those are the ones a keyboard user notices immediately and a
+scanner never will. Reversible: no.
+
+**The skip link is positioned off-screen, not `display: none`.** Hiding it until focus is the common
+implementation and it is wrong: `display: none` and `visibility: hidden` remove the element from the
+accessibility tree, so a screen-reader user never encounters it and the affordance exists only for
+sighted keyboard users — who need it least. `main` also carries `tabindex="-1"`, without which the
+browser scrolls but leaves focus in the header, and the user is told they have skipped when they have
+not. Reversible: no.
+
+**`:focus-visible` is styled globally.** Tailwind's preflight removes the browser's default outline,
+and per-component focus styling is a rule each new component has to remember. Nobody tests with a
+keyboard by accident, so the indicator is defined once in the base layer. Reversible: yes.
+
+**`check:web` is a separate task from `check`.** The Rust gate runs on every edit; adding a browser
+install and a Vite build would make the inner loop minutes long. CI runs both, and `check:all` exists
+for a pre-push sweep. Reversible: yes.
+
+**shadcn-svelte adoption is deferred to F.2.** Its `init` writes the design-token layer, which is what
+F.2 defines from the UI spec — running it now would mean writing those values twice and reconciling
+them later. bits-ui is installed and exercised now, since §14.1 says the DAM-specific components
+compose bits-ui primitives directly rather than waiting for a shadcn wrapper. Reversible: yes.
