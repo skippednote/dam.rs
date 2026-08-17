@@ -24,12 +24,6 @@ Rules for autonomous runs:
   workspace deps, undeclared `utoipa`). sqlx 0.9 split runtime/TLS features. See
   DECISIONS.md.
 
-- [x] ~~**0.1 Workspace skeleton.**~~ All 12 members from ARCHITECTURE §4 with real
-  `lib.rs`/`main.rs`, `#![forbid(unsafe_code)]`, and the shared lint config.
-  *Done when:* `cargo build --workspace` and `cargo clippy -D warnings` are clean.
-  *Verify the pinned dep versions against crates.io first* — `ort`, `tantivy`, and
-  `rmcp` were pinned at design time and will have moved. Record any change in
-  `DECISIONS.md`.
 
 - [ ] **0.2 `dam-core` errors + config.** `thiserror` per crate, `anyhow` only in
   binaries (owner's call). `figment` config from TOML + env.
