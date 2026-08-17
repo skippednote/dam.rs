@@ -43,23 +43,23 @@ Rules for autonomous runs:
   All three binaries now boot through one init path; `damctl config` prints a
   resolved config with secrets redacted.
 
-- [ ] **0.4 Postgres harness.** testcontainers helper that boots pgvector/pg17,
-  runs the §5.3 bootstrap (schemas + 3 extensions), and hands back a pool.
-  *Test first:* harness returns a usable pool and is torn down.
+- [x] **0.4 Postgres harness.** Done, behind a `testing` feature so other crates reuse
+  it from dev-dependencies. 5 tests, ~4s for 6 containers.
+  *Surprise:* needed `pool_for_schema()` with connect-time `search_path` — see 0.6.
 
-- [ ] **0.5 Migration runner.** Two independent tracks, per-schema `_sqlx_migrations`
-  ledger, `search_path` set at **connect time** (not `SET LOCAL` — the sqlx
-  migrator manages its own transactions).
-  *Test first:* apply global then tenant to a fresh container; assert 14 global
-  tables, 58 tenant tables, 206 indexes, 75 CHECKs, 5 HNSW, 2 triggers, 2 rules.
+- [x] **0.5 Migration runner.** Done. 11 tests; counts asserted and matching.
+  *Surprise:* sqlx 0.9 requires `AssertSqlSafe` for dynamic SQL (good — it marks every
+  site needing an injection audit). Index count is 207 not 206: `_sqlx_migrations`
+  has its own PK index, so the assertion excludes the ledger.
 
-- [ ] **0.6 Compliance gate suite.** Port the eleven adversarial cases already
-  proven during design into a permanent suite: consent trigger (unnamed / named /
-  withdrawn), DPIA-gated flag, audit-log immutability, legal-hold override,
-  perpetual+end-date, AI defaults deny, minor without guardian, dual-owner
-  placement, restore-without-expiry, two-current-versions, in-flight restore
-  dedupe. Plus `provenance_gaps` and the unmarked-synthetic index.
-  *These are the D12–D15 guarantees. If one regresses, the build fails.*
+- [x] **0.6 Compliance gate suite.** Done — 16 gates, all green, D12–D15 now
+  regression-protected.
+  *Surprise, and the most valuable of the night:* the first run failed 10/16 and
+  **three of the six passes were false** — `refused()` was `.is_err()`, so "relation
+  does not exist" counted as "a constraint refused it". Caused by `SET search_path`
+  on a pool affecting only one connection (exactly the §5.2 hazard). Now
+  `refused_by_constraint()` asserts SQLSTATE 23/P0001 and panics on class 42.
+  See DECISIONS.md.
 
 - [ ] **0.7 `TenantConn`.** Cannot be constructed outside a transaction. Schema
   name via `quote_ident`, never interpolation.

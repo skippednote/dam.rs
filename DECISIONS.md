@@ -236,3 +236,53 @@ the service. Asserted by `an_invalid_filter_falls_back_to_info_rather_than_faili
 has to exercise the same subscriber construction production uses — a capture writer
 that only exists in tests invites a subscriber that only exists in tests, which is
 the same mistake 0.2 corrected in the config loader.
+
+## 2026-08-17 — tasks 0.4/0.5/0.6: the pool `search_path` trap, caught by the gate suite
+
+**The compliance-gate suite's first run failed 10 of 16 — and three of the six
+"passes" were false.** Root cause: `tenant_db()` did
+`pool.execute("SET search_path TO t_acme, ...")`. `SET` without `LOCAL` applies to
+**one pooled connection**, and the pool hands out others freely, so the first query
+landed in the right schema and later ones silently did not.
+
+This is precisely the hazard ARCHITECTURE §5.2 documents for production. It showed
+up here first, in the test harness, which is the cheapest possible place to learn it.
+
+The dangerous half was the false passes. `refused()` was `.is_err()`, so a statement
+failing with *"relation does not exist"* counted as "the constraint refused it".
+Three gates looked enforced while proving nothing at all. Replaced with
+`refused_by_constraint()`, which asserts SQLSTATE class 23 (integrity constraint
+violation) or P0001 (our `RAISE EXCEPTION` in the consent trigger) and **panics
+loudly on class 42** (undefined table/column). A gate test that can pass for the
+wrong reason is worse than no test.
+
+Fix on the harness side: `PostgresHarness::pool_for_schema()` sets `search_path` via
+`PgConnectOptions::options` at **connect time**, so every connection in the pool
+carries it. Production's request path will use `SET LOCAL` inside a transaction
+(`TenantConn`, 0.7); this is the connect-time equivalent for tests and the migrator.
+
+Reversible: no. Do not reintroduce `.is_err()` as a refusal assertion, and do not
+set `search_path` on a pool with bare `SET`.
+
+### Smaller findings
+
+**sqlx 0.9 requires dynamic SQL to be explicitly asserted safe.** `sqlx::query()`
+now takes `impl SqlSafeStr`, which `&'static str` implements and `String` does not;
+dynamic SQL must be wrapped in `sqlx::AssertSqlSafe`. Genuinely good ergonomics for
+this codebase, where schema names are interpolated into DDL — the wrapper is a
+grep-able marker at every site that needs auditing, and the schema name is validated
+against `^t_[a-z][a-z0-9_]{1,38}$` before it gets there.
+
+**The index count is 207, not the 206 measured during design.** The extra one is
+`_sqlx_migrations`' own primary key; the design-time count came from raw psql with no
+ledger. The assertion now excludes the ledger's indexes so the number still counts
+migrations' own output.
+
+**Migration count assertions.** `the_embedded_migration_counts_match_the_files_on_disk`
+asserts 2 global and 8 tenant. The macro embeds at compile time, so a mismatch means
+the binary and the repository disagree — a stale build, or a migration added but not
+committed.
+
+**`PgSslMode::Prefer`, not `Require`.** Loopback testcontainers and the dev stack
+speak plain TCP; deployed Postgres should be behind TLS. A caller that must mandate
+it puts `sslmode=require` in the URL, which wins. Reversible: yes.

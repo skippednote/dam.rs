@@ -18,6 +18,18 @@ tracing = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 
+# The container harness ships behind a feature so other crates' dev-dependencies
+# can reuse it (`dam-db = { path = "...", features = ["testing"] }`) without
+# testcontainers landing in a production build.
+testcontainers = { workspace = true, optional = true }
+
+[features]
+testing = ["dep:testcontainers"]
+
+[dev-dependencies]
+dam-db = { path = ".", features = ["testing"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
 [lints.rust]
 unsafe_code = "forbid"
 missing_debug_implementations = "warn"
