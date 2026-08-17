@@ -775,3 +775,32 @@ media tool into a bucket compromise. The test asserts the child's environment ag
 rather than looking for specific leaks, because naming the variables we fear only catches the ones
 we thought of. `LC_ALL=C` is not incidental: media tools read locale for number formatting and have
 produced comma-decimal output that downstream parsers rejected. Reversible: yes.
+
+**Dimensions are reported twice, and neither field is called `width`.** A phone stores a portrait
+photo as 4000x3000 pixels with `orientation = 6`. Reporting those numbers makes every grid cell,
+aspect ratio and thumbnail sideways — the most visible bug a DAM can have — and reporting only the
+rotated size loses what the file actually contains, which the derivative pipeline needs. So
+`stored_*` and `display_*` are both explicit. The naming is the point: a bare `width` is the field
+somebody uses without deciding which one they wanted, and that decision is invisible in review.
+Reversible: no.
+
+**An EXIF orientation outside 1-8 is dropped, not applied.** Cameras have written 0 and 9. An
+unknown transform would corrupt the derivative, and treating the file as upright is the recoverable
+failure. Reversible: yes.
+
+**`orientation: None` and `Some(1)` are kept distinct.** Both mean no work for the derivative
+pipeline, but the first is "no EXIF at all" and the second is "the file explicitly says upright" —
+a provenance record should not conflate them. Reversible: yes.
+
+**The probe never decodes; anything that must decode checks a pixel budget first.** A 65535x65535
+PNG header fits in a few hundred bytes and is about 50 GB decoded. Dimensions come from the header
+(`ImageReader::into_dimensions`), and `perceptual_hash` enforces `DEFAULT_PIXEL_BUDGET` itself
+rather than trusting the caller — "hash everything on ingest" is exactly what a worker will do. An
+*unknown* size does not count against the budget, because refusing files whose dimensions cannot be
+read would reject every format this path does not understand, and a DAM stores those. Reversible:
+yes, the budget is a parameter.
+
+**libvips is not installed.** It needs a system library (`brew install vips`), which is not a
+mise-installable runtime, so it is flagged rather than installed. The pure-Rust path is what
+ARCHITECTURE already calls the fallback and covers JPEG, PNG, WebP, TIFF, GIF and AVIF; RAW, PSD
+and Office formats need the primary path. Reversible: n/a — pending a decision.

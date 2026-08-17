@@ -247,10 +247,31 @@ Rules for autonomous runs:
   *Also fixed:* a full-workspace run flaked once on container startup under load. Both
   harnesses now set a 120s startup timeout — a suite that fails one run in ten teaches people
   to re-run instead of to read the failure.
-  *Still to do:* the probe itself and derivative generation. **libvips needs a system
-  library** (`brew install vips`), which is not a mise-installable runtime — flagging rather
-  than installing it. The pure-Rust path (`image` + `kamadak-exif` + `image_hasher`) can be
-  built first and is what ARCHITECTURE calls the fallback.
+  *Part done:* the probe (`dam-media::probe`, 12 cases + 3 unit). Mutation-checked: swapping
+  the axes for the wrong orientation range fails 2 tests, trusting an out-of-range orientation
+  fails 1, removing the pixel-budget guard fails 1.
+  *Decision taken — dimensions are reported twice.* A phone stores a portrait photo as
+  4000x3000 with `orientation = 6`; reporting those numbers makes every grid cell and thumbnail
+  sideways, and reporting only the rotated size loses what the file contains. So
+  `stored_width`/`stored_height` and `display_width`/`display_height` are both named
+  explicitly, and nothing is called `width` — a bare `width` is the field somebody uses without
+  deciding which one they meant.
+  *Notes:*
+  - Dimensions come from the header alone (`ImageReader::into_dimensions`). A 65535x65535 PNG
+    header is a few hundred bytes and ~50 GB decoded, so the probe answers it without
+    allocating; `perceptual_hash`, which must decode, enforces the budget itself because "hash
+    everything on ingest" is exactly what a worker will do.
+  - An orientation outside 1-8 is dropped rather than applied. Cameras have written 0 and 9,
+    and an unknown transform would corrupt the derivative.
+  - `None` and `Some(1)` are kept distinct: no EXIF at all versus a file that says "upright".
+  - Building the bomb fixture took two attempts: a 13-byte GIF header looks ideal but `image`'s
+    GIF decoder wants more than the logical screen descriptor and fails with EOF. Patching a
+    real PNG's IHDR (and recomputing its CRC) means only the claimed size differs from something
+    the encoder produced, so the test cannot pass because of an unrelated malformation.
+  *Still to do:* derivative generation (resize, format conversion, matting on alpha), page
+  counts for paged formats, and video/audio probing. **libvips needs a system library**
+  (`brew install vips`) — not a mise-installable runtime, so I have not installed it. What is
+  built is what ARCHITECTURE calls the fallback path, and it covers JPEG/PNG/WebP/TIFF/GIF/AVIF.
 - [ ] **1.8 Master proxy.** The §2 invariant. *Test first:* `enrichment_runs.used_original`
   is false for every run — the alarm that keeps cold storage viable.
 - [ ] **1.9 C2PA.** Verify on ingest, preserve inbound manifest, re-sign
