@@ -139,3 +139,53 @@ the overnight run. I did not assume either.
 auth model tends to leak that model into every handler, and unpicking it later is the expensive
 kind of refactor. Everything below the HTTP layer is finished and tested, so nothing is blocked
 except the endpoints themselves.
+
+---
+
+## Task 1.9 — C2PA: the mechanism is settled, the signing identity and the failure policy are not
+
+**Status:** stopped before writing code. This is the provenance category I was told to stop on, and
+two of the three questions below are not answered anywhere in ARCHITECTURE.md.
+
+**What is settled.** D13 ("provenance is preserved and re-signed, never stripped"), D15 (AI
+disclosure rides the same mechanism), §16's tool table naming `c2pa-rs` for verify + preserve +
+re-sign, `0006_provenance.sql` with `provenance_manifests`, `provenance_actions`, `ai_disclosures`
+and the `provenance_gaps` view, and `Key::manifest` for a detached manifest that survives its master
+being tiered to Deep Archive. None of that needs a decision from you.
+
+**Dependency check, so the cost is not a guess.** `c2pa` 0.90.15: 83 required dependencies, MSRV
+1.88 (we build on 1.94), and **openssl is optional** — the default path is pure Rust (`rasn-cms`,
+`rsa`, `p256/p384/p521`, `ed25519-dalek`). So no system library, and no repeat of the libvips
+problem. It is a heavy crate but it is the reference implementation and D13 names it.
+
+**What I need decided.**
+
+1. **Whose signature is it?** Re-signing asserts that *someone* performed a transform. One damrs
+   identity for the whole deployment, or one per tenant? This is not a code detail: a single
+   identity means every customer's derivatives carry damrs's claim, and a per-tenant identity means
+   provisioning and rotating a certificate per tenant. It also decides what a downstream verifier
+   learns about who did what.
+
+2. **Where does the production certificate come from?** §16 says "a damrs signing cert in KMS". A
+   C2PA signature is only meaningful if the certificate chains to a trust list a verifier accepts,
+   which means a real CA and an organisational decision. `c2pa-rs` ships test certificates, so I can
+   build and test the whole pipeline against those — but then the code must **refuse to sign with a
+   test certificate outside development**, and I want that refusal to be a decision you have made
+   rather than one I inferred.
+
+3. **What happens when an inbound manifest fails validation?** This is the one ARCHITECTURE does not
+   address at all, and it is the sharpest. A file arrives with a C2PA manifest whose certificate is
+   revoked, or whose hash no longer matches the pixels. Three options, with different consequences:
+   - **Reject the upload.** Safest for provenance integrity; also means a customer cannot ingest
+     their own historical archive if any of it was re-saved by a tool that broke the chain.
+   - **Accept, record the failure, do not re-sign.** The asset exists, the broken chain is visible
+     in `provenance_manifests`, and derivatives carry no credential. My recommendation.
+   - **Accept and strip.** Explicitly forbidden by D13, listed only for completeness.
+
+**What proceeding without a decision would cost.** Guessing (1) means either re-issuing certificates
+for every tenant later, or unpicking a per-tenant scheme nobody wanted. Guessing (3) means an ingest
+policy with compliance consequences chosen by default rather than deliberately — and it is exactly
+the kind of default that is never revisited once assets have been accepted under it.
+
+**What I did instead.** Moved to 1.10 (lifecycle engine), which §6.4 settles fully. 1.9 is the only
+M1 task left blocked besides the TUS surface.
