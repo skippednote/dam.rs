@@ -396,7 +396,32 @@ Rules for autonomous runs:
   than a duplicate-match error. `it.each` fixes it and names the failing state.
   *Note:* `null` confidence renders no meter at all rather than an empty bar. A null score usually
   means a human applied the tag; an empty bar would claim the model was certain it was wrong.
-- [ ] **F.3** OpenAPI → TS client generation, wired so drift is a build error.
+- [x] **F.3** OpenAPI → TS client generation, wired so drift is a build error. Done — the document
+  is emitted by `damctl openapi --write`, checked in as `openapi.json`, and consumed by
+  `openapi-typescript`. `mise run openapi` regenerates both.
+  *Three layers, each verified by deliberately breaking the chain — adding a `Revoked` variant to the
+  Rust enum:*
+  1. **Stale `openapi.json`** → the Rust suite fails with the regeneration command in the message.
+  2. **`openapi.json` current but the client stale** → the web contract test fails. This is the case
+     TypeScript *cannot* see: a stale generated union type-checks perfectly against out-of-date
+     constants.
+  3. **Both regenerated** → `svelte-check` fails naming `vocabulary.ts` and `RightsBadge.svelte`,
+     because the `Record<RightsState, …>` tables must be exhaustive. A new state cannot reach the UI
+     without a label, an icon and a colour token.
+  *Note:* F.2's hand-written unions are gone — `RightsState` and `ProvenanceState` now come from the
+  generated client, so the chain is database CHECK → `dam-core` enum → `openapi.json` →
+  `schema.d.ts` → the badge tables, with a test at every hop.
+  *Line drawn deliberately:* the new `dam-core::rights` module defines the *vocabulary* and nothing
+  else — no `blocks_distribution()`. That is enforcement, it belongs at the distribution chokepoint
+  (D12), and the predicate that decides it is 0.10, which is stopped pending review. A convenience
+  method there would quietly become the definition, in the one layer that has no idea who is asking.
+  *Note:* the generated file is excluded from Prettier. Formatting machine output would make the CI
+  drift diff depend on two tools agreeing about formatting forever.
+  *Watch item:* `openapi-typescript` 7.13 declares a peer of `typescript@^5.x` and the scaffold
+  installed TypeScript 6.0.3. Generation and `svelte-check` both work; the warning is worth
+  remembering if a future release starts to care.
+  *Bonus:* the Rust doc comments travel through as JSDoc, so the invariants ("only `Present` is
+  readable", "unevaluated is not permission") are visible in the editor on the frontend.
 - [ ] **F.4** Asset grid: virtualised, keyboard-navigable, ARIA grid semantics.
 
 ---

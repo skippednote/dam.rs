@@ -1,0 +1,92 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "damrs API",
+    "description": "Digital asset management: ingest, search, rights, provenance.",
+    "license": {
+      "name": "AGPL-3.0-or-later"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {},
+  "components": {
+    "schemas": {
+      "LatencyClass": {
+        "type": "string",
+        "description": "How long a `GET` takes to become possible.\n\nThe download path and the UI branch on **this**, not on the provider name. That is\nwhat lets Azure Archive or LTO tape slot in later without special-casing (§6.1).",
+        "enum": [
+          "instant",
+          "seconds",
+          "minutes",
+          "hours",
+          "days"
+        ]
+      },
+      "PlacementState": {
+        "type": "string",
+        "description": "Lifecycle state of one `object_placements` row.\n\nMirrors the `object_placements.state` CHECK. In `dam-core` rather than `dam-store`\nbecause both the database layer that loads it and the resolution layer that acts on it\nneed the same vocabulary — and a second definition is how the two drift.\n\nOnly `Present` is readable. The others each mean something different to an operator,\nwhich is why this is not a boolean: `Uploading` will resolve itself, `Missing` needs a\nre-replication, `Corrupt` needs a scrub, and `Deleting` is expected to disappear.",
+        "enum": [
+          "uploading",
+          "present",
+          "transitioning",
+          "missing",
+          "corrupt",
+          "deleting"
+        ]
+      },
+      "ProvenanceState": {
+        "type": "string",
+        "description": "Content-credential verification outcome. Mirrors the `assets.provenance_state` CHECK.\n\nFour states rather than a boolean because they call for different responses: `None` is a file that\nnever had a credential, `Invalid` is one whose credential no longer matches its bytes, and\n`Untrusted` is an intact credential from a signer outside any trust list. Collapsing them loses\nthe distinction between \"no claim was made\" and \"a claim was made and broken\".",
+        "enum": [
+          "none",
+          "valid",
+          "invalid",
+          "untrusted"
+        ]
+      },
+      "RestoreState": {
+        "type": "string",
+        "description": "Where a restore has got to, matching `object_placements.restore_state`.",
+        "enum": [
+          "none",
+          "requested",
+          "ongoing",
+          "available",
+          "expired"
+        ]
+      },
+      "RestoreTier": {
+        "type": "string",
+        "description": "Retrieval speed for a restore, matching `restore_requests.tier`.",
+        "enum": [
+          "expedited",
+          "standard",
+          "bulk"
+        ]
+      },
+      "RightsState": {
+        "type": "string",
+        "description": "Rights evaluation outcome for an asset. Mirrors the `assets.rights_state` CHECK.",
+        "enum": [
+          "allowed",
+          "expiring",
+          "denied",
+          "unknown"
+        ]
+      },
+      "StorageClass": {
+        "type": "string",
+        "description": "S3 storage classes, matching `object_placements.storage_class`.",
+        "enum": [
+          "STANDARD",
+          "STANDARD_IA",
+          "ONEZONE_IA",
+          "INTELLIGENT_TIERING",
+          "GLACIER_IR",
+          "GLACIER",
+          "DEEP_ARCHIVE"
+        ]
+      }
+    }
+  }
+}

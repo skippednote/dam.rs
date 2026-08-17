@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::{fmt, str::FromStr, time::Duration};
 
 /// S3 storage classes, matching `object_placements.storage_class`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum StorageClass {
     Standard,
@@ -117,7 +117,9 @@ impl FromStr for StorageClass {
 ///
 /// The download path and the UI branch on **this**, not on the provider name. That is
 /// what lets Azure Archive or LTO tape slot in later without special-casing (§6.1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, utoipa::ToSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum LatencyClass {
     Instant,
@@ -148,7 +150,7 @@ impl fmt::Display for LatencyClass {
 }
 
 /// Retrieval speed for a restore, matching `restore_requests.tier`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum RestoreTier {
     /// 1-5 minutes on Glacier. **Not available on Deep Archive** — validated against
@@ -195,7 +197,7 @@ impl fmt::Display for RestoreTier {
 }
 
 /// Where a restore has got to, matching `object_placements.restore_state`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum RestoreState {
     /// Not restorable, or not in an archive class.
@@ -283,7 +285,7 @@ mod tests {
 /// Only `Present` is readable. The others each mean something different to an operator,
 /// which is why this is not a boolean: `Uploading` will resolve itself, `Missing` needs a
 /// re-replication, `Corrupt` needs a scrub, and `Deleting` is expected to disappear.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum PlacementState {
     Uploading,

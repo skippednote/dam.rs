@@ -1524,6 +1524,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "url",
+ "utoipa",
  "uuid",
 ]
 
@@ -1669,6 +1670,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "dam-api",
  "dam-core",
  "dam-db",
  "dam-search",

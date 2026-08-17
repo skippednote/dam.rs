@@ -9,6 +9,9 @@ publish.workspace = true
 
 [dependencies]
 thiserror = { workspace = true }
+# Derives the OpenAPI schemas for the wire vocabulary. In dam-core rather than dam-api because a
+# second definition of these enums is exactly the drift F.3 exists to make impossible.
+utoipa = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

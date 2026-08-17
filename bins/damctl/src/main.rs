@@ -36,6 +36,17 @@ enum Command {
     },
     /// Print the resolved configuration. Secrets stay redacted.
     Config,
+
+    /// Print the OpenAPI document, or write it to `openapi.json`.
+    ///
+    /// The document is checked in so the wire contract appears in review diffs, and the test suite
+    /// asserts the checked-in copy matches this output — so a forgotten regeneration fails the build
+    /// rather than shipping a client that disagrees with the server.
+    Openapi {
+        /// Write to openapi.json at the repository root instead of stdout.
+        #[arg(long)]
+        write: bool,
+    },
 }
 
 #[tokio::main]
@@ -124,6 +135,19 @@ async fn main() -> anyhow::Result<()> {
                 "tenant ready"
             );
             println!("{}\t{}\t{}", tenant.id, tenant.slug, tenant.schema_name);
+        }
+
+        Command::Openapi { write } => {
+            let json =
+                dam_api::openapi::document_json().context("serialising the OpenAPI document")?;
+            if write {
+                let path = std::path::Path::new("openapi.json");
+                std::fs::write(path, &json)
+                    .with_context(|| format!("writing {}", path.display()))?;
+                println!("wrote {} ({} bytes)", path.display(), json.len());
+            } else {
+                print!("{json}");
+            }
         }
 
         Command::Config => {

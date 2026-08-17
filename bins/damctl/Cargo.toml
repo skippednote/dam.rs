@@ -8,6 +8,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+dam-api = { path = "../../crates/dam-api" }
 dam-core = { path = "../../crates/dam-core" }
 dam-telemetry = { path = "../../crates/dam-telemetry" }
 dam-db = { path = "../../crates/dam-db" }

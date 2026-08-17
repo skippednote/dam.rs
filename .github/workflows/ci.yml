@@ -62,6 +62,13 @@ jobs:
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
+      # Drift is a build error (§14.1). The Rust suite already asserts openapi.json matches the
+      # code; this asserts the checked-in TypeScript client matches openapi.json. Without it a
+      # stale client type-checks happily against an out-of-date union and the UI is confidently
+      # wrong about what the API can return.
+      - run: pnpm run gen:api
+      - name: fail if the generated API client is stale
+        run: git diff --exit-code -- src/lib/api/schema.d.ts
       - run: pnpm run check
       - run: pnpm run lint
       - run: pnpm exec vitest run

@@ -13,6 +13,7 @@
 pub mod clock;
 pub mod config;
 pub mod error;
+pub mod rights;
 pub mod secret;
 pub mod storage;
 pub mod tenant;
@@ -20,6 +21,7 @@ pub mod tenant;
 pub use clock::{Clock, SystemClock, TestClock};
 pub use config::Config;
 pub use error::{Error, ResourceKind, Result};
+pub use rights::{ProvenanceState, RightsState};
 pub use secret::Secret;
 pub use storage::{LatencyClass, PlacementState, RestoreState, RestoreTier, StorageClass};
 pub use tenant::TenantSlug;

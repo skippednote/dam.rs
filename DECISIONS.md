@@ -972,3 +972,34 @@ the data. Reversible: no.
 into a shared container, so repeated renders in a single test leave several copies in the DOM and every
 locator matches more than one element — which surfaces as a 15-second timeout, not a duplicate-match
 error. Worth recording because the symptom points nowhere near the cause. Reversible: yes.
+
+**The OpenAPI document is checked in, not generated on demand.** For the same reason a lockfile is: a
+reviewer should see the wire contract change in the diff rather than discover it at runtime. The Rust
+suite asserts the checked-in copy matches what the code emits, so a forgotten regeneration fails
+`mise run check` before a push. Emission is deterministic and pretty-printed — a document whose key
+order varied between runs would fail CI at random and be disabled within a week, and a single-line
+document would make every change unreadable. Reversible: yes.
+
+**Drift is caught at three layers, because each catches what the others cannot.** A stale
+`openapi.json` fails the Rust suite; a stale generated client fails a web test that reads
+`openapi.json` directly; and a *current* client with an unhandled variant fails `svelte-check` through
+the exhaustive `Record<State, Meta>` tables. The middle one matters most and is the least obvious: a
+stale generated union type-checks perfectly against out-of-date constants, so TypeScript alone cannot
+see it. Verified by adding a variant upstream and watching each layer fire in turn. Reversible: no.
+
+**`dam-core::rights` defines the vocabulary and deliberately nothing else.** No
+`blocks_distribution()`, no method answering whether a state permits anything. That is enforcement, it
+belongs at the distribution chokepoint (D12), and the predicate deciding it is task 0.10 — stopped
+pending the decisions in NEEDS-REVIEW.md. A convenience method here would quietly become the
+definition, in the one layer with no idea who is asking or what for. The frontend's
+`blocksDistribution` is a display hint that dims a button, and it is deliberately more conservative
+than any server rule. Reversible: no — this is the line between vocabulary and policy.
+
+**The wire enums live in `dam-core`, which now depends on `utoipa`.** A domain crate knowing about
+OpenAPI is mild layering impurity; a second definition of these enums in `dam-api` is exactly the
+drift F.3 exists to make impossible. The impurity is a derive macro, the alternative is a class of bug.
+Reversible: yes.
+
+**The generated client is excluded from Prettier and the CI drift check compares raw generator
+output.** Formatting machine output would make the diff depend on two tools agreeing about formatting
+forever, which is a flake waiting for a Prettier release. Reversible: yes.

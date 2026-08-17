@@ -9,17 +9,37 @@
  * - **Provenance → neutral.** A missing credential is a fact about the file's history, not an alarm.
  * - **Confidence → magnitude.** It is a quantity, and quantities read as length.
  *
- * The state names mirror the database exactly — `assets.rights_state` and `assets.provenance_state`
- * CHECK these values — so a state the backend can produce always has somewhere to render. F.3 will
- * generate these types from the OpenAPI document; until then they are hand-written and the tests
- * assert they match the schema.
+ * The state *types* come from the generated OpenAPI client, so the database CHECK constraints reach
+ * this file through `dam-core` and `openapi.json` rather than by being retyped. Two mechanisms make
+ * drift a build error rather than a rendering bug:
+ *
+ * - The `Record<State, Meta>` tables below must be exhaustive, so a variant **added** upstream fails
+ *   to compile until it has a label, an icon and a colour.
+ * - The `satisfies readonly State[]` on each array rejects a value the backend cannot produce, so a
+ *   variant **removed** upstream fails too.
+ *
+ * A state that reached the UI without either would render as no badge at all, which reads as "no
+ * restriction" — the most dangerous default a rights indicator has.
  */
 
-export const RIGHTS_STATES = ['allowed', 'expiring', 'denied', 'unknown'] as const;
-export type RightsState = (typeof RIGHTS_STATES)[number];
+import type { components } from '$lib/api/schema';
 
-export const PROVENANCE_STATES = ['none', 'valid', 'invalid', 'untrusted'] as const;
-export type ProvenanceState = (typeof PROVENANCE_STATES)[number];
+export type RightsState = components['schemas']['RightsState'];
+export type ProvenanceState = components['schemas']['ProvenanceState'];
+
+export const RIGHTS_STATES = [
+	'allowed',
+	'expiring',
+	'denied',
+	'unknown'
+] as const satisfies readonly RightsState[];
+
+export const PROVENANCE_STATES = [
+	'none',
+	'valid',
+	'invalid',
+	'untrusted'
+] as const satisfies readonly ProvenanceState[];
 
 export const TIERS = ['hot', 'cool', 'archive', 'restoring', 'restored'] as const;
 export type Tier = (typeof TIERS)[number];

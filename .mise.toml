@@ -28,6 +28,13 @@ DAMRS_STORAGE__SECRET_ACCESS_KEY = "damrsdevsecret"
 AWS_ACCESS_KEY_ID = "damrsdev"
 AWS_SECRET_ACCESS_KEY = "damrsdevsecret"
 
+[tasks.openapi]
+description = "Regenerate openapi.json and the TypeScript client from it"
+run = """
+cargo run -q -p damctl -- openapi --write
+cd web && pnpm exec openapi-typescript ../openapi.json -o src/lib/api/schema.d.ts
+"""
+
 [tasks."check:web"]
 description = "Frontend gate: typecheck, lint, unit tests, and the axe a11y suite"
 dir = "web"
