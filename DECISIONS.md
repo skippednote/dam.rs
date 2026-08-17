@@ -541,3 +541,50 @@ The allowance is scoped to that module alone.
 **`TestClock` starts at a fixed instant, not `Utc::now()`,** so a failure reproduces with
 the same timestamps tomorrow. It never advances on its own — a test that forgets to
 advance sees a stopped clock and fails loudly rather than passing intermittently.
+
+**D19: the SeaweedFS tag is 4.42, and the tag is load-bearing.** 3.80 answers
+`PutBucketVersioning` with `501 NotImplemented` — versioning and object lock are recent
+S3-gateway additions. This mattered more than a version bump normally does, because
+without versioning a version-scoped delete fails with `AccessDenied`, which is
+indistinguishable from a legal hold working. An earlier note in this file claimed the hold
+was verified live on that basis; it was not — the request was refused for the wrong reason.
+The same tag is now pinned in the harness and in `docker/compose.dev.yml`, because `latest`
+in dev against a pin in tests is how a capability difference becomes a bug that only
+reproduces on one machine. Reversible: yes, by moving the pin — but never downward past
+4.3x.
+
+**The test container runs with an identity config, not anonymously.** An unconfigured
+SeaweedFS allows everything, which is simpler and would have made
+`x-amz-bypass-governance-retention` fail permanently: SeaweedFS only honours the header for
+an identity holding `BypassGovernanceRetention` or `Admin`, and an anonymous request holds
+neither. Two identities are declared — one that may bypass and one that may not — so the
+suite proves both directions. Without the second identity, "bypass refused" would prove
+nothing about the permission, since it is also what an unimplemented bypass looks like.
+Reversible: yes.
+
+**Object lock lives beside `BlobStore`, not in it.** `set_legal_hold`, `set_retention`, and
+the versioning calls are `S3Store` methods rather than trait methods, because a trait
+method forces every driver to answer — and `FakeS3Store` cannot answer honestly, since the
+point of a hold is that the *server* refuses. `RetentionMode` has no `Default` and no
+`FromStr`: GOVERNANCE is correctable and COMPLIANCE is not, so a caller must say which it
+means. `Bypass` is an enum rather than a `bool` for the same reason — a bare `true` at a
+delete that overrides a retention policy is the argument that gets flipped by an
+autocomplete. Reversible: yes.
+
+**A multipart `Placement` reports no whole-object checksum.** A multipart ETag is a digest
+of the part digests with a `-<count>` suffix, so it is not the digest of the object.
+Returning it as `checksum` would have the integrity scrub compare two values that were
+never meant to match, and the failure would look like corruption. `checksum: None` forces
+the caller to use the streaming BLAKE3 (§6.4). Reversible: no.
+
+**The 5 MiB part minimum is enforced at `upload_part`, not at completion.** S3 reports
+`EntityTooSmall` from `CompleteMultipartUpload`, after every byte has crossed the wire. For
+a 200 GB master that is an expensive way to learn the part sizing was wrong, so an
+undersized part is refused on the *next* call — the moment it stops being allowed to be the
+final one. Reversible: yes.
+
+**`.mise.toml` exported four `DAMRS_S3_*` variables that match no config field.** The
+config is nested and denies unknown fields, so `DAMRS_S3_BUCKET` was not a loose alias for
+`storage.bucket` — it was a hard startup failure. `damd` could not have started in the dev
+environment. Renamed to `DAMRS_STORAGE__*`. The strictness stays: a typo in a deployed env
+var must fail loudly rather than silently fall back to a default. Reversible: n/a, a bug fix.

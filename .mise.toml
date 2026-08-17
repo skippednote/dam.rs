@@ -12,10 +12,19 @@ RUST_LOG = "damrs=debug,sqlx=warn,tower_http=debug"
 
 # Local dev stack (docker/compose.dev.yml). Tests use testcontainers on random
 # ports instead and ignore these.
-DAMRS_S3_ENDPOINT = "http://localhost:8333"
-DAMRS_S3_REGION = "us-east-1"
-DAMRS_S3_BUCKET = "damrs-dev"
-DAMRS_S3_FORCE_PATH_STYLE = "true"
+#
+# The `__` is the section separator (figment `Env::prefixed("DAMRS_").split("__")`),
+# and the config denies unknown fields — so `DAMRS_S3_BUCKET` is not a loose
+# alias for `storage.bucket`, it is a hard startup failure. Every name here must
+# match a real field in dam_core::config.
+DAMRS_STORAGE__ENDPOINT = "http://localhost:8333"
+DAMRS_STORAGE__REGION = "us-east-1"
+DAMRS_STORAGE__BUCKET = "damrs-dev"
+DAMRS_STORAGE__FORCE_PATH_STYLE = "true"
+DAMRS_STORAGE__ACCESS_KEY_ID = "damrsdev"
+DAMRS_STORAGE__SECRET_ACCESS_KEY = "damrsdevsecret"
+# Also exported unprefixed for the aws CLI, which the compose stack's healthcheck
+# and any manual `aws s3 ls` against the dev endpoint use.
 AWS_ACCESS_KEY_ID = "damrsdev"
 AWS_SECRET_ACCESS_KEY = "damrsdevsecret"
 

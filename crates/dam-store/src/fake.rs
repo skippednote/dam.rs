@@ -195,6 +195,8 @@ impl BlobStore for FakeS3Store {
             storage_class: class,
             etag: Some(format!("\"{}\"", &checksum[..32])),
             checksum: Some(checksum),
+            // The fake does not claim `versioning`, so it never reports a version.
+            version_id: None,
         })
     }
 

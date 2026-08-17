@@ -1082,7 +1082,7 @@ What remains, against the features Garage lacks:
 | Backend | Object lock | Versioning | Storage classes | RestoreObject | Notes |
 |---|---|---|---|---|---|
 | Garage | ✗ | ✗ (`NotImplemented`) | accepted, ignored | ✗ | Rust, 5 MiB RSS, AGPL |
-| **SeaweedFS** | ✓ GOVERNANCE + COMPLIANCE + legal holds | ✓ | accepted, ignored | ✗ | Apache 2.0, 66 MiB RSS |
+| **SeaweedFS** ≥ 4.3x | ✓ GOVERNANCE + COMPLIANCE + legal holds | ✓ | accepted, echoed back | ✗ | Apache 2.0, 66 MiB RSS. Version-sensitive — see below |
 | Ceph RGW | ✓ | ✓ | ✓ | ✓ | Closest to AWS parity; wants 3 nodes at 4+ GB each |
 | moto (server) | ✓ | ✓ | partial | ✓ | Test emulator, not a storage server |
 | AWS S3 | ✓ | ✓ | ✓ | ✓ | Nightly, credential-gated |
@@ -1105,8 +1105,14 @@ reasoning:
   output. A testcontainers harness that has to parse credentials from a subprocess
   on every suite is fragile in a way that has nothing to do with the code under
   test.
-- **Versioning works.** `PutBucketVersioning` returns `NotImplemented` on Garage.
-  Object lock requires versioning, so on Garage that whole surface is untestable.
+- **Versioning works — from 4.3x.** `PutBucketVersioning` returns `NotImplemented`
+  on Garage, and object lock requires versioning, so on Garage that whole surface is
+  untestable. It is fair to record that when D18 was written this bullet was an
+  assumption about SeaweedFS rather than a measurement: 3.80, the tag first pinned,
+  *also* answers `PutBucketVersioning` with `501 NotImplemented`. Versioning and
+  object lock are recent S3-gateway additions, verified working on **4.42** (D19).
+  The conclusion stands, but the tag is load-bearing and is pinned in both the
+  harness and the dev stack.
 - **Memory is irrelevant at this scale.** 5 MiB versus 66 MiB decides nothing when
   the Postgres container alongside it is larger than both.
 

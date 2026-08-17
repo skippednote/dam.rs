@@ -28,9 +28,18 @@
 pub mod conformance;
 pub mod fake;
 pub mod key;
+pub mod multipart;
+pub mod s3;
+pub mod versioning;
+
+#[cfg(feature = "testing")]
+pub mod testing;
 
 pub use fake::FakeS3Store;
 pub use key::Key;
+pub use multipart::{MIN_PART_SIZE, MultipartUpload};
+pub use s3::S3Store;
+pub use versioning::{Bypass, ObjectVersion, RetentionMode};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -184,7 +193,14 @@ pub struct Placement {
     pub size: u64,
     pub storage_class: StorageClass,
     pub etag: Option<String>,
+    /// Whole-object checksum the driver actually computed. `None` for a multipart upload,
+    /// where the ETag is a composite of part digests and is not the digest of the object —
+    /// the streaming BLAKE3 in the upload path is the checksum of record (§6.4).
     pub checksum: Option<String>,
+    /// The version this write created, on a versioned bucket. `None` when versioning is
+    /// off. Carried because a legal hold attaches to a *version*, not to a key — holding
+    /// "the current version" is a race, since the next overwrite moves it.
+    pub version_id: Option<String>,
 }
 
 /// What a driver supports.

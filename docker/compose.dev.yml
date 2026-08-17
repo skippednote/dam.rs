@@ -38,7 +38,11 @@ services:
   # header and ignores it, which is worse than rejecting for test purposes. The
   # tiering state machine therefore runs against FakeS3Store (ARCHITECTURE §20.2).
   seaweedfs:
-    image: chrislusf/seaweedfs:latest
+    # Pinned, and pinned to the SAME tag the testcontainers harness uses
+    # (crates/dam-store/src/testing.rs): `latest` in dev against a pin in tests is
+    # exactly how a capability difference becomes a bug that only reproduces locally.
+    # Must be >= 4.3x — versioning and object lock are recent S3-gateway additions.
+    image: chrislusf/seaweedfs:4.42
     command: server -s3 -s3.config=/etc/seaweedfs/s3.json -dir=/data -master.volumeSizeLimitMB=64
     ports:
       - "8333:8333"   # S3 API

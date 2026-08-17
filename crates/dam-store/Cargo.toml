@@ -26,9 +26,19 @@ url = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+# The SeaweedFS harness ships behind a feature so testcontainers stays out of a
+# production build, while other crates can still reuse it from dev-dependencies.
+testcontainers = { workspace = true, optional = true }
+
+[features]
+testing = ["dep:testcontainers"]
+
 [dev-dependencies]
+dam-store = { path = ".", features = ["testing"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-testcontainers = { workspace = true }
+# Used to prove a presigned URL actually works, not merely that it parses.
+reqwest = { workspace = true }
+blake3 = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"

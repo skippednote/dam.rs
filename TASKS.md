@@ -108,10 +108,22 @@ Rules for autonomous runs:
   declared and verified, skips reported in a `Report` rather than swallowed.
   *Note:* the storage-class skip message says outright that echoing the header back
   without changing behaviour does not count — which is exactly what SeaweedFS does.
-- [ ] **1.2 `S3Store` on `aws-sdk-s3`.** SeaweedFS harness via `GenericImage`
-  (no testcontainers module exists). Path-style, SigV4, multipart, presign,
-  ranged GET — plus versioning and object lock (GOVERNANCE / COMPLIANCE /
-  legal hold), which is why a real server is in the loop at all.
+- [x] **1.2 `S3Store` on `aws-sdk-s3`.** Done — 7 conformance cases (11 shared passes,
+  2 declared skips), 5 multipart cases, 6 versioning/object-lock cases.
+  *Surprises, in order of how badly they'd have bitten:*
+  1. The pinned SeaweedFS tag (3.80) answers `PutBucketVersioning` with `501
+     NotImplemented`. Because a version-scoped delete then fails with `AccessDenied`,
+     the earlier "legal hold verified live" note was a **pass for the wrong reason**.
+     Fixed by pinning 4.42 (D19) — where the hold genuinely refuses and releasing it
+     genuinely permits the delete.
+  2. `x-amz-bypass-governance-retention` is permission-gated. An anonymous container
+     can never bypass, so the harness now declares two identities and the suite proves
+     the refusal is the *permission* rather than an unimplemented header.
+  3. The wait strategy matched on stdout; SeaweedFS logs to **stderr**, so it waited on
+     an empty stream until timeout. Bumping the tag also cut container start 25s → 4s.
+  4. `.mise.toml` exported `DAMRS_S3_*`, which match no config field — the config is
+     nested and denies unknown fields, so `damd` could not have started in the dev
+     environment at all. Caught by dam-core's own config tests once the full gate ran.
 - [x] **1.3 `FakeS3Store`.** Done — passes the shared suite with zero skips, plus 10
   timing cases no real backend can be tested on.
   *Surprise:* my expiry test advanced to *exactly* `expires_at` and called it "just
@@ -136,6 +148,15 @@ Rules for autonomous runs:
   `pinned` honoured, `max_objects_per_run` halt.
 
 ## Frontend track (parallel, once 0.11 lands)
+
+  *Prerequisite found in 1.2:* §6.3 tiers superseded versions on their own schedule
+  (`GLACIER_IR` at 30 d), and `lifecycle_policies.only_superseded` expresses it — but
+  `object_placements` is keyed `(object_key, pool_id)` with no `version_id`, so a
+  noncurrent version has nowhere to record its class, minimum duration, or restore
+  state. Either noncurrent tiering is delegated wholly to S3-native
+  `NoncurrentVersionTransition` rules (in which case a restore of a superseded version
+  has no row to hang off), or placements gain a version dimension. Decide before
+  writing the engine; not decided here.
 
 - [ ] **F.1** SvelteKit + Tailwind 4 + shadcn-svelte/bits-ui scaffold in `web/`.
 - [ ] **F.2** Design tokens from the UI spec — the four-dimension state vocabulary
