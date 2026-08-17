@@ -268,10 +268,27 @@ Rules for autonomous runs:
     GIF decoder wants more than the logical screen descriptor and fails with EOF. Patching a
     real PNG's IHDR (and recomputing its CRC) means only the claimed size differs from something
     the encoder produced, so the test cannot pass because of an unrelated malformation.
-  *Still to do:* derivative generation (resize, format conversion, matting on alpha), page
-  counts for paged formats, and video/audio probing. **libvips needs a system library**
-  (`brew install vips`) — not a mise-installable runtime, so I have not installed it. What is
-  built is what ARCHITECTURE calls the fallback path, and it covers JPEG/PNG/WebP/TIFF/GIF/AVIF.
+  *Part done:* derivative rendering (`dam-media::derive`, 12 cases + 5 unit) — Lanczos3 resize,
+  contain/cover fit, matting, and `op_hash`.
+  *Surprise — my own halo test was vacuous.* It used a `size / 4` inset, which puts the square's
+  edge exactly on a block boundary when scaling 64→16, so no output pixel straddled the edge and
+  there was no halo to detect. It passed with premultiplication *disabled*. Fixed by offsetting
+  the inset and scaling to 15: the mutation now produces `Rgba([77, 77, 77, 77])` — a grey
+  fringe — and fails. This is the fourth "passes for the wrong reason" defect this project has
+  turned up, and the first one I introduced in a test of a property I had specifically set out to
+  prove.
+  *Notes:*
+  - `op_hash` length-prefixes the profile and intent. Concatenated, `("srgbper", "ceptual")` and
+    `("srgb", "perceptual")` would collide, and a collision here serves the wrong colour from
+    cache forever.
+  - Orientation is applied once and the output carries **no** EXIF, so a viewer cannot rotate it
+    a second time. All eight values are handled, including the four mirrors.
+  - Nothing is upscaled: the source is the ceiling. Mutation-checked (removing the clamp fails
+    2 tests).
+  *Still to do:* page counts for paged formats, video/audio probing. **libvips needs a system
+  library** (`brew install vips`) — not a mise-installable runtime, so I have not installed it.
+  What is built is what ARCHITECTURE calls the fallback path: JPEG/PNG/WebP/TIFF/GIF/AVIF. RAW,
+  PSD, INDD and Office formats need the primary path.
 - [ ] **1.8 Master proxy.** The §2 invariant. *Test first:* `enrichment_runs.used_original`
   is false for every run — the alarm that keeps cold storage viable.
 - [ ] **1.9 C2PA.** Verify on ingest, preserve inbound manifest, re-sign

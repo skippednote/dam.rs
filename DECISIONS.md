@@ -804,3 +804,29 @@ yes, the budget is a parameter.
 mise-installable runtime, so it is flagged rather than installed. The pure-Rust path is what
 ARCHITECTURE already calls the fallback and covers JPEG, PNG, WebP, TIFF, GIF and AVIF; RAW, PSD
 and Office formats need the primary path. Reversible: n/a — pending a decision.
+
+**Alpha is premultiplied before resizing, and the test that proves it had to be repaired.** Resizing
+RGBA without premultiplying averages the transparent *black* around a logo into the visible pixels
+beside it, leaving a grey fringe. The first version of that test used a square whose edge fell
+exactly on a block boundary at the chosen scale factor, so no output pixel ever mixed the two — it
+passed with premultiplication switched off. The geometry now guarantees straddling pixels, and the
+mutation produces `Rgba([77, 77, 77, 77])`. Recorded because the lesson generalises: a test for an
+edge-mixing property has to be built so that mixing actually happens. Reversible: no.
+
+**A derivative carries no EXIF orientation.** The pixels are uprighted once during rendering; leaving
+an orientation tag on the output would make a viewer rotate them again. All eight orientation values
+are applied, including the four mirrors — a mirrored derivative is as wrong as a rotated one.
+Reversible: no.
+
+**Nothing is ever upscaled.** A 2048px rendition of a 64px source is blurry in a way that reads as a
+defect, so the source dimensions are the ceiling and the caller decides whether the result is usable.
+Reversible: yes.
+
+**`op_hash` length-prefixes the colour profile and rendering intent.** §18.1 requires both in the
+hash so the cache cannot serve a wrongly-converted rendition. Concatenated, `("srgbper", "ceptual")`
+and `("srgb", "perceptual")` hash identically — and a collision here serves the wrong colour from
+cache indefinitely. Reversible: no, changing it invalidates every cached derivative.
+
+**Matting composites per pixel rather than drawing over a filled canvas.** The latter depends on
+whichever blend mode the library defaults to, and getting it wrong produces a black background —
+exactly the bug the matting exists to prevent. Reversible: yes.
