@@ -31,6 +31,7 @@ pub mod fake;
 pub mod key;
 pub mod multipart;
 pub mod pool;
+pub mod resumable;
 pub mod s3;
 pub mod versioning;
 
@@ -42,6 +43,7 @@ pub use fake::FakeS3Store;
 pub use key::Key;
 pub use multipart::{MIN_PART_SIZE, MultipartUpload};
 pub use pool::{PlacementRef, PoolRegistry, PoolSpec, Rate, ReadPlan};
+pub use resumable::{ResumableSession, ResumableStore};
 pub use s3::S3Store;
 pub use versioning::{Bypass, ObjectVersion, RetentionMode};
 

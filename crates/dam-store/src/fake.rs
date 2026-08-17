@@ -54,6 +54,10 @@ struct Restore {
 #[derive(Debug, Clone)]
 pub struct FakeS3Store {
     objects: Arc<Mutex<BTreeMap<String, Object>>>,
+    /// Open multipart uploads, keyed by upload id. Held separately from `objects` because an
+    /// in-flight upload is deliberately invisible to `get`, `head` and `list` — the same as on
+    /// a real backend, where a partial upload must never read as an object.
+    uploads: Arc<Mutex<BTreeMap<String, BTreeMap<i32, Bytes>>>>,
     clock: Arc<dyn Clock>,
     /// Simulated retrieval cost, so the restore-budget path has something to assert on.
     retrieval_cost_per_gb_cents: u64,
@@ -69,6 +73,7 @@ impl FakeS3Store {
     pub fn with_clock(clock: Arc<dyn Clock>) -> Self {
         Self {
             objects: Arc::new(Mutex::new(BTreeMap::new())),
+            uploads: Arc::new(Mutex::new(BTreeMap::new())),
             clock,
             retrieval_cost_per_gb_cents: 300,
         }
@@ -387,5 +392,94 @@ impl Object {
     #[allow(dead_code)]
     fn requested_at(&self) -> Option<DateTime<Utc>> {
         self.restore.as_ref().map(|r| r.requested_at)
+    }
+}
+
+#[async_trait]
+impl crate::ResumableStore for FakeS3Store {
+    async fn begin_resumable(&self, key: &Key, _class: StorageClass) -> Result<String> {
+        // Derived from the key and a counter rather than random, so a failure reproduces with
+        // the same ids tomorrow (the same reason `TestClock` starts at a fixed instant).
+        let mut uploads = match self.uploads.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let id = format!("fake-mpu-{}-{}", uploads.len() + 1, key.as_str());
+        uploads.insert(id.clone(), BTreeMap::new());
+        Ok(id)
+    }
+
+    async fn upload_resumable_part(
+        &self,
+        _key: &Key,
+        upload_id: &str,
+        part_number: i32,
+        body: Bytes,
+    ) -> Result<String> {
+        let mut uploads = match self.uploads.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let parts = uploads
+            .get_mut(upload_id)
+            .ok_or_else(|| Error::Backend(format!("no such upload {upload_id}")))?;
+        let etag = format!("\"{}\"", blake3::hash(&body).to_hex());
+        parts.insert(part_number, body);
+        Ok(etag)
+    }
+
+    async fn finish_resumable(
+        &self,
+        key: &Key,
+        upload_id: &str,
+        parts: &[crate::resumable::PartRecord],
+    ) -> Result<()> {
+        if parts.is_empty() {
+            return Err(Error::Backend(format!(
+                "refusing to complete {key} with no parts"
+            )));
+        }
+        let body = {
+            let mut uploads = match self.uploads.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            let stored = uploads
+                .remove(upload_id)
+                .ok_or_else(|| Error::Backend(format!("no such upload {upload_id}")))?;
+            // Assembled in the order the *caller* gave, not in map order: a real backend
+            // concatenates by the completion list, and a fake that sorted its own way would
+            // hide a caller bug in part ordering.
+            let mut buf = Vec::new();
+            for part in parts {
+                let bytes = stored.get(&part.number).ok_or_else(|| {
+                    Error::Backend(format!("upload {upload_id} has no part {}", part.number))
+                })?;
+                buf.extend_from_slice(bytes);
+            }
+            Bytes::from(buf)
+        };
+        let now = self.clock.now();
+        self.lock().insert(
+            key.as_str().to_owned(),
+            Object {
+                body,
+                storage_class: StorageClass::Standard,
+                last_modified: now,
+                class_since: now,
+                restore: None,
+            },
+        );
+        Ok(())
+    }
+
+    async fn abort_resumable(&self, _key: &Key, upload_id: &str) -> Result<()> {
+        let mut uploads = match self.uploads.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        // Idempotent: an upload already forgotten is the desired end state.
+        uploads.remove(upload_id);
+        Ok(())
     }
 }

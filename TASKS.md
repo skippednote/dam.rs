@@ -173,8 +173,28 @@ Rules for autonomous runs:
   of the bytes until then, so an early delete would destroy a retryable upload; an
   abandoned staging object is reaped on a timer instead — a leak that costs storage beats a
   loss that costs the upload.
-  *Still to do:* TUS protocol surface, presigned direct-to-S3, magic-byte sniffing, and the
-  staging reaper.
+  *Part done:* magic-byte sniffing (`dam-media::sniff`, 22 cases). Findings, all verified by
+  probing `infer` 0.22 directly rather than assumed:
+  - **`infer` does not detect ELF at all.** It carries Mach-O, PE, wasm and Java class, so a
+    Linux binary fell through to `application/octet-stream` with class `Unknown` — meaning
+    `is_dangerous()` was false and the upload path would have stored it happily. Explicit
+    signature added.
+  - An SVG **with** an XML prolog is detected as `text/xml`, so it never reached the content
+    sniffer. Generic text answers are now refined — and refinement may only *specialise*: my
+    first version let a catalogue XML file fall back to `text/plain`, replacing a specific
+    answer with a vaguer one.
+  - A shell script arrives as `text/x-shellscript` with a `Text` matcher, which a naive text
+    mapping files as a document. Classed `Executable`.
+  - OLE storage stays `Archive` on purpose: the same container holds legacy `.doc`/`.xls`
+    **and** `.msi` installers. `Document` would point a renderer at an installer; `Executable`
+    would refuse the customer's legacy Word files.
+  *Part done:* the resumable-upload engine (`dam-store::resumable`, 12 integration + 3 unit).
+  The constraint that shapes it: a TUS chunk may be 64 KB while S3 refuses any part under
+  5 MiB except the last, so chunks accumulate into a **tail** held *in object storage* — a
+  process-local buffer would make resumption sticky to one node. Mutation-checked: reversing
+  the tail/chunk order fails 3 tests, removing the offset-conflict check fails 2.
+  *Still to do:* the TUS HTTP surface and its `upload_sessions` table, presigned
+  direct-to-S3, and the staging reaper.
 - [ ] **1.7 Probe + derivatives.** libvips primary, `image` fallback. Subprocesses
   with rlimits, wall-clock, and an escape-proof temp dir.
 - [ ] **1.8 Master proxy.** The §2 invariant. *Test first:* `enrichment_runs.used_original`

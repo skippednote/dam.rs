@@ -951,6 +951,17 @@ rendition.
 | Fonts (OTF, TTF, WOFF2) | Specimen sheet render; family/weight metadata extraction | M6 |
 | Subtitles (SRT, VTT) | First-class derivative, indexed as text, optional burn-in | M3 |
 
+Two format classes carry a **delivery** constraint rather than a processing one, established
+while building the sniffer:
+
+- **SVG and HTML** execute when served. Both are legitimate assets — icon libraries and HTML5
+  creatives — so they are stored and previewed, but never served inline unsanitised, because
+  they run with the privileges of the origin serving them. `Sniffed::carries_active_content`
+  is the flag the delivery path reads.
+- **Executables** are refused by default. `infer` does not detect ELF, so damrs carries that
+  signature itself; without it a Linux binary reads as opaque bytes and would be stored and
+  served happily from the customer's own asset domain.
+
 ### 18.3 Large files (G21)
 
 A 200 GB ProRes master breaks assumptions that hold at 20 MB. Multipart upload

@@ -656,3 +656,45 @@ the driver, since it is S3's limit rather than every caller's problem. Reversibl
 1–64 alphanumeric, `-` or `_` characters. Object keys are generated, never client-supplied, so
 this is the one place a caller could otherwise steer a write outside its own tenant prefix.
 Reversible: no.
+
+**Sniffing never falls back to the client's declaration, and never consults the filename.** A
+declaration that disagrees with the bytes is recorded in `declared_mismatch` and discarded; one
+that cannot be corroborated is still discarded. Any fallback would make every check bypassable
+by sending bytes we do not recognise, and a filename extension is attacker-controlled in exactly
+the same way a `Content-Type` is. The mismatch is kept rather than dropped because it is the
+only evidence that an attempt was deliberate. Reversible: no.
+
+**Two separate hazard flags, because they imply different actions.** `is_dangerous()` marks
+executables — never a creative asset, refused by default. `carries_active_content()` marks SVG
+and HTML — legitimate assets (HTML5 creatives, icon libraries) that must never be served inline
+unsanitised, because they execute with the privileges of whatever origin serves them. Collapsing
+the two would either refuse real assets or serve an XSS payload. An SVG is classed `Image` so it
+keeps its thumbnail pipeline; the delivery constraint rides alongside. Reversible: yes.
+
+**An unrecognised format is stored, not refused.** A DAM is a store first: refusing would lose
+the customer's file over our inability to preview it. It is `application/octet-stream` with
+class `Unknown` and `is_processable() == false`. Reversible: yes.
+
+**The resumable-upload tail lives in object storage, not in the process.** A TUS chunk may be
+far below S3's 5 MiB part minimum, so chunks accumulate before becoming a part. Keeping that
+remainder in memory would make an upload sticky to one node and lose it when the node restarts —
+so it is a small object alongside the staging key, at the cost of one extra small read and write
+per sub-minimum chunk. For an upload measured in minutes that is the right trade. Reversible: yes,
+but only by giving up multi-node resumption.
+
+**`ResumableSession` is a value the caller persists; the engine keeps no map of live uploads.**
+Any node can serve any PATCH and a restart loses nothing. Reversible: yes.
+
+**Multipart primitives go on a separate `ResumableStore` trait, not on `BlobStore`.** `BlobStore`
+documents multipart as sitting *above* it, and `MultipartUpload` owns its part list and borrows
+the store — right for a single pass, wrong for an upload spanning many requests and processes.
+Widening `BlobStore` would have contradicted its own stated design. Reversible: yes.
+
+**An offset conflict is an outcome, not an error.** It is the normal way a client whose connection
+dropped mid-chunk finds out where to resume, and TUS answers it with a 409 carrying the
+authoritative offset. It also covers the replay case: a client retrying a chunk whose response was
+lost sends it at the *previous* offset, and accepting that would silently duplicate the bytes and
+produce an object whose digest matches nothing the client can compute. Reversible: yes.
+
+**A completion short of the declared length fails but leaves the session Active.** The client may
+still send the rest; marking it failed would turn a slow upload into a lost one. Reversible: yes.

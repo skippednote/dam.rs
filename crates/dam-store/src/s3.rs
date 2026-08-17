@@ -669,6 +669,111 @@ impl BlobStore for S3Store {
     }
 }
 
+#[async_trait]
+impl crate::ResumableStore for S3Store {
+    async fn begin_resumable(&self, key: &Key, class: StorageClass) -> Result<String> {
+        let mut req = self
+            .client
+            .create_multipart_upload()
+            .bucket(&self.bucket)
+            .key(key.as_str());
+        if self.capabilities.storage_classes {
+            req = req.storage_class(Self::to_sdk_class(class));
+        }
+        req.send()
+            .await
+            .map_err(|e| self.map_err(key, &e))?
+            .upload_id()
+            .map(str::to_owned)
+            .ok_or_else(|| Error::Backend("create_multipart_upload returned no upload id".into()))
+    }
+
+    async fn upload_resumable_part(
+        &self,
+        key: &Key,
+        upload_id: &str,
+        part_number: i32,
+        body: Bytes,
+    ) -> Result<String> {
+        self.client
+            .upload_part()
+            .bucket(&self.bucket)
+            .key(key.as_str())
+            .upload_id(upload_id)
+            .part_number(part_number)
+            .body(ByteStream::from(body))
+            .send()
+            .await
+            .map_err(|e| self.map_err(key, &e))?
+            .e_tag()
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                // Without the ETag the upload cannot be completed, and the session has no way
+                // to record the part — so the caller must retry it rather than carry on.
+                Error::Backend(format!("part {part_number} of {key} returned no ETag"))
+            })
+    }
+
+    async fn finish_resumable(
+        &self,
+        key: &Key,
+        upload_id: &str,
+        parts: &[crate::resumable::PartRecord],
+    ) -> Result<()> {
+        if parts.is_empty() {
+            return Err(Error::Backend(format!(
+                "refusing to complete {key} with no parts"
+            )));
+        }
+        let completed: Vec<_> = parts
+            .iter()
+            .map(|p| {
+                aws_sdk_s3::types::CompletedPart::builder()
+                    .part_number(p.number)
+                    .e_tag(&p.etag)
+                    .build()
+            })
+            .collect();
+        self.client
+            .complete_multipart_upload()
+            .bucket(&self.bucket)
+            .key(key.as_str())
+            .upload_id(upload_id)
+            .multipart_upload(
+                aws_sdk_s3::types::CompletedMultipartUpload::builder()
+                    .set_parts(Some(completed))
+                    .build(),
+            )
+            .send()
+            .await
+            .map_err(|e| self.map_err(key, &e))
+            .map(|_| ())
+    }
+
+    async fn abort_resumable(&self, key: &Key, upload_id: &str) -> Result<()> {
+        match self
+            .client
+            .abort_multipart_upload()
+            .bucket(&self.bucket)
+            .key(key.as_str())
+            .upload_id(upload_id)
+            .send()
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                // An upload the server has already forgotten is the desired end state, so a
+                // retried cleanup must not fail.
+                if format!("{e:?}").contains("NoSuchUpload") {
+                    Ok(())
+                } else {
+                    Err(self.map_err(key, &e))
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
