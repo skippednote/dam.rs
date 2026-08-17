@@ -130,8 +130,19 @@ Rules for autonomous runs:
   under". The implementation was right; the boundary is exclusive, matching S3's
   `expiry-date`, and is now pinned at t+59/t+60 — an inclusive boundary would serve one
   request more than AWS and show up only as an intermittent production 403.
-- [ ] **1.4 Pool + placement resolution.** Cheapest available placement wins;
-  unknown `pool_id` is a hard error, never a silent fallback.
+- [x] **1.4 Pool + placement resolution.** Done — 15 cases, pure logic, no container.
+  *Note:* "cheapest wins" is wrong stated alone. Deep Archive is the cheapest place to
+  keep bytes and its per-GB retrieval can undercut Glacier IR's, so a price-only ranking
+  turns ordinary downloads into restore tickets. Resolution is lexicographic:
+  readable-now, then price, then a stable name tiebreak. Mutation-checked — removing the
+  readability filter fails 3 tests, skipping an unknown pool fails 1.
+  *Surprise:* clippy caught `40 / 1000` in my own expected value — integer division, so
+  per-request charges were truncating to zero out of every estimate at the database's
+  1e-8 scale (an S3 GET is 4e-7). `Rate` now works at 1e-12 with an exact ×10,000
+  conversion from `numeric(12,8)`. Two pools differing only in request price would
+  otherwise have compared equal.
+  *Decision taken:* `enabled = false` retires a pool from new placements but keeps it
+  readable — blocking reads too would turn a config change into a data outage.
 - [ ] **1.5 Content addressing.** Streaming BLAKE3, key layout per §6.2, dedupe on
   re-upload proven by a test that uploads the same bytes twice.
 - [ ] **1.6 Upload.** TUS resumable + presigned direct-to-S3. Magic-byte sniffing

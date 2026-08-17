@@ -588,3 +588,35 @@ config is nested and denies unknown fields, so `DAMRS_S3_BUCKET` was not a loose
 `storage.bucket` — it was a hard startup failure. `damd` could not have started in the dev
 environment. Renamed to `DAMRS_STORAGE__*`. The strictness stays: a typo in a deployed env
 var must fail loudly rather than silently fall back to a default. Reversible: n/a, a bug fix.
+
+**Read resolution is lexicographic, not a cost minimum.** Readable-now first, then price,
+then pool name. "Cheapest available placement wins" (TASKS 1.4) is only correct if
+"available" is evaluated first: Deep Archive is the cheapest place in the estate to keep
+bytes and its per-GB retrieval charge can be *lower* than Glacier IR's, so a resolver
+ranking on price alone would route ordinary downloads into 12-hour restores while appearing
+to save money. The name tiebreak exists so two identical requests resolve identically — an
+unstable tiebreak makes a cache key and an audit log disagree. Reversible: yes.
+
+**A disabled pool is still readable.** `storage_pools.enabled = false` retires a pool from
+*new* placements only. Blocking reads as well would take every object already living there
+offline, which is a data outage dressed as a configuration change. Retiring a pool's data
+is a migration, not a flag. Reversible: yes.
+
+**Write placement is decided by pool minimums, not by class name.** A thumbnail must not
+land in Glacier IR — not because of the label but because of the 128 KiB minimum billable
+size and the 90-day minimum duration, which together make a 20 KB thumbnail cost more there
+than in Standard. `suits_small_permanent_objects()` tests the minimums directly, so a future
+cheap class without minimums qualifies automatically and a name-based check does not have to
+be revisited. Reversible: yes.
+
+**`Rate` is an integer at 1e-12, four digits finer than the database.** Cost comparisons must
+be exact so ties break deterministically. The scale is finer than `numeric(12,8)` because at
+the database's own scale a single S3 GET (4e-7 currency units) divides to zero: request costs
+silently vanished from every estimate, and two pools differing only in request price compared
+equal. Conversion from the database is an exact ×10,000. Reversible: yes, but not downward.
+
+**`PlacementState` lives in `dam-core`.** The vocabulary is shared between the layer that
+loads placements and the layer that acts on them; a second definition is how the two drift
+out of step with the `object_placements.state` CHECK. It is an enum rather than a boolean
+because each non-`Present` state implies a different operator action — `Uploading` resolves
+itself, `Missing` needs re-replication, `Corrupt` needs a scrub. Reversible: yes.

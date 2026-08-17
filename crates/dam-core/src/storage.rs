@@ -273,3 +273,69 @@ mod tests {
         assert!(RestoreTier::Bulk.expected_wait(g) > RestoreTier::Expedited.expected_wait(g));
     }
 }
+
+/// Lifecycle state of one `object_placements` row.
+///
+/// Mirrors the `object_placements.state` CHECK. In `dam-core` rather than `dam-store`
+/// because both the database layer that loads it and the resolution layer that acts on it
+/// need the same vocabulary — and a second definition is how the two drift.
+///
+/// Only `Present` is readable. The others each mean something different to an operator,
+/// which is why this is not a boolean: `Uploading` will resolve itself, `Missing` needs a
+/// re-replication, `Corrupt` needs a scrub, and `Deleting` is expected to disappear.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PlacementState {
+    Uploading,
+    Present,
+    Transitioning,
+    Missing,
+    Corrupt,
+    Deleting,
+}
+
+impl PlacementState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Uploading => "uploading",
+            Self::Present => "present",
+            Self::Transitioning => "transitioning",
+            Self::Missing => "missing",
+            Self::Corrupt => "corrupt",
+            Self::Deleting => "deleting",
+        }
+    }
+
+    /// Whether bytes can be served from a placement in this state, before any
+    /// storage-class or restore consideration.
+    pub fn is_serveable(self) -> bool {
+        matches!(self, Self::Present)
+    }
+}
+
+impl std::fmt::Display for PlacementState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for PlacementState {
+    type Err = crate::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "uploading" => Ok(Self::Uploading),
+            "present" => Ok(Self::Present),
+            "transitioning" => Ok(Self::Transitioning),
+            "missing" => Ok(Self::Missing),
+            "corrupt" => Ok(Self::Corrupt),
+            "deleting" => Ok(Self::Deleting),
+            // The value is echoed deliberately: a placement state comes from our own
+            // schema, never from a user, so naming it is diagnostic rather than a leak.
+            other => Err(crate::Error::Validation {
+                field: "object_placements.state".into(),
+                reason: format!("unknown placement state {other:?}"),
+            }),
+        }
+    }
+}

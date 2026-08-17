@@ -29,6 +29,7 @@ pub mod conformance;
 pub mod fake;
 pub mod key;
 pub mod multipart;
+pub mod pool;
 pub mod s3;
 pub mod versioning;
 
@@ -38,6 +39,7 @@ pub mod testing;
 pub use fake::FakeS3Store;
 pub use key::Key;
 pub use multipart::{MIN_PART_SIZE, MultipartUpload};
+pub use pool::{PlacementRef, PoolRegistry, PoolSpec, Rate, ReadPlan};
 pub use s3::S3Store;
 pub use versioning::{Bypass, ObjectVersion, RetentionMode};
 
@@ -76,6 +78,17 @@ pub enum Error {
 
     #[error("invalid range {range} for object of {size} bytes")]
     InvalidRange { range: String, size: u64 },
+
+    /// A placement referencing a pool the registry does not know. Its own variant because
+    /// this is configuration drift, not a storage failure, and the fix is a config change
+    /// rather than a retry.
+    #[error("unknown storage pool {0} — a placement references a pool that is not configured")]
+    UnknownPool(uuid::Uuid),
+
+    /// No copy of the object can be read or restored. Carries why each copy was unusable,
+    /// because "no usable placement" alone leaves an operator querying the table by hand.
+    #[error("no usable placement: {reason}")]
+    NoUsablePlacement { reason: String },
 
     #[error("storage backend: {0}")]
     Backend(String),
