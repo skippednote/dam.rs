@@ -8,6 +8,7 @@ members = [
     "crates/dam-media",
     "crates/dam-ai",
     "crates/dam-connect",
+    "crates/dam-telemetry",
     "crates/dam-api",
     "crates/dam-mcp",
     "bins/damd",
@@ -111,7 +112,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-opentelemetry = "0.33"
 opentelemetry = "0.32"
 opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
-opentelemetry-otlp = "0.32"
+opentelemetry-otlp = { version = "0.32", default-features = false, features = [
+    "trace", "http-proto", "reqwest-client",
+] }
 metrics = "0.24"
 metrics-exporter-prometheus = "0.18"
 

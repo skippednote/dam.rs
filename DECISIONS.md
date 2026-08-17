@@ -193,3 +193,46 @@ Two smaller decisions taken along the way:
 Also added, unprompted but cheap: `deny_unknown_fields` on every config struct, so
 a typo'd key (`prot = 9999`) fails startup instead of being silently ignored —
 which is how an operator ends up certain they changed a setting when they did not.
+
+## 2026-08-17 — task 0.3: telemetry, and a span convention that was decorative until tested
+
+**`dam-telemetry` is a new crate (13th member), not part of `dam-core`.**
+`tracing-subscriber` and `opentelemetry-otlp` are concrete infrastructure, and
+`dam-core` is deliberately free of that. All three binaries depend on it so
+initialisation cannot drift between them — which was the actual motivation:
+duplicating subscriber setup three ways guarantees they diverge. Reversible: yes.
+
+**The test caught a real defect in the field convention.**
+`ids_propagate_into_a_child_span` failed against the first implementation. The JSON
+layer was configured `with_current_span(true).with_span_list(false)`, which I chose
+to keep log lines quieter. `with_current_span` emits only the **innermost** span's
+fields — so an event inside `derive_thumbnail` nested under `request` carried no
+`tenant_id` at all. The convention "tenant_id on every span" was decorative:
+top-level requests had it, and everything the worker actually does happens in child
+spans.
+
+Fixed by enabling `with_span_list(true)` in both the `subscriber()` and `init()`
+paths. Cost is a more verbose line; the alternative is traces that cannot be tied
+to a tenant, which is worthless when a customer reports a problem. Reversible: no —
+do not turn this off to reduce log volume without replacing it with something that
+propagates ancestor fields.
+
+**OTLP over HTTP/protobuf rather than gRPC.** `opentelemetry-otlp` gates transports
+behind features; `with_tonic()` needs `grpc-tonic`, which pulls a whole gRPC stack.
+Chose `http-proto` + `reqwest-client`: reuses the reqwest dependency already present
+for the Anthropic client, and every collector accepts OTLP/HTTP on 4318. Reversible:
+yes, a feature swap.
+
+**opentelemetry 0.32 API drift.** `global::shutdown_tracer_provider()` no longer
+exists — the holder must own the provider and call `provider.shutdown()`. `Guard`
+now owns it. Losing this is silent: the process exits cleanly and the final spans
+simply never arrive, which is the worst kind of observability bug.
+
+**Invalid `RUST_LOG` falls back to `info` rather than failing startup.** A typo in a
+filter directive should not stop a service booting; losing precision beats losing
+the service. Asserted by `an_invalid_filter_falls_back_to_info_rather_than_failing`.
+
+**`CaptureWriter` ships in the library, not in a test helper.** The redaction suite
+has to exercise the same subscriber construction production uses — a capture writer
+that only exists in tests invites a subscriber that only exists in tests, which is
+the same mistake 0.2 corrected in the config loader.

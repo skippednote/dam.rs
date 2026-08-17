@@ -33,8 +33,15 @@ Rules for autonomous runs:
   Also landed: `Secret<T>` (redacts in Debug/Display/Serialize), domain `Error` with
   machine-readable denial reasons, `deny_unknown_fields` so typo'd keys fail startup.
 
-- [ ] **0.3 Tracing + OTel.** JSON logs, `RUST_LOG` filter, request-id span
-  propagation. Tenant id on every span, never the tenant's data.
+- [x] **0.3 Tracing + OTel.** Done in a new `dam-telemetry` crate; 33 tests, bar green.
+  *Surprise:* the child-span test proved the "tenant_id on every span" convention was
+  decorative — `with_current_span` emits only the innermost span's fields, so
+  everything the worker does in a child span had no tenant attribution. Needed
+  `with_span_list(true)`. Also: opentelemetry 0.32 removed
+  `global::shutdown_tracer_provider`, and OTLP transports are feature-gated (took
+  HTTP/protobuf over gRPC to avoid tonic). See DECISIONS.md.
+  All three binaries now boot through one init path; `damctl config` prints a
+  resolved config with secrets redacted.
 
 - [ ] **0.4 Postgres harness.** testcontainers helper that boots pgvector/pg17,
   runs the §5.3 bootstrap (schemas + 3 extensions), and hands back a pool.
