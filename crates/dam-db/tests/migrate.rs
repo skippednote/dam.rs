@@ -67,7 +67,7 @@ async fn tenant_migrations_apply_to_a_named_schema() {
         (
             "view count",
             "SELECT count(*) FROM information_schema.views WHERE table_schema='t_acme'",
-            1,
+            2,
         ),
         // Excludes the sqlx ledger's own primary-key index, so this counts the
         // indexes the migrations create. The design-time measurement was taken via
@@ -75,12 +75,12 @@ async fn tenant_migrations_apply_to_a_named_schema() {
         (
             "index count",
             "SELECT count(*) FROM pg_indexes WHERE schemaname='t_acme' AND tablename <> '_sqlx_migrations'",
-            210,
+            211,
         ),
         (
             "check constraints",
             "SELECT count(*) FROM pg_constraint c JOIN pg_namespace n ON n.oid=c.connamespace WHERE n.nspname='t_acme' AND c.contype='c'",
-            87,
+            88,
         ),
         (
             "hnsw indexes",
@@ -120,8 +120,8 @@ async fn each_tenant_gets_an_independent_ledger() {
         )
         .await;
         assert_eq!(
-            applied, 9,
-            "{schema} should have 9 tenant migrations applied"
+            applied, 10,
+            "{schema} should have 10 tenant migrations applied"
         );
     }
 }
@@ -145,7 +145,7 @@ async fn migrating_twice_is_a_no_op() {
             "SELECT count(*) FROM t_acme._sqlx_migrations WHERE success"
         )
         .await,
-        9
+        10
     );
 }
 

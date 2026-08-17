@@ -289,8 +289,29 @@ Rules for autonomous runs:
   library** (`brew install vips`) — not a mise-installable runtime, so I have not installed it.
   What is built is what ARCHITECTURE calls the fallback path: JPEG/PNG/WebP/TIFF/GIF/AVIF. RAW,
   PSD, INDD and Office formats need the primary path.
-- [ ] **1.8 Master proxy.** The §2 invariant. *Test first:* `enrichment_runs.used_original`
-  is false for every run — the alarm that keeps cold storage viable.
+- [x] **1.8 Master proxy.** Done — 15 media cases + 4 database cases, plus migration 0010.
+  *The invariant is structural, not documentary.* An enrichment stage takes an
+  `EnrichmentSource`, whose only alarm-free constructor **refuses any key outside the `p/`
+  namespace**. A doc comment saying "read the proxy" is a convention, and conventions decay one
+  commit at a time — invisibly, in this case, because nothing breaks until the next model
+  upgrade turns into a restore storm. Reading the original stays possible (C2PA verification at
+  ingest legitimately attests to the master's own bytes) but sets `used_original` and demands a
+  reason.
+  *Note:* "not the original" would have been the wrong check. A thumbnail is hot and cheap too,
+  but it is 400px, and re-embedding against it would silently degrade every vector in the
+  library. The test asserts thumbnails, derivatives, manifests and staging keys are all refused.
+  *Surprise — my chosen quality contradicted §2's own footprint number.* I picked q88; measured
+  against a photo-like 12-megapixel master it costs **766 KB for the proxy alone**, against §2's
+  ~0.5 MB budget for the *entire* hot set. Dropped to q82 (561 KB) and put the measured table
+  into ARCHITECTURE §2, so the number is grounded rather than asserted.
+  *Surprise:* my first size test compared the proxy against a synthetic PNG gradient, which
+  compresses to 187 KB for 12 megapixels — so the "master" was smaller than its own proxy and
+  the test failed for a reason unrelated to the code. Fixtures that reason about *size* need
+  photo-like data.
+  *Also landed:* migration 0010 makes the alarm triageable — `original_read_reason` with a CHECK
+  that it is present whenever `used_original`, an `enrichment_original_reads` view that joins the
+  asset (filename and size, because "which files" and "what would a restore cost" are the first
+  two questions), and a partial index so the alert can be polled cheaply forever.
 - [ ] **1.9 C2PA.** Verify on ingest, preserve inbound manifest, re-sign
   derivatives. *Test first:* `provenance_gaps` is empty after deriving from an
   asset with credentials. **This is D13; a derivative pipeline that strips

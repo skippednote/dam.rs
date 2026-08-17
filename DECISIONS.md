@@ -830,3 +830,40 @@ cache indefinitely. Reversible: no, changing it invalidates every cached derivat
 **Matting composites per pixel rather than drawing over a filled canvas.** The latter depends on
 whichever blend mode the library defaults to, and getting it wrong produces a black background —
 exactly the bug the matting exists to prevent. Reversible: yes.
+
+**The §2 invariant is enforced by a type, not by a comment.** An enrichment stage takes an
+`EnrichmentSource`, and its only alarm-free constructor refuses any key outside the proxy namespace.
+The reason to spend a type on this: the failure is silent. Nothing breaks the day a stage starts
+reading originals — the bill arrives at the next model upgrade, as a restore storm across the whole
+archive, by which time the change that caused it is months old. A convention cannot survive that
+feedback delay. Reversible: yes, but it would give up the only enforcement that does not depend on
+someone remembering.
+
+**The check is "is the proxy", not "is not the original".** A thumbnail is hot and cheap too, but it
+is 400px — re-running an embedding model against one would silently degrade every vector in the
+library, and nothing would report it. Thumbnails, derivatives, manifests and staging keys are all
+refused. Reversible: no.
+
+**Reading the original is possible, inconvenient, and self-recording.** C2PA verification at ingest
+legitimately attests to the master's own bytes while they are still hot, so an escape hatch has to
+exist. It sets `used_original` and requires a non-empty reason, and the database refuses the row
+without one — a flag with no reason gets muted, and a muted alarm is worse than none because it
+reads as "we are watching this". Reversible: yes.
+
+**Proxy quality is 82, not 88.** Measured against a photo-like 4000x3000 master (3.1 MB as JPEG):
+q75 → 424 KB, q82 → 561 KB, q88 → 766 KB, q92 → 999 KB. §2 budgets ~0.5 MB per asset for the
+*entire* hot set, so 88 does not fit on the proxy alone. Below 82 would still satisfy the model half
+of the proxy's job — embeddings downsample to 224–448px and never see JPEG artifacts — but not the
+preview half. The measured table now lives in ARCHITECTURE §2 so the number is grounded rather than
+asserted. Reversible: yes, but changing it means regenerating every proxy, which means reading every
+original.
+
+**A proxy is contained, never cropped.** `Fit::Cover` would discard image content that a future model
+— or a person looking at a preview — would have wanted, and by then the original may be hours of
+restore away. Reversible: no.
+
+**Fixtures that reason about size need photo-like data.** My first proxy size test compared against a
+synthetic PNG gradient, which compresses to 187 KB for 12 megapixels: the "master" was smaller than
+its own proxy and the test failed for a reason unrelated to the code. Correlated noise over a
+gradient, encoded as JPEG, is the fixture that behaves like a photograph. Recorded because it is the
+second time a smooth synthetic fixture has made a test meaningless in this project.

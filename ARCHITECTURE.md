@@ -57,6 +57,24 @@ That set is roughly **0.5 MB per asset** and stays hot forever, in Postgres +
 Tantivy + pgvector + a hot S3 prefix. Only the **original master** tiers to
 cold storage.
 
+Measured while building the proxy (task 1.8), against a photo-like 4000×3000
+master that is 3.1 MB as JPEG — the upper end of what a photo library commonly
+holds:
+
+| Proxy JPEG quality | Proxy size |
+|---|---|
+| 75 | 424 KB |
+| **82 — chosen** | **561 KB** |
+| 88 | 766 KB |
+| 92 | 999 KB |
+
+The 0.5 MB figure is an average, not a ceiling: 561 KB is the 12-megapixel end,
+and the many assets below that size are not upscaled so their proxies are
+smaller. Quality 88 does not fit — 766 KB for the proxy alone, before embeddings,
+text and thumbnails. Below 82 would still satisfy the *model* half of the proxy's
+job, since embeddings downsample to 224–448px and never see JPEG artifacts, but
+not the *preview* half, where a designer zooms in.
+
 The **master proxy** is what makes this work: a deliberately generous
 derivative (2048px JPEG / 720p H.264 / extracted text) good enough to serve
 every future preview *and* to re-run every future AI model. When the tagging
