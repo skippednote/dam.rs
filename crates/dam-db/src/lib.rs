@@ -10,6 +10,7 @@ pub mod jobs;
 pub mod migrate;
 pub mod provision;
 pub mod tenant_conn;
+pub mod uploads;
 
 #[cfg(feature = "testing")]
 pub mod testing;
@@ -38,6 +39,19 @@ pub enum Error {
     /// worker must stop work immediately rather than retry.
     #[error("lease lost for job {job_id} (worker {worker}); another worker may own it")]
     LeaseLost { job_id: uuid::Uuid, worker: String },
+
+    /// A caller tried to advance an upload session the database has no record of. Its own
+    /// variant because the caller believes it holds a live session: continuing would append to
+    /// an upload that does not exist, so it must stop rather than retry.
+    #[error("upload session `{0}` does not exist")]
+    UploadGone(String),
+
+    /// A row contradicts itself — a part count that disagrees with the part list, a status
+    /// outside the vocabulary. Its own variant because it is neither a query failure nor a
+    /// missing row: resuming from it would assemble the wrong bytes under a content-addressed
+    /// key, which produces an object that looks canonical. Refusing is the only safe move.
+    #[error("inconsistent row: {0}")]
+    Inconsistent(String),
 
     #[error(transparent)]
     Core(#[from] dam_core::Error),

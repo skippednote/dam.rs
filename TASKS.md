@@ -202,8 +202,25 @@ Rules for autonomous runs:
   *Note:* one of my test names over-claimed — "hashed in bounded chunks not buffered whole"
   only proves the digest is right under a small window; boundedness is structural and not
   observable from a test. Renamed to what it actually checks.
-  *Still to do:* the TUS HTTP surface and its `upload_sessions` table, minting the presigned
-  URL itself, and the staging reaper.
+  *Part done:* `upload_sessions` (migration 0009, 10 constraint cases) plus `dam_db::uploads`
+  — create/load/save/reapable/reap (8 cases, both containers).
+  *Notes:*
+  - The session row carries `tenant_id`. My first version derived it from
+    `dam_global.tenants` via `current_schema()`, which coupled the reaper to a provisioned
+    control-plane row — precisely what may be missing when cleanup matters most. Keys already
+    embed the tenant (`object_placements` stores whole keys rather than reconstructing them),
+    so the row carries the prefix it needs. It is **not** an access-control boundary; the
+    schema is that (D2).
+  - `reap` reclaims **storage first, then the row**. Marking the row first would orphan the
+    parts permanently with nothing left pointing at them; the other order repeats an
+    idempotent cleanup.
+  - The `part_count = jsonb_array_length(parts)` constraint caught my own test's positive
+    case, which set a counter of 1 against an empty list. That is the exact inconsistency the
+    Rust loader refuses, so both ends now agree.
+  *Still to do — and deliberately stopped:* the TUS HTTP surface. See NEEDS-REVIEW.md — it
+  needs request authentication and tenant resolution, and no task in M0/M1 schedules an API
+  skeleton. Presigned URL minting has the same dependency: `presign_put` exists, but *who* may
+  ask for one is an authorisation decision.
 - [ ] **1.7 Probe + derivatives.** libvips primary, `image` fallback. Subprocesses
   with rlimits, wall-clock, and an escape-proof temp dir.
 - [ ] **1.8 Master proxy.** The §2 invariant. *Test first:* `enrichment_runs.used_original`

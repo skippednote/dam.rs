@@ -715,3 +715,28 @@ best-effort so a cleanup failure cannot mask the reason for the refusal. Reversi
 tenant and by plan, and a safe default that cannot be overridden becomes a support ticket. The
 defaults are the safe ones, and a unit test asserts `refuse_executables` is on — a careless edit
 to `Default` would otherwise be invisible. Reversible: yes.
+
+**`upload_sessions` carries `tenant_id`, and it is a key prefix rather than a boundary.** The
+first version derived the tenant from `dam_global.tenants` by matching `current_schema()`, so the
+reaper could not rebuild a staging key unless the control-plane row still existed — which is
+exactly the situation in which reclaiming storage matters most. Object keys already embed the
+tenant uuid and `object_placements` stores whole keys rather than reconstructing them, so this
+follows an existing pattern. Tenant isolation remains structural (D2): the column is the prefix
+the reaper needs, not an authorisation check. Reversible: yes.
+
+**The reaper reclaims storage before it updates the row.** If the process dies between the two,
+the next pass finds the row still `active` and repeats a cleanup that is idempotent. The other
+order orphans the multipart parts permanently, with nothing left in the database pointing at them
+and the bill continuing. A single stuck upload is logged and skipped rather than aborting the
+batch — a reaper that stops on the first failure stops reclaiming anything. Reversible: yes.
+
+**A reaped session's row is kept, marked `terminated`.** Deleting it would answer a client asking
+about its own upload with a 404 that is indistinguishable from "never existed". Reversible: yes.
+
+**`dam-db` depends on `dam-store`.** The session type is storage vocabulary, `dam-store` does not
+depend on `dam-db`, and a second definition in the database layer is how the two would drift out
+of step with the CHECK constraints in `0009_uploads.sql`. Reversible: yes.
+
+**`StorageClass` deliberately has no `Default`.** A test wanted `Default::default()` and it was
+tempting to add; an implicit storage class is how an original silently lands in an archive tier
+and starts a 180-day minimum charge. Every call site states the class. Reversible: yes.

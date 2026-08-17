@@ -62,7 +62,7 @@ async fn tenant_migrations_apply_to_a_named_schema() {
         (
             "BASE TABLE count",
             "SELECT count(*) FROM information_schema.tables WHERE table_schema='t_acme' AND table_type='BASE TABLE' AND table_name <> '_sqlx_migrations'",
-            58,
+            59,
         ),
         (
             "view count",
@@ -75,12 +75,12 @@ async fn tenant_migrations_apply_to_a_named_schema() {
         (
             "index count",
             "SELECT count(*) FROM pg_indexes WHERE schemaname='t_acme' AND tablename <> '_sqlx_migrations'",
-            206,
+            210,
         ),
         (
             "check constraints",
             "SELECT count(*) FROM pg_constraint c JOIN pg_namespace n ON n.oid=c.connamespace WHERE n.nspname='t_acme' AND c.contype='c'",
-            75,
+            87,
         ),
         (
             "hnsw indexes",
@@ -120,8 +120,8 @@ async fn each_tenant_gets_an_independent_ledger() {
         )
         .await;
         assert_eq!(
-            applied, 8,
-            "{schema} should have 8 tenant migrations applied"
+            applied, 9,
+            "{schema} should have 9 tenant migrations applied"
         );
     }
 }
@@ -145,7 +145,7 @@ async fn migrating_twice_is_a_no_op() {
             "SELECT count(*) FROM t_acme._sqlx_migrations WHERE success"
         )
         .await,
-        8
+        9
     );
 }
 

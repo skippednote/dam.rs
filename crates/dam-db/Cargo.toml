@@ -9,6 +9,10 @@ publish.workspace = true
 
 [dependencies]
 dam-core = { path = "../dam-core" }
+# The resumable-upload session type. dam-store does not depend on dam-db, so there is no
+# cycle: the session is storage vocabulary, and a second definition here is how the two
+# would drift out of step with the CHECK constraints in 0009_uploads.sql.
+dam-store = { path = "../dam-store" }
 thiserror = { workspace = true }
 sqlx = { workspace = true }
 serde = { workspace = true }
@@ -29,6 +33,9 @@ testing = ["dep:testcontainers"]
 
 [dev-dependencies]
 dam-db = { path = ".", features = ["testing"] }
+# The reaper aborts a real multipart upload, which is exactly what a fake cannot prove.
+dam-store = { path = "../dam-store", features = ["testing"] }
+bytes = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints.rust]

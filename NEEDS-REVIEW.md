@@ -104,3 +104,38 @@ in an audit because the download would look authorised.
   is only true if something checks it
 - a test that pagination counts do not differ between a caller who can see an asset and
   one who cannot — the §7 leak, asserted rather than assumed
+
+
+---
+
+## Task 1.6 — the TUS HTTP surface is blocked on the same gap as 0.10
+
+**Status:** everything in 1.6 that does not require an HTTP layer is done — the resumable
+engine, `upload_sessions`, the session repository, the reaper, sniffing, and finalisation. The
+remaining pieces are the TUS endpoints and presigned URL minting, and both stop here.
+
+**Why.** A TUS surface is not just header parsing. `POST /uploads` has to answer three questions
+before it creates anything:
+
+1. **Who is asking?** There is no authentication layer yet. No task in M0 or M1 schedules an API
+   skeleton — I checked; `TASKS.md` has no axum, router, or auth task in the overnight scope.
+2. **Which tenant?** Tenant resolution from a request is the `TenantConn` invariant's entry
+   point (§5.2), and getting it wrong is a cross-tenant data leak rather than a bug.
+3. **May they upload here?** Upload permission is an ABAC predicate, and **0.10 is already
+   blocked** pending the five decisions above.
+
+Minting a presigned PUT has the same shape: the mechanism is settled (`presign_put` exists, the
+staging key layout is settled, finalisation validates what arrives), but handing a client a URL
+that writes into a tenant's prefix *is* the authorisation decision. Building it now would mean
+inventing an auth model in a handler, which is exactly where an access-control model should never
+be invented.
+
+**What I need.** Either sign off on `NEEDS-REVIEW.md`'s five ABAC questions so 0.10 can proceed
+and the API layer can be built on it, or say explicitly that a provisional unauthenticated
+surface — bound to localhost, with a hard-coded tenant, marked as scaffolding — is acceptable for
+the overnight run. I did not assume either.
+
+**What proceeding without a decision would cost.** An HTTP surface written against an invented
+auth model tends to leak that model into every handler, and unpicking it later is the expensive
+kind of refactor. Everything below the HTTP layer is finished and tested, so nothing is blocked
+except the endpoints themselves.
