@@ -938,3 +938,37 @@ for a pre-push sweep. Reversible: yes.
 F.2 defines from the UI spec — running it now would mean writing those values twice and reconciling
 them later. bits-ui is installed and exercised now, since §14.1 says the DAM-specific components
 compose bits-ui primitives directly rather than waiting for a shadcn wrapper. Reversible: yes.
+
+**Each state dimension gets its own perceptual channel, and the tests pin the assignment.** Tier uses
+form (glyph and border), rights use semantic colour, provenance stays neutral, confidence is a
+magnitude. The reason to assert this in code rather than document it: giving tier a colour of its own
+looks like a restyle, but it takes the channel rights depends on — and a grid where "archived" is
+amber and "expiring" is amber is a grid where nobody trusts either badge. So there are direct
+assertions that all tiers share one neutral token, that each rights state has a distinct one, and that
+no provenance state borrows a rights colour. Reversible: yes, but not silently.
+
+**`rights_state = unknown` is never styled like `allowed`.** It is the column default, and the schema's
+AI-gate comment is explicit that unevaluated rights are not permission. So unknown gets its own hue —
+deliberately not a paler green — and reports `blocksDistribution: true` alongside `denied`. Rendering
+it like cleared would turn every unevaluated asset into an apparently licensed one. Reversible: no.
+
+**The state names are copied from the CHECK constraints and asserted against them.** A state the
+backend can produce but the UI cannot render shows as no indicator at all, which reads as "no
+restriction" — the most dangerous possible default for a rights badge. F.3 will generate these types
+from OpenAPI; until then the tests are what keep them in step. Reversible: yes, and F.3 should remove
+the duplication.
+
+**A `/style` route renders every variant, so axe checks every token pair's contrast.** One scan covers
+the whole palette on every CI run. Verified to have teeth: lightening a single foreground token to 82%
+lightness makes it fail with `color-contrast (serious)`. Checking a tint-plus-hue combination by eye is
+how something that measures 3.9:1 ships. Reversible: yes, but the page is cheap and the coverage is
+not replaceable by review.
+
+**A null confidence renders no meter, not an empty one.** A tag with no score is usually one a human
+applied. An empty bar would claim the model was certain the tag was wrong, which inverts the meaning of
+the data. Reversible: no.
+
+**Component tests use `it.each` rather than looping inside one test.** `vitest-browser-svelte` mounts
+into a shared container, so repeated renders in a single test leave several copies in the DOM and every
+locator matches more than one element — which surfaces as a 15-second timeout, not a duplicate-match
+error. Worth recording because the symptom points nowhere near the cause. Reversible: yes.

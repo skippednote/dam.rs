@@ -373,9 +373,29 @@ Rules for autonomous runs:
   minutes long. CI runs both jobs; `mise run check:all` is there for a pre-push sweep.
   *Deferred to F.2:* shadcn-svelte component adoption. Its `init` writes the token layer, which is
   exactly what F.2 defines from the UI spec — running it now would mean writing those values twice.
-- [ ] **F.2** Design tokens from the UI spec — the four-dimension state vocabulary
-  (tier in form, rights in semantic colour, provenance neutral, confidence as
-  bars) as components, with axe-core in CI from the first commit.
+- [x] **F.2** Design tokens + the four-dimension state vocabulary. Done — 48 unit/component cases
+  and 8 a11y cases; axe has been in CI since F.1's commit.
+  *The tests pin the channel assignment, not the pixels.* Giving tier a colour of its own is not a
+  restyle — it takes the channel rights depends on, and then "archived" amber and "expiring" amber
+  are the same badge. So there are direct assertions that every tier shares one neutral token, that
+  each rights state has its own, and that provenance never borrows a rights colour.
+  *State names come from the schema, not from me:* `rights_state` is
+  `allowed|expiring|denied|unknown` and `provenance_state` is `none|valid|invalid|untrusted`, both
+  asserted against the CHECK constraints. A state the backend can produce but the UI cannot render
+  shows as *no indicator at all*, which reads as "no restriction".
+  *The sharpest case:* `unknown` must never be styled like `allowed`. `rights_state` defaults to
+  `unknown`, and the schema's own AI-gate comment says unevaluated rights are not permission — so
+  `unknown` gets its own hue (not a paler green) and reports `blocksDistribution: true`.
+  *A `/style` route renders every variant of all four dimensions,* which means one axe scan checks
+  the contrast of every token pair on every CI run. Mutation-checked: lightening a single foreground
+  token to 82% makes it fail with `color-contrast (serious)`. A tint plus a hue is exactly the
+  combination that looks fine and measures 3.9:1.
+  *Surprise:* five component tests failed because they rendered in a `for` loop —
+  `vitest-browser-svelte` mounts into a shared container, so repeated renders leave several copies in
+  the DOM and every locator matches more than one element. It surfaces as a 15-second timeout rather
+  than a duplicate-match error. `it.each` fixes it and names the failing state.
+  *Note:* `null` confidence renders no meter at all rather than an empty bar. A null score usually
+  means a human applied the tag; an empty bar would claim the model was certain it was wrong.
 - [ ] **F.3** OpenAPI → TS client generation, wired so drift is a build error.
 - [ ] **F.4** Asset grid: virtualised, keyboard-navigable, ARIA grid semantics.
 

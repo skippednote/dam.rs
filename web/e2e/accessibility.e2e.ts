@@ -67,3 +67,23 @@ test('the viewport allows zoom, which WCAG 1.4.4 requires', async ({ page }) => 
 	expect(viewport).not.toContain('user-scalable=no');
 	expect(viewport).not.toMatch(/maximum-scale=1(\.0)?\b/);
 });
+
+test('every state of every dimension clears WCAG 2.1 AA contrast', async ({ page }) => {
+	// The /style page renders every variant of all four dimensions, so this one scan covers the
+	// contrast of every token pair. A tint plus a hue is exactly the combination that looks fine and
+	// measures 3.9:1, and checking it by eye is how that ships.
+	await page.goto('/style');
+	const results = await new AxeBuilder({ page }).withTags(WCAG_21_AA).analyze();
+	const detail = results.violations
+		.map((v) => `${v.id} (${v.impact}): ${v.nodes.map((n) => n.failureSummary).join(' | ')}`)
+		.join('\n');
+	expect(results.violations, `axe violations on /style:\n${detail}`).toEqual([]);
+});
+
+test('the state reference page is navigable by heading structure', async ({ page }) => {
+	// Screen-reader users navigate by heading, so a reference page with one flat list of badges and no
+	// headings is unusable even though axe is happy with it.
+	await page.goto('/style');
+	await expect(page.locator('h1')).toHaveCount(1);
+	await expect(page.locator('h2')).toHaveCount(4);
+});

@@ -7,12 +7,37 @@
 	tier in form, rights in semantic colour, provenance neutral, confidence as bars — is F.2, and it
 	belongs in one place because the Drupal picker and the Portals theme both theme against it (§14.1).
 */
+/*
+	The design tokens (F.2). One place, because the Drupal picker (§11.2) and the Portals theme both
+	theme against them — the asset browser embedded in Drupal's Media Library is the *same* Svelte app,
+	so a token defined twice is a picker that drifts from the app it is part of.
+
+	The state colours implement the four-dimension vocabulary in
+	`$lib/components/state/vocabulary.ts`: rights own the colour channel, tier uses form, provenance
+	stays neutral. Foreground tokens are dark enough to clear 4.5:1 against the 12%-alpha tint the
+	badges use — verified by axe over /style rather than by eye, since a tint plus a hue is exactly the
+	combination that looks fine and measures at 3.9:1.
+*/
 @theme {
 	--color-bg: oklch(99% 0.002 260);
 	--color-surface: oklch(97% 0.004 260);
 	--color-fg: oklch(24% 0.015 260);
-	--color-muted: oklch(52% 0.012 260);
-	--color-accent: oklch(52% 0.16 258);
+	--color-muted: oklch(44% 0.014 260);
+	--color-accent: oklch(48% 0.16 258);
+
+	/* Tier and provenance: one neutral, used for borders and glyphs only. */
+	--color-state-neutral: oklch(72% 0.012 260);
+
+	/* Rights: distinct hues, each with a foreground dark enough to read on its own tint. */
+	--color-state-rights-allowed: oklch(58% 0.13 150);
+	--color-state-rights-allowed-fg: oklch(36% 0.1 150);
+	--color-state-rights-expiring: oklch(70% 0.13 70);
+	--color-state-rights-expiring-fg: oklch(38% 0.09 60);
+	--color-state-rights-denied: oklch(58% 0.19 25);
+	--color-state-rights-denied-fg: oklch(38% 0.15 25);
+	/* Unknown is deliberately its own hue, not a paler green: it must never read as cleared. */
+	--color-state-rights-unknown: oklch(60% 0.07 285);
+	--color-state-rights-unknown-fg: oklch(38% 0.07 285);
 }
 
 @layer base {
