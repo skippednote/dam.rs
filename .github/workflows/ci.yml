@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Fail on warnings everywhere, not just where a lint attribute happens to be set.
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # Cheap checks first so a formatting slip does not wait behind a container build.
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # No `services:` block. Every database and object-store test starts its own
+      # container through testcontainers (D17), so the suites stay parallel and no
+      # test depends on a shared fixture's state. Docker is present on the runner
+      # by default, which is all testcontainers needs.
+      - run: cargo test --workspace --all-features
+        env:
+          # testcontainers is quiet by default; this surfaces image pulls and wait
+          # strategies when a CI-only container failure needs diagnosing.
+          RUST_LOG: testcontainers=info
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans licenses sources
+
+  # The migrations are the compliance floor (D12-D15). This job applies them to a real
+  # Postgres exactly as `damctl migrate` does and asserts the object counts, so a
+  # migration that silently drops a constraint fails here rather than in production.
+  schema:
+    name: schema counts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p dam-db --test migrate --test compliance_gates -- --nocapture

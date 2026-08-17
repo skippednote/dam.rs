@@ -1,0 +1,66 @@
+# cargo-deny configuration. Run locally with `cargo deny check`.
+
+[advisories]
+# Fail on any unpatched advisory. Exceptions belong here with a dated rationale, not
+# in a global severity threshold — "we accept mediums" ages into "we accept anything".
+yanked = "deny"
+
+# Exceptions carry a date and a reason. A global severity threshold ("we accept
+# mediums") ages into "we accept anything"; a dated list forces a re-read.
+ignore = [
+    # RUSTSEC-2024-0436: `paste` is unmaintained. It is a proc-macro that expands
+    # identifiers at compile time — no runtime code, no network, no unsafe surface, so
+    # "unmaintained" here means "finished", not "risky". Reached transitively through
+    # the metrics and symphonia trees, neither of which we control.
+    # Reviewed 2026-08-17. Re-check if a maintained fork becomes the ecosystem default.
+    { id = "RUSTSEC-2024-0436", reason = "proc-macro only; no runtime surface" },
+]
+
+[licenses]
+# Permissive plus the weak-copyleft licences that appear in the transitive graph.
+# Nothing that would encumber distributing damrs itself.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "MIT-0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.9
+
+# NCSA is permissive and OSI-approved, but it is allowed for exactly one crate rather
+# than globally. `libfuzzer-sys` reaches the lockfile through an unenabled `fuzzing`
+# feature of rav1e (rav1e <- ravif <- image's avif support) and is never compiled —
+# `cargo tree -i libfuzzer-sys` finds no path and the build never mentions it. Scoping
+# the exception means that if it ever does enter a real build, the check fires again
+# instead of having been waved through years earlier.
+[[licenses.exceptions]]
+name = "libfuzzer-sys"
+allow = ["NCSA"]
+
+[bans]
+# Duplicate versions are a warning, not an error: the aws-sdk and tracing trees
+# legitimately carry several minor versions of shared crates, and denying that
+# outright would mean pinning transitive dependencies we do not control.
+multiple-versions = "warn"
+wildcards = "deny"
+# Our own workspace members are path dependencies with no version, which reads as a
+# wildcard. The check is aimed at `foo = "*"` from a registry, which is what we
+# actually want to forbid.
+allow-wildcard-paths = true
+
+# libvips, pdfium, ort and whisper-rs are declared in the workspace but not yet
+# enabled by any member. Listed here so a future `cargo deny` run does not read
+# their absence from the lockfile as a problem.
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

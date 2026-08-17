@@ -86,13 +86,21 @@ Rules for autonomous runs:
   window functions, so correctness rests on the UPDATE's own `state='queued'` predicate
   being re-evaluated under READ COMMITTED. See DECISIONS.md.
 
-- [ ] **0.10 ABAC predicate compiler.** One predicate → SQL fragment + Tantivy
-  filter. Query-time, never post-filter.
-  *Test first:* identical asset sets from both back ends for the same grants;
-  pagination counts do not leak excluded assets.
+- [ ] **0.10 ABAC predicate compiler.** ⛔ **STOPPED FOR REVIEW — see NEEDS-REVIEW.md.**
+  The mechanism is settled (one predicate, query-time, three consumers); the semantics
+  are not. Five decisions determine whether an unapproved, unreleased or expired asset
+  can be seen or fetched — role combination, release/expiry visibility, EULA scope,
+  rule-group evaluation, and whether `all_asset_groups` bypasses expiry. Recommendations
+  written; awaiting sign-off.
 
-- [ ] **0.11 CI.** fmt, clippy `-D warnings`, test with containers, `cargo deny`,
-  `.sqlx/` committed and verified current.
+- [x] **0.11 CI.** Done — four parallel jobs plus a nightly AWS conformance run.
+  *Surprise, and a genuine one:* `cargo deny` found **three `rustls-webpki`
+  vulnerabilities** compiled into every binary. `aws-config`'s default features pull
+  `legacy-rustls-ring` (rustls 0.21 / hyper-rustls 0.24) alongside the modern client, so
+  the vulnerable stack was linked while never being the path we use. Fixed with explicit
+  feature lists; rustls 0.21 is now absent from the graph. Also fixed a `licences`
+  spelling that would have failed the job, and `publish = false` so path deps stop
+  reading as wildcards. `.sqlx/` deferred — nothing uses `query!` yet. See DECISIONS.md.
 
 ## M1 — Ingest and storage
 

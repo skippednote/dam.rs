@@ -421,3 +421,63 @@ doubling reaches days, by which point a transient outage has effectively lost th
   rejects (minimum is two). My own validator from 0.7 caught my test from 0.9.
 - `EXTRACT(EPOCH FROM interval)` returns `NUMERIC` in modern Postgres, not `FLOAT8`.
   Needed an explicit `::double precision`.
+
+## 2026-08-17 — task 0.11: CI, and cargo-deny found a real vulnerable TLS stack
+
+The deny job earned its place on its first run: **three `rustls-webpki` advisories**
+reachable from every binary through the S3 client.
+
+`aws-config`'s default features activate `aws-smithy-http-client`'s `hyper-014`, which
+pulls `legacy-rustls-ring` → rustls 0.21.12 + hyper-rustls 0.24.2 — carrying
+CVEs for URI name constraints, wildcard name constraints, and a reachable panic in CRL
+parsing. The modern `rustls-aws-lc` client was *also* active, so the vulnerable stack was
+compiled and linked while never being the path we use.
+
+Fixed by `default-features = false` on `aws-config` and `aws-sdk-s3` with an explicit
+feature list. rustls 0.21 is gone from the graph entirely (`cargo tree -i rustls@0.21.12`
+now finds no package) and the workspace still builds and tests clean. Reversible: no —
+restoring default features re-adds a known-vulnerable TLS implementation to the binary.
+
+Worth noting *how* this was found: not by reading changelogs, but by wiring the check
+into CI and running it once. It would have shipped otherwise.
+
+### Three smaller fixes, all things CI would have failed on
+
+- **`command: check advisories bans licences sources`** — British spelling. Not a valid
+  cargo-deny check name; the job would have failed on its first real run.
+- **`wildcards = "deny"` flagged our own path dependencies.** `allow-wildcard-paths`
+  exists for this but does not apply to *publishable* crates. Set `publish = false`
+  across the workspace, which is accurate (these are internal) and also prevents an
+  accidental `cargo publish`.
+- **NCSA scoped to one crate rather than allowed globally.** `libfuzzer-sys` reaches the
+  lockfile via an unenabled `rav1e` fuzzing feature and is never compiled —
+  `cargo tree -i libfuzzer-sys` finds no path. A `[[licenses.exceptions]]` entry means
+  that if it ever enters a real build the check fires again, instead of having been
+  waved through years earlier by a blanket allow.
+
+**`paste` (RUSTSEC-2024-0436) is ignored with a dated rationale.** A proc-macro that
+expands identifiers at compile time: no runtime code, no network, no unsafe surface, so
+"unmaintained" here means "finished". Reached through the metrics and symphonia trees.
+The ignore list carries dates deliberately — a global severity threshold ("we accept
+mediums") ages into "we accept anything", while a dated list forces a re-read.
+
+### CI shape
+
+Four parallel jobs: `lint` (fmt + clippy, cheapest first so a formatting slip does not
+queue behind a container build), `test`, `deny`, and `schema` — which applies the
+migrations to a real Postgres and asserts the object counts, so a migration that
+silently drops a constraint fails there rather than in production.
+
+**No `services:` block.** Every database test starts its own container through
+testcontainers (D17), so suites stay parallel and no test depends on a shared fixture's
+state.
+
+A separate nightly workflow runs the S3 conformance suite against real AWS — the only
+place actual Glacier semantics are exercised. It **skips rather than fails** when
+credentials are absent: a red nightly nobody can fix trains people to ignore the
+nightly.
+
+**`.sqlx/` offline data is not committed yet**, because nothing uses the `query!` macros
+— every query so far is runtime-checked `sqlx::query`. The `.mise.toml` `SQLX_OFFLINE`
+setting is there for when that changes. Claiming the CI verifies offline data it does not
+have would be worse than saying so.

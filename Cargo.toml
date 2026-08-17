@@ -22,6 +22,9 @@ edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
 repository = "https://github.com/skippednote/damrs"
+# Internal crates. Marking them unpublishable prevents an accidental `cargo publish`
+# and is what makes cargo-deny's `allow-wildcard-paths` apply to our path deps.
+publish = false
 
 # Versions verified against crates.io 2026-08-17 (task 0.1). Notable drift from the
 # design-time pins: tantivy 0.22 -> 0.26, rmcp 0.8 -> 3.1, sqlx 0.8 -> 0.9,
@@ -51,8 +54,17 @@ pgvector = { version = "0.4", features = ["sqlx"] }
 # ── object storage (D1: S3 only for now) ──────────────────────────────────────
 # aws-sdk-s3 rather than `object_store`: we need StorageClass, RestoreObject and
 # the x-amz-restore header, all of which object_store abstracts away (D3).
-aws-config = { version = "1", features = ["behavior-version-latest"] }
-aws-sdk-s3 = "1"
+# default-features = false to keep the LEGACY TLS stack out: the default feature set
+# activates aws-smithy-http-client's `hyper-014` -> `legacy-rustls-ring`, which pins
+# rustls 0.21 / hyper-rustls 0.24 and carries three rustls-webpki advisories. The
+# modern client (`rustls-aws-lc`) is what we actually use.
+aws-config = { version = "1", default-features = false, features = [
+    "behavior-version-latest", "rt-tokio", "sso", "credentials-process",
+    "default-https-client",
+] }
+aws-sdk-s3 = { version = "1", default-features = false, features = [
+    "behavior-version-latest", "rt-tokio", "default-https-client", "sigv4a",
+] }
 aws-credential-types = "1"
 aws-smithy-types = "1"
 
