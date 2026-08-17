@@ -10,12 +10,16 @@
     allow(clippy::expect_used, clippy::unwrap_used, clippy::result_large_err)
 )]
 
+pub mod clock;
 pub mod config;
 pub mod error;
 pub mod secret;
+pub mod storage;
 pub mod tenant;
 
+pub use clock::{Clock, SystemClock, TestClock};
 pub use config::Config;
 pub use error::{Error, ResourceKind, Result};
 pub use secret::Secret;
+pub use storage::{LatencyClass, RestoreState, RestoreTier, StorageClass};
 pub use tenant::TenantSlug;

@@ -104,15 +104,20 @@ Rules for autonomous runs:
 
 ## M1 — Ingest and storage
 
-- [ ] **1.1 `BlobStore` trait + conformance suite.** One suite, two drivers.
+- [x] **1.1 `BlobStore` trait + conformance suite.** Done — 12 shared cases, capabilities
+  declared and verified, skips reported in a `Report` rather than swallowed.
+  *Note:* the storage-class skip message says outright that echoing the header back
+  without changing behaviour does not count — which is exactly what SeaweedFS does.
 - [ ] **1.2 `S3Store` on `aws-sdk-s3`.** SeaweedFS harness via `GenericImage`
   (no testcontainers module exists). Path-style, SigV4, multipart, presign,
   ranged GET — plus versioning and object lock (GOVERNANCE / COMPLIANCE /
   legal hold), which is why a real server is in the loop at all.
-- [ ] **1.3 `FakeS3Store`.** Controllable clock; the full tiering state machine
-  no practical local server expresses — class transitions, `InvalidObjectState`,
-  `RestoreObject`, `x-amz-restore`, restore expiry, minimum-duration charges.
-  ARCHITECTURE §20.2.
+- [x] **1.3 `FakeS3Store`.** Done — passes the shared suite with zero skips, plus 10
+  timing cases no real backend can be tested on.
+  *Surprise:* my expiry test advanced to *exactly* `expires_at` and called it "just
+  under". The implementation was right; the boundary is exclusive, matching S3's
+  `expiry-date`, and is now pinned at t+59/t+60 — an inclusive boundary would serve one
+  request more than AWS and show up only as an intermittent production 403.
 - [ ] **1.4 Pool + placement resolution.** Cheapest available placement wins;
   unknown `pool_id` is a hard error, never a silent fallback.
 - [ ] **1.5 Content addressing.** Streaming BLAKE3, key layout per §6.2, dedupe on

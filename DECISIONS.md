@@ -481,3 +481,63 @@ nightly.
 — every query so far is runtime-checked `sqlx::query`. The `.mise.toml` `SQLX_OFFLINE`
 setting is there for when that changes. Claiming the CI verifies offline data it does not
 have would be worse than saying so.
+
+## 2026-08-17 — tasks 1.1/1.3: BlobStore, the conformance suite, and FakeS3Store
+
+**`GetOutcome` is an enum, not an error.** A cold read is a normal, expected outcome —
+"this master is in Deep Archive" is what the product is *for*, not an exception. Making
+it a variant means the compiler asks about it at every call site, which is how the
+Drupal connector's "resolve a cold original to the proxy" behaviour becomes hard to
+forget rather than easy. `into_bytes()` exists for the paths that genuinely cannot handle
+cold — the enrichment pipeline reading a proxy, which is always hot. Reversible: no.
+
+**Capabilities are declared and the declaration is checked.** The conformance suite skips
+what a driver does not claim and asserts everything it does. Skips land in a `Report`
+that the caller prints, because a silent skip is how a capability gap becomes a
+production surprise — the suite stays green while covering less each release.
+
+The skip message for storage classes says it explicitly: *echoing the header back
+without changing behaviour does NOT count*. That is exactly what SeaweedFS does, and a
+driver that claimed the capability on that basis would pass a test proving nothing.
+
+**The fake does not claim versioning or object lock.** Object lock's whole point is that
+the *server* refuses the delete, so a fake that refuses proves nothing. Those run against
+SeaweedFS and the AWS nightly (§20.3). Under-claiming costs coverage honestly;
+over-claiming would fake it.
+
+**Restore state is derived from the clock, never stored.** `Ongoing → Available →
+Expired` is computed on read, which makes it *impossible* for the fake to report an
+available restore whose copy has actually lapsed. Storing the state would allow exactly
+the bug that conflating restore state with storage class produces: an object that reads
+as available forever and 403s the day the temporary copy expires.
+
+**The keep-warm window runs from availability, not from the request.** A 48-hour Bulk
+restore kept for 24 hours would otherwise expire before it arrived, and the caller would
+never receive bytes they had paid for. Pinned by
+`the_keep_warm_window_runs_from_availability_not_from_the_request`.
+
+**The expiry boundary is exclusive.** At `expires_at` the copy is already gone, matching
+S3's `expiry-date`. My test originally advanced to exactly the boundary and called it
+"just under" — the implementation was right, the arithmetic was mine. Now asserted at
+t+59 (available) and t+60 (gone), because an inclusive boundary would serve bytes for one
+request more than AWS does and the difference shows up only as an intermittent
+production 403. Reversible: no.
+
+**Tier exemption is derived from the key, not looked up.** `Key::is_tier_exempt()` reads
+the `p/`, `t/`, and `c2pa/` prefixes directly, so the rule holds even for an object whose
+placement row is missing or stale. `permitted_class()` then clamps a requested class,
+which means the lifecycle engine cannot tier the master proxy even if a policy predicate
+says to. Reversible: no — this is the §2 invariant in code.
+
+**Keys reject `..`, empty segments, and uppercase digests.** Keys are ours, not a
+caller's, so validation is about catching our own construction bugs. An uppercase digest
+matters specifically: it would produce a second key for identical content, defeating the
+deduplication the content-addressed layout exists for.
+
+**`conformance.rs` ships in the library with panic lints relaxed.** A `#[cfg(test)]`
+suite cannot be run against a driver from another crate, and the AWS nightly needs it.
+The allowance is scoped to that module alone.
+
+**`TestClock` starts at a fixed instant, not `Utc::now()`,** so a failure reproduces with
+the same timestamps tomorrow. It never advances on its own — a test that forgets to
+advance sees a stopped clock and fails loudly rather than passing intermittently.
