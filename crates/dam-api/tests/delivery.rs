@@ -1,0 +1,630 @@
+//! Signed delivery (3.1) — the one chokepoint every download passes through.
+//!
+//! D12 says rights are enforced at the point of distribution rather than recorded and hoped for. The
+//! property that makes that true is not that the handler checks rights — it is **when** it checks them.
+//!
+//! A signed URL proves we issued this exact request unaltered. It does not prove entitlement. Rights are
+//! evaluated at delivery, so a URL issued on Monday under a valid licence stops working on Tuesday when the
+//! licence lapses. If the signature authorised, every URL ever issued would be an outstanding grant that
+//! nothing could withdraw — and the same mechanism is what 3.3's revocation-on-an-issued-URL depends on.
+//!
+//! One container; the cases are functions over a borrowed fixture.
+
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use chrono::{DateTime, Duration, TimeZone, Utc};
+use dam_api::delivery::{self, DeliveryState};
+use dam_core::Secret;
+use dam_core::rights_eval::Usage;
+use dam_core::signed_url::Keyring;
+use dam_db::{migrate, testing::PostgresHarness};
+use dam_store::{BlobStore, FakeS3Store, Key};
+use sqlx::PgPool;
+use std::sync::Arc;
+use tower::ServiceExt;
+use uuid::Uuid;
+
+fn now() -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(2026, 8, 18, 12, 0, 0).unwrap()
+}
+
+struct Fixture {
+    _pg: PostgresHarness,
+    pool: PgPool,
+    state: DeliveryState,
+    app: axum::Router,
+    tenant_id: Uuid,
+}
+
+async fn fixture() -> Fixture {
+    let pg = PostgresHarness::start().await.expect("start postgres");
+    let url = pg.url();
+    migrate::global(&url).await.expect("global");
+    migrate::tenant(&url, "t_acme").await.expect("tenant");
+    let pool = pg.pool_for_schema("t_acme").await.expect("pool");
+
+    let store: Arc<dyn BlobStore> = Arc::new(FakeS3Store::with_test_clock().0);
+    let keyring = Keyring::single("k1", Secret::new("a-signing-key".to_owned()));
+    let tenant_id = Uuid::from_u128(0xacc0);
+    // A fixed clock, so "expired" and "lapsed" mean the same thing to the test and the handler. With the
+    // handler reading the wall clock, a token minted one second before the fixture's `now()` was still in
+    // the *future* in real time, and the expiry case passed a 302 while claiming to test a 404.
+    let clock = Arc::new(dam_core::TestClock::new());
+    clock.set(now());
+    let state =
+        DeliveryState::new(pool.clone(), store, keyring, tenant_id).with_clock(clock.clone());
+    let app = delivery::router(state.clone());
+
+    Fixture {
+        _pg: pg,
+        pool,
+        state,
+        app,
+        tenant_id,
+    }
+}
+
+/// An asset with an original object and a `web-2048` derivative, both present in the store.
+async fn asset_with_bytes(f: &Fixture, label: &str) -> Uuid {
+    let id = Uuid::new_v4();
+    // A real BLAKE3 hex digest, because `Key::original` validates it — the key is *derived* from the hash
+    // rather than stored, which is what makes a delivery URL unable to name an object the hash does not
+    // account for.
+    let content_hash = blake3::hash(label.as_bytes()).to_hex().to_string();
+    sqlx::query(
+        "INSERT INTO assets (id, content_hash, filename, mime, bytes, version_group_id) \
+         VALUES ($1, $2, $3, 'image/jpeg', 10, $1)",
+    )
+    .bind(id)
+    .bind(&content_hash)
+    .bind(format!("{label}.jpg"))
+    .execute(&f.pool)
+    .await
+    .expect("asset");
+
+    let derivative = format!("acme/p/{label}-2048");
+    sqlx::query(
+        "INSERT INTO derivatives (id, asset_id, role, profile, op_hash, object_key, mime, bytes) \
+         VALUES (gen_random_uuid(), $1, 'proxy', 'web-2048', $2, $3, 'image/jpeg', 5)",
+    )
+    .bind(id)
+    .bind(format!("op-{label}"))
+    .bind(&derivative)
+    .execute(&f.pool)
+    .await
+    .expect("derivative");
+    id
+}
+
+/// Attaches a perpetual worldwide licence, optionally ending at `ends_at`.
+async fn licence(f: &Fixture, asset_id: Uuid, ends_at: Option<DateTime<Utc>>) {
+    let license_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO licenses (id, name, license_type, perpetual, ends_at) \
+         VALUES ($1, 'worldwide', 'royalty_free', $2, $3)",
+    )
+    .bind(license_id)
+    .bind(ends_at.is_none())
+    .bind(ends_at)
+    .execute(&f.pool)
+    .await
+    .expect("licence");
+    sqlx::query(
+        "INSERT INTO license_scopes (id, license_id, territories) \
+         VALUES (gen_random_uuid(), $1, '{WORLD}')",
+    )
+    .bind(license_id)
+    .execute(&f.pool)
+    .await
+    .expect("scope");
+    sqlx::query("INSERT INTO asset_licenses (asset_id, license_id) VALUES ($1, $2)")
+        .bind(asset_id)
+        .bind(license_id)
+        .execute(&f.pool)
+        .await
+        .expect("attach");
+}
+
+fn web() -> Usage {
+    Usage {
+        channel: "web".to_owned(),
+        territory: "WORLD".to_owned(),
+    }
+}
+
+async fn get(app: &axum::Router, token: &str) -> axum::http::Response<Body> {
+    app.clone()
+        .oneshot(
+            Request::get(format!("/d/{token}"))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("router")
+}
+
+// ─── the happy path ─────────────────────────────────────────────────────────
+
+async fn a_signed_url_for_a_licensed_asset_redirects_to_the_object(f: &Fixture) {
+    let id = asset_with_bytes(f, "allowed").await;
+    licence(f, id, None).await;
+
+    let token = delivery::issue(
+        &f.state,
+        id,
+        "web-2048",
+        &web(),
+        None,
+        Duration::minutes(10),
+        now(),
+    )
+    .await
+    .expect("issue");
+
+    let response = get(&f.app, &token).await;
+    assert_eq!(response.status(), StatusCode::FOUND);
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .expect("a Location header");
+    assert!(
+        location.contains("acme/p/allowed-2048"),
+        "the redirect must point at the derivative, got {location}"
+    );
+
+    // Never cached by a shared cache: the URL embeds a credential and the verdict behind it can change at
+    // any moment, so a proxy holding this redirect would serve access after it was withdrawn.
+    let cache = response
+        .headers()
+        .get("cache-control")
+        .and_then(|v| v.to_str().ok())
+        .expect("Cache-Control");
+    assert!(
+        cache.contains("no-store") && cache.contains("private"),
+        "got {cache}"
+    );
+}
+
+async fn the_transform_selects_which_object_is_served(f: &Fixture) {
+    // The transform is part of the signature and is resolved against `derivatives` rather than trusted as
+    // a path. A transform that reached the key builder directly would be a path-traversal parameter that
+    // *we had signed* — the signature would make it harder to notice, not safer.
+    let id = asset_with_bytes(f, "transforms").await;
+    licence(f, id, None).await;
+
+    let original_key = Key::original(f.tenant_id, &blake3::hash(b"transforms").to_hex())
+        .expect("a derived original key");
+    for (transform, expected) in [
+        ("original", original_key.as_str().to_owned()),
+        ("web-2048", "acme/p/transforms-2048".to_owned()),
+    ] {
+        let token = delivery::issue(
+            &f.state,
+            id,
+            transform,
+            &web(),
+            None,
+            Duration::minutes(10),
+            now(),
+        )
+        .await
+        .expect("issue");
+        let response = get(&f.app, &token).await;
+        assert_eq!(response.status(), StatusCode::FOUND, "{transform}");
+        let location = response
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok())
+            .expect("location");
+        assert!(
+            location.contains(&expected),
+            "{transform} gave {location}, expected it to name {expected}"
+        );
+    }
+}
+
+async fn an_unknown_transform_is_not_deliverable(f: &Fixture) {
+    // Signed by us, so the signature verifies — and there is no such derivative. It answers 404, the same
+    // as an unsigned token, so a caller cannot enumerate which profiles exist.
+    let id = asset_with_bytes(f, "no-such-profile").await;
+    licence(f, id, None).await;
+
+    let token = delivery::issue(
+        &f.state,
+        id,
+        "print-a3",
+        &web(),
+        None,
+        Duration::minutes(10),
+        now(),
+    )
+    .await
+    .expect("issue");
+    assert_eq!(get(&f.app, &token).await.status(), StatusCode::NOT_FOUND);
+}
+
+// ─── the D12 property ───────────────────────────────────────────────────────
+
+async fn a_valid_signature_over_an_unlicensed_asset_is_still_refused(f: &Fixture) {
+    // The heart of it. The signature is ours and unaltered; the asset has no licence. If the signature
+    // authorised, this would serve bytes.
+    let id = asset_with_bytes(f, "unlicensed").await;
+    // No licence attached.
+
+    // Issuing already refuses, which is the first half — a link that looks valid in an email and fails when
+    // clicked is worse than an error in front of the person who can fix it.
+    let refused = delivery::issue(
+        &f.state,
+        id,
+        "web-2048",
+        &web(),
+        None,
+        Duration::minutes(10),
+        now(),
+    )
+    .await;
+    assert!(refused.is_err(), "issuing must refuse an unlicensed asset");
+
+    // And a token minted directly — as one issued before the licence was removed would be — is refused at
+    // delivery. This is the half that matters.
+    let token = mint_directly(f, id, "web-2048", &web(), now() + Duration::minutes(10));
+    let response = get(&f.app, &token).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let body = body_json(response).await;
+    assert_eq!(body["error"], "rights_denied");
+    assert_eq!(body["rights_state"], "unknown");
+    assert_eq!(
+        body["reasons"][0], "no_license",
+        "a customer who cannot download their own asset needs to know why: {body}"
+    );
+}
+
+async fn a_licence_that_lapses_after_issue_stops_an_already_issued_url(f: &Fixture) {
+    // The property revocation depends on. The URL was valid when minted and the licence ends before it is
+    // used — nothing about the token changes, and it must stop working.
+    let id = asset_with_bytes(f, "lapsing").await;
+    licence(f, id, Some(now() + Duration::days(2))).await;
+
+    // Valid at issue.
+    let token = delivery::issue(
+        &f.state,
+        id,
+        "web-2048",
+        &web(),
+        None,
+        // Deliberately outliving the licence, which is exactly the case that must not work later.
+        Duration::hours(20),
+        now(),
+    )
+    .await
+    .expect("issue");
+    assert_eq!(get(&f.app, &token).await.status(), StatusCode::FOUND);
+
+    // Now expire the licence by moving it into the past, which is what a lapse looks like to the evaluator.
+    sqlx::query("UPDATE licenses SET ends_at = $1, perpetual = false")
+        .bind(now() - Duration::days(1))
+        .execute(&f.pool)
+        .await
+        .expect("lapse");
+    dam_db::rights::invalidate(&f.pool, id)
+        .await
+        .expect("invalidate");
+
+    let response = get(&f.app, &token).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "the same token, unchanged, must stop working once the licence has lapsed"
+    );
+    let body = body_json(response).await;
+    assert_eq!(body["rights_state"], "denied");
+}
+
+async fn a_legal_hold_stops_delivery_of_an_already_issued_url(f: &Fixture) {
+    // A legal hold arrives as an instruction to stop distributing *now*, so it has to bite on URLs already
+    // in circulation. This is the same mechanism as a lapse, reached a different way.
+    let id = asset_with_bytes(f, "held").await;
+    licence(f, id, None).await;
+    let token = delivery::issue(
+        &f.state,
+        id,
+        "web-2048",
+        &web(),
+        None,
+        Duration::hours(20),
+        now(),
+    )
+    .await
+    .expect("issue");
+    assert_eq!(get(&f.app, &token).await.status(), StatusCode::FOUND);
+
+    sqlx::query("UPDATE assets SET legal_hold = true WHERE id = $1")
+        .bind(id)
+        .execute(&f.pool)
+        .await
+        .expect("hold");
+    dam_db::rights::invalidate(&f.pool, id)
+        .await
+        .expect("invalidate");
+
+    let response = get(&f.app, &token).await;
+    assert_eq_forbidden(&response);
+    let body = body_json(response).await;
+    assert_eq!(body["reasons"][0], "legal_hold");
+}
+
+async fn the_channel_in_the_token_selects_which_licence_terms_apply(f: &Fixture) {
+    // Signed, so it cannot be edited — and it decides the answer. A licence scoped to editorial must not
+    // deliver an advertising request, and the only reason it cannot is that the channel is inside the
+    // signature.
+    let id = asset_with_bytes(f, "editorial-only").await;
+    let license_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO licenses (id, name, license_type, perpetual) \
+         VALUES ($1, 'editorial', 'editorial_only', true)",
+    )
+    .bind(license_id)
+    .execute(&f.pool)
+    .await
+    .expect("licence");
+    sqlx::query(
+        "INSERT INTO license_scopes (id, license_id, territories, channels) \
+         VALUES (gen_random_uuid(), $1, '{WORLD}', '{editorial}')",
+    )
+    .bind(license_id)
+    .execute(&f.pool)
+    .await
+    .expect("scope");
+    sqlx::query("INSERT INTO asset_licenses (asset_id, license_id) VALUES ($1, $2)")
+        .bind(id)
+        .bind(license_id)
+        .execute(&f.pool)
+        .await
+        .expect("attach");
+
+    let editorial = Usage {
+        channel: "editorial".to_owned(),
+        territory: "WORLD".to_owned(),
+    };
+    let allowed = delivery::issue(
+        &f.state,
+        id,
+        "web-2048",
+        &editorial,
+        None,
+        Duration::minutes(10),
+        now(),
+    )
+    .await
+    .expect("editorial is licensed");
+    assert_eq!(get(&f.app, &allowed).await.status(), StatusCode::FOUND);
+
+    // The advertising request is refused, and a token minted for it directly is refused at delivery too.
+    let advertising = Usage {
+        channel: "advertising".to_owned(),
+        territory: "WORLD".to_owned(),
+    };
+    assert!(
+        delivery::issue(
+            &f.state,
+            id,
+            "web-2048",
+            &advertising,
+            None,
+            Duration::minutes(10),
+            now()
+        )
+        .await
+        .is_err()
+    );
+    let forged_channel = mint_directly(
+        f,
+        id,
+        "web-2048",
+        &advertising,
+        now() + Duration::minutes(10),
+    );
+    assert_eq_forbidden(&get(&f.app, &forged_channel).await);
+}
+
+// ─── tokens that should get nowhere ─────────────────────────────────────────
+
+async fn an_expiring_licence_still_delivers(f: &Fixture) {
+    // `Expiring` is a warning with a deadline, not a refusal. A warning that blocks is a denial with extra
+    // steps, and people route around it — which is how a licence reaches its end date with nobody having
+    // renewed it. Made explicit rather than left incidental to another case.
+    let id = asset_with_bytes(f, "expiring").await;
+    licence(f, id, Some(now() + Duration::days(3))).await;
+
+    let verdict = dam_db::rights::effective(&f.pool, id, &web(), now())
+        .await
+        .expect("evaluate");
+    assert_eq!(
+        verdict,
+        dam_core::rights::RightsState::Expiring,
+        "three days out is inside the notice window, so the fixture must actually be expiring"
+    );
+
+    let token = delivery::issue(
+        &f.state,
+        id,
+        "web-2048",
+        &web(),
+        None,
+        Duration::minutes(10),
+        now(),
+    )
+    .await
+    .expect("an expiring licence must still issue");
+    assert_eq!(get(&f.app, &token).await.status(), StatusCode::FOUND);
+}
+
+async fn a_tampered_or_unsigned_token_is_a_flat_404(f: &Fixture) {
+    // Every signature failure answers identically. Distinguishing "bad signature" from "expired" tells a
+    // forger their attempt was otherwise accepted, and 404 rather than 403 avoids confirming the asset
+    // exists at all.
+    let id = asset_with_bytes(f, "tamper").await;
+    licence(f, id, None).await;
+    let good = delivery::issue(
+        &f.state,
+        id,
+        "web-2048",
+        &web(),
+        None,
+        Duration::minutes(10),
+        now(),
+    )
+    .await
+    .expect("issue");
+
+    let (payload, signature) = good.split_once('.').expect("two parts");
+    let candidates = vec![
+        ("empty", String::new()),
+        ("nonsense", "not-a-token".to_owned()),
+        ("payload only", payload.to_owned()),
+        ("signature only", signature.to_owned()),
+        ("swapped halves", format!("{signature}.{payload}")),
+        (
+            "truncated signature",
+            format!("{payload}.{}", &signature[..signature.len() - 4]),
+        ),
+    ];
+    for (name, token) in candidates {
+        let response = get(&f.app, &token).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "{name} must be a flat 404, got {}",
+            response.status()
+        );
+    }
+}
+
+async fn an_expired_token_is_refused_even_though_the_rights_are_fine(f: &Fixture) {
+    let id = asset_with_bytes(f, "expired-token").await;
+    licence(f, id, None).await;
+    let token = mint_directly(f, id, "web-2048", &web(), now() - Duration::seconds(1));
+    assert_eq!(get(&f.app, &token).await.status(), StatusCode::NOT_FOUND);
+}
+
+async fn a_deleted_asset_is_not_deliverable(f: &Fixture) {
+    // Soft-deleted, licence intact, token valid. The delete is the answer, and it is a 404 — a 403 would
+    // confirm the asset had existed.
+    let id = asset_with_bytes(f, "deleted").await;
+    licence(f, id, None).await;
+    let token = delivery::issue(
+        &f.state,
+        id,
+        "web-2048",
+        &web(),
+        None,
+        Duration::hours(1),
+        now(),
+    )
+    .await
+    .expect("issue");
+    assert_eq!(get(&f.app, &token).await.status(), StatusCode::FOUND);
+
+    sqlx::query("UPDATE assets SET deleted_at = now() WHERE id = $1")
+        .bind(id)
+        .execute(&f.pool)
+        .await
+        .expect("delete");
+    assert_eq!(get(&f.app, &token).await.status(), StatusCode::NOT_FOUND);
+}
+
+async fn a_token_ttl_is_clamped_rather_than_refused(f: &Fixture) {
+    // A caller asking for a year is asking for a share link. Answering with a 24-hour URL is more useful
+    // than an error about a constant they cannot see — and 3.3 is the supported way to publish a URL.
+    let id = asset_with_bytes(f, "clamped").await;
+    licence(f, id, None).await;
+    let token = delivery::issue(
+        &f.state,
+        id,
+        "web-2048",
+        &web(),
+        None,
+        Duration::days(365),
+        now(),
+    )
+    .await
+    .expect("issue");
+
+    let claim = dam_core::signed_url::verify(
+        &Keyring::single("k1", Secret::new("a-signing-key".to_owned())),
+        &token,
+        now(),
+    )
+    .expect("verifies");
+    assert_eq!(
+        claim.expires_at,
+        now() + delivery::MAX_TOKEN_TTL,
+        "a year must be clamped to the maximum, not honoured"
+    );
+}
+
+// ─── helpers ────────────────────────────────────────────────────────────────
+
+/// Signs a claim without going through `issue`, so a token can exist for a state `issue` would refuse.
+///
+/// That is the whole point of the D12 tests: the interesting case is a token that *was* legitimately issued
+/// and whose asset has since changed, and this is how that state is reached in a test.
+fn mint_directly(
+    f: &Fixture,
+    asset_id: Uuid,
+    transform: &str,
+    usage: &Usage,
+    expires_at: DateTime<Utc>,
+) -> String {
+    let _ = f;
+    dam_core::signed_url::sign(
+        &Keyring::single("k1", Secret::new("a-signing-key".to_owned())),
+        &dam_core::signed_url::DeliveryClaim {
+            asset_id,
+            transform: transform.to_owned(),
+            channel: usage.channel.clone(),
+            territory: usage.territory.clone(),
+            identity_id: None,
+            expires_at,
+            key_id: String::new(),
+        },
+    )
+    .expect("sign")
+}
+
+fn assert_eq_forbidden(response: &axum::http::Response<Body>) {
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+async fn body_json(response: axum::http::Response<Body>) -> serde_json::Value {
+    let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("body");
+    serde_json::from_slice(&bytes).expect("json")
+}
+
+#[tokio::test]
+async fn the_delivery_chokepoint_holds() {
+    let f = fixture().await;
+
+    a_signed_url_for_a_licensed_asset_redirects_to_the_object(&f).await;
+    the_transform_selects_which_object_is_served(&f).await;
+    an_unknown_transform_is_not_deliverable(&f).await;
+
+    a_valid_signature_over_an_unlicensed_asset_is_still_refused(&f).await;
+    the_channel_in_the_token_selects_which_licence_terms_apply(&f).await;
+    a_legal_hold_stops_delivery_of_an_already_issued_url(&f).await;
+
+    an_expiring_licence_still_delivers(&f).await;
+    a_tampered_or_unsigned_token_is_a_flat_404(&f).await;
+    an_expired_token_is_refused_even_though_the_rights_are_fine(&f).await;
+    a_deleted_asset_is_not_deliverable(&f).await;
+    a_token_ttl_is_clamped_rather_than_refused(&f).await;
+
+    // Last: it edits every licence row, so it must not run before the cases above.
+    a_licence_that_lapses_after_issue_stops_an_already_issued_url(&f).await;
+}

@@ -1859,6 +1859,7 @@ dependencies = [
  "axum",
  "axum-extra",
  "base64 0.22.1",
+ "blake3",
  "chrono",
  "dam-connect",
  "dam-core",

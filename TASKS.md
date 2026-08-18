@@ -783,8 +783,31 @@ shorthand search, the rights model (G4), and the eval harness (G8).
 Scope from §13: signed transform delivery, embeds, CDN, video + HLS, share links, restore flow with
 cost guards, notifications/Paths (G9), saved searches (G15).
 
-- [ ] **3.1 Signed transform URLs.** The one chokepoint every download passes through, so rights and
+- [x] **3.1 Signed transform URLs.** The one chokepoint every download passes through, so rights and
   ABAC are enforced by the delivery design rather than by a caller remembering (D12).
+  *Done:* `dam_core::signed_url` (17 pure cases) + `dam_api::delivery` (12 cases, one container).
+  *A signed URL is permission to **attempt**, not to receive.* The signature proves we issued this exact
+  request unaltered; rights are evaluated **at delivery**. That ordering is the whole design — a URL issued
+  Monday under a valid licence stops working Tuesday when it lapses, and 3.3's revocation-on-an-issued-URL
+  is the same mechanism. Mutation-verified: removing the delivery-time rights check serves bytes (302 where
+  403 belongs).
+  *The injectivity test took three attempts to be non-vacuous.* Both earlier versions passed while the
+  canonical form used `|` separators instead of length prefixes. The real collision needs the delimiter to
+  move a boundary between two **populated** fields — `transform="web|2048", channel="x"` and
+  `transform="web", channel="2048|x"` both render `web|2048|x|`. Under the mutation the two tokens are
+  **byte-identical**: one signature covering two claims, so anyone who can influence the transform forges
+  the channel — and the channel selects which licence terms apply.
+  *Other properties:* the signature is checked **before** the expiry, so a forged expired token reports a
+  bad signature rather than telling a forger their attempt was otherwise accepted; every signature failure
+  collapses to one flat **404**, which also avoids confirming the asset exists; the transform resolves
+  against `derivatives` rather than being trusted as a path (a signed path parameter would be traversal we
+  had *signed*); `Expiring` still delivers; the redirect is `private, no-store` with a 30-second presign,
+  since it hands out a credential the rights check can no longer supervise; and the original's key is
+  **derived** from `content_hash`, so a URL cannot name an object the asset's own hash does not account for.
+  *A bug the tests exposed in the tests:* the handler called `Utc::now()` while the fixture used a fixed
+  clock, so a token minted one second before the fixture's `now()` was still in the *future* in real time —
+  the expiry case asserted 404 and was handed a 302. The clock is injected now, which is what makes every
+  time-dependent property here actually testable.
 - [ ] **3.2 Derivative delivery + cache.** `op_hash` keyed, with the profile and intent in the key.
 - [ ] **3.3 Share links.** Passcode, expiry, download limits, revocation — and revocation that takes
   effect on an already-issued URL.

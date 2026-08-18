@@ -34,6 +34,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use dam_core::Clock;
 use dam_core::rights::RightsState;
 use dam_core::rights_eval::Usage;
 use dam_core::signed_url::{self, DeliveryClaim, Keyring};
@@ -64,14 +65,27 @@ pub struct DeliveryState {
     global: PgPool,
     store: Arc<dyn BlobStore>,
     keyring: Keyring,
-    tenant_prefix: String,
+    /// The tenant whose prefix originals live under.
+    ///
+    /// A `Uuid` rather than a rendered prefix string, because `Key::original` builds the path — a caller
+    /// passing a prefix would be one concatenation away from naming another tenant's.
+    tenant_id: Uuid,
+    /// Where "now" comes from.
+    ///
+    /// Injected rather than `Utc::now()` at the point of use, because every interesting property of this
+    /// handler is about time: a token expiring, a licence lapsing between issue and delivery. Reading the
+    /// wall clock inside the handler makes all of that untestable, and the tests that look like they cover
+    /// it silently do not — a fixed fake `now` in the test and a real one in the handler had an "expired"
+    /// token still in the future.
+    clock: Arc<dyn Clock>,
 }
 
 impl std::fmt::Debug for DeliveryState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Neither the pool nor the keyring: one carries a database password and the other the signing key.
         f.debug_struct("DeliveryState")
-            .field("tenant_prefix", &self.tenant_prefix)
+            .field("tenant_id", &self.tenant_id)
+            .field("clock", &self.clock)
             .finish_non_exhaustive()
     }
 }
@@ -81,14 +95,27 @@ impl DeliveryState {
         global: PgPool,
         store: Arc<dyn BlobStore>,
         keyring: Keyring,
-        tenant_prefix: impl Into<String>,
+        tenant_id: Uuid,
     ) -> Self {
         Self {
             global,
             store,
             keyring,
-            tenant_prefix: tenant_prefix.into(),
+            tenant_id,
+            clock: Arc::new(dam_core::SystemClock),
         }
+    }
+
+    /// Replaces the clock, for tests that need to move time.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// The current instant, from this state's clock.
+    pub fn now(&self) -> DateTime<Utc> {
+        self.clock.now()
     }
 }
 
@@ -192,7 +219,7 @@ async fn deliver(
     State(state): State<Arc<DeliveryState>>,
     Path(token): Path<String>,
 ) -> Result<Response, Refusal> {
-    let now = Utc::now();
+    let now = state.now();
 
     // Step 1. Establishes that we issued this request unaltered. Every failure mode collapses to one
     // answer — see `Refusal::NotDeliverable`.
@@ -279,8 +306,11 @@ async fn reason_codes(
 /// *harder* to notice, not safer.
 async fn object_key(state: &DeliveryState, claim: &DeliveryClaim) -> Result<Key, Refusal> {
     if claim.transform == "original" {
-        let key: Option<String> = sqlx::query_scalar(
-            "SELECT original_key FROM assets WHERE id = $1 AND deleted_at IS NULL",
+        // Derived from the content hash rather than read from a column. Assets are content-addressed (D1),
+        // so there is no stored path — and deriving it means a delivery URL cannot name an object the
+        // asset's own hash does not account for.
+        let content_hash: Option<String> = sqlx::query_scalar(
+            "SELECT content_hash FROM assets WHERE id = $1 AND deleted_at IS NULL",
         )
         .bind(claim.asset_id)
         .fetch_optional(&state.global)
@@ -288,9 +318,9 @@ async fn object_key(state: &DeliveryState, claim: &DeliveryClaim) -> Result<Key,
         .map_err(dam_db::Error::from)?;
         // A deleted asset is not deliverable, and it answers the same way an unsigned token does: the
         // caller learns nothing about whether it ever existed.
-        let key = key.ok_or(Refusal::NotDeliverable)?;
-        return Key::new(key).map_err(|error| {
-            tracing::error!(%error, "an asset's stored original_key is not a valid key");
+        let content_hash = content_hash.ok_or(Refusal::NotDeliverable)?;
+        return Key::original(state.tenant_id, &content_hash).map_err(|error| {
+            tracing::error!(%error, "an asset's content_hash does not form a valid key");
             Refusal::Internal
         });
     }
