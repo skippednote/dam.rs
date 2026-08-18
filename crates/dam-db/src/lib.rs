@@ -8,6 +8,7 @@
 
 pub mod access;
 pub mod auth;
+pub mod fields;
 pub mod jobs;
 pub mod migrate;
 pub mod provenance;

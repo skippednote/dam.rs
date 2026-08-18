@@ -17,6 +17,7 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 url = { workspace = true }
+regex = { workspace = true }
 figment = { workspace = true }
 
 [dev-dependencies]

@@ -571,9 +571,29 @@ Rules for autonomous runs:
 Scope from ARCHITECTURE §13: metadata schema engine, taxonomies, collections, Tantivy, faceted +
 shorthand search, the rights model (G4), and the eval harness (G8).
 
-- [ ] **2.1 Field definitions and validation.** `field_defs` → a validator that accepts or refuses a
+- [x] **2.1 Field definitions and validation.** `field_defs` → a validator that accepts or refuses a
   metadata payload. Every `kind` in the CHECK, `multivalued`, `required`, `read_only`. *Test first:* a
   `taxonomy_ref` field refuses a term from the wrong taxonomy.
+  *Done:* `dam_core::fields` (28 pure cases) + `dam_db::fields` (5 cases, one container). The named test
+  is mutation-verified: dropping the taxonomy comparison fails it.
+  *Four choices worth more than the type checking.* An **unknown key is refused, never ignored** —
+  ignoring returns 200 and silently discards data the user believes they saved, and they find out months
+  later. **Every rejection is collected**, because a twenty-field import that reports one problem per
+  attempt is twenty round trips. **`required` applies on create, not patch** — enforcing it on a patch
+  makes every single-field edit a read-modify-write with a lost-update race in it. And **`ai_writable`
+  restricts enrichment, not the field**: a person writes anywhere, an enrichment run only where the
+  tenant said so, or one pass overwrites a caption a person wrote.
+  *Refusals rather than coercions,* each because coercion hides a client bug: a bare scalar on a
+  multivalued field (`"red,blue"` would become one wrong value), `"true"` for a bool, a timestamp for a
+  `date` (which would acquire a timezone and move the day), a datetime with no offset (ambiguous by up
+  to 26 hours — an embargo lifting on the wrong day).
+  *Security:* a `url` field allowlists http/https. A `javascript:` or `data:` value in a field a UI
+  renders as a link is stored XSS, and a denylist is one scheme away from wrong. Patterns are **anchored**
+  (an unanchored `[A-Z]{3}` accepts `"oops ABC oops"`) and capped at 512 bytes, since a field definition
+  is tenant-controlled input reaching a regex compiler on every write.
+  *Lengths count characters, not bytes* — a 5-char limit rejecting `café` is a bug a European customer
+  finds on their first import. Taxonomy refs resolve in **one** query for the whole payload, not one per
+  term.
 - [ ] **2.2 Taxonomies.** `ltree` paths, move/merge/deprecate, and the rule that a deprecated term stays
   resolvable so old assets keep their meaning.
 - [ ] **2.3 Collections.** Membership, ordering, `pin_hot` interaction with the lifecycle engine.
