@@ -13,6 +13,7 @@
 pub mod clock;
 pub mod config;
 pub mod error;
+pub mod policy;
 pub mod rights;
 pub mod secret;
 pub mod storage;
