@@ -1085,3 +1085,25 @@ provenance and verifies against nothing. Reversible: no.
 Rejecting the upload would stop a customer ingesting their own archive if any of it was re-saved by a
 tool that broke the chain. Stripping is forbidden by D13. So the asset exists, the broken chain is
 visible in `provenance_manifests`, and derivatives carry no credential. Reversible: yes.
+
+**The access predicate renders into the query, never as a post-filter.** §7 gives the reason: pagination
+counts alone disclose the existence of assets a caller cannot see. The two are indistinguishable by row
+set and differ only in the count, so there is a test comparing `count(*)` with the rows and another
+paginating the filtered set. Reversible: no.
+
+**A predicate matching nothing renders as `(false)`, never as an omitted filter.** An omitted group
+clause is a full scan of the tenant's library and is one early `return` away. Mutation-checked: rendering
+`(true)` fails two tests. Reversible: no.
+
+**Group membership renders as `IN (SELECT …)` rather than a join.** A join returns an asset once per
+matching group, which inflates counts and breaks pagination — but only once somebody grants overlapping
+groups, so it would ship. Reversible: yes.
+
+**Release and expiry are deliberately absent from the visibility filter.** They gate distribution, not
+visibility, and adding them here is the obvious optimisation and the wrong one. A unit test asserts the
+rendered SQL mentions neither column. Reversible: no.
+
+**A granted group with a rule predicate is refused, not ignored.** Evaluating one needs the query IR
+(task 2.4). Ignoring it would grant less access than configured — fail-closed, but silently, so the
+first symptom is an asset that should have been visible and was not. Same discipline as the lifecycle
+engine's `only_superseded` halt. Reversible: yes, when 2.4 lands.

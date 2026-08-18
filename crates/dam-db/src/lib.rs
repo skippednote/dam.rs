@@ -6,6 +6,7 @@
     allow(clippy::expect_used, clippy::unwrap_used, clippy::result_large_err)
 )]
 
+pub mod access;
 pub mod jobs;
 pub mod migrate;
 pub mod provision;
@@ -45,6 +46,11 @@ pub enum Error {
     /// an upload that does not exist, so it must stop rather than retry.
     #[error("upload session `{0}` does not exist")]
     UploadGone(String),
+
+    /// A configuration the code cannot yet act on. Its own variant because the honest response is to
+    /// refuse rather than to approximate — see `access::check_groups_are_renderable`.
+    #[error("unsupported: {0}")]
+    Unsupported(String),
 
     /// A row contradicts itself — a part count that disagrees with the part list, a status
     /// outside the vocabulary. Its own variant because it is neither a query failure nor a

@@ -86,7 +86,28 @@ Rules for autonomous runs:
   window functions, so correctness rests on the UPDATE's own `state='queued'` predicate
   being re-evaluated under READ COMMITTED. See DECISIONS.md.
 
-- [ ] **0.10 ABAC predicate compiler.** ⛔ **STOPPED FOR REVIEW — see NEEDS-REVIEW.md.**
+- [x] **0.10 ABAC predicate compiler.** Pure policy layer + SQL rendering done — 24 pure cases and
+  12 against real Postgres. The five semantics are the delegated decisions in DECISIONS.md, each
+  asserted rather than described, because every one is a decision somebody will later assume went the
+  other way.
+  *Two functions, because visibility and usability are different questions:* `compile` answers "which
+  assets may this caller see", `evaluate` answers "may they do this to this asset, and if not, why".
+  Conflating them is what makes an expired asset vanish from search — and an asset that vanishes on
+  expiry is one nobody renews.
+  *The §7 leak is asserted, not assumed.* A post-filter returns the same rows as an in-query filter
+  and differs only in the count, so there is a test comparing `count(*)` against the row set, plus one
+  paginating the filtered set. It looks redundant; it is the whole point.
+  *Mutation-checked:* rendering `(true)` instead of `(false)` for an empty predicate fails 2 tests,
+  breaking the group clause fails 7, dropping the soft-delete filter fails 1.
+  *Refused rather than approximated:* a granted group carrying a rule `predicate` errors out, because
+  the language those are written in is the query IR (2.4). Ignoring it would grant *less* access than
+  configured — fail-closed but silently, so the first anyone would know is an asset that should have
+  been visible and was not.
+  *Surprises:* sqlx 0.9 dropped `QueryBuilder`'s lifetime parameter and returns `SqlStr` rather than
+  `String` from `into_sql`. And my parenthesisation test split on `"WHERE "` while the fragment
+  contains its own inner `WHERE` — it was asserting against a half-fragment.
+  *Remaining in 0.10:* the Tantivy rendering and the differential test asserting both back ends return
+  identical sets. That test cannot exist until the second back end does; it lands with 2.6.
   The mechanism is settled (one predicate, query-time, three consumers); the semantics
   are not. Five decisions determine whether an unapproved, unreleased or expired asset
   can be seen or fetched — role combination, release/expiry visibility, EULA scope,
