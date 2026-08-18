@@ -31,11 +31,21 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # mise supplies libvips and ffmpeg, pinned in .mise.toml. Without it the media
+      # suites fail here while passing locally, because vips lives under
+      # ~/.local/share/mise and a bare `cargo test` cannot see it. Installing the
+      # same pinned versions CI and laptop alike is the point — an apt libvips would
+      # be a different build with a different loader set, which is exactly what
+      # `the_loaders_this_build_provides_are_asserted_not_assumed` refuses to guess at.
+      - uses: jdx/mise-action@v2
+        with:
+          install: true
+          cache: true
       # No `services:` block. Every database and object-store test starts its own
       # container through testcontainers (D17), so the suites stay parallel and no
       # test depends on a shared fixture's state. Docker is present on the runner
       # by default, which is all testcontainers needs.
-      - run: cargo test --workspace --all-features
+      - run: mise exec -- cargo test --workspace --all-features
         env:
           # testcontainers is quiet by default; this surfaces image pulls and wait
           # strategies when a CI-only container failure needs diagnosing.

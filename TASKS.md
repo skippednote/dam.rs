@@ -306,10 +306,29 @@ Rules for autonomous runs:
     a second time. All eight values are handled, including the four mirrors.
   - Nothing is upscaled: the source is the ceiling. Mutation-checked (removing the clamp fails
     2 tests).
-  *Still to do:* page counts for paged formats, video/audio probing. **libvips needs a system
-  library** (`brew install vips`) — not a mise-installable runtime, so I have not installed it.
-  What is built is what ARCHITECTURE calls the fallback path: JPEG/PNG/WebP/TIFF/GIF/AVIF. RAW,
-  PSD, INDD and Office formats need the primary path.
+  *Part done:* the libvips path (`dam-media::vips`, 9 integration + 6 unit). vips 8.18.5 is now
+  installed via mise's conda backend — **not** Homebrew, which cannot link freetype on this machine
+  because a Codex runtime holds that path. `pdfload` gives page counts, which I had previously said
+  needed pdfium.
+  *The find that shaped the design:* **libvips marks 14 of its own loaders `untrusted`** —
+  `dcrawload`, `magickload`, `pdfload`, `svgload`, `openslideload`. The formats a DAM most needs are
+  the ones its maintainers flag as risky on hostile input, so libvips runs as a CLI inside the
+  sandbox rather than as an in-process binding: a malformed RAW then kills a bounded subprocess
+  instead of corrupting `damd`'s address space. There is a test asserting those loaders are *still*
+  marked untrusted, so the rationale stays checkable rather than becoming folklore.
+  *Surprise — my own sandbox broke tool discovery.* It clears the environment and sets `PATH` to the
+  system directories, so a mise-installed vips is not on the child's `PATH` at all. `Toolchain` now
+  resolves absolute paths in the parent before the environment is stripped, which is also the right
+  posture for a tool pointed at untrusted bytes: no `PATH` ambiguity about which decoder ran.
+  *And it broke CI, which I fixed before pushing anything:* CI ran a bare `cargo test`, so these
+  tests would have passed locally and failed there. CI now installs the same pinned tools through
+  `jdx/mise-action` — an apt libvips would be a different build with a different loader set, which is
+  precisely what the capability test refuses to guess at.
+  *Surprise:* my integration loop asserted a 1-page PDF reports `Some(1)` while the unit test next to
+  it asserted `None` — the two contradicted each other directly. `None` is right: a JPEG is not a
+  one-page document, and storing 1 for every photograph makes documents unfilterable.
+  *Still to do in 1.7:* vips-backed derivative rendering, so libvips is the *primary* path rather
+  than only the probe; ICC transforms at delivery (D11); and audio probing.
 - [x] **1.8 Master proxy.** Done — 15 media cases + 4 database cases, plus migration 0010.
   *The invariant is structural, not documentary.* An enrichment stage takes an
   `EnrichmentSource`, whose only alarm-free constructor **refuses any key outside the `p/`

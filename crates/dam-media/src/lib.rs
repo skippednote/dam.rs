@@ -13,5 +13,6 @@ pub mod probe;
 pub mod proxy;
 pub mod sandbox;
 pub mod sniff;
+pub mod vips;
 
 pub use sniff::{MediaClass, Sniffed};
