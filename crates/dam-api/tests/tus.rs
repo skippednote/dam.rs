@@ -658,6 +658,137 @@ async fn a_post_that_declares_nothing_at_all_is_refused(f: &Fixture) {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
+// ─── the presigned direct-to-S3 path ───────────────────────────────────────
+
+async fn a_presigned_put_is_issued_with_a_session_behind_it(f: &Fixture) {
+    // The point of this path: the bytes never traverse the API server. What makes it safe is the
+    // session recorded alongside the URL — finalisation compares the stored object against the declared
+    // length, and an object with no session behind it is one nothing will ever adopt.
+    let response = send(
+        &f.app,
+        Request::post("/uploads/presign")
+            .header(header::AUTHORIZATION, format!("Bearer {}", f.key))
+            .header("Tus-Resumable", TUS_VERSION)
+            .header("Upload-Length", "2048")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let body: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("body"),
+    )
+    .expect("json");
+
+    let upload_id = body["upload_id"].as_str().expect("an upload id");
+    assert!(
+        body["url"].as_str().is_some_and(|u| u.starts_with("http")),
+        "expected a URL, got {:?}",
+        body["url"]
+    );
+    assert_eq!(body["expires_in_seconds"].as_u64(), Some(900));
+
+    // The session exists and is resumable through the ordinary TUS surface, which is what "a session
+    // behind it" has to mean in practice.
+    let head = send(
+        &f.app,
+        Request::head(format!("/uploads/{upload_id}"))
+            .header(header::AUTHORIZATION, format!("Bearer {}", f.key))
+            .header("Tus-Resumable", TUS_VERSION)
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await;
+    assert_eq!(head.status(), StatusCode::OK);
+    assert_eq!(header_of(&head, "upload-length").as_deref(), Some("2048"));
+}
+
+async fn a_presigned_key_is_always_inside_the_callers_own_prefix(f: &Fixture) {
+    // The property that stops this endpoint being a signing oracle. The key comes from the caller's
+    // tenant id and a server-generated upload id; if a client could influence it, one customer could
+    // obtain a signed write into another's prefix — or anywhere in the bucket.
+    let mut keys = Vec::new();
+    for key_header in [&f.key, &f.other_key] {
+        let response = send(
+            &f.app,
+            Request::post("/uploads/presign")
+                .header(header::AUTHORIZATION, format!("Bearer {key_header}"))
+                .header("Tus-Resumable", TUS_VERSION)
+                .header("Upload-Length", "10")
+                // A hostile attempt to steer the key. Every one of these is ignored, not sanitised —
+                // there is no parameter for it to land in.
+                .header(
+                    "Upload-Metadata",
+                    "key ../../../etc/passwd,filename ZXZpbC5wbmc=",
+                )
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 64 * 1024)
+                .await
+                .expect("body"),
+        )
+        .expect("json");
+        let staging = body["staging_key"]
+            .as_str()
+            .expect("a staging key")
+            .to_owned();
+        assert!(
+            staging.contains("/staging/") && !staging.contains(".."),
+            "got {staging}"
+        );
+        keys.push(staging);
+    }
+
+    // Two tenants, two prefixes. Equal prefixes would mean the tenant id is not in the key at all.
+    let prefix_of = |k: &String| k.split('/').next().expect("a tenant prefix").to_owned();
+    assert_ne!(
+        prefix_of(&keys[0]),
+        prefix_of(&keys[1]),
+        "each tenant's staging keys must live under its own prefix"
+    );
+}
+
+async fn a_presign_without_a_declared_length_is_refused(f: &Fixture) {
+    // Unlike the TUS path, this one cannot defer. The server never sees the bytes, so the declared
+    // length is the *only* cross-check finalisation has — without it an object of any size is
+    // indistinguishable from the expected one.
+    let response = send(
+        &f.app,
+        Request::post("/uploads/presign")
+            .header(header::AUTHORIZATION, format!("Bearer {}", f.key))
+            .header("Tus-Resumable", TUS_VERSION)
+            .header("Upload-Defer-Length", "1")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+async fn a_read_only_key_cannot_obtain_a_presigned_url(f: &Fixture) {
+    // The gate that matters most on this endpoint: a presigned PUT is a write credential that outlives
+    // the request and travels outside this server's control, so handing one to a read-only key would be
+    // worse than letting it upload through the proxied path.
+    let response = send(
+        &f.app,
+        Request::post("/uploads/presign")
+            .header(header::AUTHORIZATION, format!("Bearer {}", f.read_only_key))
+            .header("Tus-Resumable", TUS_VERSION)
+            .header("Upload-Length", "10")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
 // ─── drivers ────────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -681,6 +812,15 @@ async fn the_offset_arithmetic_holds() {
     a_replayed_chunk_is_refused_rather_than_appended_twice(&f).await;
     a_chunk_over_the_memory_bound_is_refused(&f).await;
     terminating_an_upload_removes_it(&f).await;
+}
+
+#[tokio::test]
+async fn the_presigned_path_holds() {
+    let f = fixture().await;
+    a_presigned_put_is_issued_with_a_session_behind_it(&f).await;
+    a_presigned_key_is_always_inside_the_callers_own_prefix(&f).await;
+    a_presign_without_a_declared_length_is_refused(&f).await;
+    a_read_only_key_cannot_obtain_a_presigned_url(&f).await;
 }
 
 #[tokio::test]

@@ -49,6 +49,7 @@ use dam_db::{auth, uploads};
 use dam_store::{ResumableStore, resumable};
 use sqlx::PgPool;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// The only protocol version this server implements.
 ///
@@ -120,10 +121,18 @@ impl AppState {
     }
 }
 
+/// How long a presigned PUT stays valid.
+///
+/// Long enough for a large single-shot upload on a poor connection, short enough that a URL captured
+/// from a log or a browser history is useless by the time anyone reads it. The URL is a bearer
+/// credential for one write to one key, which is the whole reason it is not measured in hours.
+const PRESIGN_TTL: Duration = Duration::from_secs(15 * 60);
+
 /// The upload routes.
 pub fn router(state: AppState) -> axum::Router {
     axum::Router::new()
         .route("/uploads", post(create).options(options))
+        .route("/uploads/presign", post(presign))
         // `get(...)` carries the HEAD, because axum answers HEAD from a GET route by running the
         // handler and dropping the body — which would drop the offset with it. Registering HEAD
         // explicitly is the only way it reaches this handler with its headers intact.
@@ -224,6 +233,71 @@ async fn create(
         HeaderValue::from_str(&format!("/uploads/{upload_id}")).map_err(|_| Refusal::Internal)?,
     );
     Ok((StatusCode::CREATED, out).into_response())
+}
+
+/// Issues a presigned `PUT` for a direct-to-S3 upload.
+///
+/// The alternative to TUS, and the right one for a 3 MB photograph: the bytes go straight to the bucket
+/// and never traverse this process, which is the difference between a stateless API server and one
+/// sized for its customers' bandwidth.
+///
+/// What it costs is the validation that a proxied upload gets for free. A presigned PUT hands out a URL
+/// and steps out of the way, so the server sees neither the bytes nor their length — the client can
+/// upload anything, of any size, whatever it declared here. That is why `dam_media::ingest` re-sniffs
+/// and re-measures the object after the fact, and why this endpoint records a session rather than
+/// trusting the response: the session's declared length is the cross-check that finalisation compares
+/// against, and a key with no session behind it is an object nothing will ever adopt.
+async fn presign(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Response, Refusal> {
+    let caller = authorize(&state, &headers, Action::Manage).await?;
+
+    // Required here, unlike on the TUS path: `Upload-Defer-Length` has no meaning for a single PUT, and
+    // without a declared length finalisation has nothing to compare the stored object against.
+    let declared: u64 = header_str(&headers, "upload-length")
+        .ok_or(Refusal::BadRequest)?
+        .parse()
+        .map_err(|_| Refusal::BadRequest)?;
+    if declared > state.max_upload {
+        return Err(Refusal::TooLarge);
+    }
+
+    let metadata = Metadata::parse(header_str(&headers, "upload-metadata").unwrap_or_default());
+    let upload_id = uuid::Uuid::new_v4().simple().to_string();
+
+    // The key is derived from the tenant and an id this server generated. A client-supplied key would
+    // make this endpoint a signing oracle for any path in the bucket, including another tenant's.
+    let key = dam_store::Key::staging(caller.tenant_id, &upload_id)?;
+    let url = state.store.presign_put(&key, PRESIGN_TTL).await?;
+
+    let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
+    uploads::create(
+        conn.executor(),
+        caller.tenant_id,
+        &upload_id,
+        Some(declared),
+        metadata.filename.as_deref(),
+        metadata.mime.as_deref(),
+        caller.identity_id,
+    )
+    .await?;
+    conn.commit().await?;
+
+    Ok((
+        StatusCode::CREATED,
+        [(header::LOCATION, format!("/uploads/{upload_id}"))],
+        axum::Json(serde_json::json!({
+            "upload_id": upload_id,
+            "url": url,
+            "expires_in_seconds": PRESIGN_TTL.as_secs(),
+            // Echoed so a client does not have to reconstruct it, and named `staging` so nobody mistakes
+            // it for the asset's final content key — the promotion to that key happens server-side after
+            // the digest is known.
+            "staging_key": key.as_str(),
+        })),
+    )
+        .into_response())
 }
 
 async fn head_upload(

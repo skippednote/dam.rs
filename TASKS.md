@@ -178,8 +178,25 @@ Rules for autonomous runs:
   *Deferred to 1.6:* a streaming upload cannot know its key before it has read the bytes,
   so the large-file path needs a staging key promoted by a server-side copy. `hash_reader`
   and `StreamHasher` are the pieces; the promotion belongs with TUS.
-- [ ] **1.6 Upload.** TUS resumable + presigned direct-to-S3. Magic-byte sniffing
+- [x] **1.6 Upload.** TUS resumable + presigned direct-to-S3. Magic-byte sniffing
   via `infer` — never trust client `Content-Type`.
+  *Done:* the HTTP surface — OPTIONS/POST/HEAD/PATCH/DELETE plus `POST /uploads/presign` — over the
+  1.5 engine, 23 cases in 4 drivers.
+  *Two things writing it down exposed.* The 404-for-another-tenant claim was not yet true:
+  `uploads::load` filtered on `upload_id` alone and relied on `search_path`, then post-checked
+  `tenant_id` and returned `Inconsistent`, which renders as a **500** — a status that varies with the
+  input is the disclosure the rule exists to remove. A `tenant_id` predicate fixes it; the post-check
+  stays as a tripwire. Mutation-verified: with `search_path` isolation neutralised the cross-tenant
+  test still passes, and with the predicate also gone it fails with exactly that 500. And a NUL byte
+  in an upload id reached Postgres, which rejects NUL in text — same 500-instead-of-404. The id rule
+  is now one public `dam_store::validate_upload_id` applied at the edge *and* in `Key::staging`.
+  *`grants_for` is now executor-generic*, like `uploads`: an unqualified `FROM roles` resolves through
+  the request transaction's `search_path`, so a pool would have read the wrong schema and found no
+  grants — fails closed, looks like a permissions bug.
+  *Cost note:* a container per case put 19 Postgres instances in one suite, taking the run from 12 s
+  to 231 s and then breaking it on connection timeouts. Cases are now plain functions over a borrowed
+  fixture with 4 drivers (5 s). A shared pool is not available — each `#[tokio::test]` builds its own
+  runtime and a pool hangs when used from another.
   *Part done:* staging-key promotion (the piece 1.5 deferred). A streamed upload lands at
   `<tenant>/staging/<upload_id>` and is promoted to its content key by a **server-side**
   copy once the digest is known, so the bytes never cross the client twice. `copy` is now a
