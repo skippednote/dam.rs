@@ -911,8 +911,32 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   makes everything need approval before anyone configured anything, which teaches people to disable it.
   *Needs a table:* per-tenant budgets. The threshold lives in code today and `spent_this_month` is computed
   per tenant schema, but the limits themselves are not yet configurable.
-- [ ] **3.5 Video and HLS.** ffmpeg in the subprocess sandbox, loudness normalisation, the 720p H.264
+- [x] **3.5 Video and HLS.** ffmpeg in the subprocess sandbox, loudness normalisation, the 720p H.264
   master proxy §2 specifies.
+  *Done:* `dam_media::video` — 12 integration cases against real ffmpeg plus 7 unit, whole suite 1.2 s.
+  Fixtures are **generated** by `testsrc`/`sine`: a binary video fixture is one nobody can review, and a
+  two-second 320×240 clip proves the same properties as a two-minute 4K one.
+  *A real bug the tests found.* I mapped ffmpeg's `-inf` (silence) to a sentinel and fed it back to
+  `loudnorm`, which asks the filter to lift silence to −16 LUFS. The resulting gain emits samples the AAC
+  encoder rejects — `Input contains (near) NaN/+-Inf`, then `Conversion failed!`. So "handle silence
+  gracefully" was **producing a corrupt audio stream**. Silence is now detected and normalisation skipped,
+  and that is not a preference a caller can override. The track survives: a silent track is still a track.
+  *Limits are derived from duration, and both directions matter.* The probe default's 120 s wall clock kills
+  any real transcode; a budget sized for a three-hour film lets a **hung** ffmpeg on a ten-second clip hold a
+  worker for hours. Budget is 4× the media's own duration, floored at 60 s and capped at 6 h. There is
+  deliberately **no CPU cap** — `ulimit -t` bounds exactly what a transcode is supposed to spend, so the wall
+  clock is the bound that separates slow from stuck.
+  *Loudness needs two passes.* Single-pass `loudnorm` is **dynamic**: it adapts as it goes, pumping quiet
+  passages and leaving the volume moving *inside* each clip — the opposite of what normalising is for. The
+  test measures the **output** to confirm the offsets were applied.
+  *Other things that would be quietly wrong:* `min(ih,720)` never upscales (a plain `scale=-2:720` blows a
+  240p clip up to look worse and cost more); `-2` keeps the width even, which 4:2:0 requires as a hard error;
+  `-an` for a video with no sound, since a silent AAC track is bytes kept hot forever and makes "has audio"
+  answer yes; the measurement is read from **stderr**, because ffmpeg writes filter output there and a
+  stdout reader concludes every file is silent; `+faststart` is verified by **byte offset** (`moov` before
+  `mdat`), which a parse-check cannot see and which is the commonest reason a valid MP4 "does not play"; and
+  HLS segments are read from the **playlist**, not a directory glob, since a glob sorts lexically and stops
+  working past 99,999 segments.
 - [ ] **3.6 Notifications and Paths (G9).** `paths`, `path_firings`, and delivery that is idempotent
   under retry.
 - [ ] **3.7 Saved searches (G15).** Stored query IR, re-evaluated against current access rather than the

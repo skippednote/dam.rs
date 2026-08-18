@@ -162,13 +162,39 @@ pub async fn probe_with_limits(
     }
 }
 
-/// Runs ffmpeg. For generating test fixtures and, later, derivatives.
+/// Runs ffmpeg with the default limits. For generating test fixtures and short operations.
+///
+/// **Not for transcoding.** The default wall clock is 120 seconds and there is a CPU cap, both of which are
+/// right for a probe and fatal for real media — see `video::limits_for`.
 pub async fn run_ffmpeg(tools: &AvToolchain, args: &[&str]) -> Result<()> {
-    let outcome = Sandbox::new(Limits::default())?
+    run_ffmpeg_with_limits(tools, args, Limits::default()).await
+}
+
+/// Runs ffmpeg under explicit limits, discarding its output.
+pub async fn run_ffmpeg_with_limits(
+    tools: &AvToolchain,
+    args: &[&str],
+    limits: Limits,
+) -> Result<()> {
+    run_ffmpeg_capturing(tools, args, limits).await.map(|_| ())
+}
+
+/// Runs ffmpeg under explicit limits and returns its **stderr**.
+///
+/// stderr, not stdout, and that is not an oversight: ffmpeg writes its banner, stream information, progress
+/// and — critically — filter output like `loudnorm`'s measurement there. stdout is reserved for media, which
+/// is why `-f null -` writes nothing to it. A caller reading stdout for a measurement gets an empty string
+/// and concludes the file has no audio.
+pub async fn run_ffmpeg_capturing(
+    tools: &AvToolchain,
+    args: &[&str],
+    limits: Limits,
+) -> Result<String> {
+    let outcome = Sandbox::new(limits)?
         .run(&tools.ffmpeg.to_string_lossy(), args)
         .await?;
     match &outcome {
-        Outcome::Ok { .. } => Ok(()),
+        Outcome::Ok { stderr, .. } => Ok(String::from_utf8_lossy(stderr).into_owned()),
         Outcome::Failed { stderr, .. } => Err(Error::Rejected {
             path: args.join(" "),
             detail: String::from_utf8_lossy(stderr).trim().to_owned(),

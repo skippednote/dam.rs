@@ -16,6 +16,7 @@ pub mod provenance;
 pub mod proxy;
 pub mod sandbox;
 pub mod sniff;
+pub mod video;
 pub mod vips;
 
 pub use sniff::{MediaClass, Sniffed};
