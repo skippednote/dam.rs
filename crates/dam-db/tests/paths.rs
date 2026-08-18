@@ -556,7 +556,7 @@ async fn claiming_and_marking_moves_a_firing_through_its_states(pool: &PgPool) {
         other => panic!("expected a recording, got {other:?}"),
     };
 
-    let claimed = paths::claim_queued(pool, 100).await.expect("claim");
+    let claimed = paths::due_for_delivery(pool, 100).await.expect("claim");
     assert!(claimed.iter().any(|f| f.id == firing.id));
 
     assert!(paths::mark_sent(pool, firing.id).await.expect("sent"));
@@ -565,11 +565,51 @@ async fn claiming_and_marking_moves_a_firing_through_its_states(pool: &PgPool) {
         "marking twice must be idempotent"
     );
 
-    let claimed_again = paths::claim_queued(pool, 100).await.expect("claim");
+    let claimed_again = paths::due_for_delivery(pool, 100).await.expect("claim");
     assert!(
         claimed_again.iter().all(|f| f.id != firing.id),
-        "a sent firing must not be claimed again"
+        "a sent firing must not be listed again"
     );
+}
+
+async fn two_readers_both_see_a_queued_firing_and_that_is_the_contract(pool: &PgPool) {
+    // Stated rather than assumed, because the function used to be called `claim_queued` and carried
+    // `FOR UPDATE SKIP LOCKED` — which does nothing on a pool, since the statement is its own transaction and
+    // the locks release when it returns. A mutation deleting the clause changed no behaviour, which is how the
+    // false reassurance was found.
+    //
+    // Two workers polling at the same time therefore both get the same firing. That is the accepted design —
+    // an in-progress state would need a crash-recovery sweep — and it is why delivery must be idempotent at
+    // the *provider*, keyed on `digest_key`. A worker author who assumed exclusivity would send every
+    // notification once per worker.
+    let path = create_path(pool, "shared-read", "restore_ready", None, None, None).await;
+    let id = asset(pool, "shared-read").await;
+    let firing = match paths::fire(
+        pool,
+        &path,
+        Some(id),
+        &Subject::Event { id: Uuid::new_v4() },
+        1,
+        now(),
+    )
+    .await
+    .expect("fire")
+    {
+        FireOutcome::Recorded(f) => f,
+        other => panic!("expected a recording, got {other:?}"),
+    };
+
+    let first = paths::due_for_delivery(pool, 100).await.expect("read");
+    let second = paths::due_for_delivery(pool, 100).await.expect("read");
+    assert!(
+        first.iter().any(|f| f.id == firing.id) && second.iter().any(|f| f.id == firing.id),
+        "both reads see it: nothing here claims, and pretending otherwise is the trap"
+    );
+
+    // Recording the result is what removes it, and `mark_sent` only counts the first transition — so a second
+    // worker that delivers the same firing cannot double-count it as sent.
+    assert!(paths::mark_sent(pool, firing.id).await.expect("sent"));
+    assert!(!paths::mark_sent(pool, firing.id).await.expect("sent"));
 }
 
 async fn a_failed_delivery_keeps_its_row_so_the_key_stays_claimed(pool: &PgPool) {
@@ -685,6 +725,7 @@ async fn the_path_invariants_hold() {
 
     claiming_and_marking_moves_a_firing_through_its_states(&pool).await;
     a_failed_delivery_keeps_its_row_so_the_key_stays_claimed(&pool).await;
+    two_readers_both_see_a_queued_firing_and_that_is_the_contract(&pool).await;
 
     only_enabled_paths_are_loaded_and_escalation_order_is_widest_first(&pool).await;
     a_digest_window_is_read_back_as_a_duration(&pool).await;

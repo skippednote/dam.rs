@@ -159,6 +159,64 @@ fn the_same_key_always_hashes_the_same_and_a_different_one_does_not() {
 // ─── authentication ─────────────────────────────────────────────────────────
 
 #[tokio::test]
+async fn only_an_active_tenant_authenticates() {
+    // Suspension is the one thing suspension is for. The query used to join `tenants` and check nothing about
+    // it, so a tenant suspended for non-payment or abuse kept every one of its API keys working — and nothing
+    // asserted otherwise, which a surviving mutation proved: turning the join into a `LEFT JOIN` broke no test.
+    //
+    // Every non-active status is refused, and each for its own reason: `provisioning` may have no schema yet,
+    // `deprovisioning` is being torn down, and `migration_failed` is at an unknown schema version where every
+    // later query fails from inside a handler.
+    let (_pg, global, _tenant, tenant_id) = setup().await;
+    let identity_id = identity(&global, "suspended@example.com").await;
+    let key = issue(&global, tenant_id, identity_id, &[], None).await;
+
+    assert!(
+        auth::authenticate(&global, &key)
+            .await
+            .expect("query")
+            .is_some(),
+        "the premise: this key works while the tenant is active"
+    );
+
+    for status in [
+        "suspended",
+        "provisioning",
+        "deprovisioning",
+        "migration_failed",
+    ] {
+        sqlx::query("UPDATE dam_global.tenants SET status = $2 WHERE id = $1")
+            .bind(tenant_id)
+            .bind(status)
+            .execute(&global)
+            .await
+            .expect("set status");
+
+        assert!(
+            auth::authenticate(&global, &key)
+                .await
+                .expect("query")
+                .is_none(),
+            "a key on a {status} tenant must not authenticate"
+        );
+    }
+
+    // And it comes back when the tenant does: suspension is reversible, so it must not need the key reissued.
+    sqlx::query("UPDATE dam_global.tenants SET status = 'active' WHERE id = $1")
+        .bind(tenant_id)
+        .execute(&global)
+        .await
+        .expect("reactivate");
+    assert!(
+        auth::authenticate(&global, &key)
+            .await
+            .expect("query")
+            .is_some(),
+        "reactivating a tenant must restore its keys rather than requiring new ones"
+    );
+}
+
+#[tokio::test]
 async fn a_valid_key_authenticates_to_its_tenant_and_identity() {
     let (_pg, global, _tenant, tenant_id) = setup().await;
     let who = identity(&global, "alice@example.com").await;

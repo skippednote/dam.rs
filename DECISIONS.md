@@ -1480,3 +1480,47 @@ endpoints that mint preview tokens. Reversible: yes; it goes away when 3.x puts 
 **`RUST_LOG` named the project rather than the crates.** `damrs=debug` matched no crate, so every binary logged
 nothing while looking configured — the worker started, ran jobs and reported none of it. Now
 `damd=info,dam_worker=info,dam_api=info,dam_pipeline=info,dam_db=info,sqlx=warn`. Reversible: yes.
+
+**A key only authenticates while its tenant is `active`.** The query joined `dam_global.tenants` and checked
+nothing about it, so the join proved the row existed and nothing more — a tenant `suspended` for non-payment or
+abuse kept every one of its API keys working, which is the one thing suspension is for. `provisioning` is
+refused because the schema may not exist yet, `deprovisioning` because it is being torn down, and
+`migration_failed` because its schema is at an unknown version and every later query would fail from inside a
+handler. `damd` already filtered on `active` when resolving its delivery tenant; authentication now agrees with
+it. The refusal is indistinguishable from an unknown key, per the module's existing posture: the place to
+explain a suspension is the billing page, not an API that has just refused a credential. Found by a surviving
+mutation — turning the join into a `LEFT JOIN` broke no test, which meant nothing asserted the tenant side at
+all. Reversible: no.
+
+**`paths::claim_queued` is now `due_for_delivery`, because it never claimed anything.** It carried
+`FOR UPDATE SKIP LOCKED` and a comment saying that let several workers drain without overlapping. The statement
+runs on a pool, so it is its own transaction and the row locks release the instant it returns — `SKIP LOCKED`
+protects nothing between two *calls*, only within a transaction a caller holds open. Deleting the clause changed
+no behaviour, which is how it was found. The accepted design is unchanged (rows stay `queued`; an in-progress
+state would need a crash-recovery sweep; the provider idempotency key covers the duplicate), but the name and
+the clause promised exclusivity the code cannot give — and the notification worker does not exist yet, so a
+future author would have inherited the assumption and sent every notification once per worker. Reversible: yes,
+and the alternative is a real lease like `jobs::claim`.
+
+**A caller with no identity owns no saved search.** The ownership test was
+`owner_id IS NOT DISTINCT FROM $1`, so a caller with no identity matched every *ownerless* search while an
+identified caller matched none of them. Neither half is a coherent rule and it was nobody's decision — it reads
+as NULL-handling politeness. Plain `=` gives the only coherent reading: an identity-less caller owns nothing, and
+an ownerless search is reachable only by being shared. Narrowing rather than widening, which is the safe
+direction for an access predicate, and consistent with `caller::authorize` already refusing an identity-less
+caller outright. Reversible: yes.
+
+**Deleting the staging object last is defensive, not load-bearing — and the comment said otherwise.** What makes
+a crash between the promotion and the asset insert recoverable is `upload_sessions.content_hash`, written the
+moment the promotion succeeds. A mutation that unstages before the commit survives the suite for exactly that
+reason. The ordering costs nothing and still helps for a failure landing before the digest is recorded, so it
+stays — but an overclaiming comment is itself a defect, because it tells the next reader a property is enforced
+when nothing enforces it. Reversible: n/a, it is a comment.
+
+**Four untested security properties, each now pinned by a test:** an *expired* share must stop the delivery URLs
+it already issued (revocation and exhaustion were covered; expiry, the commonest of the three, was not);
+`consume_download` has its own copy of the expiry condition — deliberately, because the decrement must be atomic
+with the check — and a duplicated condition needs its own test; a restore plan costing exactly the approval
+threshold does not need approval, which is the reading that makes a threshold of 0 mean "approve everything";
+and re-indexing an asset must leave one document, since Tantivy has no update and a missing delete-by-term puts
+the same asset in every search result twice.

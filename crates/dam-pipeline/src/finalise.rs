@@ -15,11 +15,16 @@
 //!
 //! ## The order is: assemble, promote, record, then unstage
 //!
-//! Each step is safe to repeat and none of them destroys the previous one's output until the next is
-//! durable. Specifically the staging object is deleted **last**, after the asset row exists: doing it
-//! earlier would mean a crash between the copy and the insert leaves bytes under a content-addressed key
-//! with nothing pointing at them, which is an orphan the scrub has to reason about. Deleting last means a
-//! crash leaves the staging object instead — and that has a reaper.
+//! Each step is safe to repeat and none of them destroys the previous one's output until the next is durable.
+//! The staging object is deleted last, after the asset row exists.
+//!
+//! That ordering is **defensive rather than load-bearing**, and saying so is the point. What actually makes a
+//! crash between the promotion and the insert recoverable is `upload_sessions.content_hash`, written the moment
+//! the promotion succeeds: a re-run reads it, skips the promotion and records the asset, whether or not staging
+//! survived. A mutation that unstages *before* the commit survives the test suite for exactly that reason — and
+//! an earlier version of this comment claimed the ordering was what prevented an orphan. It is not; the digest
+//! column is. The ordering costs nothing and still helps for a failure that lands before the digest is
+//! recorded, so it stays.
 //!
 //! ## The type comes from the bytes, never from the client
 //!

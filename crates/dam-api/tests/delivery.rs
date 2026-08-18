@@ -654,6 +654,70 @@ async fn an_exhausted_share_stops_its_issued_urls_too(f: &Fixture) {
     );
 }
 
+async fn an_expired_share_stops_its_issued_urls_too(f: &Fixture) {
+    // The third way a share ends, and the one nothing asserted. Revocation and exhaustion were both covered;
+    // expiry was not — and it is the commonest of the three, because an expiry date is what somebody sets when
+    // they send a link to a client for a campaign. A mutation that made `is_live` ignore `expires_at` passed the
+    // whole suite.
+    //
+    // The property is 3.3's: a share mints delivery URLs valid for their own TTL, so without re-checking the
+    // share at delivery, an expiry date would mean "expires, and then keeps working for up to a day".
+    let id = asset_with_bytes(f, "share-expiring").await;
+    licence(f, id, None).await;
+
+    let share = dam_db::shares::create(
+        &f.pool,
+        &dam_db::shares::ShareSpec {
+            kind: "asset",
+            target_id: Some(id),
+            search_query: None,
+            passcode: None,
+            // Live now, expired in an hour — so the URL below is legitimately issued and then goes stale.
+            expires_at: Some(now() + Duration::hours(1)),
+            max_downloads: None,
+            allow_original: false,
+            requires_eula: false,
+            created_by: None,
+        },
+    )
+    .await
+    .expect("create a share");
+
+    let token = delivery::issue_for_share(
+        &f.state,
+        id,
+        "web-2048",
+        &web(),
+        None,
+        Some(share.id),
+        Duration::hours(12),
+        now(),
+    )
+    .await
+    .expect("issue through a live share");
+
+    assert_eq!(
+        get(&f.app, &token).await.status(),
+        StatusCode::FOUND,
+        "the premise: the URL works while the share is live"
+    );
+
+    // The share expires. The *token* has not — it was minted for twelve hours — so anything that stops it now
+    // has to be the share check rather than the token's own expiry.
+    sqlx::query("UPDATE share_links SET expires_at = $2 WHERE id = $1")
+        .bind(share.id)
+        .bind(now() - Duration::minutes(1))
+        .execute(&f.pool)
+        .await
+        .expect("expire the share");
+
+    assert_eq!(
+        get(&f.app, &token).await.status(),
+        StatusCode::NOT_FOUND,
+        "an expired share must stop the URLs it already issued, not merely stop issuing new ones"
+    );
+}
+
 async fn a_url_with_no_share_is_unaffected_by_share_state(f: &Fixture) {
     // The share check must be scoped to tokens that carry one. A URL issued to a logged-in user has no share
     // link, and must not be refused because some unrelated share was revoked.
@@ -1049,6 +1113,7 @@ async fn the_delivery_chokepoint_holds() {
     an_expiring_licence_still_delivers(&f).await;
     revoking_a_share_stops_a_url_it_already_issued(&f).await;
     an_exhausted_share_stops_its_issued_urls_too(&f).await;
+    an_expired_share_stops_its_issued_urls_too(&f).await;
     a_url_with_no_share_is_unaffected_by_share_state(&f).await;
     a_tampered_or_unsigned_token_is_a_flat_404(&f).await;
     an_expired_token_is_refused_even_though_the_rights_are_fine(&f).await;

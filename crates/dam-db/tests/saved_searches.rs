@@ -420,6 +420,49 @@ async fn a_private_search_is_visible_only_to_its_owner(pool: &PgPool) {
     );
 }
 
+async fn a_caller_with_no_identity_owns_nothing(pool: &PgPool) {
+    // `owner_id` is nullable with no defined meaning for NULL, and the ownership test used
+    // `IS NOT DISTINCT FROM` — so a caller with no identity matched every ownerless search while an identified
+    // caller matched none of them. Neither half is a coherent rule, and it was nobody's decision. A mutation
+    // swapping the operator for plain `=` changed no test, which is how it surfaced.
+    //
+    // The rule now: an identity-less caller owns nothing, and an ownerless search is reachable only by being
+    // shared. Narrowing, which is the safe direction for an access predicate.
+    let query = Query::All;
+    let ownerless_private = saved_searches::save(pool, &spec("ownerless private", &query, None))
+        .await
+        .expect("save");
+    let ownerless_shared = saved_searches::save(
+        pool,
+        &SaveSpec {
+            shared: true,
+            ..spec("ownerless shared", &query, None)
+        },
+    )
+    .await
+    .expect("save");
+
+    let anonymous = saved_searches::visible_to(pool, None, &[], 100)
+        .await
+        .expect("visible");
+    assert!(
+        anonymous.iter().all(|s| s.id != ownerless_private.id),
+        "a caller with no identity must not own an ownerless search"
+    );
+    assert!(
+        anonymous.iter().any(|s| s.id == ownerless_shared.id),
+        "but a shared one is reachable, because that is what shared means"
+    );
+
+    // And an identified caller sees the shared one for the same reason, rather than being excluded from
+    // ownerless searches as the old operator did.
+    let somebody = saved_searches::visible_to(pool, Some(Uuid::new_v4()), &[], 100)
+        .await
+        .expect("visible");
+    assert!(somebody.iter().any(|s| s.id == ownerless_shared.id));
+    assert!(somebody.iter().all(|s| s.id != ownerless_private.id));
+}
+
 async fn a_shared_search_with_no_roles_reaches_the_whole_tenant(pool: &PgPool) {
     // What `shared` alone means. `shared_with_roles` narrows it, and an empty list is the unnarrowed case rather
     // than "shared with nobody" — which would make the flag do nothing.
@@ -637,6 +680,7 @@ async fn the_saved_search_invariants_hold() {
     an_unreadable_stored_query_is_refused_rather_than_matching_everything(&pool).await;
 
     a_private_search_is_visible_only_to_its_owner(&pool).await;
+    a_caller_with_no_identity_owns_nothing(&pool).await;
     a_shared_search_with_no_roles_reaches_the_whole_tenant(&pool).await;
     a_role_scoped_share_reaches_only_those_roles(&pool).await;
     visibility_does_not_imply_the_savers_results(&pool).await;

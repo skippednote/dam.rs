@@ -266,6 +266,57 @@ fn a_large_restore_needs_approval_rather_than_being_refused() {
 }
 
 #[test]
+fn a_plan_exactly_at_the_approval_threshold_does_not_need_approval() {
+    // The boundary, pinned because it is a one-cent decision that reads either way and nothing asserted it: a
+    // mutation turning `>` into `>=` passed the whole suite.
+    //
+    // The chosen reading is that a threshold of N cents means "more than N needs approval". A plan costing
+    // exactly N is *at* the limit rather than over it, which is how a spending limit is normally described —
+    // and it is the reading that makes a threshold of 0 mean "everything needs approval" rather than
+    // "everything except free restores", which is the useful sense of zero.
+    let cost = plan_with(&glacier(100), RestoreTier::Expedited, &permissive())
+        .expect("plan")
+        .est_cost_cents;
+    assert!(
+        cost > 1,
+        "the premise: this restore costs something to threshold against"
+    );
+
+    let exactly = Budget {
+        approval_threshold_cents: Some(cost),
+        ..permissive()
+    };
+    let at = plan_with(&glacier(100), RestoreTier::Expedited, &exactly).expect("plan");
+    assert_eq!(at.est_cost_cents, cost);
+    assert!(
+        !at.needs_approval,
+        "a plan costing exactly the threshold is at the limit, not over it"
+    );
+
+    let one_less = Budget {
+        approval_threshold_cents: Some(cost - 1),
+        ..permissive()
+    };
+    assert!(
+        plan_with(&glacier(100), RestoreTier::Expedited, &one_less)
+            .expect("plan")
+            .needs_approval,
+        "and one cent over does need approval, or the threshold means nothing"
+    );
+
+    // Zero is the "approve everything" setting, which only works under the `>` reading.
+    let everything = Budget {
+        approval_threshold_cents: Some(0),
+        ..permissive()
+    };
+    assert!(
+        plan_with(&glacier(100), RestoreTier::Expedited, &everything)
+            .expect("plan")
+            .needs_approval
+    );
+}
+
+#[test]
 fn the_default_budget_asks_for_approval_but_does_not_block() {
     // A default of "no budget at all" makes the guardrail opt-in, and the failure mode of an opt-in cost
     // control is a surprise invoice. A default of zero would make everything need approval before anyone had

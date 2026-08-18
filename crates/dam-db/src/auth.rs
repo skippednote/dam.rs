@@ -126,9 +126,11 @@ pub struct Authenticated {
 
 /// Authenticates a presented key.
 ///
-/// `Ok(None)` covers every reason a key does not work — unknown, revoked, expired, or belonging to a
-/// deleted tenant. They are deliberately indistinguishable to the caller: telling a prober which of their
-/// guesses had the right *shape* hands them the cheap half of the search.
+/// `Ok(None)` covers every reason a key does not work — unknown, revoked, expired, or belonging to a tenant
+/// that is not active. They are deliberately indistinguishable to the caller: telling a prober which of their
+/// guesses had the right *shape* hands them the cheap half of the search. A suspended tenant's user gets the
+/// same answer as somebody guessing keys, which is correct — the place to explain a suspension is the billing
+/// page, not an API that has just refused a credential.
 pub async fn authenticate(
     global: &PgPool,
     presented: &str,
@@ -141,6 +143,20 @@ pub async fn authenticate(
     // authenticate, and relying on the foreign key's cascade to have run is the wrong place to be
     // trusting. Expiry and revocation are in the WHERE clause for the same reason — a caller that had to
     // remember to check them is a caller that will forget.
+    //
+    // **And the tenant must be `active`, not merely present.** The join alone proved existence, so a
+    // `suspended` tenant's keys kept working — suspending a tenant for non-payment or abuse did not cut off
+    // its API access, which is the one thing suspension is for. `provisioning` is refused because the
+    // schema may not exist yet, `deprovisioning` because it is being torn down, and `migration_failed`
+    // because its schema is at an unknown version and every later query would fail with "relation does not
+    // exist" from inside a handler. `damd` already filtered on `active` when resolving its delivery tenant;
+    // this makes authentication agree with it.
+    //
+    // Found by a surviving mutation: turning the join into a `LEFT JOIN` broke nothing, which meant nothing
+    // asserted the tenant side at all. That mutation still survives and is now *equivalent* rather than
+    // undetected — with a left join `t.status` is NULL for a missing tenant, and `NULL = 'active'` is not
+    // true, so the row is excluded either way. The status check subsumes the join's protection; the inner
+    // join stays because it says what is meant.
     let row = sqlx::query_as::<
         _,
         (
@@ -156,6 +172,7 @@ pub async fn authenticate(
          FROM dam_global.api_keys k \
          JOIN dam_global.tenants t ON t.id = k.tenant_id \
          WHERE k.key_hash = $1 \
+           AND t.status = 'active' \
            AND k.revoked_at IS NULL \
            AND (k.expires_at IS NULL OR k.expires_at > now())",
     )

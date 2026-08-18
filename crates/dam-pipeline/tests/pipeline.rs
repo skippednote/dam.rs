@@ -642,6 +642,76 @@ async fn a_file_no_renderer_can_read_is_not_a_failure(f: &Fixture) {
     assert_eq!(count, 0);
 }
 
+async fn indexing_twice_leaves_one_document(f: &Fixture, context: &dam_pipeline::worker::Context) {
+    // Tantivy has no update, so a re-index that did not delete the asset's previous document would leave two —
+    // the same asset returned twice in search results, and every facet count it contributes to doubled. The
+    // delete-by-term is what prevents that, and nothing asserted it: a mutation removing it passed the suite.
+    //
+    // Re-indexing is ordinary rather than exceptional: the `index` job's dedupe key only holds while it is
+    // queued, so every metadata edit legitimately queues another one.
+    let bytes = jpeg(120, 90);
+    stage(f, "reindex001", "twice-indexed.jpg", &bytes).await;
+    let finalised = dam_pipeline::finalise::upload(
+        &f.global,
+        f.store.as_ref(),
+        &f.slug,
+        f.tenant_id,
+        "reindex001",
+    )
+    .await
+    .expect("finalise");
+
+    let job = |id| {
+        dam_db::jobs::JobSpec::new(f.tenant_id, dam_pipeline::worker::kind::INDEX)
+            .payload(serde_json::json!({ "asset_id": id }))
+    };
+
+    for _ in 0..2 {
+        let id = dam_db::jobs::enqueue(&f.global, job(finalised.asset_id))
+            .await
+            .expect("enqueue");
+        let claimed = dam_db::jobs::claim(
+            &f.global,
+            "reindex-worker",
+            dam_db::jobs::ClaimOptions::default(),
+        )
+        .await
+        .expect("claim");
+        let this = claimed
+            .iter()
+            .find(|c| c.id == id)
+            .expect("the index job just enqueued");
+        dam_pipeline::worker::handle(context, this)
+            .await
+            .expect("index");
+        dam_db::jobs::complete(&f.global, id)
+            .await
+            .expect("complete");
+    }
+
+    let schema = dam_search::IndexSchema::new(dam_db::fields::load(&f.tenant).await.expect("defs"));
+    let open = context
+        .indexes
+        .get(&f.slug, &schema)
+        .await
+        .expect("open the index");
+    open.reload().expect("reload");
+    let found = open
+        .searcher()
+        .search(
+            &tantivy::query::TermQuery::new(
+                tantivy::Term::from_field_text(schema.asset_id(), &finalised.asset_id.to_string()),
+                tantivy::schema::IndexRecordOption::Basic,
+            ),
+            &tantivy::collector::Count,
+        )
+        .expect("search");
+    assert_eq!(
+        found, 1,
+        "two index runs must leave one document, or the asset appears twice in every search"
+    );
+}
+
 // ─── drivers ────────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -780,6 +850,8 @@ async fn the_whole_chain_runs_through_the_worker() {
         )
         .expect("search");
     assert_eq!(found, 1, "the asset is in the tenant's index");
+
+    indexing_twice_leaves_one_document(&f, &context).await;
 
     // An unknown kind is permanent rather than retried: it means version skew, and retrying will not teach
     // this binary a job it does not know.

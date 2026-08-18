@@ -190,6 +190,16 @@ pub async fn record_count(
 ///
 /// A search shared with **no** roles is shared with everyone in the tenant. That is what `shared` alone means,
 /// and `shared_with_roles` narrows it.
+///
+/// **A viewer with no identity owns nothing.** `owner_id` is nullable with no defined meaning for NULL, and the
+/// ownership test used `IS NOT DISTINCT FROM` — so a caller with no identity matched every ownerless search and
+/// an identified caller matched none of them. That is not a coherent rule in either direction, and it was
+/// nobody's decision: it reads as NULL-handling politeness. Plain `=` gives the only coherent reading — an
+/// identity-less caller owns nothing, and an ownerless search is visible only if it is shared.
+///
+/// Narrowing rather than widening, which is the safe direction for an access predicate, and consistent with
+/// `dam_api::caller::authorize` already refusing an identity-less caller outright. Found by a surviving
+/// mutation: swapping the operator changed no test.
 pub async fn visible_to(
     pool: &sqlx::PgPool,
     viewer: Option<Uuid>,
@@ -200,7 +210,7 @@ pub async fn visible_to(
         "SELECT id, owner_id, name, query, is_smart_collection, shared, shared_with_roles, \
                 notify_path_id, result_count, counted_at, last_used_at \
          FROM saved_searches \
-         WHERE (owner_id IS NOT DISTINCT FROM $1) \
+         WHERE (owner_id = $1) \
             OR (shared AND (cardinality(shared_with_roles) = 0 OR shared_with_roles && $2)) \
          ORDER BY last_used_at DESC NULLS LAST, name LIMIT $3",
     )

@@ -113,6 +113,60 @@ async fn an_expired_share_is_refused_and_says_so(pool: &PgPool) {
     );
 }
 
+async fn an_expired_share_cannot_have_a_download_consumed(pool: &PgPool) {
+    // `resolve` refusing an expired share is covered above; `consume_download` is a *different* query with its
+    // own copy of the expiry condition, and nothing asserted it. A mutation inverting the comparison there
+    // passed the whole suite — which would mean an expired share still spending downloads while a live one
+    // could not.
+    //
+    // It has its own copy deliberately: the decrement has to be atomic with the check, or two concurrent
+    // downloads both pass a separate check and both succeed on the last one. So the condition is duplicated,
+    // and a duplicated condition needs its own test.
+    let live = shares::create(
+        pool,
+        &ShareSpec {
+            expires_at: Some(now() + Duration::hours(1)),
+            max_downloads: Some(3),
+            ..spec()
+        },
+    )
+    .await
+    .expect("create");
+    assert_eq!(
+        shares::consume_download(pool, live.id, now())
+            .await
+            .expect("a live share spends a download"),
+        1
+    );
+
+    let expired = shares::create(
+        pool,
+        &ShareSpec {
+            expires_at: Some(now() - Duration::seconds(1)),
+            max_downloads: Some(3),
+            ..spec()
+        },
+    )
+    .await
+    .expect("create");
+    assert_eq!(
+        shares::consume_download(pool, expired.id, now())
+            .await
+            .unwrap_err(),
+        ShareRefusal::Exhausted,
+        "an expired share must not spend a download, however many it has left"
+    );
+
+    // And the counter did not move, because the refusal is the UPDATE matching nothing rather than a check
+    // before it.
+    let spent: i32 = sqlx::query_scalar("SELECT download_count FROM share_links WHERE id = $1")
+        .bind(expired.id)
+        .fetch_one(pool)
+        .await
+        .expect("count");
+    assert_eq!(spent, 0);
+}
+
 async fn a_revoked_share_is_refused_before_expiry_is_even_considered(pool: &PgPool) {
     // Revocation is the most absolute reason, and the one a recipient most needs stated plainly. A share that
     // is both revoked and expired should say revoked.
@@ -385,6 +439,7 @@ async fn the_share_link_invariants_hold() {
 
     an_expired_share_is_refused_and_says_so(&pool).await;
     a_revoked_share_is_refused_before_expiry_is_even_considered(&pool).await;
+    an_expired_share_cannot_have_a_download_consumed(&pool).await;
     revoking_twice_reports_only_the_first(&pool).await;
     a_download_limit_is_enforced_and_reported(&pool).await;
     concurrent_downloads_cannot_both_take_the_last_slot(&pool).await;

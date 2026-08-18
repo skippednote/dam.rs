@@ -218,15 +218,26 @@ pub async fn by_key(
     Ok(row.map(into_firing))
 }
 
-/// Claims queued firings for delivery.
+/// The queued firings due for delivery, oldest first.
 ///
-/// `SKIP LOCKED` so several workers can drain without blocking. The rows stay `queued` until a delivery result
-/// is recorded — deliberately: moving them to an in-progress state would need a crash-recovery sweep to move
-/// them back, and the provider idempotency key already covers the duplicate that a retry causes.
-pub async fn claim_queued(pool: &sqlx::PgPool, limit: i64) -> Result<Vec<Firing>, Error> {
+/// **This does not claim exclusively, and the name used to say otherwise.** Rows stay `queued` until a delivery
+/// result is recorded, which is deliberate — an in-progress state would need a crash-recovery sweep to move
+/// abandoned rows back, and the provider idempotency key already covers the duplicate a retry causes. The
+/// consequence is that two workers polling at the same time both get the same firings.
+///
+/// It carried `FOR UPDATE SKIP LOCKED` and a comment claiming that let several workers drain without
+/// overlapping. That was wrong in a way worth recording: the statement runs on a pool, so it is its own
+/// transaction, and the row locks are released the instant it returns. `SKIP LOCKED` protects nothing between
+/// two *calls* — only within one transaction a caller holds open. Found by a surviving mutation: deleting the
+/// clause changed no behaviour at all, because it never had any.
+///
+/// So the clause is gone rather than left as false reassurance, and the duplicate is stated. When the
+/// notification worker is written it must be idempotent per `(path_id, digest_key)` at the *provider*, which is
+/// what `digest_key` exists for — not assume this function handed it exclusive work.
+pub async fn due_for_delivery(pool: &sqlx::PgPool, limit: i64) -> Result<Vec<Firing>, Error> {
     let rows = sqlx::query_as::<_, FiringRow>(
         "SELECT id, path_id, asset_id, digest_key, state, fired_at FROM path_firings \
-         WHERE state = 'queued' ORDER BY fired_at LIMIT $1 FOR UPDATE SKIP LOCKED",
+         WHERE state = 'queued' ORDER BY fired_at LIMIT $1",
     )
     .bind(limit)
     .fetch_all(pool)

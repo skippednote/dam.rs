@@ -1072,6 +1072,41 @@ derivative and nothing finalises an upload into an asset. An upload lands in sta
 browser says so rather than leaving the user to wonder. That is 0.9's remainder and the first thing M4
 needs, since every M4 deliverable is a job.
 
+## H — A mutation-testing sweep
+
+Asked for as "fix all the bugs". The technique that has actually found defects in this build is mutation
+testing — roughly fifteen tests in earlier milestones passed for the wrong reason — so the sweep applied it to
+the modules that had never had it, prioritising the ones where being wrong is a security problem.
+
+*The harness itself had a bug worth recording:* the first version checked for compile errors before test
+failures, and `cargo` prints `error: test failed` for a genuine failure — so it reported every **caught**
+mutation as "did not compile". Four real catches read as noise. The order matters, and shell escaping of SQL
+fragments silently produced "text not found" for half the mutations until the harness moved to Python.
+
+- [x] **H.1 One live security bug: a suspended tenant's API keys still worked.** `authenticate` joined
+  `dam_global.tenants` and checked nothing about it, so the join proved the row existed and nothing more.
+  Suspension for non-payment or abuse did not cut off API access. Now `status = 'active'` only, with each other
+  status refused for its own reason. Found because a `LEFT JOIN` mutation broke no test — nothing asserted the
+  tenant side at all.
+- [x] **H.2 A function that promised exclusivity it could not give.** `paths::claim_queued` carried
+  `FOR UPDATE SKIP LOCKED` on a pool — its own transaction, locks released on return — so it claimed nothing
+  between calls. Renamed `due_for_delivery`, clause removed, contract stated, and a case pins that two readers
+  both see the same firing. No consumer exists yet, so this was a trap set for whoever writes the notification
+  worker rather than a live fault.
+- [x] **H.3 An access predicate nobody decided.** Saved-search ownership used `IS NOT DISTINCT FROM`, so a
+  caller with no identity owned every ownerless search and an identified caller owned none of them. Narrowed to
+  plain equality — the fail-closed direction.
+- [x] **H.4 Four untested security properties, now pinned.** An expired share must stop already-issued delivery
+  URLs; `consume_download`'s duplicated expiry condition needs its own test; a restore at exactly the approval
+  threshold does not need approval; re-indexing must leave one document.
+- [x] **H.5 A comment that overclaimed.** Finalisation's "deleted last, so a crash cannot orphan an object" is
+  defensive rather than load-bearing — the digest column is what makes that crash recoverable. Corrected rather
+  than left, because a comment claiming an enforced property is a defect in its own right.
+
+*Clean under mutation:* `access.rs` (all four §7 leak mutations caught), `query_sql.rs`'s jsonb equality forms,
+`auth.rs` after H.1, `shares.rs` after H.4, the restore cost guard, and the whole new pipeline — twelve
+mutations, one survivor, now closed.
+
 ## M3 — Delivery, sharing, restore
 
 Scope from §13: signed transform delivery, embeds, CDN, video + HLS, share links, restore flow with
