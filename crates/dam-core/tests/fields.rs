@@ -31,6 +31,7 @@ fn def(key: &str, kind: FieldKind) -> FieldDef {
         required: false,
         read_only: false,
         ai_writable: false,
+        facetable: false,
         constraints: Constraints::default(),
     }
 }

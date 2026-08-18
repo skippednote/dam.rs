@@ -183,6 +183,12 @@ pub struct FieldDef {
     pub read_only: bool,
     /// Whether enrichment may write here. See the module docs.
     pub ai_writable: bool,
+    /// Whether this field may be faceted on.
+    ///
+    /// An administrator's decision, not a capability. Faceting a free-text field produces one bucket per
+    /// distinct value — a million buckets on a million-asset library — so the flag is both governance and
+    /// a resource guard, and a facet request naming a field without it is refused.
+    pub facetable: bool,
     pub constraints: Constraints,
 }
 

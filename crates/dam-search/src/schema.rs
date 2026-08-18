@@ -160,6 +160,7 @@ mod tests {
             required: false,
             read_only: false,
             ai_writable: false,
+            facetable: false,
             constraints: Constraints::default(),
         }
     }

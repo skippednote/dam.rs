@@ -706,7 +706,24 @@ shorthand search, the rights model (G4), and the eval harness (G8).
   authority. Logged as Search 1, and 2.7's facet counts inherit the same staleness.
   *Clauses the index cannot answer are refused, not dropped* — taxonomy, collections, substring. Dropping a
   filter clause returns *more* than asked, and the extra rows look like ordinary results.
-- [ ] **2.7 Faceted search.** Fast fields, counts that respect the access predicate.
+- [x] **2.7 Faceted search.** Fast fields, counts that respect the access predicate.
+  *Done:* `dam_db::facets`, 13 cases in one container. `field_defs.facetable` now reaches `FieldDef`.
+  *Counts are computed in SQL, not the index, and that discharges Search 1's caveat.* A result list can be
+  re-filtered on hydration, so a stale index only costs an extra id. **A facet count cannot be
+  re-filtered — it *is* the disclosure.** `brand: Acme (5)` shown to someone who may see three tells them
+  two exist that they cannot, which is exactly §7's "pagination counts alone disclose". A facet rail is a
+  pagination count with better presentation. If profiling later says this is too slow, the fix is fresh
+  group membership in the index, not counts from a stale one.
+  *A value with no visible assets produces **no bucket**, not a zero one.* A zero bucket discloses that the
+  value exists, and for a `client` or `campaign` facet that existence is usually the sensitive part —
+  the count is beside the point. Buckets come from the filtered set, never from enumerating a field's
+  values.
+  *Two `DISTINCT`s that each fix a visible bug,* both mutation-verified: without the first, an array
+  repeating a value counts it twice; without the second, an asset tagged with two leaves under one ancestor
+  makes the rollup read `outdoor (3)` over a library of two.
+  *Governance:* only `facetable` fields, and geo is refused even when marked — a coordinate has no discrete
+  values, so it would produce one bucket per asset. Truncation is **reported**, because a rail that
+  silently truncates makes "no other brands" and "ninety other brands" look identical.
 - [ ] **2.8 Rights model (G4).** Licences, scopes, releases, and the distribution chokepoint that D12
   requires — enforced, not recorded.
 - [ ] **2.9 Search eval harness (G8).** `relevance_judgements` → nDCG/MRR over a fixture corpus, wired

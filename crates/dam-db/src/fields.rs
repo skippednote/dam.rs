@@ -31,10 +31,12 @@ where
             bool,
             bool,
             bool,
+            bool,
             serde_json::Value,
         ),
     >(
-        "SELECT key, kind, taxonomy_id, multivalued, required, read_only, ai_writable, validation \
+        "SELECT key, kind, taxonomy_id, multivalued, required, read_only, ai_writable, facetable, \
+                validation \
          FROM field_defs ORDER BY display_order, key",
     )
     .fetch_all(executor)
@@ -50,6 +52,7 @@ where
                 required,
                 read_only,
                 ai_writable,
+                facetable,
                 validation,
             )| {
                 Ok(FieldDef {
@@ -60,6 +63,7 @@ where
                     required,
                     read_only,
                     ai_writable,
+                    facetable,
                     constraints: Constraints::from_json(&validation),
                 })
             },

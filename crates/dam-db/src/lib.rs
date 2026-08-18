@@ -9,6 +9,7 @@
 pub mod access;
 pub mod auth;
 pub mod collections;
+pub mod facets;
 pub mod fields;
 pub mod jobs;
 pub mod migrate;

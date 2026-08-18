@@ -24,6 +24,7 @@ fn def(key: &str, kind: FieldKind, alias: Option<&str>) -> FieldDef {
         required: false,
         read_only: false,
         ai_writable: false,
+        facetable: false,
         constraints: Constraints::default(),
     };
     if kind == FieldKind::TaxonomyRef {
