@@ -234,6 +234,32 @@ where
     Ok(rows.into_iter().collect())
 }
 
+/// Which of `op_hashes` one asset already has.
+///
+/// The single-asset counterpart to [`which_have`]. The detail endpoint wants two recipes for one row, and
+/// asking per recipe is two round trips for information one `= ANY` answers.
+pub async fn which_of<'e, E>(
+    executor: E,
+    asset_id: Uuid,
+    op_hashes: &[&str],
+) -> Result<std::collections::HashSet<String>, Error>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    if op_hashes.is_empty() {
+        return Ok(std::collections::HashSet::new());
+    }
+    let wanted: Vec<String> = op_hashes.iter().map(|h| (*h).to_owned()).collect();
+    let rows: Vec<String> = sqlx::query_scalar(
+        "SELECT op_hash FROM derivatives WHERE asset_id = $1 AND op_hash = ANY($2)",
+    )
+    .bind(asset_id)
+    .bind(wanted)
+    .fetch_all(executor)
+    .await?;
+    Ok(rows.into_iter().collect())
+}
+
 /// The asset's current master proxy, if it has one.
 pub async fn current_proxy<'e, E>(executor: E, asset_id: Uuid) -> Result<Option<Derivative>, Error>
 where

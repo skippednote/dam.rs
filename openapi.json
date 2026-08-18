@@ -418,6 +418,13 @@
                 ],
                 "format": "int32"
               },
+              "preview_url": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "A signed internal-preview URL for the `preview-1024` rendition, when one has been rendered.\n\nOn the detail endpoint only. A list of sixty of these would mint sixty tokens for images no grid draws —\nthe grid uses the thumbnail — and a lightbox opens one asset at a time.\n\n`Contain`-fitted rather than cropped, which is what makes it the right image for somebody inspecting an\nasset: the thumbnail is a 256px square crop, so enlarging it is a blurry crop of the wrong aspect."
+              },
               "release_at": {
                 "type": [
                   "string",

@@ -12,10 +12,10 @@
 	// Explicit per state rather than interpolated: Tailwind cannot see a class name built at runtime,
 	// so `bg-{token}` would be purged from the build and every badge would render unstyled.
 	const TONE: Record<RightsState, string> = {
-		allowed: 'bg-state-rights-allowed/12 text-state-rights-allowed-fg',
-		expiring: 'bg-state-rights-expiring/12 text-state-rights-expiring-fg',
-		denied: 'bg-state-rights-denied/12 text-state-rights-denied-fg',
-		unknown: 'bg-state-rights-unknown/12 text-state-rights-unknown-fg'
+		allowed: 'bg-state-rights-allowed/18 text-state-rights-allowed-fg',
+		expiring: 'bg-state-rights-expiring/18 text-state-rights-expiring-fg',
+		denied: 'bg-state-rights-denied/18 text-state-rights-denied-fg',
+		unknown: 'bg-state-rights-unknown/18 text-state-rights-unknown-fg'
 	};
 </script>
 

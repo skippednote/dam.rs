@@ -18,7 +18,7 @@
 
 	<!-- Proves runes are compiled and reactive, which is what D9 chose Svelte for. -->
 	<button
-		class="mt-6 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white"
+		class="mt-6 rounded-md bg-accent px-3 py-2 text-sm font-medium text-accent-fg"
 		onclick={() => (uploads += 1)}
 	>
 		Queued uploads: {uploads}

@@ -65,7 +65,7 @@
 				<label class="flex cursor-pointer items-center gap-2 py-0.5 text-sm">
 					<input
 						type="checkbox"
-						class="rounded border-state-neutral text-accent focus:ring-accent"
+						class="rounded border-line text-accent focus:ring-accent"
 						{checked}
 						onchange={() => onquery(toggleTerm(query, term))}
 					/>

@@ -207,7 +207,8 @@ async function connect(page: Page): Promise<Recorder> {
 					expires_at: null,
 					version_no: 1,
 					created_at: '2026-08-01T09:00:00Z',
-					updated_at: '2026-08-01T09:00:00Z'
+					updated_at: '2026-08-01T09:00:00Z',
+					preview_url: 'http://127.0.0.1:8099/d/preview-token'
 				}
 			});
 		}
@@ -558,4 +559,98 @@ test('the detail panel shows the thumbnail too', async ({ page }) => {
 
 	const panel = page.getByRole('complementary', { name: 'Selected asset' });
 	await expect(panel.locator('img')).toHaveJSProperty('naturalWidth', 1);
+});
+
+test('the lightbox opens on activate, is a real modal, and steps with the arrow keys', async ({
+	page
+}) => {
+	// `<dialog showModal()>` rather than a div: the focus trap, the inert background and Escape all come from
+	// the platform, and the trap is the one hand-rolled modals reliably get wrong — a keyboard user tabs
+	// straight out of a div "modal" and operates a UI they cannot see.
+	await connect(page);
+	await page.goto('/assets');
+
+	// Enter on the focused cell is the activate gesture; a click only selects.
+	await page.getByRole('gridcell').first().click();
+	await expect(page.getByRole('dialog')).toHaveCount(0, {});
+	await page.keyboard.press('Enter');
+
+	const dialog = page.getByRole('dialog');
+	await expect(dialog).toBeVisible();
+	// Named, or a screen reader announces "dialog" with no indication of what opened.
+	await expect(dialog).toHaveAccessibleName(/Preview of campaign-0000\.jpg/);
+	// The preview, not the thumbnail: `Contain`-fitted, so nothing is cropped out of an image being inspected.
+	await expect(dialog.locator('img')).toHaveAttribute(
+		'src',
+		'http://127.0.0.1:8099/d/preview-token'
+	);
+	// And it carries its filename as alt text, unlike the grid — here the image *is* the content.
+	await expect(dialog.locator('img')).toHaveAttribute('alt', 'campaign-0000.jpg');
+
+	// Modal means the background is inert. `showModal` is what provides that; the `open` attribute does not.
+	await expect(page.locator('dialog[open]')).toHaveCount(1);
+
+	await page.keyboard.press('ArrowRight');
+	await expect(dialog).toHaveAccessibleName(/campaign-0000\.jpg/);
+
+	await page.keyboard.press('Escape');
+	await expect(page.getByRole('dialog')).toHaveCount(0);
+});
+
+test('the lightbox says why there is no preview rather than showing an empty frame', async ({
+	page
+}) => {
+	// Between an upload finishing and the worker rendering, and for formats that never get an image rendition,
+	// there is no preview. An empty frame reads as a broken image.
+	const recorder = await connect(page);
+	await page.route('**/127.0.0.1:8099/assets/*', async (route) => {
+		if (route.request().url().includes('/metadata')) return route.fallback();
+		recorder.urls.push(route.request().url());
+		return route.fulfill({
+			json: {
+				...summary(2),
+				values: {},
+				technical: {},
+				duration_ms: null,
+				page_count: null,
+				color_space: null,
+				has_alpha: false,
+				content_hash: 'b'.repeat(64),
+				status: 'active',
+				enrichment_state: 'pending',
+				legal_hold: false,
+				release_at: null,
+				expires_at: null,
+				version_no: 1,
+				created_at: '2026-08-01T09:00:00Z',
+				updated_at: '2026-08-01T09:00:00Z',
+				thumbnail_url: null,
+				preview_url: null
+			}
+		});
+	});
+
+	await page.goto('/assets');
+	await page.getByRole('gridcell').nth(2).click();
+	await page.keyboard.press('Enter');
+
+	const dialog = page.getByRole('dialog');
+	await expect(dialog).toBeVisible();
+	await expect(dialog.locator('img')).toHaveCount(0);
+	// Index 2 is `archive` in the fixture, so the reason is cold storage rather than "still processing".
+	await expect(dialog.getByText(/cold storage/)).toBeVisible();
+});
+
+test('the lightbox has no axe violations', async ({ page }) => {
+	await connect(page);
+	await page.goto('/assets');
+	await page.getByRole('gridcell').first().click();
+	await page.keyboard.press('Enter');
+	await expect(page.getByRole('dialog')).toBeVisible();
+
+	const results = await new AxeBuilder({ page }).withTags(WCAG_21_AA).analyze();
+	const detail = results.violations
+		.map((v) => `${v.id} (${v.impact}): ${v.nodes.map((n) => n.failureSummary).join(' | ')}`)
+		.join('\n');
+	expect(results.violations, `axe violations in the lightbox:\n${detail}`).toEqual([]);
 });

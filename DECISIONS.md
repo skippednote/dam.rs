@@ -1524,3 +1524,45 @@ with the check — and a duplicated condition needs its own test; a restore plan
 threshold does not need approval, which is the reading that makes a threshold of 0 mean "approve everything";
 and re-indexing an asset must leave one document, since Tantivy has no update and a missing delete-by-term puts
 the same asset in every search result twice.
+
+**The UI is dark by default, and that is an argument about images rather than taste.** Every serious image tool
+is dark — Lightroom, Capture One, Bridge, Resolve — because a bright surround biases colour and tone judgement.
+A librarian deciding whether a proof matches a brand colour makes that judgement against whatever chrome we put
+around the image, so a light-grey UI makes the app an instrument that lies. Simultaneous contrast is not a
+preference. Light remains complete and fully supported, because the Drupal picker (§11.2) is a guest inside
+Drupal's own admin theme and cannot impose a dark surround on a page it does not own. Reversible: yes — it is a
+token set, and `data-theme` already switches it in both directions.
+
+**Every colour token is defined in both palettes, and none only inside a media query.** A colour whose only
+definition sits in `@media (prefers-color-scheme: …)` or a `[data-theme]` block never applies in the un-stamped
+"system" state — most viewers — and the page then renders one theme's text on the other theme's ground. So
+`:root` carries the complete dark palette and the light overrides restate the same names, twice: once guarded
+`:not([data-theme="dark"])` so an explicit light choice beats a dark OS, and once under `[data-theme="light"]`
+so the toggle wins the other way. Reversible: no; the alternative is the bug.
+
+**The axe contrast scan forces both themes.** It previously scanned whichever colour scheme Chromium defaulted
+to, so the dark palette was never contrast-checked — which is exactly how a broken dark theme reaches a release.
+Each theme has its own value for every token, so one scan cannot stand in for the other, and both `data-theme`
+stamps are also scanned against the opposite OS setting. Reversible: no.
+
+**Images sit in a checkerboard well.** It disambiguates a transparent PNG from one with a white background,
+which is why every image tool uses the convention — and it fixed a defect the first dark screenshot exposed: a
+dark photograph on a dark cell has no visible edge, so the grid read as one empty box beside eleven placeholders
+while the image was loading perfectly. Diagnosed by sampling the decoded pixels rather than by eye, which is
+also how an initial "the thumbnail is transparent" conclusion was disproved. Reversible: yes.
+
+**The lightbox is a `<dialog showModal()>`.** The focus trap, the inert background, `Escape`, the top layer and
+`::backdrop` all come from the platform. The trap is the one hand-rolled modals reliably get wrong: a div-based
+modal leaves the page behind it tabbable, so a keyboard user tabs out of the "modal" and operates a UI they
+cannot see. The one thing `<dialog>` does not do reliably under a framework is restore focus when the element is
+*destroyed* rather than closed by the user, which is what happens when a parent unmounts it — so that is
+explicit. Reversible: yes, and there is no reason to.
+
+**The lightbox steps only within the loaded page.** Stepping past the last fetched row would need a fetch
+mid-gesture, and an arrow key that sometimes pauses for a network round trip feels broken. The controls are
+hidden at the edges so the affordance matches what it can actually do. Reversible: yes — prefetching the next
+page would remove the limit.
+
+**`preview_url` is on the detail endpoint only.** A list response of sixty preview URLs would mint sixty tokens
+for images no grid draws — the grid uses the thumbnail — and a lightbox opens one asset at a time. Reversible:
+yes.

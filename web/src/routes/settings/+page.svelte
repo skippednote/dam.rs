@@ -80,7 +80,7 @@
 			</label>
 			<input
 				id="base"
-				class="w-full rounded-md border border-state-neutral bg-bg px-2 py-1.5 font-mono text-sm"
+				class="w-full rounded-md border border-line bg-bg px-2 py-1.5 font-mono text-sm"
 				bind:value={base}
 				placeholder={DEFAULT_BASE}
 			/>
@@ -94,7 +94,7 @@
 				id="key"
 				type="password"
 				autocomplete="off"
-				class="w-full rounded-md border border-state-neutral bg-bg px-2 py-1.5 font-mono text-sm"
+				class="w-full rounded-md border border-line bg-bg px-2 py-1.5 font-mono text-sm"
 				bind:value={key}
 				placeholder={session.connected ? 'Stored — leave blank to keep it' : 'damrs_…'}
 				aria-describedby="key-note"
@@ -108,7 +108,7 @@
 		<div class="flex items-center gap-3">
 			<button
 				type="submit"
-				class="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+				class="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg disabled:opacity-50"
 				disabled={checking || (!key && !session.connected)}
 			>
 				{checking ? 'Checking…' : 'Connect'}
@@ -138,8 +138,8 @@
 		<p
 			role="status"
 			class="rounded-md p-3 text-sm {result.ok
-				? 'bg-state-rights-allowed/12 text-state-rights-allowed-fg'
-				: 'bg-state-rights-denied/12 text-state-rights-denied-fg'}"
+				? 'bg-state-rights-allowed/18 text-state-rights-allowed-fg'
+				: 'bg-state-rights-denied/18 text-state-rights-denied-fg'}"
 		>
 			{result.message}
 		</p>

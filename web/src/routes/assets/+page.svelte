@@ -22,6 +22,7 @@
 	import AssetGrid from '$lib/components/grid/AssetGrid.svelte';
 	import FilterRail from '$lib/components/filter/FilterRail.svelte';
 	import DetailPanel from '$lib/components/detail/DetailPanel.svelte';
+	import Lightbox from '$lib/components/detail/Lightbox.svelte';
 	import UploadQueue from '$lib/components/upload/UploadQueue.svelte';
 	import {
 		ApiError,
@@ -52,6 +53,9 @@
 	let error = $state('');
 	let ranked = $state(false);
 	let showUpload = $state(false);
+	/** Whether the selected asset is open full-screen. Separate from `selected`, because the panel and the
+	    lightbox show the same asset and closing one must not close the other. */
+	let lightbox = $state(false);
 
 	/** Discards a stale response, so a fast second search cannot be overwritten by a slow first one. */
 	let generation = 0;
@@ -103,6 +107,23 @@
 		}
 	}
 
+	/** Where the open asset sits in the loaded page, so the lightbox knows whether it can step. */
+	const position = $derived(
+		selected ? (result?.items.findIndex((item) => item.id === selected?.id) ?? -1) : -1
+	);
+
+	/**
+	 * Steps the lightbox by `delta` within the loaded page.
+	 *
+	 * Bounded by what is loaded rather than by the whole result set: stepping past the last fetched row would
+	 * need a fetch mid-gesture, and an arrow key that sometimes pauses for a network round trip feels broken.
+	 * The controls are hidden at the edges instead, so the affordance matches what it can do.
+	 */
+	function step(delta: number) {
+		const next = result?.items[position + delta];
+		if (next) void open(next.id);
+	}
+
 	function submit(event: SubmitEvent) {
 		event.preventDefault();
 		show(query);
@@ -139,7 +160,7 @@
 </script>
 
 <div class="flex h-[calc(100vh-3rem)] flex-col">
-	<div class="flex flex-wrap items-center gap-3 border-b border-state-neutral/40 px-4 py-3">
+	<div class="flex flex-wrap items-center gap-3 border-b border-line px-4 py-3">
 		<!--
 			A real `h1`, not a visually hidden one. A screen-reader user navigating by heading needs to land
 			somewhere on this page, and an app screen with no `h1` is one that cannot be entered by heading at
@@ -150,13 +171,13 @@
 			<label class="sr-only" for="q">Search assets</label>
 			<input
 				id="q"
-				class="min-w-0 flex-1 rounded-md border border-state-neutral bg-bg px-3 py-1.5 text-sm"
+				class="min-w-0 flex-1 rounded-md border border-line bg-bg px-3 py-1.5 text-sm"
 				bind:value={query}
 				placeholder="brand:acme &quot;spring campaign&quot; year:>2024"
 			/>
 			<button
 				type="submit"
-				class="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white"
+				class="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg"
 				disabled={loading}
 			>
 				{loading ? 'Searching…' : 'Search'}
@@ -167,7 +188,7 @@
 			<label class="sr-only" for="order">Sort order</label>
 			<select
 				id="order"
-				class="rounded-md border border-state-neutral bg-bg px-2 py-1.5 text-sm"
+				class="rounded-md border border-line bg-bg px-2 py-1.5 text-sm"
 				bind:value={order}
 				onchange={load}
 			>
@@ -181,7 +202,7 @@
 
 		<button
 			type="button"
-			class="rounded-md border border-state-neutral px-3 py-1.5 text-sm"
+			class="rounded-md border border-line px-3 py-1.5 text-sm"
 			aria-expanded={showUpload}
 			onclick={() => (showUpload = !showUpload)}
 		>
@@ -190,7 +211,7 @@
 	</div>
 
 	{#if showUpload}
-		<div class="border-b border-state-neutral/40 px-4 py-3">
+		<div class="border-b border-line px-4 py-3">
 			<UploadQueue onfinished={load} />
 			<p class="mt-2 text-xs text-muted">
 				An upload lands in staging and is finalised into an asset by the worker. Until the worker
@@ -218,7 +239,7 @@
 		-->
 		<aside
 			aria-label="Filters"
-			class="hidden w-56 shrink-0 overflow-y-auto border-r border-state-neutral/40 p-4 lg:block"
+			class="hidden w-56 shrink-0 overflow-y-auto border-r border-line p-4 lg:block"
 		>
 			<FilterRail {facets} {query} onquery={railChanged} />
 		</aside>
@@ -247,15 +268,28 @@
 					rowHeight={224}
 					thumbnail={deliveryUrl}
 					onselect={(asset) => open(asset.id)}
-					onactivate={(asset) => open(asset.id)}
+					onactivate={(asset) => {
+						void open(asset.id).then(() => (lightbox = true));
+					}}
 				/>
 			{:else if !loading && !error}
 				<p class="text-sm text-muted">Nothing here yet. Upload something, or check Settings.</p>
 			{/if}
 		</div>
 
+		{#if selected && lightbox}
+			<Lightbox
+				asset={selected}
+				hasPrevious={position > 0}
+				hasNext={position >= 0 && position < (result?.items.length ?? 0) - 1}
+				onclose={() => (lightbox = false)}
+				onprevious={() => step(-1)}
+				onnext={() => step(1)}
+			/>
+		{/if}
+
 		{#if selected}
-			<aside aria-label="Selected asset" class="w-80 shrink-0 border-l border-state-neutral/40">
+			<aside aria-label="Selected asset" class="w-80 shrink-0 border-l border-line">
 				<DetailPanel
 					asset={selected}
 					{fields}

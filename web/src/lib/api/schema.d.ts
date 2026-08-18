@@ -130,6 +130,16 @@ export interface components {
             legal_hold: boolean;
             /** Format: int32 */
             page_count?: number | null;
+            /**
+             * @description A signed internal-preview URL for the `preview-1024` rendition, when one has been rendered.
+             *
+             *     On the detail endpoint only. A list of sixty of these would mint sixty tokens for images no grid draws —
+             *     the grid uses the thumbnail — and a lightbox opens one asset at a time.
+             *
+             *     `Contain`-fitted rather than cropped, which is what makes it the right image for somebody inspecting an
+             *     asset: the thumbnail is a 256px square crop, so enlarging it is a blurry crop of the wrong aspect.
+             */
+            preview_url?: string | null;
             /** Format: date-time */
             release_at?: string | null;
             status: string;

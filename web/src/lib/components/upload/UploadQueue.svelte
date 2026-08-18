@@ -108,7 +108,7 @@
 	-->
 	<label
 		class="flex cursor-pointer flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed p-6 text-center text-sm transition-colors
-		       {dragging ? 'border-accent bg-surface' : 'border-state-neutral'}"
+		       {dragging ? 'border-accent bg-raised' : 'border-line'}"
 		ondragover={(event) => {
 			event.preventDefault();
 			dragging = true;

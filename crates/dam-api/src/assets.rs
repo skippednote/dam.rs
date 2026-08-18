@@ -202,6 +202,14 @@ pub struct AssetDetail {
     pub version_no: i32,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    /// A signed internal-preview URL for the `preview-1024` rendition, when one has been rendered.
+    ///
+    /// On the detail endpoint only. A list of sixty of these would mint sixty tokens for images no grid draws —
+    /// the grid uses the thumbnail — and a lightbox opens one asset at a time.
+    ///
+    /// `Contain`-fitted rather than cropped, which is what makes it the right image for somebody inspecting an
+    /// asset: the thumbnail is a 256px square crop, so enlarging it is a blurry crop of the wrong aspect.
+    pub preview_url: Option<String>,
 }
 
 /// A page of assets the caller may see.
@@ -248,7 +256,7 @@ pub async fn list(
         .map(|row| {
             let mut summary = summary_of(row);
             if with_thumbnails.contains(&row.id) {
-                summary.thumbnail_url = thumbnail_url(&state, &caller, row.id);
+                summary.thumbnail_url = preview_link(&state, &caller, row.id, thumb_profile().name);
             }
             summary
         })
@@ -282,16 +290,25 @@ pub async fn detail(
     let caller = caller::authorize(&state.global, &headers, Action::Read).await?;
     let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
     let found = assets::detail(conn.executor(), &caller.predicate, asset_id).await?;
-    let with_thumbnail =
-        dam_db::derivatives::which_have(conn.executor(), &[asset_id], &thumb_profile().op_hash())
-            .await?;
+    // Both recipes in one query. Two calls would be two round trips for one row's worth of information.
+    let rendered = dam_db::derivatives::which_of(
+        conn.executor(),
+        asset_id,
+        &[&thumb_profile().op_hash(), &preview_profile().op_hash()],
+    )
+    .await?;
     conn.commit().await?;
     let found = found.ok_or(Failure::NotFound)?;
 
     let mut summary = summary_of(&found.summary);
-    if with_thumbnail.contains(&asset_id) {
-        summary.thumbnail_url = thumbnail_url(&state, &caller, asset_id);
+    if rendered.contains(&thumb_profile().op_hash()) {
+        summary.thumbnail_url = preview_link(&state, &caller, asset_id, thumb_profile().name);
     }
+    let preview_url = if rendered.contains(&preview_profile().op_hash()) {
+        preview_link(&state, &caller, asset_id, preview_profile().name)
+    } else {
+        None
+    };
 
     Ok(Json(AssetDetail {
         summary,
@@ -310,6 +327,7 @@ pub async fn detail(
         version_no: found.version_no,
         created_at: found.created_at,
         updated_at: found.updated_at,
+        preview_url,
     }))
 }
 
@@ -496,6 +514,11 @@ impl From<dam_db::Error> for Failure {
 /// `delivery::MAX_TOKEN_TTL`, which clamps it anyway.
 const THUMBNAIL_TTL: chrono::Duration = chrono::Duration::hours(6);
 
+/// The profile a lightbox draws.
+fn preview_profile() -> &'static dam_media::profiles::Profile {
+    &dam_media::profiles::PREVIEW_1024
+}
+
 /// The profile a grid cell draws.
 ///
 /// Resolved through `profiles::by_name` rather than referencing the constant, so that if the name and the
@@ -505,13 +528,18 @@ fn thumb_profile() -> &'static dam_media::profiles::Profile {
     &dam_media::profiles::THUMB_256
 }
 
-/// A signed internal-preview URL for `asset_id`'s thumbnail, if this deployment can mint one.
+/// A signed internal-preview URL for one of `asset_id`'s proxy renditions, if this deployment can mint one.
 ///
 /// `None` when the delivery state is absent — which is the case in the endpoint tests, and is why the field is
 /// optional in the first place rather than something a caller must have. A machine key has no identity, and an
 /// internal preview requires one, so it gets no URL either: that is the restriction in
 /// `signed_url::Purpose`, and it is enforced by the mint refusing rather than by this returning early.
-fn thumbnail_url(state: &AssetState, caller: &caller::Caller, asset_id: Uuid) -> Option<String> {
+fn preview_link(
+    state: &AssetState,
+    caller: &caller::Caller,
+    asset_id: Uuid,
+    transform: &str,
+) -> Option<String> {
     let delivery = state.delivery.as_ref()?;
     let identity = caller.identity_id?;
     let now = delivery.now();
@@ -519,7 +547,7 @@ fn thumbnail_url(state: &AssetState, caller: &caller::Caller, asset_id: Uuid) ->
     // Blocking on the mint would be wrong here: it is HMAC over a few dozen bytes, so it is microseconds, and
     // making it async would mean a page of sixty awaiting sixty futures for no I/O.
     delivery
-        .sign_preview(asset_id, thumb_profile().name, identity, THUMBNAIL_TTL, now)
+        .sign_preview(asset_id, transform, identity, THUMBNAIL_TTL, now)
         .ok()
 }
 

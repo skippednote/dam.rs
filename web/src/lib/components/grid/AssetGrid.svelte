@@ -203,7 +203,7 @@
 		aria-label="Assets"
 		aria-rowcount="0"
 		aria-colcount={columns}
-		class="rounded-md border border-state-neutral p-8 text-center text-muted"
+		class="rounded-md border border-line p-8 text-center text-muted"
 	>
 		No assets match this search.
 	</div>
@@ -218,7 +218,7 @@
 		tabindex="-1"
 		{onkeydown}
 		style="height: {height}px"
-		class="overflow-auto rounded-md border border-state-neutral"
+		class="overflow-auto rounded-md border border-line"
 	>
 		<!-- Sized from the total, so the scrollbar reflects the collection rather than the window. -->
 		<div data-testid="grid-sizer" style="height: {totalRows * rowHeight}px; position: relative;">
@@ -250,7 +250,7 @@
 								data-cell-index={index}
 								tabindex={focused === index ? 0 : -1}
 								onclick={(event) => onclick(event, index)}
-								class="flex min-w-0 flex-1 flex-col gap-1 rounded-md border border-state-neutral
+								class="flex min-w-0 flex-1 flex-col gap-1 rounded-md border border-line
 								       bg-surface p-2 text-left text-xs
 								       aria-selected:ring-2 aria-selected:ring-accent"
 							>
@@ -271,7 +271,7 @@
 										aria-hidden="true"
 										loading="lazy"
 										decoding="async"
-										class="min-h-0 w-full flex-1 rounded bg-bg object-cover"
+										class="image-well min-h-0 w-full flex-1 rounded object-cover"
 									/>
 								{:else}
 									<!--
@@ -280,7 +280,8 @@
 										the honest label for that. An empty cell reads as a broken image.
 									-->
 									<div
-										class="flex min-h-0 flex-1 items-center justify-center rounded bg-bg text-[10px] text-muted"
+										class="image-well flex min-h-0 flex-1 items-center justify-center rounded text-[10px]
+										       text-muted"
 										data-testid="thumbnail-placeholder"
 									>
 										{asset.tier === 'archive' ? 'archived' : 'processing'}

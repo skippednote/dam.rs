@@ -200,7 +200,7 @@
 				</label>
 				<input
 					id={`f-${field.key}`}
-					class="w-full rounded-md border border-state-neutral bg-bg px-2 py-1.5 text-sm"
+					class="w-full rounded-md border border-line bg-bg px-2 py-1.5 text-sm"
 					bind:value={draft[field.key]}
 					aria-invalid={problem ? 'true' : undefined}
 					aria-describedby={describedBy(field, problem)}
@@ -227,7 +227,7 @@
 		<div class="flex items-center gap-3">
 			<button
 				type="submit"
-				class="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+				class="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg disabled:opacity-50"
 				disabled={!dirty || saving}
 			>
 				{saving ? 'Saving…' : 'Save'}

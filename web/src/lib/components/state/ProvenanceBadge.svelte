@@ -13,7 +13,7 @@
 	data-testid="provenance-badge"
 	data-provenance={state}
 	title={meta.detail}
-	class="inline-flex items-center gap-1.5 rounded-md border border-state-neutral px-2 py-0.5
+	class="inline-flex items-center gap-1.5 rounded-md border border-line px-2 py-0.5
 	       text-xs text-muted"
 >
 	<span aria-hidden="true">{meta.icon}</span>

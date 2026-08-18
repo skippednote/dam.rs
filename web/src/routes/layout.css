@@ -3,39 +3,134 @@
 @plugin '@tailwindcss/typography';
 
 /*
-	Minimal tokens so the scaffold's components have something to reference. The real vocabulary —
-	tier in form, rights in semantic colour, provenance neutral, confidence as bars — is F.2, and it
-	belongs in one place because the Drupal picker and the Portals theme both theme against it (§14.1).
-*/
-/*
-	The design tokens (F.2). One place, because the Drupal picker (§11.2) and the Portals theme both
-	theme against them — the asset browser embedded in Drupal's Media Library is the *same* Svelte app,
-	so a token defined twice is a picker that drifts from the app it is part of.
+	The design tokens (F.2, reworked in F.10).
 
-	The state colours implement the four-dimension vocabulary in
-	`$lib/components/state/vocabulary.ts`: rights own the colour channel, tier uses form, provenance
-	stays neutral. Foreground tokens are dark enough to clear 4.5:1 against the 12%-alpha tint the
-	badges use — verified by axe over /style rather than by eye, since a tint plus a hue is exactly the
-	combination that looks fine and measures at 3.9:1.
+	One place, because the Drupal picker (§11.2) and the Portals theme both theme against them — the asset
+	browser embedded in Drupal's Media Library is the *same* Svelte app, so a token defined twice is a picker
+	that drifts from the app it is part of.
+
+	## Dark by default, and that is an argument about images rather than taste
+
+	Every serious image tool is dark — Lightroom, Capture One, Bridge, Resolve — for one reason: a bright
+	surround biases colour and tone judgement. A librarian deciding whether a proof matches a brand colour is
+	doing that judgement against whatever chrome we put around the image, so a light-grey UI makes the app an
+	instrument that lies. Simultaneous contrast is not a preference.
+
+	Light is still fully supported, because the Drupal picker lives inside Drupal's own admin theme and cannot
+	impose a dark surround on a page it is a guest on. So both palettes are complete, and the *only* thing that
+	differs between them is the token values.
+
+	## Why every token pair is defined in both, and none only in a media query
+
+	A colour whose only definition sits inside `@media (prefers-color-scheme: …)` or a `[data-theme]` block
+	never applies in the un-stamped state, and the page renders one theme's text on the other theme's ground.
+	So: `:root` carries the complete dark palette, and the light overrides restate the same names.
+
+	## The state vocabulary is unchanged in *meaning*
+
+	`$lib/components/state/vocabulary.ts` still owns it: rights get the colour channel, tier uses form,
+	provenance stays neutral. What changed is that each hue now has a value tuned for its own ground — a
+	foreground that clears 4.5:1 on a dark tint is not the one that clears it on a light tint, and reusing one
+	set was how the first version measured 3.9:1 while looking fine. `/style` renders every variant of all four
+	dimensions so one axe scan checks every pair on every CI run, in whichever theme the run picks.
 */
 @theme {
-	--color-bg: oklch(99% 0.002 260);
-	--color-surface: oklch(97% 0.004 260);
-	--color-fg: oklch(24% 0.015 260);
-	--color-muted: oklch(44% 0.014 260);
+	/* ── Type ─────────────────────────────────────────────────────────────
+	   A DAM is a dense metadata surface, so the scale is tight at the bottom and only opens up for the few
+	   places that are genuinely headings. `--font-mono` carries hashes, keys and object paths, which are
+	   compared character by character and must not be proportional. */
+	--font-sans:
+		ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+	--font-mono:
+		ui-monospace, 'SF Mono', 'Cascadia Mono', 'Roboto Mono', Menlo, Consolas, 'Liberation Mono',
+		monospace;
+
+	/* ── Ground and ink (dark) ────────────────────────────────────────────
+	   Not pure black: an OLED-black surround makes a photograph's own blacks unreadable, and a hair of
+	   lightness gives the image somewhere to sit. The slight blue bias is chosen rather than inherited — a
+	   pure neutral grey reads as unconsidered, and biasing towards the accent makes the whole surface look
+	   like one decision. */
+	--color-bg: oklch(17% 0.008 265);
+	/* Panels, cards, the nav. One step up, so a card reads as raised without a border doing the work. */
+	--color-surface: oklch(22% 0.009 265);
+	/* One more step, for a control that sits on a surface — an input, a hovered row. */
+	--color-raised: oklch(27% 0.01 265);
+	--color-fg: oklch(95% 0.004 265);
+	/* Secondary text. 72% against a 17% ground is ~7:1 — comfortably past AA for body text, which matters
+	   because in a DAM the "secondary" text is the metadata people actually read. */
+	--color-muted: oklch(72% 0.008 265);
+	/* Hairlines. Deliberately low-contrast: in a dense tool, borders that read as strongly as content turn
+	   the page into a grid of boxes. */
+	--color-line: oklch(32% 0.01 265);
+	--color-accent: oklch(72% 0.15 250);
+	/* Text *on* the accent. Dark, because a light-on-light-blue button is the classic 3:1 failure. */
+	--color-accent-fg: oklch(18% 0.02 250);
+
+	/* Tier and provenance: one neutral, used for borders and glyphs only, so the colour channel stays free
+	   for rights — the only dimension with legal consequence. */
+	--color-state-neutral: oklch(58% 0.012 265);
+
+	/* Rights: distinct hues, each with a foreground that reads on its own 18%-alpha tint over the dark
+	   ground. */
+	--color-state-rights-allowed: oklch(70% 0.15 152);
+	--color-state-rights-allowed-fg: oklch(86% 0.13 152);
+	--color-state-rights-expiring: oklch(78% 0.14 75);
+	--color-state-rights-expiring-fg: oklch(88% 0.12 78);
+	--color-state-rights-denied: oklch(65% 0.19 25);
+	--color-state-rights-denied-fg: oklch(82% 0.14 25);
+	/* Unknown is deliberately its own hue, not a paler green: it must never read as cleared. */
+	--color-state-rights-unknown: oklch(70% 0.09 290);
+	--color-state-rights-unknown-fg: oklch(85% 0.08 290);
+}
+
+/*
+	Light, for the same token names.
+
+	Guarded so an explicit `data-theme="light"` also wins when the OS says dark, and restated under
+	`[data-theme="light"]` so the in-app toggle wins in both directions.
+*/
+@media (prefers-color-scheme: light) {
+	:root:not([data-theme='dark']) {
+		--color-bg: oklch(99% 0.002 265);
+		--color-surface: oklch(97% 0.004 265);
+		--color-raised: oklch(94% 0.005 265);
+		--color-fg: oklch(22% 0.015 265);
+		--color-muted: oklch(44% 0.014 265);
+		--color-line: oklch(88% 0.006 265);
+		--color-accent: oklch(48% 0.16 258);
+		--color-accent-fg: oklch(99% 0.002 265);
+
+		--color-state-neutral: oklch(70% 0.012 265);
+
+		--color-state-rights-allowed: oklch(58% 0.13 150);
+		--color-state-rights-allowed-fg: oklch(36% 0.1 150);
+		--color-state-rights-expiring: oklch(70% 0.13 70);
+		--color-state-rights-expiring-fg: oklch(38% 0.09 60);
+		--color-state-rights-denied: oklch(58% 0.19 25);
+		--color-state-rights-denied-fg: oklch(38% 0.15 25);
+		--color-state-rights-unknown: oklch(60% 0.07 285);
+		--color-state-rights-unknown-fg: oklch(38% 0.07 285);
+	}
+}
+
+:root[data-theme='light'] {
+	--color-bg: oklch(99% 0.002 265);
+	--color-surface: oklch(97% 0.004 265);
+	--color-raised: oklch(94% 0.005 265);
+	--color-fg: oklch(22% 0.015 265);
+	--color-muted: oklch(44% 0.014 265);
+	--color-line: oklch(88% 0.006 265);
 	--color-accent: oklch(48% 0.16 258);
+	--color-accent-fg: oklch(99% 0.002 265);
 
-	/* Tier and provenance: one neutral, used for borders and glyphs only. */
-	--color-state-neutral: oklch(72% 0.012 260);
+	--color-state-neutral: oklch(70% 0.012 265);
 
-	/* Rights: distinct hues, each with a foreground dark enough to read on its own tint. */
 	--color-state-rights-allowed: oklch(58% 0.13 150);
 	--color-state-rights-allowed-fg: oklch(36% 0.1 150);
 	--color-state-rights-expiring: oklch(70% 0.13 70);
 	--color-state-rights-expiring-fg: oklch(38% 0.09 60);
 	--color-state-rights-denied: oklch(58% 0.19 25);
 	--color-state-rights-denied-fg: oklch(38% 0.15 25);
-	/* Unknown is deliberately its own hue, not a paler green: it must never read as cleared. */
 	--color-state-rights-unknown: oklch(60% 0.07 285);
 	--color-state-rights-unknown-fg: oklch(38% 0.07 285);
 }
@@ -44,6 +139,65 @@
 	body {
 		background-color: var(--color-bg);
 		color: var(--color-fg);
+		/* `antialiased` on a dark ground: without it, light text on dark renders visually heavier than the
+		   same weight on light, and the whole interface reads as bolder than intended. */
+		-webkit-font-smoothing: antialiased;
+		-moz-osx-font-smoothing: grayscale;
+	}
+
+	/*
+		The well an image sits in.
+
+		A checkerboard, which is the convention every image tool uses and which solves two problems at once. A
+		transparent PNG on a flat ground is indistinguishable from one with a white background — the thing the
+		checker exists to disambiguate. And a *dark* photograph on a dark cell has no visible edge at all: the
+		first dark-theme screenshot of the grid looked like an empty box next to eleven placeholders, and the
+		image was loading perfectly.
+
+		Sized in absolute pixels rather than relative units so the squares stay the same size whatever the cell
+		does — a checker that scales with its container reads as a pattern rather than as a neutral ground.
+	*/
+	.image-well {
+		background-color: var(--color-raised);
+		background-image:
+			linear-gradient(
+				45deg,
+				color-mix(in oklab, var(--color-bg) 55%, transparent) 25%,
+				transparent 25%
+			),
+			linear-gradient(
+				-45deg,
+				color-mix(in oklab, var(--color-bg) 55%, transparent) 25%,
+				transparent 25%
+			),
+			linear-gradient(
+				45deg,
+				transparent 75%,
+				color-mix(in oklab, var(--color-bg) 55%, transparent) 75%
+			),
+			linear-gradient(
+				-45deg,
+				transparent 75%,
+				color-mix(in oklab, var(--color-bg) 55%, transparent) 75%
+			);
+		background-size: 16px 16px;
+		background-position:
+			0 0,
+			0 8px,
+			8px -8px,
+			-8px 0;
+	}
+
+	/*
+		Digits that line up. In a DAM almost every number is in a column — file sizes, dimensions, facet
+		counts, download tallies — and proportional digits make a column of them look ragged even when it is
+		perfectly aligned.
+	*/
+	table,
+	dd,
+	output,
+	.tabular {
+		font-variant-numeric: tabular-nums;
 	}
 
 	/*
@@ -66,5 +220,21 @@
 	main:focus,
 	main:focus-visible {
 		outline: none;
+	}
+
+	/*
+		Every transition in one place, and every one of them respects the setting. A component-level
+		`transition-colors` cannot be switched off by a user who asked for less motion, and there are enough
+		hover states in a grid of forty thousand cells for that to matter.
+	*/
+	@media (prefers-reduced-motion: reduce) {
+		*,
+		*::before,
+		*::after {
+			animation-duration: 0.01ms !important;
+			animation-iteration-count: 1 !important;
+			transition-duration: 0.01ms !important;
+			scroll-behavior: auto !important;
+		}
 	}
 }

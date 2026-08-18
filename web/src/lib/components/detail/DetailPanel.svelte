@@ -107,7 +107,7 @@
 			src={deliveryUrl(asset.thumbnail_url)}
 			alt=""
 			aria-hidden="true"
-			class="w-full rounded-md bg-surface object-contain"
+			class="image-well w-full rounded-md object-contain"
 		/>
 	{/if}
 

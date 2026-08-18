@@ -1063,9 +1063,50 @@ the grid against sample data; these wire it to the API and make it a thing a per
   accent or an em dash throws, and in a DAM those are the normal case.
   *Verified by uploading through the browser:* 120,000 bytes, create → PATCH → `HEAD` reporting
   120000/120000, and the `upload_sessions` row to match.
-- [ ] **F.9 Lightbox, bulk-operations bar, share/portal UI, schema admin, restore UX.** The grid's
-  `onactivate` is wired and unused: the "open this" gesture wants a lightbox, and there is no proxy to show
-  in it until the worker generates one (see below).
+- [x] **F.9 The lightbox.** `onactivate` was wired and unused; now Enter on a focused cell opens the asset
+  full-screen, and `preview-1024` exists to show in it because P.3 renders it.
+  *A real `<dialog showModal()>`, not a div.* The focus trap, the inert background, `Escape`, the top layer
+  and `::backdrop` all come from the platform — and the trap is the one hand-rolled modals reliably get
+  wrong, because a keyboard user tabs straight out of a div "modal" and operates a UI they cannot see. The
+  one thing `<dialog>` does not do reliably under a framework is restore focus when the element is
+  *destroyed* rather than closed, so that is explicit.
+  *`preview-1024`, not the thumbnail and not the original.* The thumbnail is a 256px square crop, so
+  enlarging it is a blurry crop of the wrong aspect; the original may be a 200 MB TIFF the browser cannot
+  decode and fetching it to glance at spends the customer's egress. The preview is `Contain`-fitted, which
+  is what it was defined for.
+  *Arrow keys step without closing,* because reviewing a shoot is forty frames in a row and a lightbox that
+  must be reopened per frame is one nobody uses. Bounded by the loaded page rather than the whole result
+  set: an arrow key that sometimes pauses for a fetch feels broken, so the controls are hidden at the edges
+  and the affordance matches what it can do.
+  *No preview says why* — cold storage or not yet rendered — because an empty frame reads as a broken image.
+  *`preview_url` is on the detail endpoint only.* A list of sixty preview URLs would mint sixty tokens for
+  images no grid draws.
+- [x] **F.10 A real design pass, and one argument that decides it.** The shell was default-Tailwind
+  utilitarian. It is now dark by default, with a complete light palette beside it.
+  *Dark is an argument about images, not taste.* Every serious image tool is dark — Lightroom, Capture One,
+  Bridge, Resolve — because a bright surround biases colour and tone judgement. A librarian deciding whether
+  a proof matches a brand colour does that against whatever chrome we put around the image, so a light-grey
+  UI makes the app an instrument that lies. Light stays fully supported because the Drupal picker (§11.2) is
+  a guest inside Drupal's own admin theme and cannot impose a dark surround.
+  *Every token pair is defined in both palettes,* and none only inside a media query — a colour defined only
+  there never applies in the un-stamped "system" state, and the page renders one theme's text on the other
+  theme's ground. Each hue also has values tuned per ground: a foreground clearing 4.5:1 on a dark tint is
+  not the one that clears it on a light tint, which is how the first version measured 3.9:1 while looking
+  fine.
+  *The axe contrast scan now forces **both** themes,* plus both `data-theme` stamps against the opposite OS
+  setting. It previously scanned whichever scheme Chromium defaulted to, so the dark palette was never
+  contrast-checked at all — which is precisely how a broken dark theme reaches a release.
+  *New tokens the old set was missing:* `--color-raised` for a control on a surface, `--color-line` for
+  hairlines (chrome borders were borrowing the *state* neutral, which F.2 reserved for the vocabulary), and
+  `--color-accent-fg` because `text-white` on a light accent is the classic 3:1 failure.
+  *An image well, as a checkerboard.* It disambiguates a transparent PNG from one with a white background —
+  the thing the convention exists for — and it solves a defect the first dark screenshot exposed: a dark
+  photograph on a dark cell has no visible edge, so the grid looked like one empty box beside eleven
+  placeholders while the image was loading perfectly.
+  *Reduced motion is honoured globally* rather than per component, because a component-level
+  `transition-colors` cannot be switched off by a user who asked for less motion, and a grid of forty
+  thousand cells has enough hover states for that to matter.
+- [ ] **F.11 Bulk-operations bar, share/portal UI, schema admin, restore UX.** The remaining surfaces.
 
 **The gap the UI runs into, stated plainly:** `dam-worker` has no queue consumer, so nothing generates a
 derivative and nothing finalises an upload into an asset. An upload lands in staging and stops there — the

@@ -68,16 +68,50 @@ test('the viewport allows zoom, which WCAG 1.4.4 requires', async ({ page }) => 
 	expect(viewport).not.toMatch(/maximum-scale=1(\.0)?\b/);
 });
 
-test('every state of every dimension clears WCAG 2.1 AA contrast', async ({ page }) => {
-	// The /style page renders every variant of all four dimensions, so this one scan covers the
-	// contrast of every token pair. A tint plus a hue is exactly the combination that looks fine and
-	// measures 3.9:1, and checking it by eye is how that ships.
-	await page.goto('/style');
-	const results = await new AxeBuilder({ page }).withTags(WCAG_21_AA).analyze();
-	const detail = results.violations
-		.map((v) => `${v.id} (${v.impact}): ${v.nodes.map((n) => n.failureSummary).join(' | ')}`)
-		.join('\n');
-	expect(results.violations, `axe violations on /style:\n${detail}`).toEqual([]);
+test('every state of every dimension clears WCAG 2.1 AA contrast, in both themes', async ({
+	page
+}) => {
+	// The /style page renders every variant of all four dimensions, so this one scan covers the contrast of
+	// every token pair. A tint plus a hue is exactly the combination that looks fine and measures 3.9:1, and
+	// checking it by eye is how that ships.
+	//
+	// **Both themes, forced.** The earlier version scanned whichever scheme Chromium happened to default to, so
+	// the dark palette was never contrast-checked at all — which is precisely how a broken dark theme reaches a
+	// release. Each theme has its own values for every token (a foreground that clears 4.5:1 on a dark tint is
+	// not the one that clears it on a light tint), so one scan cannot stand in for the other.
+	for (const scheme of ['dark', 'light'] as const) {
+		await page.emulateMedia({ colorScheme: scheme });
+		await page.goto('/style');
+
+		const results = await new AxeBuilder({ page }).withTags(WCAG_21_AA).analyze();
+		const detail = results.violations
+			.map((v) => `${v.id} (${v.impact}): ${v.nodes.map((n) => n.failureSummary).join(' | ')}`)
+			.join('\n');
+		expect(results.violations, `axe violations on /style in ${scheme}:\n${detail}`).toEqual([]);
+	}
+});
+
+test('an explicit theme choice beats the operating system in both directions', async ({ page }) => {
+	// The three-state problem: an explicit choice stamps `data-theme`, and the default "system" setting stamps
+	// nothing. A token defined only inside a media query never applies in the un-stamped state, and the page
+	// renders one theme's text on the other theme's ground — so each override has to win over the OS, both ways.
+	for (const [scheme, stamped] of [
+		['dark', 'light'],
+		['light', 'dark']
+	] as const) {
+		await page.emulateMedia({ colorScheme: scheme });
+		await page.goto('/style');
+		await page.evaluate(
+			(theme) => document.documentElement.setAttribute('data-theme', theme),
+			stamped
+		);
+
+		const results = await new AxeBuilder({ page }).withTags(WCAG_21_AA).analyze();
+		expect(
+			results.violations,
+			`axe violations with data-theme="${stamped}" under a ${scheme} OS`
+		).toEqual([]);
+	}
 });
 
 test('the state reference page is navigable by heading structure', async ({ page }) => {

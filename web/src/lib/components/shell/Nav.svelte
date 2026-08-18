@@ -24,7 +24,7 @@
 	}
 </script>
 
-<nav aria-label="Main" class="flex h-12 items-center gap-1 border-b border-state-neutral/40 px-4">
+<nav aria-label="Main" class="flex h-12 items-center gap-1 border-b border-line px-4">
 	<a href={resolve('/')} class="mr-3 text-sm font-semibold tracking-tight">damrs</a>
 
 	{#each LINKS as link (link.href)}
