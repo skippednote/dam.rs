@@ -886,8 +886,31 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   *Token format bumped to v2*, since the payload gained a field. Outstanding v1 tokens stop verifying, which
   is correct — they were issued for at most 24 h, and the alternative is supporting two layouts so a URL from
   yesterday can bypass a check added today.
-- [ ] **3.4 Restore flow (§6.5).** `202` with an ETA and a cost estimate, batching sibling requests, and
-  the expiry sweep. ffmpeg is mise-installable, so video lands here.
+- [x] **3.4 Restore flow (§6.5).** `202` with an ETA and a cost estimate, batching sibling requests, and
+  the expiry sweep. *(Video moved to 3.5, which is where it belongs.)*
+  *Done:* `dam_core::restore` (15 cases + 3 unit) + `dam_db::restores` (13 cases).
+  *Everything here is deliberately wrong in the safe direction,* because Expedited against Bulk is roughly
+  **10× on price and 100× on latency**. Cost estimates **round up** — a restore costing a cent more than the
+  figure somebody approved is a conversation nobody wants. ETAs quote the **slow end** of each documented
+  window, since a promise made from an average is broken half the time. And the **per-object term survives**:
+  a collection restore is hundreds of objects and S3 bills per object too, so dropping it makes a 400-file
+  restore look free.
+  *Expedited on Deep Archive is refused, not downgraded* — mutation-verified. Substituting Standard answers a
+  request for five minutes with twelve hours and no explanation, and the user waits for something that was
+  never going to happen on that timescale.
+  *Three findings.* **Duplicate requests coalesce** — a second `RestoreObject` on an ongoing restore is
+  billed, and without `ON CONFLICT DO NOTHING` the partial unique index throws so the second caller gets an
+  error instead of the answer they wanted (which is the same answer). **Availability recomputes the expiry**:
+  the plan's figure came from an *estimated* ETA, so keeping it makes a Bulk restore that lands six hours
+  early expire six hours early, and the difference is a second restore billed again. **Spend counts
+  failures**, because a failed retrieval is often still billed and a budget ignoring them lets a retry loop
+  spend without limit — while queued requests do not count, since nothing reached S3 and counting them would
+  make a queue block itself.
+  *`Budget::default` asks for approval above ~$50 with no hard cap.* A default of "no budget" makes the
+  guardrail opt-in and the failure mode of an opt-in cost control is a surprise invoice; a default of zero
+  makes everything need approval before anyone configured anything, which teaches people to disable it.
+  *Needs a table:* per-tenant budgets. The threshold lives in code today and `spent_this_month` is computed
+  per tenant schema, but the limits themselves are not yet configurable.
 - [ ] **3.5 Video and HLS.** ffmpeg in the subprocess sandbox, loudness normalisation, the 720p H.264
   master proxy §2 specifies.
 - [ ] **3.6 Notifications and Paths (G9).** `paths`, `path_firings`, and delivery that is idempotent

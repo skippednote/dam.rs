@@ -16,6 +16,7 @@ pub mod error;
 pub mod fields;
 pub mod policy;
 pub mod query;
+pub mod restore;
 pub mod rights;
 pub mod rights_eval;
 pub mod secret;
