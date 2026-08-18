@@ -120,8 +120,8 @@ async fn each_tenant_gets_an_independent_ledger() {
         )
         .await;
         assert_eq!(
-            applied, 10,
-            "{schema} should have 10 tenant migrations applied"
+            applied, 11,
+            "{schema} should have 11 tenant migrations applied"
         );
     }
 }
@@ -145,7 +145,7 @@ async fn migrating_twice_is_a_no_op() {
             "SELECT count(*) FROM t_acme._sqlx_migrations WHERE success"
         )
         .await,
-        10
+        11
     );
 }
 

@@ -7,6 +7,7 @@
 )]
 
 pub mod access;
+pub mod auth;
 pub mod jobs;
 pub mod migrate;
 pub mod provision;

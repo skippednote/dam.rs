@@ -18,6 +18,10 @@ sqlx = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
+blake3 = { workspace = true }
+# The CSPRNG behind API-key generation. rand 0.9's thread RNG is ChaCha-based and
+# CryptoRng, which is the bar a credential needs.
+rand = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }

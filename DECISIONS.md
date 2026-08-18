@@ -1107,3 +1107,39 @@ rendered SQL mentions neither column. Reversible: no.
 (task 2.4). Ignoring it would grant less access than configured — fail-closed, but silently, so the
 first symptom is an asset that should have been visible and was not. Same discipline as the lifecycle
 engine's `only_superseded` halt. Reversible: yes, when 2.4 lands.
+
+**A dangerous comment on an access-control column, corrected in migration 0011.** `0001` said, directly
+above `roles.asset_group_ids`: "Empty array = all groups. Explicit rather than null so the 'no access' and
+'all access' cases cannot be confused." That contradicts itself and the `all_asset_groups` boolean beneath
+it — and under its reading, a role created with the column defaults would grant **every group in the
+tenant**, which is the most dangerous default available. The behaviour was already correct in
+`dam_core::policy`; 0011 attaches the right semantics with `COMMENT ON COLUMN`, which travels with the
+schema so `\d+ roles` shows it. Editing 0001 in place would have broken its sqlx checksum for every
+already-migrated database. Reversible: n/a, a documentation fix.
+
+**API keys are hashed with BLAKE3, not argon2.** A key here is 256 bits from a CSPRNG, so guessing is not
+a threat model: a password hash would buy nothing and cost a deliberate ~100 ms on *every request*. The
+digest is unsalted, which would be wrong for a password and is right here — a salt defends against
+precomputation over a dictionary, and there is no dictionary for 256 random bits. It also makes
+authentication a single lookup against the `UNIQUE (key_hash)` index that already existed. Reversible: no,
+without re-issuing every key.
+
+**Every authentication failure looks the same.** Unknown, revoked, expired, and belonging-to-a-deleted-
+tenant all return `Ok(None)`. Distinguishing them would tell a prober which of their guesses had the right
+*shape*, and the shape is the cheap half to brute-force. Reversible: no.
+
+**`last_used_at` is written at most hourly, not per request.** The column exists to find keys nobody uses.
+Writing it on every request turns every read-only endpoint into a write and costs a row of WAL per API
+call — a price nobody chose. Hourly resolution answers the question the column exists for. Reversible: yes.
+
+**Key scopes intersect with the identity's permissions and never add.** That is what makes a key safe to
+paste into a CI job. A union would let anyone escalate their own privileges by writing a broader scope on a
+key they issue themselves. A grant left with no permissions after intersection is dropped entirely, because
+it would otherwise still widen the group union for a different action. Reversible: no.
+
+**A membership naming a deleted role contributes nothing rather than failing the request.** Failing would
+lock a user out over an administrator's tidy-up. Reversible: yes.
+
+**`is_tenant_admin` synthesises a grant rather than requiring a role row.** It is a shortcut on the
+membership, so something has to turn it into grants; per ABAC 5 it clears group scoping and release windows
+and nothing else. Reversible: yes.
