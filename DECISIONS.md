@@ -1143,3 +1143,27 @@ lock a user out over an administrator's tidy-up. Reversible: yes.
 **`is_tenant_admin` synthesises a grant rather than requiring a role row.** It is a shortcut on the
 membership, so something has to turn it into grants; per ABAC 5 it clears group scoping and release windows
 and nothing else. Reversible: yes.
+
+**libvips and ffmpeg are installed through mise's conda backend, not Homebrew.** Not a preference: on
+this machine `brew install vips` fails at `brew link freetype`, because a Codex runtime has placed a
+symlink at `/opt/homebrew/opt/freetype/lib/libfreetype.6.dylib` pointing into its own bundled poppler.
+Brew needs that path to be a symlink into its Cellar, so the two cannot coexist — and taking it would
+silently repoint another tool's dependency at a different freetype. mise installs under
+`~/.local/share/mise` and touches nothing shared. Both are pinned, because a loader appearing or
+disappearing between vips builds changes which formats the probe claims to support. Reversible: yes.
+
+**libvips is used through its CLI in the sandbox, not through the Rust binding.** The workspace had
+declared the `libvips` crate; it is now documented as unused and the CLI path is the primary one. Two
+reasons, and the second is the decisive one:
+
+- An in-process binding puts a libvips CVE inside `damd`'s own address space, so a malformed RAW file
+  corrupts the worker rather than a subprocess.
+- **libvips marks 14 of its own loaders "untrusted"** — `dcrawload`, `magickload`, `pdfload`,
+  `svgload`, `openslideload` among them — which is to say, precisely the formats a DAM most needs are
+  the ones its own maintainers flag as risky on hostile input. Running them out of process, under the
+  rlimits, wall clock, escape-proof temp dir and cleared environment `dam_media::sandbox` already
+  provides, is the containment those warnings are asking for.
+
+The cost is a process spawn per operation, tens of milliseconds, against derivative generation that is
+already asynchronous and measured in seconds. Reversible: yes, but the security argument would have to
+be answered.

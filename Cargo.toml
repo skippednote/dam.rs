@@ -77,7 +77,11 @@ winnow = "1.0"          # Widen-compatible shorthand query parser -> query IR
 # and the only path used when libvips is unavailable at build time.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "tiff", "gif", "avif"] }
 fast_image_resize = { version = "6", features = ["image"] }
-libvips = { version = "2" }        # members mark this optional
+# libvips is used through its CLI inside dam_media::sandbox, not through a Rust binding —
+# see DECISIONS.md. An in-process binding would put a libvips CVE in damd's own address
+# space, and libvips marks 14 of its own loaders "untrusted", including the RAW, PSD, PDF
+# and SVG ones a DAM needs most. Out of process, a malformed file kills a subprocess the
+# sandbox already bounds.
 kamadak-exif = "0.5"
 image_hasher = "3.1"      # pHash / dHash for near-duplicate detection
 symphonia = { version = "0.6", features = ["all-codecs"] }

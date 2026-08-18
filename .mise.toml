@@ -2,6 +2,19 @@
 rust = "1.94.0"          # edition 2024 needs >= 1.85; pinned to what's installed
 node = "24"              # for the Svelte app in web/
 pnpm = "10"
+# Media tools, via mise's conda backend rather than Homebrew.
+#
+# Not a preference — a necessity here. `brew install vips` wants /opt/homebrew/opt/freetype,
+# and on this machine a Codex runtime has placed a symlink there pointing into its own
+# bundled poppler. The two cannot share the path, and taking it would silently repoint
+# another tool's dependency. mise installs under ~/.local/share/mise instead and touches
+# nothing shared.
+#
+# Pinned, because a loader appearing or disappearing between vips builds changes which
+# formats the probe claims to support.
+"conda:libvips" = "8.18.5"
+# ffmpeg for M3 (video, HLS, loudness normalisation).
+"conda:ffmpeg" = "9.0.1"
 
 [env]
 # Points sqlx's compile-time macros at the migrated template schema so
