@@ -1086,6 +1086,27 @@ Rejecting the upload would stop a customer ingesting their own archive if any of
 tool that broke the chain. Stripping is forbidden by D13. So the asset exists, the broken chain is
 visible in `provenance_manifests`, and derivatives carry no credential. Reversible: yes.
 
+**Taxonomy 1 — terms are deprecated and superseded, never deleted.** `asset_tags` cascades on term
+deletion, so "retiring a duplicate term" would silently untag every asset that used it, and nobody would
+notice until a search came back empty. A merge therefore retags the assets to the survivor and retires
+the source with `superseded_by` pointing at it, so an id stored outside this database — a saved search, a
+Drupal field, an API client's cache — still resolves to something meaningful. Migration 0012. Reversible:
+the columns yes; the policy no, because reverting means the untagging is back.
+
+**Taxonomy 2 — deprecating a term with live children is refused rather than cascaded.** Cascading would
+retire terms the operator never asked about; leaving them would put active terms under a retired ancestor,
+which no rollup query renders sensibly. Refusing names the problem and the operator retires bottom-up,
+which is the order they would work in anyway. Reversible: yes.
+
+**Taxonomy 3 — slugs are unique per taxonomy, so a vocabulary cannot have the same leaf label twice.**
+Not a decision I made: `taxonomy_terms_slug_idx` in 0001 is `UNIQUE (taxonomy_id, slug)` rather than
+`(parent_id, slug)`. Recorded because the consequence is easy to miss and a customer will meet it — there
+can be no "Other" under two different parents, and no `outdoor.beach` alongside `indoor.beach`. It also
+makes a path collision structurally unreachable, since a path's last label *is* the slug; the `PathTaken`
+guard in `move_term` stays anyway, so relaxing the index later cannot silently produce a half-applied
+UPDATE. Left as it is for now: relaxing it later is an ordinary migration, while tightening it later would
+break existing data. Worth a product decision before a real vocabulary import. Reversible: yes.
+
 **C2PA 4 — the workspace MSRV rises from 1.85 to 1.88 to take c2pa 0.90.** Cargo silently resolves to
 c2pa 0.58 under a 1.85 floor, which is a materially older API. Nothing is published from this workspace
 and every build already uses the pinned 1.94 toolchain, so the floor was a declaration rather than a

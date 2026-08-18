@@ -13,6 +13,7 @@ pub mod jobs;
 pub mod migrate;
 pub mod provenance;
 pub mod provision;
+pub mod taxonomy;
 pub mod tenant_conn;
 pub mod uploads;
 

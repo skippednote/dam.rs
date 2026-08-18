@@ -594,8 +594,28 @@ shorthand search, the rights model (G4), and the eval harness (G8).
   *Lengths count characters, not bytes* — a 5-char limit rejecting `café` is a bug a European customer
   finds on their first import. Taxonomy refs resolve in **one** query for the whole payload, not one per
   term.
-- [ ] **2.2 Taxonomies.** `ltree` paths, move/merge/deprecate, and the rule that a deprecated term stays
+- [x] **2.2 Taxonomies.** `ltree` paths, move/merge/deprecate, and the rule that a deprecated term stays
   resolvable so old assets keep their meaning.
+  *Done:* migration 0012 (`deprecated_at`, `superseded_by`) + `dam_db::taxonomy`, 16 cases in one
+  container plus 2 unit. Mutation-verified twice: making `deprecate` delete fails the resolvability
+  test, and narrowing the move's `path <@` to `path =` fails the subtree test.
+  *Every operation is destructive in its obvious form,* and what it destroys is the meaning of assets
+  tagged years ago. `asset_tags` cascades on term deletion, so deleting a "duplicate" term silently
+  untags every asset that used it. Reparenting without moving descendants leaves them on a path whose
+  prefix no longer exists, so `path <@ 'outdoor'` quietly returns nothing. Hard-deleting after a merge
+  breaks every id held outside this database.
+  *So:* a merge retags to the survivor and retires the source with `superseded_by`, resolution walks the
+  chain (bounded at 32 hops, so a hand-written cycle cannot hang a request), and a move is **one**
+  UPDATE over `path <@ subtree` — 10,000 terms in one statement with no half-moved window.
+  *Refused, each for a stated reason:* a cross-taxonomy merge (it changes what an asset means, not which
+  term carries it), a deprecated survivor, a cycle, a move under one's own descendant (the subtree
+  detaches from the tree entirely), and deprecating a parent with live children.
+  *Two things found while writing it.* An asset tagged with **both** terms would make the merge's UPDATE
+  violate `asset_tags`' primary key and abandon the whole merge — over an asset that already has the
+  meaning; the duplicate is dropped first. And `taxonomy_terms_slug_idx` is `UNIQUE (taxonomy_id, slug)`,
+  not `(parent_id, slug)`, so **a vocabulary cannot have the same leaf label twice** — no "Other" under
+  two parents. That makes path collision unreachable; the guard stays anyway. Logged as Taxonomy 3 and
+  worth a product decision before a real vocabulary import.
 - [ ] **2.3 Collections.** Membership, ordering, `pin_hot` interaction with the lifecycle engine.
 - [ ] **2.4 Query IR.** One parsed representation shared by SQL and Tantivy, with the access predicate
   as an injected term rather than a post-filter (§7, §12).

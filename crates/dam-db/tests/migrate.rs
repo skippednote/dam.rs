@@ -75,12 +75,14 @@ async fn tenant_migrations_apply_to_a_named_schema() {
         (
             "index count",
             "SELECT count(*) FROM pg_indexes WHERE schemaname='t_acme' AND tablename <> '_sqlx_migrations'",
-            211,
+            // 213 since 0012: taxonomy_terms gains a live-terms index and a supersession index.
+            213,
         ),
         (
             "check constraints",
             "SELECT count(*) FROM pg_constraint c JOIN pg_namespace n ON n.oid=c.connamespace WHERE n.nspname='t_acme' AND c.contype='c'",
-            88,
+            // 90 since 0012: a superseded term must be deprecated, and cannot supersede itself.
+            90,
         ),
         (
             "hnsw indexes",
@@ -120,8 +122,8 @@ async fn each_tenant_gets_an_independent_ledger() {
         )
         .await;
         assert_eq!(
-            applied, 11,
-            "{schema} should have 11 tenant migrations applied"
+            applied, 12,
+            "{schema} should have 12 tenant migrations applied"
         );
     }
 }
@@ -145,7 +147,7 @@ async fn migrating_twice_is_a_no_op() {
             "SELECT count(*) FROM t_acme._sqlx_migrations WHERE success"
         )
         .await,
-        11
+        12
     );
 }
 
