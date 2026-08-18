@@ -106,8 +106,10 @@ Rules for autonomous runs:
   *Surprises:* sqlx 0.9 dropped `QueryBuilder`'s lifetime parameter and returns `SqlStr` rather than
   `String` from `into_sql`. And my parenthesisation test split on `"WHERE "` while the fragment
   contains its own inner `WHERE` — it was asserting against a half-fragment.
-  *Remaining in 0.10:* the Tantivy rendering and the differential test asserting both back ends return
-  identical sets. That test cannot exist until the second back end does; it lands with 2.6.
+  *Remaining in 0.10 — now done, in 2.6:* the Tantivy rendering and the differential test asserting both
+  back ends return identical sets. 15 query shapes × 4 access predicates = 60 comparisons, plus a
+  non-vacuity guard. Mutation-verified three ways: dropping Tantivy's group filter, its soft-delete
+  exclusion, or making its empty `Or` match everything each fails with the two sets printed side by side.
   The mechanism is settled (one predicate, query-time, three consumers); the semantics
   are not. Five decisions determine whether an unapproved, unreleased or expired asset
   can be seen or fetched — role combination, release/expiry visibility, EULA scope,
@@ -683,8 +685,27 @@ shorthand search, the rights model (G4), and the eval harness (G8).
   `a..b`, `>`, `>=`, `<`, `<=` with the exclusivity the symbol implies; values are typed from the field
   kind, so `year:2026` is an integer and `brand:2026` is text; and input length and paren depth are
   bounded before parsing, since a search string arrives in a URL and the parser recurses.
-- [ ] **2.6 Tantivy index per tenant.** Schema derived from `field_defs`, an LRU writer pool (§19), and
+- [x] **2.6 Tantivy index per tenant.** Schema derived from `field_defs`, an LRU writer pool (§19), and
   a cold-open path. *Test first:* 1,000 tenants do not open 1,000 indexes.
+  *Done:* `dam_search::{schema, pool, document, query}` — 8 pool cases, 3 differential cases (60
+  back-end comparisons), 3 schema unit. **This also closes 0.10's remainder.**
+  *The named test passes at 32 open for 1,000 tenants,* and the half that makes it mean something is the
+  second assertion: an evicted tenant is reopened and its committed document is still there, and is *that*
+  tenant's document. Eviction closes an index; it does not delete one.
+  *A bug the first version of that suite hid.* `concurrent_first_requests_...` passed with a
+  get-then-insert that had a real race in it, because `#[tokio::test]` is single-threaded and the open was
+  synchronous — so sixteen tasks never overlapped. Under `flavor = "multi_thread"` it reports **16 cold
+  opens instead of 1**. Fixed with `try_get_with`, and the open moved to `spawn_blocking` — a synchronous
+  index open on an async worker stalls every request sharing that thread, precisely when the tenant is
+  already slowest.
+  *Metadata is one JSON field, not one per definition.* A Tantivy schema is fixed at creation and
+  `field_defs` is not, so per-definition fields would make **every field addition a full reindex** — hours
+  for a large library. A test asserts the schema is unchanged by adding definitions.
+  *Tantivy ranks; Postgres authorises.* Group membership is indexed and changes in Postgres immediately, so
+  between the two the index is **permissive**. The rendered predicate narrows candidates; it is not the
+  authority. Logged as Search 1, and 2.7's facet counts inherit the same staleness.
+  *Clauses the index cannot answer are refused, not dropped* — taxonomy, collections, substring. Dropping a
+  filter clause returns *more* than asked, and the extra rows look like ordinary results.
 - [ ] **2.7 Faceted search.** Fast fields, counts that respect the access predicate.
 - [ ] **2.8 Rights model (G4).** Licences, scopes, releases, and the distribution chokepoint that D12
   requires — enforced, not recorded.

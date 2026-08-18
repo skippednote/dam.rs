@@ -1086,6 +1086,31 @@ Rejecting the upload would stop a customer ingesting their own archive if any of
 tool that broke the chain. Stripping is forbidden by D13. So the asset exists, the broken chain is
 visible in `provenance_manifests`, and derivatives carry no credential. Reversible: yes.
 
+**Search 1 — Tantivy ranks, Postgres authorises.** The access predicate is rendered into the Tantivy
+query, and that filter is a *narrowing optimisation, not the authority*. An asset's group membership is
+written into its document at index time and changes in Postgres the instant an administrator saves; between
+those two moments the index is stale, and a stale index is **permissive** — it still says the asset is in
+the group. So results are hydrated through Postgres with the same predicate applied there. §12 asks for one
+predicate and three consumers; it does not say an eventually-consistent index may be the gate on a governed
+library, and it must not be. Reversible: no.
+
+*Consequence for 2.7:* facet counts computed purely from Tantivy inherit the same staleness, so they can
+over-count. That has to be addressed there rather than assumed away.
+
+**Search 2 — the tenant's metadata is one Tantivy JSON field, not one field per definition.** A Tantivy
+schema is fixed at index creation; `field_defs` is not — adding a metadata field is something a customer
+does on a Tuesday afternoon. One Tantivy field per definition would make every field addition a **full
+reindex** of that tenant: hours for a million-asset library, with search degraded throughout. The JSON field
+means a definition change alters what is written and never the schema. The price is that per-field boosting
+moves from the schema to the query, which is a runtime choice rather than a migration. Reversible: yes, but
+only via a reindex — which is the cost being avoided.
+
+**Search 3 — a clause the index cannot answer is refused, not dropped.** Taxonomy and collection membership
+are relational and absent from the index, and substring matching would disagree with SQL's `ILIKE` at the
+margins. Silently dropping a filter clause returns **more** than the caller asked for, and the extra rows
+look like ordinary results. `dam_search::query::render` returns `Unsupported` naming the clause. Reversible:
+yes — each becomes supported when it can be rendered *and* covered by the differential test.
+
 **Taxonomy 1 — terms are deprecated and superseded, never deleted.** `asset_tags` cascades on term
 deletion, so "retiring a duplicate term" would silently untag every asset that used it, and nobody would
 notice until a search came back empty. A merge therefore retags the assets to the survivor and retires

@@ -1,0 +1,251 @@
+//! Rendering the query IR into a Tantivy query (2.6) — §12's second consumer, and 0.10's remainder.
+//!
+//! The SQL renderer is `dam_db::query_sql`. Neither decides anything: the access rules were compiled in
+//! `dam_core::policy` and the query was validated in `dam_core::query`. §12's reason for that split is
+//! that divergence between the consumers is a data leak, and the differential test in this crate's tests
+//! is what keeps it honest — the same [`Planned`] through both back ends must return the same set.
+//!
+//! ## What Tantivy cannot answer, it refuses
+//!
+//! Taxonomy and collection membership are relational and are not in the index. A renderer that quietly
+//! dropped those clauses would return **more** than the caller asked for, which for a filter over a
+//! governed library is the wrong direction to be wrong in. So [`render`] returns
+//! [`Unsupported`](crate::Error::Unsupported) naming the clause, and a planner routes such queries through
+//! SQL or intersects the two.
+//!
+//! ## The access filter here is an optimisation; Postgres is the authority
+//!
+//! Group membership is written into the document at index time and changes in Postgres immediately. In the
+//! window between an administrator revoking a group and the asset being reindexed, the index is
+//! *permissive* — it still says the asset is in the group. Rendering the predicate here narrows the
+//! candidate set and keeps scoring sane; it is not what makes the answer correct.
+//!
+//! [`search`] therefore returns ids for Postgres to filter and hydrate with the same predicate. Tantivy
+//! ranks, Postgres authorises. Treating an eventually-consistent index as the gate on a governed library
+//! is the failure this note exists to prevent.
+
+use crate::schema::IndexSchema;
+use crate::{Error, Result};
+use dam_core::query::{Comparison, Endpoint, Literal, Planned, Query};
+use tantivy::query::{
+    AllQuery, BooleanQuery, EmptyQuery, ExistsQuery, Occur, PhraseQuery, Query as TantivyQuery,
+    RangeQuery, TermQuery, TermSetQuery,
+};
+use tantivy::schema::{IndexRecordOption, Term};
+
+/// Renders `planned` into a Tantivy query.
+pub fn render(planned: &Planned, schema: &IndexSchema) -> Result<Box<dyn TantivyQuery>> {
+    // A predicate that matches nothing short-circuits, exactly as in SQL. `EmptyQuery` rather than a
+    // filter that happens to exclude everything: the intent is visible and cannot be optimised away.
+    if planned.matches_nothing() {
+        return Ok(Box::new(EmptyQuery));
+    }
+
+    let mut clauses: Vec<(Occur, Box<dyn TantivyQuery>)> = Vec::new();
+
+    // Soft-deleted assets are excluded on every query, so this is a `MustNot` on the fixed field rather
+    // than something each caller adds.
+    clauses.push((
+        Occur::MustNot,
+        Box::new(TermQuery::new(
+            Term::from_field_bool(schema.deleted(), true),
+            IndexRecordOption::Basic,
+        )),
+    ));
+
+    if !planned.access().all_groups() {
+        let groups = planned.access().allowed_groups();
+        if groups.is_empty() {
+            // Scoped to no groups. Unreachable through `matches_nothing`, and rendered explicitly rather
+            // than left as an empty term set — an empty `TermSetQuery` matches nothing, but relying on
+            // that is relying on a library's edge case for a security property.
+            return Ok(Box::new(EmptyQuery));
+        }
+        let terms: Vec<Term> = groups
+            .iter()
+            .map(|id| Term::from_field_text(schema.group_ids(), &id.to_string()))
+            .collect();
+        clauses.push((Occur::Must, Box::new(TermSetQuery::new(terms))));
+    }
+
+    clauses.push((Occur::Must, render_query(planned.query(), schema)?));
+    Ok(Box::new(BooleanQuery::new(clauses)))
+}
+
+fn render_query(query: &Query, schema: &IndexSchema) -> Result<Box<dyn TantivyQuery>> {
+    let rendered: Box<dyn TantivyQuery> = match query {
+        Query::All => Box::new(AllQuery),
+        Query::Text(text) => render_text(text, schema),
+        Query::Field { key, op } => render_field(key, op, schema)?,
+        Query::Term { .. } => {
+            return Err(Error::Unsupported(
+                "taxonomy membership is relational and is not in the index; dropping the clause would \
+                 return more than the caller asked for, so it is refused and routed through SQL"
+                    .to_owned(),
+            ));
+        }
+        Query::InCollection(_) => {
+            return Err(Error::Unsupported(
+                "collection membership is relational and is not in the index".to_owned(),
+            ));
+        }
+        Query::And(children) => {
+            if children.is_empty() {
+                // The identity, matching SQL's `(true)`.
+                Box::new(AllQuery)
+            } else {
+                let mut clauses = Vec::with_capacity(children.len());
+                for child in children {
+                    clauses.push((Occur::Must, render_query(child, schema)?));
+                }
+                Box::new(BooleanQuery::new(clauses))
+            }
+        }
+        Query::Or(children) => {
+            if children.is_empty() {
+                // `false`, not "no filter". The SQL renderer has the same case for the same reason: an
+                // empty disjunction that matched everything would return the tenant's whole library.
+                Box::new(EmptyQuery)
+            } else {
+                let mut clauses = Vec::with_capacity(children.len());
+                for child in children {
+                    clauses.push((Occur::Should, render_query(child, schema)?));
+                }
+                Box::new(BooleanQuery::new(clauses))
+            }
+        }
+        Query::Not(inner) => {
+            // `MustNot` alone matches nothing in Tantivy, so the `Must(AllQuery)` is required rather than
+            // decorative — without it a negated query returns an empty set whatever it negates.
+            Box::new(BooleanQuery::new(vec![
+                (Occur::Must, Box::new(AllQuery) as Box<dyn TantivyQuery>),
+                (Occur::MustNot, render_query(inner, schema)?),
+            ]))
+        }
+    };
+    Ok(rendered)
+}
+
+/// Free text over the concatenated blob.
+///
+/// A multi-word input becomes a phrase query, because the shorthand only produces a multi-word
+/// [`Query::Text`] from a quoted phrase — an unquoted `beach holiday` arrives as two conjoined terms.
+fn render_text(text: &str, schema: &IndexSchema) -> Box<dyn TantivyQuery> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    match words.as_slice() {
+        [] => Box::new(AllQuery),
+        [single] => Box::new(TermQuery::new(
+            Term::from_field_text(schema.text(), &single.to_lowercase()),
+            IndexRecordOption::WithFreqs,
+        )),
+        many => {
+            let terms: Vec<Term> = many
+                .iter()
+                .map(|word| Term::from_field_text(schema.text(), &word.to_lowercase()))
+                .collect();
+            Box::new(PhraseQuery::new(terms))
+        }
+    }
+}
+
+fn render_field(key: &str, op: &Comparison, schema: &IndexSchema) -> Result<Box<dyn TantivyQuery>> {
+    let field = schema.metadata();
+    let rendered: Box<dyn TantivyQuery> = match op {
+        Comparison::Exists => Box::new(ExistsQuery::new(
+            format!("{}.{key}", crate::schema::METADATA),
+            true,
+        )),
+        Comparison::Missing => Box::new(BooleanQuery::new(vec![
+            (Occur::Must, Box::new(AllQuery) as Box<dyn TantivyQuery>),
+            (
+                Occur::MustNot,
+                Box::new(ExistsQuery::new(
+                    format!("{}.{key}", crate::schema::METADATA),
+                    true,
+                )),
+            ),
+        ])),
+        Comparison::Equals(literal) => Box::new(TermQuery::new(
+            json_term(field, key, literal)?,
+            IndexRecordOption::Basic,
+        )),
+        Comparison::NotEquals(literal) => Box::new(BooleanQuery::new(vec![
+            (Occur::Must, Box::new(AllQuery) as Box<dyn TantivyQuery>),
+            (
+                Occur::MustNot,
+                Box::new(TermQuery::new(
+                    json_term(field, key, literal)?,
+                    IndexRecordOption::Basic,
+                )),
+            ),
+        ])),
+        Comparison::Range { lower, upper } => render_range(field, key, lower, upper)?,
+        Comparison::Contains(_) | Comparison::StartsWith(_) => {
+            // Both are expressible with a regex or an automaton query, and both would then disagree with
+            // SQL's `ILIKE` at the margins — accent folding, tokenisation, case. Refused until the
+            // differential test can cover them rather than rendered approximately.
+            return Err(Error::Unsupported(format!(
+                "substring matching on {key} is not yet rendered here; SQL's ILIKE and a Tantivy \
+                 automaton disagree at the margins, and an approximate answer that differs between \
+                 back ends is what §12 forbids"
+            )));
+        }
+    };
+    Ok(rendered)
+}
+
+/// A term addressing `key` inside the JSON metadata field.
+fn json_term(field: tantivy::schema::Field, key: &str, literal: &Literal) -> Result<Term> {
+    let mut term = Term::from_field_json_path(field, key, false);
+    match literal {
+        // Lowercased: the JSON field is indexed with the default tokeniser, so a stored "Acme" is the
+        // token "acme". Comparing against the raw case would silently never match.
+        Literal::Text(text) => term.append_type_and_str(&text.to_lowercase()),
+        Literal::Uuid(id) => term.append_type_and_str(&id.to_string()),
+        Literal::Date(date) => term.append_type_and_str(&date.format("%Y-%m-%d").to_string()),
+        Literal::DateTime(at) => term.append_type_and_str(&at.to_rfc3339()),
+        Literal::Int(number) => term.append_type_and_fast_value(*number),
+        Literal::Bool(flag) => term.append_type_and_fast_value(*flag),
+        Literal::Decimal(number) => term.append_type_and_fast_value(*number),
+    }
+    Ok(term)
+}
+
+fn render_range(
+    field: tantivy::schema::Field,
+    key: &str,
+    lower: &Endpoint,
+    upper: &Endpoint,
+) -> Result<Box<dyn TantivyQuery>> {
+    use std::ops::Bound;
+
+    // `RangeQuery::new` derives the field it searches from whichever bound is set, so the term must carry
+    // the real field handle. Passing a placeholder id resolves to whatever field happens to hold that id
+    // — the query would run, against the wrong column, and return a plausible wrong answer.
+    let bound = |endpoint: &Endpoint| -> Result<Bound<Term>> {
+        Ok(match endpoint {
+            Endpoint::Unbounded => Bound::Unbounded,
+            Endpoint::Inclusive(literal) => Bound::Included(range_term(field, key, literal)?),
+            Endpoint::Exclusive(literal) => Bound::Excluded(range_term(field, key, literal)?),
+        })
+    };
+
+    Ok(Box::new(RangeQuery::new(bound(lower)?, bound(upper)?)))
+}
+
+/// A range endpoint term, addressing `key` inside the JSON field.
+fn range_term(field: tantivy::schema::Field, key: &str, literal: &Literal) -> Result<Term> {
+    let mut term = Term::from_field_json_path(field, key, false);
+    match literal {
+        Literal::Int(number) => term.append_type_and_fast_value(*number),
+        Literal::Decimal(number) => term.append_type_and_fast_value(*number),
+        Literal::Date(date) => term.append_type_and_str(&date.format("%Y-%m-%d").to_string()),
+        Literal::DateTime(at) => term.append_type_and_str(&at.to_rfc3339()),
+        other => {
+            return Err(Error::Unsupported(format!(
+                "a range endpoint of {other:?} has no ordering"
+            )));
+        }
+    }
+    Ok(term)
+}

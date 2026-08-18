@@ -16,10 +16,19 @@ winnow = { workspace = true }
 pgvector = { workspace = true }
 sqlx = { workspace = true }
 moka = { workspace = true }
+tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tempfile = { workspace = true }
+dam-db = { path = "../dam-db", features = ["testing"] }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"
