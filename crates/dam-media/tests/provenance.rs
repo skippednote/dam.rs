@@ -69,7 +69,7 @@ fn a_file_with_no_credentials_verifies_as_absent_not_invalid() {
     // near a C2PA-aware tool, and reporting them as `invalid` would flood the tamper-detection queue
     // with every ordinary photograph and make the real signal unfindable.
     let outcome = provenance::verify("image/jpeg", &plain_jpeg(32, 32)).expect("verify");
-    assert_eq!(outcome.state, ProvenanceState::Absent);
+    assert_eq!(outcome.state, ProvenanceState::None);
     assert!(
         outcome.manifest.is_none(),
         "there is nothing to store for an asset with no credentials"

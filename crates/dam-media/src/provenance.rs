@@ -36,6 +36,9 @@
 
 use c2pa::{Builder, Context, Reader, Signer, ValidationState, assertions};
 use dam_core::config::Environment;
+// Not a local enum. `dam_core::rights::ProvenanceState` already carries these four states and is the
+// wire vocabulary; a second definition here would be exactly the drift dam-core exists to prevent.
+pub use dam_core::rights::ProvenanceState;
 use std::io::Cursor;
 use std::sync::{Arc, LazyLock};
 
@@ -53,7 +56,7 @@ static CONTEXT: LazyLock<Arc<Context>> = LazyLock::new(|| Arc::new(Context::new(
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// The file could not be read at all — distinct from "has no credentials", which is
-    /// [`ProvenanceState::Absent`] and not an error.
+    /// [`ProvenanceState::None`] and not an error.
     #[error("could not read content credentials: {0}")]
     Unreadable(String),
 
@@ -76,35 +79,6 @@ type Result<T> = std::result::Result<T, Error>;
 /// also mean a CA-issued certificate per tenant, which is operationally infeasible.
 pub fn claim_generator() -> String {
     format!("damrs/{}", env!("CARGO_PKG_VERSION"))
-}
-
-/// The provenance verdict, matching `assets.provenance_state`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProvenanceState {
-    /// No credentials. Not a problem — most assets have never met a C2PA-aware tool.
-    Absent,
-    /// Verifies and chains to a root the trust list knows.
-    Valid,
-    /// The signature verifies; the signer is not recognised. Displayed differently from [`Self::Valid`]
-    /// on purpose — a manifest anyone can mint must not read as one an authority vouched for.
-    Untrusted,
-    /// The binding fails. Possible tampering, and the state the suspect index exists to surface.
-    Invalid,
-}
-
-impl ProvenanceState {
-    /// The value stored in `assets.provenance_state` / `provenance_manifests.validation_state`.
-    ///
-    /// Spelled out rather than derived from `Debug`, because a rename of a variant must not silently
-    /// change a database value that a CHECK constraint and a partial index both depend on.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Absent => "absent",
-            Self::Valid => "valid",
-            Self::Untrusted => "untrusted",
-            Self::Invalid => "invalid",
-        }
-    }
 }
 
 /// What verification found.
@@ -145,7 +119,7 @@ pub struct Verification {
 impl Verification {
     fn absent() -> Self {
         Self {
-            state: ProvenanceState::Absent,
+            state: ProvenanceState::None,
             manifest: None,
             signer_cn: None,
             claim_generator: None,

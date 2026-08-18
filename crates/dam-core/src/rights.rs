@@ -88,6 +88,7 @@ pub enum ProvenanceState {
 }
 
 impl ProvenanceState {
+    /// The value stored in `assets.provenance_state`.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::None => "none",
@@ -95,6 +96,29 @@ impl ProvenanceState {
             Self::Invalid => "invalid",
             Self::Untrusted => "untrusted",
         }
+    }
+
+    /// The value stored in `provenance_manifests.validation_state`.
+    ///
+    /// The same states, and the two columns spell the absent case differently: `assets` says `none`,
+    /// `provenance_manifests` says `absent`. Both CHECK constraints are already deployed, so this is a
+    /// rendering difference rather than a second enum — the alternative is two Rust types for one
+    /// concept, which is the drift the wire vocabulary lives in `dam-core` to prevent.
+    pub fn as_validation_state(self) -> &'static str {
+        match self {
+            Self::None => "absent",
+            Self::Valid => "valid",
+            Self::Invalid => "invalid",
+            Self::Untrusted => "untrusted",
+        }
+    }
+
+    /// Whether this state means credentials failed rather than were missing.
+    ///
+    /// The distinction the suspect index exists for: `invalid` and `untrusted` are findings, `none` is
+    /// the ordinary case, and showing them the same way would bury every real signal.
+    pub fn is_finding(self) -> bool {
+        matches!(self, Self::Invalid | Self::Untrusted)
     }
 }
 

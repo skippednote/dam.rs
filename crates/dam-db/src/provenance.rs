@@ -67,7 +67,8 @@ impl Role {
 pub struct NewManifest<'a> {
     pub object_key: &'a str,
     pub bytes: i64,
-    /// From `dam_media::provenance::ProvenanceState::as_str`.
+    /// From `dam_core::rights::ProvenanceState::as_validation_state` — *not* `as_str`, which
+    /// renders the `assets` column's vocabulary and spells the absent case `none` rather than `absent`.
     pub validation_state: &'a str,
     pub validation_detail: serde_json::Value,
     pub signer_cn: Option<&'a str>,
