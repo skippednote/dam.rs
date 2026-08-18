@@ -19,7 +19,7 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"   # raised from 1.85 by c2pa 0.90; see DECISIONS.md
 license = "Apache-2.0"
 repository = "https://github.com/skippednote/damrs"
 # Internal crates. Marking them unpublishable prevents an accidental `cargo publish`
@@ -118,6 +118,15 @@ uuid = { version = "1", features = ["v4", "v7", "serde"] }   # v7 for time-order
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
 blake3 = "1"            # content addressing
 base64 = "0.22"
+# Provenance (D13). Two features are pointedly absent.
+#
+# `openssl` is the default and is replaced by `rust_native_crypto`: a system OpenSSL is a build-time
+# dependency on every machine and container that compiles this, and the pure-Rust backend removes it.
+#
+# `fetch_remote_manifests` would make the reader dereference a URL found *inside an uploaded file*.
+# On an ingest path that is a server-side request forgery primitive handed to anyone who can upload,
+# and it is on by opt-in for exactly that reason. Cloud manifests are not worth it.
+c2pa = { version = "0.90", default-features = false, features = ["rust_native_crypto"] }
 url = { version = "2", features = ["serde"] }
 bytes = "1"
 mime = "0.3"

@@ -1086,6 +1086,21 @@ Rejecting the upload would stop a customer ingesting their own archive if any of
 tool that broke the chain. Stripping is forbidden by D13. So the asset exists, the broken chain is
 visible in `provenance_manifests`, and derivatives carry no credential. Reversible: yes.
 
+**C2PA 4 — the workspace MSRV rises from 1.85 to 1.88 to take c2pa 0.90.** Cargo silently resolves to
+c2pa 0.58 under a 1.85 floor, which is a materially older API. Nothing is published from this workspace
+and every build already uses the pinned 1.94 toolchain, so the floor was a declaration rather than a
+constraint anyone was meeting. Reversible: yes, by dropping the dependency.
+
+**C2PA 5 — `rust_native_crypto` instead of the default `openssl`, and `fetch_remote_manifests` stays
+off.** The first removes a system OpenSSL from every machine and container that compiles this. The second
+matters more: with it, the reader dereferences a URL found *inside an uploaded file*, which on an ingest
+path is a server-side request forgery primitive handed to anyone who can upload. Cloud-hosted manifests
+are not worth that. Reversible: the crypto backend yes; the remote fetch no.
+
+*Cost, recorded because the earlier estimate was wrong:* c2pa pulls **245** crates, not the 83 I
+estimated when assessing feasibility. It is still the only maintained Rust implementation, and D13 is not
+optional, so the conclusion stands — but the number should not go unremarked.
+
 **The access predicate renders into the query, never as a post-filter.** §7 gives the reason: pagination
 counts alone disclose the existence of assets a caller cannot see. The two are indistinguishable by row
 set and differ only in the count, so there is a test comparing `count(*)` with the rows and another

@@ -26,6 +26,8 @@ tokio = { workspace = true, features = ["process", "io-util", "time", "macros"] 
 tracing = { workspace = true }
 bytes = { workspace = true }
 
+c2pa = { workspace = true }
+
 [dev-dependencies]
 # The SeaweedFS harness: finalising is validated against a real server, since the ranged
 # reads it relies on are exactly what a fake would get wrong for free.

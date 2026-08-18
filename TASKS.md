@@ -397,10 +397,36 @@ Rules for autonomous runs:
   that it is present whenever `used_original`, an `enrichment_original_reads` view that joins the
   asset (filename and size, because "which files" and "what would a restore cost" are the first
   two questions), and a partial index so the alert can be polled cheaply forever.
-- [ ] **1.9 C2PA.** Verify on ingest, preserve inbound manifest, re-sign
+- [x] **1.9 C2PA.** Verify on ingest, preserve inbound manifest, re-sign
   derivatives. *Test first:* `provenance_gaps` is empty after deriving from an
   asset with credentials. **This is D13; a derivative pipeline that strips
   credentials is wrong, not incomplete.**
+  *Done:* `dam_media::provenance` (verify / preserve / sign, 12 cases) and `dam_db::provenance`
+  (record + the `provenance_gaps` query, 8 cases). c2pa 0.90.15.
+  *The state mapping was the thing to get right.* c2pa-rs reports `Valid` for a signature that
+  verifies and `Trusted` for one that also chains to a known root. Our `valid` means **trusted**;
+  `Valid` maps to `untrusted`. Collapsing them would display "credentials verified" for a manifest
+  anyone can mint, and collapsing `absent` into `invalid` would bury every real tamper signal under
+  every ordinary photograph.
+  *Four spec requirements found by testing, each of which produced a manifest that verified as
+  **invalid** — indistinguishable from a tampered file:* the chain must open with `c2pa.created` or
+  `c2pa.opened`; `c2pa.created` must carry a `digitalSourceType`; `c2pa.opened` must reference its
+  ingredient by a hashed URI that does not exist until the manifest is assembled; and `c2pa.opened`
+  requires a `parentOf` ingredient. The first action is therefore **not the caller's to build** —
+  `Provenance::{Created(Origin), DerivedFrom(Parent)}` drives `BuilderIntent`, which makes all four
+  unrepresentable. Also: the claim generator moved to `claim_generator_info` in claim v2, so reading
+  the flat field reported `None` for everything we sign.
+  *D15/G2 comes free:* `digitalSourceType` **is** the Article 50 machine-readable mark, so
+  `Origin::AlgorithmicMedia` writes it today and M5 is left with a database concern rather than a
+  manifest-format question.
+  *Two features deliberately off:* `openssl` (replaced by `rust_native_crypto`, removing a system
+  dependency from every build) and `fetch_remote_manifests` — the latter makes the reader dereference
+  a URL found **inside an uploaded file**, which on an ingest path is an SSRF primitive handed to
+  anyone who can upload.
+  *Costs:* MSRV 1.85 → 1.88 (cargo silently resolves to c2pa 0.58 otherwise), which turned on
+  clippy's let-chain lint and required one pre-existing fix in `dam-telemetry`. And c2pa pulls **245**
+  crates, not the 83 estimated during feasibility — recorded because the estimate was wrong, not
+  because the conclusion changed.
 - [x] **1.10 Lifecycle engine.** Done — 22 cases, pure logic. Dry-run default, `pinned`
   honoured unconditionally, `min_duration_until` respected with an inclusive boundary,
   `max_objects_per_run` halting *and reporting how many were left*. Mutation-checked: flipping

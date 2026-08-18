@@ -11,6 +11,7 @@ pub mod avprobe;
 pub mod derive;
 pub mod ingest;
 pub mod probe;
+pub mod provenance;
 pub mod proxy;
 pub mod sandbox;
 pub mod sniff;

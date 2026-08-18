@@ -214,12 +214,13 @@ pub struct Guard {
 
 impl Drop for Guard {
     fn drop(&mut self) {
-        if let Some(provider) = self.provider.take() {
-            if let Err(e) = provider.shutdown() {
-                // Nothing useful to do this late — the subscriber may already be
-                // torn down, so this goes to stderr rather than through tracing.
-                eprintln!("otlp shutdown failed: {e}");
-            }
+        // A let-chain, which the 1.88 MSRV makes available and clippy now requires.
+        if let Some(provider) = self.provider.take()
+            && let Err(e) = provider.shutdown()
+        {
+            // Nothing useful to do this late — the subscriber may already be
+            // torn down, so this goes to stderr rather than through tracing.
+            eprintln!("otlp shutdown failed: {e}");
         }
     }
 }
