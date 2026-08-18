@@ -29,6 +29,51 @@ use crate::Error;
 use dam_core::TenantSlug;
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 
+/// A pool pinned to one tenant's schema, for a single-tenant process.
+///
+/// **Not for the server.** The server holds one pool for every tenant and scopes each request with
+/// [`TenantConn`], because a pool per tenant at a thousand tenants is a thousand idle connection sets. This
+/// exists for `damctl`, which runs one command against one tenant and exits.
+///
+/// It is safe for that use in a way that setting `search_path` on a shared pool is not: the path is a
+/// **connect option**, so Postgres applies it as every connection in this pool starts up. There is no
+/// window in which a connection from this pool has a different path, which is exactly the failure the
+/// module docs above describe — a runtime `SET` reaching one connection while later queries take another.
+pub async fn single_tenant_pool(
+    url: &str,
+    slug: &TenantSlug,
+    max_connections: u32,
+) -> Result<PgPool, Error> {
+    use std::str::FromStr as _;
+
+    let schema = slug.schema_name();
+    let options = sqlx::postgres::PgConnectOptions::from_str(url)
+        .map_err(|e| Error::Migrate(format!("parsing the database url: {e}")))?
+        .options([(
+            "search_path",
+            format!("\"{schema}\",dam_global,extensions,public").as_str(),
+        )]);
+
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(max_connections.max(1))
+        .connect_with(options)
+        .await?;
+
+    // Checked up front, for the same reason `begin` checks: the alternative is every later query failing
+    // with its own "relation does not exist" while the real problem is that the tenant was never
+    // provisioned.
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = $1)",
+    )
+    .bind(&schema)
+    .fetch_one(&pool)
+    .await?;
+    if !exists {
+        return Err(Error::TenantNotProvisioned(schema));
+    }
+    Ok(pool)
+}
+
 /// A transaction whose `search_path` resolves one tenant's schema first.
 ///
 /// Drop without [`Self::commit`] rolls back, which is sqlx's `Transaction` behaviour

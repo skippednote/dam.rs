@@ -4,8 +4,10 @@
 //! tenants do not mean a thousand open indexes — see [`pool`] and ARCHITECTURE §19.
 
 pub mod document;
+pub mod eval_run;
 pub mod pool;
 pub mod query;
+pub mod reindex;
 pub mod schema;
 
 pub use document::AssetDocument;

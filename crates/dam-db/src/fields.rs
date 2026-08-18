@@ -71,6 +71,33 @@ where
         .collect()
 }
 
+/// The tenant's search aliases: `search_alias` → field key.
+///
+/// Separate from [`load`] because a `FieldDef` deliberately does not carry the alias — the alias is a search
+/// affordance rather than a property of the field, and the validator has no business knowing about it.
+pub async fn aliases<'e, E>(executor: E) -> Result<HashMap<String, String>, Error>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    let rows = sqlx::query_as::<_, (String, String)>(
+        "SELECT search_alias, key FROM field_defs WHERE search_alias IS NOT NULL",
+    )
+    .fetch_all(executor)
+    .await?;
+    Ok(rows.into_iter().collect())
+}
+
+/// The tenant's schema as the shorthand parser needs it.
+///
+/// Assembled here rather than at each call site, because a caller that loaded definitions and aliases
+/// separately could pair a fresh alias with a stale field list — and the symptom would be a shorthand key
+/// resolving to a field that no longer exists.
+pub async fn search_schema(pool: &sqlx::PgPool) -> Result<dam_core::shorthand::Schema, Error> {
+    let defs = load(pool).await?;
+    let aliases = aliases(pool).await?;
+    Ok(dam_core::shorthand::Schema::new(defs, aliases))
+}
+
 /// Validates `payload` against the tenant's field definitions, resolving taxonomy references.
 ///
 /// The definitions are loaded rather than passed in, so a caller cannot validate against a stale set —

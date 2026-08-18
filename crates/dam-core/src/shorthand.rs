@@ -58,6 +58,14 @@ impl Schema {
         Self { fields, aliases }
     }
 
+    /// The definitions, for a caller that needs to plan the query this schema parsed.
+    ///
+    /// Handing back the same list the parser resolved against is the point: planning against a separately
+    /// loaded set could validate a query the parser built from a field the planner has never heard of.
+    pub fn fields(&self) -> &[FieldDef] {
+        &self.fields
+    }
+
     /// Resolves a key or alias to a definition.
     fn resolve(&self, name: &str) -> Option<&FieldDef> {
         let key = self.aliases.get(name).map_or(name, String::as_str);

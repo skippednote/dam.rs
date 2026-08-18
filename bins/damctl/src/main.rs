@@ -37,6 +37,37 @@ enum Command {
     /// Print the resolved configuration. Secrets stay redacted.
     Config,
 
+    /// Rebuild a tenant's search index from Postgres.
+    ///
+    /// Postgres is the record and the index is derived, so this is the command that regenerates the
+    /// derived thing. It replaces the index in one commit: a reader sees the old index or the new one,
+    /// never a fraction of the library.
+    Reindex {
+        #[arg(long)]
+        tenant: String,
+        /// Rows per round trip.
+        #[arg(long, default_value_t = dam_search::reindex::DEFAULT_BATCH)]
+        batch: usize,
+    },
+
+    /// Score the tenant's relevance judgements against the live search path (G8).
+    ///
+    /// The point of the harness is that a ranking change reports its effect instead of being argued
+    /// about, so this is meant to be run before and after one. It exits non-zero when `--min-ndcg` is
+    /// not met, and also when any query in the corpus could not be run at all — a corpus that quietly
+    /// dropped its broken queries would score *better* the more of it broke.
+    Eval {
+        #[arg(long)]
+        tenant: String,
+        /// Scoring depth. nDCG@10 by default; a depth that varied between runs would make them
+        /// incomparable.
+        #[arg(long, default_value_t = dam_search::eval_run::DEFAULT_AT)]
+        at: usize,
+        /// Fail if the mean nDCG falls below this. For a CI gate on a ranking change.
+        #[arg(long)]
+        min_ndcg: Option<f64>,
+    },
+
     /// Print the OpenAPI document, or write it to `openapi.json`.
     ///
     /// The document is checked in so the wire contract appears in review diffs, and the test suite
@@ -150,6 +181,131 @@ async fn main() -> anyhow::Result<()> {
             }
         }
 
+        Command::Reindex { tenant, batch } => {
+            let slug = TenantSlug::new(&tenant).context("tenant slug")?;
+            let url = cfg.database.url.expose();
+            let tenant_pool =
+                dam_db::tenant_conn::single_tenant_pool(url, &slug, cfg.database.max_connections)
+                    .await
+                    .context("connecting to the tenant schema")?;
+            let defs = dam_db::fields::load(&tenant_pool)
+                .await
+                .context("loading the tenant's field definitions")?;
+            let index_schema = dam_search::IndexSchema::new(defs);
+            let indexes = search_pool(&cfg);
+
+            let stats =
+                dam_search::reindex::tenant(&tenant_pool, &indexes, &slug, &index_schema, batch)
+                    .await
+                    .context("reindexing")?;
+
+            tracing::info!(
+                tenant = %slug,
+                indexed = stats.indexed,
+                tombstones = stats.tombstones,
+                "reindex complete"
+            );
+            println!("indexed\t{}", stats.indexed);
+            println!("tombstones\t{}", stats.tombstones);
+        }
+
+        Command::Eval {
+            tenant,
+            at,
+            min_ndcg,
+        } => {
+            let slug = TenantSlug::new(&tenant).context("tenant slug")?;
+            let url = cfg.database.url.expose();
+
+            // Schema-scoped, like every other tenant read: the judgement corpus lives in the tenant's own
+            // schema so a customer's labels measure their own library rather than somebody else's
+            // vocabulary.
+            let tenant_pool =
+                dam_db::tenant_conn::single_tenant_pool(url, &slug, cfg.database.max_connections)
+                    .await
+                    .context("connecting to the tenant schema")?;
+
+            let corpus = dam_db::judgements::corpus(&tenant_pool)
+                .await
+                .context("loading the judgement corpus")?;
+            let parse_schema = dam_db::fields::search_schema(&tenant_pool)
+                .await
+                .context("loading the tenant's field definitions")?;
+            let index_schema = dam_search::IndexSchema::new(parse_schema.fields().to_vec());
+            let indexes = search_pool(&cfg);
+
+            // Unrestricted, and said out loud: a run under a restricted scope measures the ranking and
+            // the access filter together, and a regression that turns out to be a permission change is a
+            // different bug from a regression in relevance.
+            let access = dam_core::policy::compile(
+                &dam_core::policy::Grants::from(vec![dam_core::policy::Grant {
+                    permissions: vec!["asset:read".to_owned()],
+                    asset_group_ids: vec![],
+                    all_asset_groups: true,
+                    valid_from: None,
+                    valid_until: None,
+                    requires_eula: false,
+                    eula_accepted: true,
+                }]),
+                dam_core::policy::Action::Read,
+                chrono::Utc::now(),
+            );
+
+            let queries = corpus.len();
+            let run = dam_search::eval_run::run(
+                &indexes,
+                &slug,
+                &index_schema,
+                &parse_schema,
+                &access,
+                corpus,
+                at,
+            )
+            .await
+            .context("scoring the corpus")?;
+
+            println!("tenant\t{slug}");
+            println!("judged queries\t{queries}");
+            println!("scored\t{}", run.report.scoreable);
+            println!("unscoreable\t{}", run.report.unscoreable);
+            println!("refused\t{}", run.refused.len());
+            println!("at\t{}", run.at);
+            println!("mean nDCG\t{}", render_metric(run.report.mean_ndcg));
+            println!("MRR\t{}", render_metric(run.report.mrr));
+            for query in &run.report.queries {
+                println!(
+                    "query\t{}\tndcg={}\trr={}\tjudged={}\tunjudged_returned={}",
+                    query.query_text,
+                    render_metric(query.ndcg),
+                    render_metric(query.reciprocal_rank),
+                    query.judged_total,
+                    query.unjudged_returned
+                );
+            }
+            for refusal in &run.refused {
+                println!("refused\t{}\t{}", refusal.query_text, refusal.reason);
+            }
+
+            if !run.refused.is_empty() {
+                bail!(
+                    "{} of {queries} queries could not be run; the mean is over a different sample than \
+                     a clean run and must not be compared to one",
+                    run.refused.len()
+                );
+            }
+            if let Some(floor) = min_ndcg {
+                match run.report.mean_ndcg {
+                    // `None` fails the gate rather than passing it: an unlabelled corpus cannot clear a
+                    // floor, and treating "nothing to measure" as a pass is how a gate stops gating.
+                    None => bail!("no query was scoreable, so --min-ndcg {floor} cannot be met"),
+                    Some(mean) if mean < floor => {
+                        bail!("mean nDCG {mean:.4} is below the --min-ndcg floor of {floor}")
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+
         Command::Config => {
             // Debug on Config is safe by construction: every secret is a
             // `Secret<T>`, which refuses to render. Asserted in dam-core's tests.
@@ -157,6 +313,28 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// The index pool, built from configuration.
+///
+/// One place, so `reindex` and `eval` cannot disagree about where a tenant's index lives — an eval run
+/// against an empty directory would report a total relevance collapse and send somebody looking at the
+/// ranker.
+fn search_pool(cfg: &Config) -> dam_search::IndexPool {
+    dam_search::IndexPool::new(
+        dam_search::PoolConfig::new(&cfg.search.index_root)
+            .with_max_open_indexes(cfg.search.max_open_indexes)
+            .with_max_open_writers(cfg.search.max_open_writers)
+            .with_writer_memory_bytes(cfg.search.writer_memory_mib * 1024 * 1024),
+    )
+}
+
+/// A metric, or why there isn't one.
+///
+/// `None` prints as `n/a` and never as `0` or `1.0`: an unscoreable query is a query nobody labelled, and
+/// rendering that as either a perfect or a failing score is how an eval report starts lying.
+fn render_metric(value: Option<f64>) -> String {
+    value.map_or_else(|| "n/a".to_owned(), |v| format!("{v:.4}"))
 }
 
 async fn connect(url: &str, cfg: &Config) -> anyhow::Result<sqlx::PgPool> {

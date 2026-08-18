@@ -13,6 +13,7 @@
 pub mod clock;
 pub mod config;
 pub mod error;
+pub mod eval;
 pub mod fields;
 pub mod policy;
 pub mod query;

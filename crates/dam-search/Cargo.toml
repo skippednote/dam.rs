@@ -29,6 +29,8 @@ dam-db = { path = "../dam-db", features = ["testing"] }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+blake3 = { workspace = true }
+sqlx = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"

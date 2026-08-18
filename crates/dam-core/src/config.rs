@@ -46,6 +46,7 @@ pub struct Config {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
     pub storage: StorageConfig,
+    pub search: SearchConfig,
     pub telemetry: TelemetryConfig,
 }
 
@@ -88,6 +89,21 @@ pub struct StorageConfig {
     pub multipart_part_mib: u64,
 }
 
+/// Where the per-tenant Tantivy indexes live (§19).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SearchConfig {
+    /// Root directory holding one subdirectory per tenant.
+    pub index_root: std::path::PathBuf,
+    /// How many tenant indexes may be open at once. §19's LRU bound: at a thousand tenants the working
+    /// set is what fits in file descriptors and page cache, and cold-open latency sits on p99.
+    pub max_open_indexes: u64,
+    /// How many writers may be open at once. Far smaller than the reader bound — a writer holds a heap
+    /// arena, so this is the memory knob.
+    pub max_open_writers: u64,
+    pub writer_memory_mib: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TelemetryConfig {
@@ -111,7 +127,21 @@ impl Default for Config {
             server: ServerConfig::default(),
             database: DatabaseConfig::default(),
             storage: StorageConfig::default(),
+            search: SearchConfig::default(),
             telemetry: TelemetryConfig::default(),
+        }
+    }
+}
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        Self {
+            // Under the working directory, not `/var/lib`: a default that needs root to create is a
+            // default that fails on a developer's first run.
+            index_root: std::path::PathBuf::from("./data/search"),
+            max_open_indexes: 64,
+            max_open_writers: 4,
+            writer_memory_mib: 64,
         }
     }
 }

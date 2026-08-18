@@ -1988,6 +1988,7 @@ dependencies = [
 name = "dam-search"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "chrono",
  "dam-core",
  "dam-db",
@@ -2073,6 +2074,7 @@ name = "damctl"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "dam-api",
  "dam-core",

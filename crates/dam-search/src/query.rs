@@ -33,6 +33,61 @@ use tantivy::query::{
 };
 use tantivy::schema::{IndexRecordOption, Term};
 
+/// The ids `planned` matches, **best first**.
+///
+/// The ordered counterpart to [`render`], and the input the eval harness scores. nDCG and MRR are functions of
+/// position, so a set-valued accessor makes every ranking indistinguishable — which is the state 2.9 exists to end.
+///
+/// Ties break on document address, so the order is deterministic for a given index state. It is not stable across
+/// a reindex that lays segments out differently, which is why an eval run reports a corpus rather than asserting
+/// exact positions.
+///
+/// The access predicate is rendered here as it is in [`render`] — see the module docs for why that narrows the
+/// candidate set rather than authorising it. Postgres filters and hydrates the ids this returns, with the same
+/// predicate.
+pub fn search(
+    open: &crate::pool::OpenIndex,
+    schema: &IndexSchema,
+    planned: &Planned,
+    limit: usize,
+) -> Result<Vec<uuid::Uuid>> {
+    // Refusals happen before any searching, so this cannot become a way around them: a dropped taxonomy clause
+    // would return more than the caller asked for whether the results were ordered or not.
+    let query = render(planned, schema)?;
+
+    let searcher = open.searcher();
+    // `order_by_score` is what makes this ordered: in tantivy 0.26 a bare `TopDocs` is not a collector at all
+    // until it is told what to order by, which is a good deal more honest than defaulting silently.
+    let hits = searcher.search(
+        &query,
+        &tantivy::collector::TopDocs::with_limit(limit.max(1)).order_by_score(),
+    )?;
+
+    let mut ids = Vec::with_capacity(hits.len());
+    for (_score, address) in hits {
+        let doc: tantivy::TantivyDocument = searcher.doc(address)?;
+        let raw = doc
+            .get_first(schema.asset_id())
+            .and_then(|value| {
+                use tantivy::schema::Value as _;
+                value.as_str().map(str::to_owned)
+            })
+            .ok_or_else(|| {
+                Error::Tantivy(format!(
+                    "indexed document at {address:?} has no stored asset id"
+                ))
+            })?;
+        // A malformed id is an error rather than a skipped hit: silently dropping one would make a ranking look
+        // worse than it is, and the eval harness would report a regression the ranking did not cause.
+        ids.push(
+            uuid::Uuid::parse_str(&raw).map_err(|e| {
+                Error::Tantivy(format!("stored asset id {raw:?} is not a uuid: {e}"))
+            })?,
+        );
+    }
+    Ok(ids)
+}
+
 /// Renders `planned` into a Tantivy query.
 pub fn render(planned: &Planned, schema: &IndexSchema) -> Result<Box<dyn TantivyQuery>> {
     // A predicate that matches nothing short-circuits, exactly as in SQL. `EmptyQuery` rather than a
