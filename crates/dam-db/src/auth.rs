@@ -189,13 +189,22 @@ pub async fn authenticate(
 ///
 /// `global` supplies the membership, `tenant` the role definitions — they live in different schemas, and
 /// the split is the D2 boundary rather than an accident.
-pub async fn grants_for(
+///
+/// The tenant side is any [`sqlx::PgExecutor`], which in a request is a [`crate::TenantConn`]'s
+/// connection: the unqualified `FROM roles` below resolves through that transaction's `search_path`, so
+/// passing a pool whose search_path is the *global* schema would read the wrong table — or, worse, no
+/// table and therefore no grants, which fails closed but looks like a permissions bug. A per-tenant pool
+/// would avoid that and reintroduce the thousand-pools problem §5.2 exists to prevent.
+pub async fn grants_for<'e, E>(
     global: &PgPool,
-    tenant: &PgPool,
+    tenant: E,
     tenant_id: Uuid,
     identity_id: Uuid,
     scopes: &[&str],
-) -> Result<Grants, Error> {
+) -> Result<Grants, Error>
+where
+    E: sqlx::PgExecutor<'e>,
+{
     let membership = sqlx::query_as::<_, (Vec<String>, bool)>(
         "SELECT role_names, is_tenant_admin FROM dam_global.tenant_members \
          WHERE tenant_id = $1 AND identity_id = $2",

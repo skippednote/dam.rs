@@ -4,3 +4,4 @@
 
 pub mod dto;
 pub mod openapi;
+pub mod tus;

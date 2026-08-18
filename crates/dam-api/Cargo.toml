@@ -27,10 +27,17 @@ subtle = { workspace = true }
 governor = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+base64 = { workspace = true }
+sqlx = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+dam-db = { path = "../dam-db", features = ["testing"] }
+dam-store = { path = "../dam-store" }
 
 [lints.rust]
 unsafe_code = "forbid"

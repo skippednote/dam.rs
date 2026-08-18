@@ -41,7 +41,7 @@ pub mod testing;
 
 pub use content::{Digest, Ingested, StreamHasher};
 pub use fake::FakeS3Store;
-pub use key::Key;
+pub use key::{Key, validate_upload_id};
 pub use lifecycle::{LifecyclePolicy, Plan};
 pub use multipart::{MIN_PART_SIZE, MultipartUpload};
 pub use pool::{PlacementRef, PoolRegistry, PoolSpec, Rate, ReadPlan};

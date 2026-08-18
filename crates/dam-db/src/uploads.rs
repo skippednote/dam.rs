@@ -100,18 +100,21 @@ where
     let row = sqlx::query(
         "SELECT tenant_id, upload_id, status, offset_bytes, declared_length, \
                 backend_upload_id, part_count, tail_bytes, parts \
-         FROM upload_sessions WHERE upload_id = $1",
+         FROM upload_sessions WHERE upload_id = $1 AND tenant_id = $2",
     )
     .bind(upload_id)
+    .bind(tenant)
     .fetch_optional(executor)
     .await?;
 
     let Some(row) = row else { return Ok(None) };
     let session = from_row(&row)?;
     if session.tenant != tenant {
-        // The pool is already scoped to one tenant's schema, so this can only mean the caller
-        // and the row disagree about who owns the upload. Refusing beats resuming into the
-        // wrong tenant's key prefix.
+        // Unreachable through the query above, and kept anyway. The predicate is what makes a
+        // wrong-tenant lookup return `None` — indistinguishable from a missing upload, which is
+        // the answer the HTTP layer needs to avoid confirming that someone else's id exists. If
+        // that predicate is ever edited away, this turns the resulting cross-tenant read into a
+        // loud failure instead of a silent success.
         return Err(Error::Inconsistent(format!(
             "upload session {upload_id} belongs to tenant {} but was loaded as {tenant}",
             session.tenant

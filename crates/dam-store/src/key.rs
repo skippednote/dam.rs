@@ -16,6 +16,34 @@ use uuid::Uuid;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Key(String);
 
+/// Whether `upload_id` is a shape this system ever issues.
+///
+/// Public because the rule has two consumers and must not be written twice. [`Key::staging`] applies it
+/// so a hostile id cannot steer a write outside its tenant prefix; the HTTP layer applies it at the edge
+/// so a hostile id never reaches the database at all. That second use is not belt-and-braces — a NUL
+/// byte in an id is rejected by Postgres itself, which surfaced as a `500` where a `404` belonged, and a
+/// status that differs by input is the disclosure the 404-for-everything rule exists to prevent.
+///
+/// Alphanumeric, `-` and `_`: a superset of the hex ids we generate, chosen so a ULID or a UUID in any
+/// common rendering passes, and nothing that means anything to a path, a shell, or a query does.
+pub fn validate_upload_id(upload_id: &str) -> Result<(), Error> {
+    if upload_id.is_empty() || upload_id.len() > 64 {
+        return Err(Error::Backend(format!(
+            "upload id must be 1-64 characters, got {}",
+            upload_id.len()
+        )));
+    }
+    if !upload_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(Error::Backend(format!(
+            "upload id must be alphanumeric, '-' or '_': {upload_id:?}"
+        )));
+    }
+    Ok(())
+}
+
 impl Key {
     /// Validates and wraps.
     pub fn new(s: impl Into<String>) -> Result<Self, Error> {
@@ -105,20 +133,7 @@ impl Key {
     /// digest: a client-supplied id would make this the one place a caller could steer a
     /// write outside its own prefix.
     pub fn staging(tenant: Uuid, upload_id: &str) -> Result<Self, Error> {
-        if upload_id.is_empty() || upload_id.len() > 64 {
-            return Err(Error::Backend(format!(
-                "upload id must be 1-64 characters, got {}",
-                upload_id.len()
-            )));
-        }
-        if !upload_id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-        {
-            return Err(Error::Backend(format!(
-                "upload id must be alphanumeric, '-' or '_': {upload_id:?}"
-            )));
-        }
+        validate_upload_id(upload_id)?;
         Self::new(format!("{tenant}/staging/{upload_id}"))
     }
 
