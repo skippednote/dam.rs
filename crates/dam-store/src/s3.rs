@@ -34,6 +34,45 @@ use chrono::{DateTime, Utc};
 use dam_core::{LatencyClass, RestoreState, RestoreTier, StorageClass};
 use std::time::Duration;
 
+/// Retries per operation, including the first attempt.
+///
+/// **`aws_sdk_s3::Config::builder()` applies no retry policy at all** — only `aws_config::defaults()`
+/// does, and that is not the path a non-AWS endpoint takes. So every operation against a self-hosted
+/// gateway ran with retries disabled, which is exactly backwards: a MinIO or SeaweedFS deployment is
+/// more likely to return a transient `500` than AWS is, and a 40-part upload that fails outright on one
+/// of them loses the whole upload.
+///
+/// Found by a test suite failing three separate times on a SeaweedFS `InternalError` whose own response
+/// was marked `retryable: true`.
+const MAX_ATTEMPTS: u32 = 5;
+
+/// Ceiling on one attempt, so a stalled connection cannot hold a worker forever.
+///
+/// Per *attempt*, not per operation: a multipart part upload can legitimately take minutes, and a
+/// deadline on the whole operation would cancel healthy slow transfers along with dead ones.
+const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long to wait for the connection itself. Short, because a wrong endpoint should fail fast.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The retry and timeout policy, applied to both constructors.
+///
+/// Stated on the AWS path too, rather than inherited from `aws_config::defaults()`. Two paths with
+/// different resilience is the bug this function exists to remove, and one of them being implicit is
+/// how it stayed invisible.
+fn resilience() -> (
+    aws_config::retry::RetryConfig,
+    aws_config::timeout::TimeoutConfig,
+) {
+    (
+        aws_config::retry::RetryConfig::standard().with_max_attempts(MAX_ATTEMPTS),
+        aws_config::timeout::TimeoutConfig::builder()
+            .operation_attempt_timeout(ATTEMPT_TIMEOUT)
+            .connect_timeout(CONNECT_TIMEOUT)
+            .build(),
+    )
+}
+
 /// S3-compatible blob store.
 #[derive(Debug, Clone)]
 pub struct S3Store {
@@ -47,8 +86,11 @@ pub struct S3Store {
 impl S3Store {
     /// A store against real AWS S3, using the ambient credential chain.
     pub async fn aws(bucket: &str, region: &str) -> Self {
+        let (retry, timeout) = resilience();
         let conf = aws_config::defaults(BehaviorVersion::latest())
             .region(Region::new(region.to_owned()))
+            .retry_config(retry)
+            .timeout_config(timeout)
             .load()
             .await;
         Self {
@@ -58,6 +100,18 @@ impl S3Store {
             latency_class: LatencyClass::Instant,
             driver: "s3",
         }
+    }
+
+    /// Retry attempts this store is configured for, including the first.
+    ///
+    /// Exposed so the policy can be asserted. `Config::builder()` silently defaults to no retries, and
+    /// nothing about a store with retries disabled looks different until a backend returns a transient
+    /// error under load — which is a bad time to find out.
+    pub fn max_attempts(&self) -> Option<u32> {
+        self.client
+            .config()
+            .retry_config()
+            .map(|c| c.max_attempts())
     }
 
     /// A store against a non-AWS S3-compatible endpoint with static credentials.
@@ -74,12 +128,15 @@ impl S3Store {
         driver: &'static str,
     ) -> Self {
         let creds = Credentials::new(access_key, secret_key, None, None, "damrs-static");
+        let (retry, timeout) = resilience();
         let conf = aws_sdk_s3::Config::builder()
             .behavior_version(BehaviorVersion::latest())
             .region(Region::new(region.to_owned()))
             .endpoint_url(endpoint)
             .credentials_provider(creds)
             .force_path_style(true)
+            .retry_config(retry)
+            .timeout_config(timeout)
             .build();
         Self {
             client: Client::from_conf(conf),

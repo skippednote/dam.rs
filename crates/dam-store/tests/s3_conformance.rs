@@ -236,3 +236,30 @@ async fn a_5mib_body_survives_a_round_trip_through_a_real_server() {
         GetOutcome::NotAvailable(_) => panic!("unexpected cold object"),
     }
 }
+
+#[tokio::test]
+async fn the_compatible_path_retries_transient_backend_errors() {
+    // Not a style preference. `aws_sdk_s3::Config::builder()` applies **no** retry policy — only
+    // `aws_config::defaults()` does, and a non-AWS endpoint does not go through it. So every operation
+    // against a self-hosted gateway ran with retries disabled, which is backwards: a MinIO or SeaweedFS
+    // deployment returns a transient 500 more readily than AWS, and a 40-part upload that fails outright
+    // on one of them loses the whole upload.
+    //
+    // This was found by three separate suites failing on a SeaweedFS `InternalError` whose own response
+    // carried `retryable: true`. Asserted rather than trusted, because a store with retries disabled
+    // looks identical to one without until a backend has a bad minute.
+    let store = dam_store::S3Store::compatible(
+        "http://127.0.0.1:1",
+        "damrs-test",
+        "us-east-1",
+        "key",
+        "secret",
+        dam_store::Capabilities::full(),
+        "test",
+    );
+    assert_eq!(
+        store.max_attempts(),
+        Some(5),
+        "the S3-compatible path must retry; nothing here ever contacts the endpoint"
+    );
+}
