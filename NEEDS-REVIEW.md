@@ -1,3 +1,23 @@
+# Answered — decisions delegated, 2026-08-18
+
+You said "complete m0 and m1 and then complete m2 and m3". Every open question below carried a
+recommendation, so I am reading that as: proceed on the recommendations. Each is now recorded in
+DECISIONS.md as adopted, with the fact that it was delegated rather than separately approved — so a
+later reader can see which calls were mine.
+
+**Two questions had no recommendation and I have now made one** (both in DECISIONS.md, both
+reversible): C2PA signs as one damrs identity per deployment rather than per tenant, and signing is
+refused outside development unless a real certificate is configured.
+
+**One item I still cannot do:** `brew install vips`. My write approval is scoped to this repository
+and a Homebrew install writes to `/opt/homebrew`. Run `! brew install vips` when convenient and the
+RAW/PSD/INDD path activates; everything else in 1.7 proceeds without it.
+
+The original text is kept below, because the reasoning behind each recommendation is the record of
+why the system behaves the way it does.
+
+---
+
 # Blocked — needs your decision
 
 Task **0.10 (ABAC predicate compiler)** is stopped per the standing rule: stop if a task

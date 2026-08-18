@@ -455,6 +455,49 @@ Rules for autonomous runs:
 
 ---
 
+## M2 — Metadata, search, rights
+
+Scope from ARCHITECTURE §13: metadata schema engine, taxonomies, collections, Tantivy, faceted +
+shorthand search, the rights model (G4), and the eval harness (G8).
+
+- [ ] **2.1 Field definitions and validation.** `field_defs` → a validator that accepts or refuses a
+  metadata payload. Every `kind` in the CHECK, `multivalued`, `required`, `read_only`. *Test first:* a
+  `taxonomy_ref` field refuses a term from the wrong taxonomy.
+- [ ] **2.2 Taxonomies.** `ltree` paths, move/merge/deprecate, and the rule that a deprecated term stays
+  resolvable so old assets keep their meaning.
+- [ ] **2.3 Collections.** Membership, ordering, `pin_hot` interaction with the lifecycle engine.
+- [ ] **2.4 Query IR.** One parsed representation shared by SQL and Tantivy, with the access predicate
+  as an injected term rather than a post-filter (§7, §12).
+- [ ] **2.5 Shorthand search syntax.** `bra:acme`, quoted phrases, ranges, negation. *Test first:* an
+  unclosed quote is a parse error with a column, not a silent whole-string match.
+- [ ] **2.6 Tantivy index per tenant.** Schema derived from `field_defs`, an LRU writer pool (§19), and
+  a cold-open path. *Test first:* 1,000 tenants do not open 1,000 indexes.
+- [ ] **2.7 Faceted search.** Fast fields, counts that respect the access predicate.
+- [ ] **2.8 Rights model (G4).** Licences, scopes, releases, and the distribution chokepoint that D12
+  requires — enforced, not recorded.
+- [ ] **2.9 Search eval harness (G8).** `relevance_judgements` → nDCG/MRR over a fixture corpus, wired
+  so a ranking change reports its effect instead of being argued about.
+- [ ] **2.10 Bulk operations (G18).** `bulk_operations`, dry-run first, per-item outcomes, resumable.
+
+## M3 — Delivery, sharing, restore
+
+Scope from §13: signed transform delivery, embeds, CDN, video + HLS, share links, restore flow with
+cost guards, notifications/Paths (G9), saved searches (G15).
+
+- [ ] **3.1 Signed transform URLs.** The one chokepoint every download passes through, so rights and
+  ABAC are enforced by the delivery design rather than by a caller remembering (D12).
+- [ ] **3.2 Derivative delivery + cache.** `op_hash` keyed, with the profile and intent in the key.
+- [ ] **3.3 Share links.** Passcode, expiry, download limits, revocation — and revocation that takes
+  effect on an already-issued URL.
+- [ ] **3.4 Restore flow (§6.5).** `202` with an ETA and a cost estimate, batching sibling requests, and
+  the expiry sweep. ffmpeg is mise-installable, so video lands here.
+- [ ] **3.5 Video and HLS.** ffmpeg in the subprocess sandbox, loudness normalisation, the 720p H.264
+  master proxy §2 specifies.
+- [ ] **3.6 Notifications and Paths (G9).** `paths`, `path_firings`, and delivery that is idempotent
+  under retry.
+- [ ] **3.7 Saved searches (G15).** Stored query IR, re-evaluated against current access rather than the
+  access at save time.
+
 ## State at the end of the overnight run
 
 Everything actionable is done. **370 Rust tests + 70 frontend unit/component tests + 11 browser

@@ -1035,3 +1035,53 @@ explanation becomes a list of invented rules. Reversible: no.
 (`3e+06px`), which reads as invalid CSS while laying out correctly. An assertion on `style.height`
 reported a bug that did not exist. `getBoundingClientRect` is the honest measurement, and a probe test
 pins the platform behaviour so a future clamp is caught rather than assumed. Reversible: no.
+
+
+---
+
+## Delegated decisions, adopted 2026-08-18
+
+Asked to "complete m0 and m1 and then complete m2 and m3" with every open question already carrying a
+recommendation. Recorded here as adopted-by-delegation rather than separately approved, so a later
+reader can tell which calls were mine.
+
+**ABAC 1 — multiple roles combine as a union.** A user with `contributor` on {A,B} and `reviewer` on
+{B,C} sees {A,B,C}. Intersection would mean granting someone an extra role *reduced* their access,
+which no administrator expects. Reversible: yes.
+
+**ABAC 2 — an unreleased or expired asset stays visible but is not downloadable.** Someone has to find
+an expired asset in order to renew its licence, and a librarian needs to see next week's embargoed
+campaign in order to tag it. The download refusal carries a reason code so the UI can say "licence
+expired 14 Aug" rather than silently omitting the asset — an asset that vanishes on expiry is one
+nobody renews. Reversible: yes.
+
+**ABAC 3 — `requires_eula` gates download and derivative delivery, not visibility.** Browsing is what
+tells someone the EULA is worth accepting; gating search results makes an unaccepted EULA look like an
+empty library, which reads as a broken product. Reversible: yes.
+
+**ABAC 4 — rule-based groups are evaluated live inside the predicate.** Correct-then-fast: a
+materialised membership table is faster but lets access lag a metadata change. Revisit at M2 when the
+Tantivy side is measurable; if it shows up in p99 latency the fix is materialisation *with a stated
+staleness bound*. Reversible: yes, and expected to be revisited.
+
+**ABAC 5 — `all_asset_groups` bypasses group scoping and release windows, but not expiry, legal hold,
+or `rights_state = 'denied'`.** An administrator manages the library, so unreleased assets must be
+reachable; a lapsed licence is a legal fact about the asset rather than a permission anyone holds.
+Under the alternative, "administrator" silently becomes "may commit a rights violation" — the exact
+failure D12 exists to prevent, and invisible in an audit because the download would look authorised.
+Reversible: yes, but this is the one I would want re-confirmed before it changes.
+
+**C2PA 1 — damrs signs as one identity per deployment, not per tenant.** A C2PA signature attests to
+who *performed the transform*, and that is the service, not the customer whose asset it was. Per-tenant
+certificates would also mean provisioning a CA-issued certificate per tenant, which is operationally
+infeasible. The tenant travels as assertion metadata instead. Reversible: yes.
+
+**C2PA 2 — development may sign with the c2pa-rs test certificate; anything else refuses.** Signing is
+enabled only when a certificate is configured, and a test certificate is refused unless
+`environment = development`. A test-signed credential in production is worse than none: it looks like
+provenance and verifies against nothing. Reversible: no.
+
+**C2PA 3 — an inbound manifest that fails validation is accepted, recorded, and not re-signed.**
+Rejecting the upload would stop a customer ingesting their own archive if any of it was re-saved by a
+tool that broke the chain. Stripping is forbidden by D13. So the asset exists, the broken chain is
+visible in `provenance_manifests`, and derivatives carry no credential. Reversible: yes.
