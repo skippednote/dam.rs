@@ -20,6 +20,7 @@ pub mod provision;
 pub mod query_sql;
 pub mod restores;
 pub mod rights;
+pub mod saved_searches;
 pub mod shares;
 pub mod taxonomy;
 pub mod tenant_conn;

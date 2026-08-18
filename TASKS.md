@@ -962,8 +962,26 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   right side to fail on, so the firing is recorded first and the digest key is handed to the provider as **its**
   idempotency key, which is where the duplicate actually collapses. The module docs say so rather than claiming
   the ledger alone suffices.
-- [ ] **3.7 Saved searches (G15).** Stored query IR, re-evaluated against current access rather than the
+- [x] **3.7 Saved searches (G15).** Stored query IR, re-evaluated against current access rather than the
   access at save time.
+  *Done:* `dam_db::saved_searches` — 14 cases. **M3's backend is complete.**
+  *The named property decides whether sharing is safe at all.* Store the results, or store the query with its
+  access filter baked in, and a search saved by an administrator becomes a permanent leak wearing the shape of a
+  bookmark. Only the *user's* query is stored; the predicate is compiled fresh for whoever opens it, and
+  `Planned::new` is the single join point — there is no variant taking a stored predicate. Asserted on the
+  **stored bytes**, not inferred from behaviour: no group id, no `asset_group_members`, no `deleted_at`.
+  *Sharing shares the question, never the answer* — a separate test opens a shared search as a scoped viewer and
+  confirms the saver's hidden results stay hidden.
+  *Two fallbacks that would each turn a broken bookmark into "every asset",* both mutation-verified: an
+  unreadable stored shape is **refused**, not read as `Query::All`; and a clause naming a since-deleted field is
+  **refused**, not dropped — dropping widens the result set, the same argument `dam_core::query` makes.
+  *The stored form is a wire format,* so it is hand-written rather than derived: a derive would rename itself out
+  from under existing rows the first time somebody reordered the enum. Literal types are **tagged**, because
+  `2026` could be an int, a decimal or a year in a text field, and guessing on load compares the wrong column
+  type — silently wrong results rather than an error. 17 query shapes round-trip exactly.
+  *`result_count` is a badge, not the viewer's count.* It is stored per search rather than per viewer, so it is
+  at best somebody else's number, and presenting it as *the* count would leak how many assets exist beyond a
+  viewer's scope — §7's disclosure in a sidebar.
 
 ## State at the end of the overnight run
 
