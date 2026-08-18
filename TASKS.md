@@ -327,8 +327,23 @@ Rules for autonomous runs:
   *Surprise:* my integration loop asserted a 1-page PDF reports `Some(1)` while the unit test next to
   it asserted `None` — the two contradicted each other directly. `None` is right: a JPEG is not a
   one-page document, and storing 1 for every photograph makes documents unfilterable.
-  *Still to do in 1.7:* vips-backed derivative rendering, so libvips is the *primary* path rather
-  than only the probe; ICC transforms at delivery (D11); and audio probing.
+  *Part done:* vips-backed rendering (`vips::render`, 9 cases), which makes libvips the *primary* path
+  and lands **D11** — the ICC handling §18.1 calls "non-negotiable for any brand or print library".
+  `image` has no colour management at all, so this is the half that makes D11 real.
+  *The colour tests assert on pixels, not metadata.* An embedded profile proves a profile is embedded,
+  not that the transform ran; swapping the tag without converting looks correct in every metadata check
+  and is wrong on screen. Measured: P3 red `230 49 35` → sRGB `251 0 5`, and unchanged when no output
+  profile is set (D11's "masters keep their profile"). My first attempt compared profile *bytes* and
+  would have passed regardless — the two profiles share an identical ICC header.
+  *Surprise — `vipsthumbnail` upscales by default.* A 64x48 source asked for 2048x2048 came back
+  2048x1536, while the pure-Rust path caps at the source. The `>` size modifier fixes it. Two renderers
+  disagreeing on every small asset is a bug nobody finds until they compare two derivatives of one file.
+  *Surprise — rendering intents do nothing between matrix profiles.* All four intents gave identical
+  pixels for P3→sRGB, which is correct ICC behaviour: both are matrix/TRC with a shared D65 white point.
+  Intents diverge for LUT profiles, and CMYK is one — relative `232 31 42` against perceptual
+  `232 0 0` — which is exactly D11's print case. Both facts are now tests, because the next person will
+  reasonably expect P3 to behave like CMYK.
+  *Still to do in 1.7:* audio probing (ffmpeg is installed; video derivatives are M3.5).
 - [x] **1.8 Master proxy.** Done — 15 media cases + 4 database cases, plus migration 0010.
   *The invariant is structural, not documentary.* An enrichment stage takes an
   `EnrichmentSource`, whose only alarm-free constructor **refuses any key outside the `p/`

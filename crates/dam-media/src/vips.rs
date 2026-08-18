@@ -47,6 +47,7 @@ type Result<T> = std::result::Result<T, Error>;
 pub struct Toolchain {
     vips: PathBuf,
     vipsheader: PathBuf,
+    vipsthumbnail: PathBuf,
 }
 
 impl Toolchain {
@@ -74,7 +75,8 @@ impl Toolchain {
     fn from_dir(dir: &Path) -> Result<Self> {
         let vips = dir.join("vips");
         let vipsheader = dir.join("vipsheader");
-        for binary in [&vips, &vipsheader] {
+        let vipsthumbnail = dir.join("vipsthumbnail");
+        for binary in [&vips, &vipsheader, &vipsthumbnail] {
             if !binary.exists() {
                 return Err(Error::Unavailable(format!(
                     "{} does not exist",
@@ -87,6 +89,7 @@ impl Toolchain {
             // swapped in between discovery and use.
             vips: vips.canonicalize().unwrap_or(vips),
             vipsheader: vipsheader.canonicalize().unwrap_or(vipsheader),
+            vipsthumbnail: vipsthumbnail.canonicalize().unwrap_or(vipsthumbnail),
         })
     }
 
@@ -96,6 +99,10 @@ impl Toolchain {
 
     pub fn vipsheader(&self) -> &Path {
         &self.vipsheader
+    }
+
+    pub fn vipsthumbnail(&self) -> &Path {
+        &self.vipsthumbnail
     }
 }
 
@@ -255,6 +262,162 @@ async fn list_operations(tools: &Toolchain) -> Result<Vec<(String, bool)>> {
         }
     }
     Ok(found)
+}
+
+/// ICC rendering intent.
+///
+/// Part of `derivatives.op_hash` (§18.1), so two intents are two different derivatives — which is only
+/// justified because the intent genuinely changes the pixels for an out-of-gamut colour. There is a test
+/// asserting that rather than assuming it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Intent {
+    /// Preserves in-gamut colours exactly and clips the rest. The right default for brand colour.
+    Relative,
+    /// Compresses the whole gamut so relationships survive. Better for photography.
+    Perceptual,
+    Saturation,
+    Absolute,
+}
+
+impl Intent {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Relative => "relative",
+            Self::Perceptual => "perceptual",
+            Self::Saturation => "saturation",
+            Self::Absolute => "absolute",
+        }
+    }
+}
+
+/// What to render.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderSpec {
+    pub width: u32,
+    pub height: u32,
+    pub format: crate::derive::OutputFormat,
+    pub quality: u8,
+    pub fit: crate::derive::Fit,
+    /// Convert to this ICC profile — `srgb`, `p3`, `cmyk`, or a path to a profile file.
+    ///
+    /// `None` **preserves** the source's profile, which is D11's rule for a master: converting at ingest
+    /// is lossy and irreversible, and the customer's press-ready file would be gone. Delivery sets it.
+    pub output_profile: Option<String>,
+    pub intent: Intent,
+}
+
+/// Renders with the default limits.
+pub async fn render(tools: &Toolchain, source: &Path, out: &Path, spec: &RenderSpec) -> Result<()> {
+    render_with_limits(tools, source, out, spec, Limits::default()).await
+}
+
+/// Renders, bounded by `limits`.
+pub async fn render_with_limits(
+    tools: &Toolchain,
+    source: &Path,
+    out: &Path,
+    spec: &RenderSpec,
+    limits: Limits,
+) -> Result<()> {
+    // The `>` suffix means "only shrink". Without it `vipsthumbnail` upscales — measured: a 64x48 source
+    // asked for 2048x2048 came back 2048x1536 — while the pure-Rust path caps at the source size. Two
+    // renderers disagreeing on every small asset is a bug nobody notices until they compare two
+    // derivatives of the same file.
+    let size = format!("{}x{}>", spec.width, spec.height);
+
+    // Encoder options ride on the output filename, which is how vips takes them. Built from a number and
+    // a fixed key, never from caller text.
+    let target = match spec.format {
+        crate::derive::OutputFormat::Png => out.to_string_lossy().to_string(),
+        _ => format!("{}[Q={}]", out.to_string_lossy(), spec.quality),
+    };
+
+    let mut args: Vec<String> = vec![
+        source.to_string_lossy().to_string(),
+        "-o".to_owned(),
+        target,
+        "--size".to_owned(),
+        size,
+    ];
+    if matches!(spec.fit, crate::derive::Fit::Cover) {
+        // Attention-based rather than centre: a centre crop of a product shot routinely cuts the product
+        // in half, and vips already has a saliency model for this.
+        args.push("--smartcrop".to_owned());
+        args.push("attention".to_owned());
+    }
+    if let Some(profile) = &spec.output_profile {
+        args.push("--output-profile".to_owned());
+        args.push(profile.clone());
+        args.push("--intent".to_owned());
+        args.push(spec.intent.as_str().to_owned());
+    }
+
+    let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+    let sandbox = Sandbox::new(limits)?;
+    let outcome = sandbox
+        .run(&tools.vipsthumbnail.to_string_lossy(), &borrowed)
+        .await?;
+
+    match &outcome {
+        Outcome::Ok { .. } => Ok(()),
+        Outcome::Failed { stderr, .. } => Err(Error::Rejected {
+            path: source.display().to_string(),
+            detail: String::from_utf8_lossy(stderr).trim().to_owned(),
+        }),
+        Outcome::Killed { .. } | Outcome::TimedOut { .. } => Err(Error::Bounded {
+            path: source.display().to_string(),
+            outcome: format!("{outcome:?}"),
+        }),
+    }
+}
+
+/// Reads one pixel, for tests and for the colour-management diagnostics.
+///
+/// Asserting on pixels is the only honest way to check that a colour transform ran: an embedded profile
+/// proves a profile is embedded, not that the numbers moved.
+pub async fn pixel_at(tools: &Toolchain, path: &Path, x: u32, y: u32) -> Result<Vec<f64>> {
+    let outcome = Sandbox::new(Limits::default())?
+        .run(
+            &tools.vips.to_string_lossy(),
+            &[
+                "getpoint",
+                &path.to_string_lossy(),
+                &x.to_string(),
+                &y.to_string(),
+            ],
+        )
+        .await?;
+    match &outcome {
+        Outcome::Ok { stdout, .. } => Ok(String::from_utf8_lossy(stdout)
+            .split_whitespace()
+            .filter_map(|v| v.parse::<f64>().ok())
+            .collect()),
+        other => Err(Error::Rejected {
+            path: path.display().to_string(),
+            detail: format!("getpoint failed: {other:?}"),
+        }),
+    }
+}
+
+/// Runs an arbitrary `vips` operation in the sandbox.
+///
+/// For building fixtures and for operations that have no wrapper yet. Deliberately not a general escape
+/// hatch for production paths: those should gain a named function, so the arguments are reviewable.
+pub async fn run_raw(tools: &Toolchain, args: &[&str]) -> Result<()> {
+    let outcome = Sandbox::new(Limits::default())?
+        .run(&tools.vips.to_string_lossy(), args)
+        .await?;
+    match &outcome {
+        Outcome::Ok { .. } => Ok(()),
+        Outcome::Failed { stderr, .. } => Err(Error::Rejected {
+            path: args.join(" "),
+            detail: String::from_utf8_lossy(stderr).trim().to_owned(),
+        }),
+        other => Err(Error::Bounded {
+            path: args.join(" "),
+            outcome: format!("{other:?}"),
+        }),
+    }
 }
 
 #[cfg(test)]

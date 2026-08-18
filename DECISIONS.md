@@ -1167,3 +1167,27 @@ reasons, and the second is the decisive one:
 The cost is a process spawn per operation, tens of milliseconds, against derivative generation that is
 already asynchronous and measured in seconds. Reversible: yes, but the security argument would have to
 be answered.
+
+**Colour-management tests assert on pixels, never on embedded metadata.** An embedded profile proves a
+profile is embedded, not that the transform ran — and swapping the tag without converting the pixels looks
+correct in every metadata check while being wrong on screen. Measured: Display P3 red `230 49 35` becomes
+`251 0 5` in sRGB. An earlier version of this check compared profile *bytes* and would have passed
+regardless, because the two profiles share an identical ICC header. Reversible: no.
+
+**`vipsthumbnail` is invoked with the `>` size modifier, because it upscales by default.** Measured: a
+64x48 source asked for 2048x2048 came back 2048x1536, while the pure-Rust path caps at the source. Two
+renderers disagreeing on every asset smaller than the requested size is the kind of divergence nobody
+notices until they compare two derivatives of one file. Reversible: no.
+
+**Rendering intents are a no-op between matrix profiles, and there is a test saying so.** Intents diverge
+only for LUT-based profiles: P3 and sRGB are both matrix/TRC with a shared D65 white point, so every
+intent reduces to the same matrix. CMYK is table-based and does diverge — measured, relative
+`232 31 42` against perceptual `232 0 0` — which is exactly the case D11 exists for, since "CMYK is
+converted at delivery, never at ingest" is about print masters. Recorded as a test rather than a comment
+because the next person to look at this will reasonably expect P3 to behave like CMYK and conclude the code
+is broken when it does not. The corollary for the cache: for matrix conversions, `op_hash` including the
+intent stores duplicate derivatives — wasteful, not wrong, and the price of one hash covering the case
+where intent matters. Reversible: yes.
+
+**Cover fit uses attention-based cropping, not a centre crop.** A centre crop of a product shot routinely
+cuts the product in half, and vips already carries a saliency model. Reversible: yes.
