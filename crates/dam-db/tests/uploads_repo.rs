@@ -91,6 +91,85 @@ async fn the_part_list_survives_persistence_in_order() {
 }
 
 #[tokio::test]
+async fn a_session_round_trips_through_a_tenant_conn_transaction() {
+    // The point of the executor-generic signatures. §5.2 makes `TenantConn` the isolation mechanism —
+    // one shared pool, a per-request transaction with `SET LOCAL search_path` — so the request path has
+    // to work against a *connection inside a transaction*, not only against a pool. A function that
+    // accepted only a pool would force one pool per tenant, which is a thousand pools at a thousand
+    // tenants.
+    let (pg, _pool) = db().await;
+    let shared = pg.pool();
+    let slug = dam_core::TenantSlug::new("acme").expect("slug");
+
+    // Create inside one transaction and commit.
+    let mut conn = dam_db::TenantConn::begin(shared, &slug)
+        .await
+        .expect("begin");
+    let mut session = uploads::create(
+        conn.executor(),
+        TENANT,
+        "via-tenant-conn",
+        Some(64),
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("create");
+    session.offset = 64;
+    session.tail_len = 64;
+    uploads::save(conn.executor(), &session)
+        .await
+        .expect("save");
+    conn.commit().await.expect("commit");
+
+    // Read it back in a *separate* transaction, which is what a second request would do.
+    let mut conn = dam_db::TenantConn::begin(shared, &slug)
+        .await
+        .expect("begin");
+    let loaded = uploads::load(conn.executor(), TENANT, "via-tenant-conn")
+        .await
+        .expect("load")
+        .expect("present");
+    conn.commit().await.expect("commit");
+    assert_eq!(loaded.offset, 64);
+    assert_eq!(loaded.tail_len, 64);
+}
+
+#[tokio::test]
+async fn work_in_an_uncommitted_tenant_conn_is_not_visible_elsewhere() {
+    // The transaction boundary is load-bearing for TUS: a PATCH that fails after writing the tail but
+    // before committing the offset must leave no session at all, or a client resumes against state the
+    // server does not have.
+    let (pg, pool) = db().await;
+    let slug = dam_core::TenantSlug::new("acme").expect("slug");
+
+    let mut conn = dam_db::TenantConn::begin(pg.pool(), &slug)
+        .await
+        .expect("begin");
+    uploads::create(
+        conn.executor(),
+        TENANT,
+        "rolled-back",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("create");
+    conn.rollback().await.expect("rollback");
+
+    assert!(
+        uploads::load(&pool, TENANT, "rolled-back")
+            .await
+            .expect("load")
+            .is_none(),
+        "a rolled-back create must leave nothing behind"
+    );
+}
+
+#[tokio::test]
 async fn an_unknown_upload_id_loads_as_absent_rather_than_erroring() {
     let (_pg, pool) = db().await;
     assert!(
