@@ -774,9 +774,56 @@ shorthand search, the rights model (G4), and the eval harness (G8).
   *The cache never serves a stale `allowed`* — the expiry check is in the query, and `expires_at` is the
   earliest instant a verdict could change on its own. A miss recomputes rather than denying, or the first
   download of the day fails for every asset and people learn to retry instead of read the error.
-- [ ] **2.9 Search eval harness (G8).** `relevance_judgements` → nDCG/MRR over a fixture corpus, wired
+- [x] **2.9 Search eval harness (G8).** `relevance_judgements` → nDCG/MRR over a fixture corpus, wired
   so a ranking change reports its effect instead of being argued about.
-- [ ] **2.10 Bulk operations (G18).** `bulk_operations`, dry-run first, per-item outcomes, resumable.
+  *Done:* `dam_core::eval` (16 pure cases), `dam_db::judgements` (10 cases), `dam_search::query::search`
+  — the ordered accessor (4 cases), `dam_search::eval_run` (3 cases), and `damctl eval`. Verified by
+  running it: a two-asset corpus scored `mean nDCG 0.8155 / MRR 0.7500`, `--min-ndcg 0.95` exited
+  non-zero, and a corpus query naming a removed field was reported rather than dropped.
+  *The metric refuses to flatter itself.* Four separate places where the obvious implementation reports a
+  perfect score over nothing: **0/0 nDCG is `None`, never 1.0** (an unjudged corpus would otherwise report
+  perfect relevance); **`for_query` returns `None` rather than an empty set** for an unjudged query,
+  because an empty `Judgements` is *scoreable*; a query whose every judged asset was **soft-deleted becomes
+  unjudged**, so deleting labelled assets cannot improve the numbers; and `--min-ndcg` **fails on `None`**
+  rather than passing, because "nothing to measure" as a pass is how a gate stops gating.
+  *Unjudged results score zero, they are not skipped* — skipping them means a ranking that returns junk
+  scores the same as one that returns nothing, and the ideal DCG uses **every** judgement rather than only
+  the returned ones, or a ranking is compared against its own output.
+  *A refused query is reported, never dropped.* `Run::is_trustworthy` is false while any query failed to
+  parse or plan, and `damctl eval` exits non-zero: a corpus that silently skips its broken queries scores
+  *better* the more of it breaks, which is worse than having no harness.
+  *`eval.rs` lives in `dam-core`, not `dam-search`* — `dam-search` already depends on `dam-db`, so loading
+  judgements from a module inside `dam-search` is a dependency cycle. The compiler found it.
+  *Two things 2.9 needed that did not exist:* Tantivy had no **ordered** accessor at all (the differential
+  suite compares sets and says so), and there was no way to **build an index from Postgres** — so
+  `dam_search::reindex` and `damctl reindex` landed here too, with 3 cases: tombstones are indexed with the
+  flag set so an undelete is a flag flip rather than a reindex; the walk is cursored on `assets.id` because
+  a LIMIT/OFFSET walk over a table taking inserts both skips and repeats rows; and the index is replaced in
+  one commit, so three reindexes leave one document rather than three.
+- [x] **2.10 Bulk operations (G18).** `bulk_operations`, dry-run first, per-item outcomes, resumable.
+  *Done:* `dam_db::bulk` — 15 cases over one container, all eight load-bearing properties
+  mutation-verified.
+  *A real bug in my own first version, found by a mutation that survived.* `next_batch` cursored on
+  `resume_after`, a high-water mark of the greatest asset id recorded. A worker that fans a batch out
+  concurrently records in *completion* order, not id order — so recording the highest id first stepped the
+  cursor past every lower pending item. They could never be served again, `done + failed = target` would
+  never hold, and the operation could not legitimately finish. Selection is on **item state** now, which
+  cannot skip a row it has not seen an outcome for; `resume_after` stays as the progress marker an operator
+  reads. Migration 0013 puts `asset_id` in the pending partial index so the batch order comes from the
+  index. The mutation that exposed this (dropping the cursor) had *passed*, which is what sent me looking.
+  *The state is derived from the counters, never chosen.* `finish` computes `failed`/`partial`/`completed`
+  in SQL, so a caller cannot report an operation with 9,000 failures as green — the thing somebody
+  discovers a month later.
+  *A dry run writes nothing at all,* not even a `bulk_operations` row: an abandoned row would sit in the
+  actor's history, which is exactly where somebody looks to find what they actually ran.
+  *Other things that would be quietly wrong:* a repeated id from a multi-page selection is **deduplicated
+  and the target count corrected**, or the primary key aborts the whole operation and `done + failed =
+  target` never holds; `record_outcome` counts **only an actual transition**, so a retried worker cannot
+  inflate the counters past the target; `skipped` counts as neither done nor failed and carries its reason,
+  because a silent skip is indistinguishable from a bug; an operation over **zero targets is refused**
+  rather than recorded as instantly complete; the error sample is bounded at 20 while the full list stays
+  queryable row by row; and cancelling **rolls nothing back** and says so, because a bulk tag over 31,000
+  assets cannot be undone by a cancellation without a second bulk operation.
 
 ## M3 — Delivery, sharing, restore
 

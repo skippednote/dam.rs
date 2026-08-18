@@ -1252,3 +1252,50 @@ where intent matters. Reversible: yes.
 
 **Cover fit uses attention-based cropping, not a centre crop.** A centre crop of a product shot routinely
 cuts the product in half, and vips already carries a saliency model. Reversible: yes.
+
+**Bulk batch selection is on item state, not on the `resume_after` cursor (2.10).** The schema's comment
+calls `resume_after` a "cursor for resumption", and my first version used it that way: the batch query
+filtered `asset_id > resume_after`, and `record_outcome` advanced the cursor to the greatest id it had
+recorded. That is correct only if outcomes are recorded in id order. A worker that fans a batch out
+concurrently records in *completion* order, so recording the highest id first steps the cursor past every
+lower pending item — those items are never served again, `done + failed = target` never holds, and the
+operation can never legitimately finish. Selection is on `state = 'pending'` now, which cannot skip a row it
+has not seen an outcome for; migration 0013 adds `asset_id` to the pending partial index so the batch order
+still comes from the index rather than a sort. `resume_after` is still written and is still the progress
+marker an operator reads — it just no longer decides what is served. Reversible: yes, but the concurrency
+argument would have to be answered. Found by a surviving mutation: deleting the cursor from the query did
+not fail any test, which is what sent me looking for what the cursor was actually buying.
+
+**A refused eval query fails the run rather than being skipped (2.9).** An eval harness that drops the
+queries it cannot parse reports a mean over a shrinking sample, and the number *improves* as more of the
+corpus breaks — so the harness is worst exactly when it is most needed. `Run::is_trustworthy` is false while
+any refusal remains and `damctl eval` exits non-zero, which makes a corpus that has drifted out of step with
+the schema a build failure instead of a quietly better score. The same reasoning makes `--min-ndcg` fail on
+an unscoreable corpus rather than pass it. Reversible: yes.
+
+**`damctl eval` runs under an unrestricted access predicate, and says so in its own docs.** A run under a
+restricted scope measures the ranking and the access filter together, and a regression that turns out to be
+a permission change is a different bug from a regression in relevance. The predicate is still rendered —
+`dam_search::query::search` is a second consumer of it, and §12's warning is that a second consumer is where
+divergence appears — it is simply an unrestricted one. Reversible: yes; a `--as-role` flag would be the
+natural extension when there is a reason to measure the two together.
+
+**`dam_db::tenant_conn::single_tenant_pool` exists for `damctl` only, and the reason it is safe is narrow.**
+`TenantConn` has exactly one constructor and it begins a transaction, precisely so no code can hold a
+tenant-scoped handle outside one — a runtime `SET LOCAL` outside a transaction is a silent no-op, and on a
+pool it reaches one connection while later queries take another. `single_tenant_pool` sets `search_path` as a
+**connect option**, so Postgres applies it as every connection in the pool starts up; there is no window in
+which a connection from it has a different path. It is still wrong for the server, where a pool per tenant at
+a thousand tenants is a thousand idle connection sets, and the doc comment says so. Reversible: yes.
+
+**A reindex indexes soft-deleted assets, with the flag set.** `query::render` excludes `deleted` on every
+query, so a tombstone in the index is invisible to search; and an undelete then needs no reindex, because the
+document is already there and only the flag has to flip. Skipping tombstones makes undelete a reindex, which
+on a large tenant is minutes of stale search for an operation a user expects to be instant. The cost is index
+size proportional to deletions ever made, which a periodic full rebuild reclaims. Reversible: yes.
+
+**Migration-count assertions read the embedded count rather than a literal.** Two tests hard-coded `12` and
+had to be edited by rote for migration 0013 — and a number edited by rote is a number nobody checks. They
+compare against `migrate::tenant_migration_count()` now, which still catches the case the test was written
+for (a migration file added but not committed, or a stale build, since the macro embeds at compile time)
+without inviting a mechanical edit every time. Reversible: yes.

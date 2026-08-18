@@ -121,9 +121,12 @@ async fn each_tenant_gets_an_independent_ledger() {
             &format!("SELECT count(*) FROM \"{schema}\"._sqlx_migrations WHERE success"),
         )
         .await;
+        // Against the embedded count rather than a literal: a literal has to be edited for every new
+        // migration, and a number edited by rote is a number nobody checks.
         assert_eq!(
-            applied, 12,
-            "{schema} should have 12 tenant migrations applied"
+            applied,
+            i64::try_from(migrate::tenant_migration_count()).expect("a plausible migration count"),
+            "{schema} should have every tenant migration applied"
         );
     }
 }
@@ -147,7 +150,7 @@ async fn migrating_twice_is_a_no_op() {
             "SELECT count(*) FROM t_acme._sqlx_migrations WHERE success"
         )
         .await,
-        12
+        i64::try_from(migrate::tenant_migration_count()).expect("a plausible migration count")
     );
 }
 

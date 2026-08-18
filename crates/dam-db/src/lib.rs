@@ -8,6 +8,7 @@
 
 pub mod access;
 pub mod auth;
+pub mod bulk;
 pub mod collections;
 pub mod derivatives;
 pub mod facets;
