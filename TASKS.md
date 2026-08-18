@@ -724,8 +724,44 @@ shorthand search, the rights model (G4), and the eval harness (G8).
   *Governance:* only `facetable` fields, and geo is refused even when marked — a coordinate has no discrete
   values, so it would produce one bucket per asset. Truncation is **reported**, because a rail that
   silently truncates makes "no other brands" and "ninety other brands" look identical.
-- [ ] **2.8 Rights model (G4).** Licences, scopes, releases, and the distribution chokepoint that D12
+- [ ] **2.x Test-gate throughput, and the TLS defect it exposed.** *Not blocking anything; recorded so it
+  is not rediscovered.* The Rust gate had grown past ten minutes — thirty container-backed suites at ~10 s
+  of Postgres startup each. `dam_db::testing::SHARED_URL_ENV` (`DAM_TEST_PG_URL`) now lets every harness
+  create a **database** on one shared server instead of starting a container, which keeps the isolation and
+  takes the run to about 6.5 minutes. Available as `mise run check:shared-pg`; **not** the default, because
+  removing that accidental serialisation exposed a separate defect.
+  *The defect:* at full parallelism, `aws_sdk_s3` **client construction** panics inside rustls' native-root
+  loading — "TrustStore configured to enable native roots but no valid root certificates parsed" — in nine
+  S3 cases that all pass in isolation, including one that never opens a connection. Concurrent macOS
+  keychain reads are the suspect. Worth fixing at the source rather than working around: an `http://`
+  endpoint has no use for a TLS trust store, and **every self-hosted deployment pays to load one**. The fix
+  is to build the client without native roots when the endpoint is plain HTTP.
+  *Also found:* `DAMRS_TEST_PG_URL` was the first name tried, and it broke every config load — `Config::load`
+  claims the whole `DAMRS_` namespace and refuses unknown keys. The strictness is right; the name was wrong.
+- [x] **2.8 Rights model (G4).** Licences, scopes, releases, and the distribution chokepoint that D12
   requires — enforced, not recorded.
+  *Done:* `dam_core::rights_eval` (30 pure cases) + `dam_db::rights` (14 cases, one container). The
+  chokepoint that *enforces* it is 3.1; this is the calculation and its cache.
+  *Four properties, all mutation-verified.* **Intersection, not union** — attaching a permissive licence
+  must not launder another's restrictions; under a union it does, and the test catches it. **Unknown
+  denies** — no licence is `unknown`, not a soft yes, because the cost of guessing wrong is a rights claim.
+  **Exclusions beat inclusions** — "worldwide except China" has `WORLD` in the inclusion list, so checking
+  inclusions first grants China. And **`Expiring` is a verdict that still permits distribution** — a
+  warning that blocks is a denial with extra steps, and people route around it.
+  *A bug in my own first version:* I took the **shortest** renewal-notice window across licences. A licence
+  needing 90 days to renew then reads as merely allowed until renewing it is no longer possible. It is the
+  longest now.
+  *Other things that would be quietly wrong:* a licence with **no scope grants nothing** (distinct from a
+  scope with empty lists, which grants everywhere — conflating them turns a half-configured licence into
+  blanket permission); scopes *within* a licence are alternatives while licences are conjunctive; a cap of
+  `Some(0)` is "none permitted", not "uncapped"; a release that lapsed on the clock denies even while its
+  `status` column still says valid, because that column is worker-maintained and trusting it distributes on
+  the strength of a job that has not run; withdrawn consent denies regardless of term; and the AI gates are
+  answered **independently of the distribution verdict**, since a territorial restriction says nothing about
+  internal cataloguing.
+  *The cache never serves a stale `allowed`* — the expiry check is in the query, and `expires_at` is the
+  earliest instant a verdict could change on its own. A miss recomputes rather than denying, or the first
+  download of the day fails for every asset and people learn to retry instead of read the error.
 - [ ] **2.9 Search eval harness (G8).** `relevance_judgements` → nDCG/MRR over a fixture corpus, wired
   so a ranking change reports its effect instead of being argued about.
 - [ ] **2.10 Bulk operations (G18).** `bulk_operations`, dry-run first, per-item outcomes, resumable.
