@@ -18,6 +18,7 @@ pub mod policy;
 pub mod query;
 pub mod rights;
 pub mod secret;
+pub mod shorthand;
 pub mod storage;
 pub mod tenant;
 

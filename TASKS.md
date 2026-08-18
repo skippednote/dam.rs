@@ -663,8 +663,26 @@ shorthand search, the rights model (G4), and the eval harness (G8).
   recursion ARCHITECTURE does not settle — a group's membership defined by a query whose access predicate
   is defined by group membership. See NEEDS-REVIEW.md; it contradicts Decision 4, so I did not take it
   unilaterally.
-- [ ] **2.5 Shorthand search syntax.** `bra:acme`, quoted phrases, ranges, negation. *Test first:* an
+- [x] **2.5 Shorthand search syntax.** `bra:acme`, quoted phrases, ranges, negation. *Test first:* an
   unclosed quote is a parse error with a column, not a silent whole-string match.
+  *Done:* `dam_core::shorthand`, 34 pure cases. Parses to the **same** `Query` the API accepts, so there
+  is no second query language and no second place for validation to differ.
+  *The named test, mutation-verified:* letting an unclosed quote fall through makes `"beach holiday`
+  a search for the literal text — which returns nothing and explains nothing. The error reports the
+  **opening** quote's column, because the missing character is at the end but the one to look at is the
+  quote you opened. Columns are 1-based and counted in **characters**; switching to bytes fails a test
+  with `café` in it, since a caret under byte 7 points at the wrong character.
+  *Case-sensitive operators:* `OR` is an operator, `or` is a word. A user typing `cats or dogs` means the
+  word, and a case-insensitive keyword would make it unsearchable short of quoting. `AND` binds tighter
+  than `OR`; getting that backwards silently answers a different question.
+  *Two exceptions stop the shorthand becoming a trap:* anything containing `://` is text (pasting a URL
+  into a search box is common), and a key that is not `field_defs`-key-shaped is text, so `9:30` and
+  `Ratio:16` search rather than fail. An unknown key that *does* look like a field is an error naming it.
+  *Also:* a leading `-` negates but an internal one is a hyphen (`sold-out` is a word); a quoted value
+  suppresses every operator meaning including `:`; `field:*` is presence and `field:-` absence; ranges are
+  `a..b`, `>`, `>=`, `<`, `<=` with the exclusivity the symbol implies; values are typed from the field
+  kind, so `year:2026` is an integer and `brand:2026` is text; and input length and paren depth are
+  bounded before parsing, since a search string arrives in a URL and the parser recurses.
 - [ ] **2.6 Tantivy index per tenant.** Schema derived from `field_defs`, an LRU writer pool (§19), and
   a cold-open path. *Test first:* 1,000 tenants do not open 1,000 indexes.
 - [ ] **2.7 Faceted search.** Fast fields, counts that respect the access predicate.
