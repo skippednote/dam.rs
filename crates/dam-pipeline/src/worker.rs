@@ -39,6 +39,8 @@ pub mod kind {
     pub const DERIVE: &str = "derive";
     /// An asset is written into the tenant's search index.
     pub const INDEX: &str = "index";
+    /// A bulk operation is driven to a terminal state.
+    pub const BULK: &str = "bulk";
 }
 
 /// How long to wait when the queue is empty.
@@ -221,6 +223,51 @@ pub async fn handle(context: &Context, job: &Job) -> Result<()> {
             index_one(context, &slug, job.tenant_id, asset_id).await
         }
 
+        kind::BULK => {
+            let operation_id = uuid_field(job, "operation_id")?;
+            let job_id = job.id;
+            let worker = context.worker.clone();
+            let global = context.global.clone();
+
+            let executed = crate::bulk_exec::run(
+                &context.global,
+                &slug,
+                operation_id,
+                chrono::Utc::now(),
+                // The lease renews per batch, because a 40,000-item operation legitimately outlives one
+                // lease — and a worker whose lease was reclaimed must *stop*, not fight the worker that took
+                // over. `LeaseLost` is its own error variant for exactly that; surfacing it as transient lets
+                // the new holder's run be the one that finishes.
+                async move || {
+                    jobs::heartbeat(&global, job_id, &worker, LEASE)
+                        .await
+                        .map_err(|error| match error {
+                            dam_db::Error::LeaseLost { .. } => Error::Transient(format!(
+                                "lease lost mid-operation: {error}; another worker owns this job now"
+                            )),
+                            other => other.into(),
+                        })
+                },
+            )
+            .await?;
+
+            tracing::info!(
+                %operation_id,
+                state = %executed.state,
+                done = executed.done,
+                failed = executed.failed,
+                touched = executed.touched.len(),
+                "bulk operation finished"
+            );
+
+            // Every changed asset gets re-indexed, or a bulk metadata edit is invisible to search and a bulk
+            // delete leaves ghosts in the results until the next full reindex.
+            for asset_id in executed.touched {
+                enqueue_index(&context.global, job.tenant_id, asset_id).await?;
+            }
+            Ok(())
+        }
+
         // Not an error to be retried: an unknown kind means a worker older than whatever enqueued it, and
         // retrying will not make this binary understand it. Permanent, so it lands in `failed` where an
         // operator can see the version skew rather than in a backoff loop.
@@ -256,6 +303,24 @@ pub async fn enqueue_index(global: &sqlx::PgPool, tenant_id: Uuid, asset_id: Uui
             .payload(serde_json::json!({ "asset_id": asset_id }))
             .priority(50)
             .dedupe_key(format!("index:{asset_id}")),
+    )
+    .await?)
+}
+
+/// Queues the execution of a bulk operation.
+pub async fn enqueue_bulk(
+    global: &sqlx::PgPool,
+    tenant_id: Uuid,
+    operation_id: Uuid,
+) -> Result<Uuid> {
+    Ok(jobs::enqueue(
+        global,
+        jobs::JobSpec::new(tenant_id, kind::BULK)
+            .payload(serde_json::json!({ "operation_id": operation_id }))
+            // A person clicked "apply to N assets" and is watching a progress bar, so it sits with the other
+            // interactive work rather than behind background maintenance.
+            .priority(45)
+            .dedupe_key(format!("bulk:{operation_id}")),
     )
     .await?)
 }

@@ -1,0 +1,369 @@
+//! Executing bulk operations end to end.
+//!
+//! `dam_db::bulk`'s own suite proves the bookkeeping; this proves the *driver* — that an operation actually
+//! changes assets, that the guards hold per item rather than per operation, and that the terminal state is
+//! derived from what really happened. Postgres only: neither executable kind touches the object store, and a
+//! SeaweedFS container here would be fourteen seconds of startup for nothing.
+
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
+use dam_core::TenantSlug;
+use dam_db::bulk::{self, OperationSpec};
+use dam_db::{TenantConn, migrate, testing::PostgresHarness};
+use sqlx::PgPool;
+use uuid::Uuid;
+
+struct Fixture {
+    _pg: PostgresHarness,
+    global: PgPool,
+    tenant: PgPool,
+    slug: TenantSlug,
+    tenant_id: Uuid,
+}
+
+async fn fixture() -> Fixture {
+    let pg = PostgresHarness::start().await.expect("start postgres");
+    let url = pg.url();
+    migrate::global(&url).await.expect("global");
+    migrate::tenant(&url, "t_acme").await.expect("tenant");
+    let global = pg.pool().clone();
+    let tenant = pg.pool_for_schema("t_acme").await.expect("tenant pool");
+
+    let tenant_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO dam_global.tenants \
+         (id, slug, schema_name, display_name, storage_prefix, status) \
+         VALUES (gen_random_uuid(), 'acme', 't_acme', 'Acme', 'acme/', 'active') RETURNING id",
+    )
+    .fetch_one(&global)
+    .await
+    .expect("tenant row");
+
+    Fixture {
+        _pg: pg,
+        global,
+        tenant,
+        slug: TenantSlug::new("acme").expect("slug"),
+        tenant_id,
+    }
+}
+
+async fn asset(f: &Fixture, filename: &str) -> Uuid {
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO assets (id, content_hash, filename, mime, bytes, version_group_id) \
+         VALUES ($1, $2, $3, 'image/jpeg', 10, $1)",
+    )
+    .bind(id)
+    .bind(blake3::hash(filename.as_bytes()).to_hex().to_string())
+    .bind(filename)
+    .execute(&f.tenant)
+    .await
+    .expect("asset");
+    id
+}
+
+async fn field(f: &Fixture, key: &str) {
+    sqlx::query(
+        "INSERT INTO field_defs (id, key, label, kind, display_order) \
+         VALUES (gen_random_uuid(), $1, $1, 'text', 1) ON CONFLICT (key) DO NOTHING",
+    )
+    .bind(key)
+    .execute(&f.tenant)
+    .await
+    .expect("field");
+}
+
+async fn operation(f: &Fixture, kind: &str, params: serde_json::Value, targets: &[Uuid]) -> Uuid {
+    let mut conn = TenantConn::begin(&f.global, &f.slug).await.expect("conn");
+    let op = bulk::create_on(
+        conn.executor(),
+        &OperationSpec {
+            kind,
+            actor_id: None,
+            predicate: None,
+            params,
+        },
+        targets,
+    )
+    .await
+    .expect("create");
+    conn.commit().await.expect("commit");
+    op.id
+}
+
+async fn run(f: &Fixture, id: Uuid) -> dam_pipeline::Result<dam_pipeline::bulk_exec::Executed> {
+    dam_pipeline::bulk_exec::run(&f.global, &f.slug, id, chrono::Utc::now(), async || Ok(())).await
+}
+
+// ─── delete ─────────────────────────────────────────────────────────────────
+
+async fn a_bulk_delete_deletes_what_it_may_and_reports_the_rest(f: &Fixture) {
+    let plain_one = asset(f, "del-1.jpg").await;
+    let plain_two = asset(f, "del-2.jpg").await;
+    let held = asset(f, "del-held.jpg").await;
+    sqlx::query("UPDATE assets SET legal_hold = true WHERE id = $1")
+        .bind(held)
+        .execute(&f.tenant)
+        .await
+        .expect("hold");
+    let gone_already = asset(f, "del-gone.jpg").await;
+    sqlx::query("UPDATE assets SET deleted_at = now() WHERE id = $1")
+        .bind(gone_already)
+        .execute(&f.tenant)
+        .await
+        .expect("pre-delete");
+    let never_existed = Uuid::new_v4();
+
+    let id = operation(
+        f,
+        "delete",
+        serde_json::json!({}),
+        &[plain_one, plain_two, held, gone_already, never_existed],
+    )
+    .await;
+    let executed = run(f, id).await.expect("run");
+
+    // The counters say exactly what happened: two deleted, one hard failure (the phantom id), two skips that
+    // count as neither — which is why done + failed < target here, deliberately.
+    assert_eq!(executed.done, 2);
+    assert_eq!(executed.failed, 1);
+    assert_eq!(
+        executed.state, "partial",
+        "one failure means partial, and a UI cannot put a green tick over it"
+    );
+
+    // The changes themselves.
+    let deleted: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM assets WHERE id = ANY($1) AND deleted_at IS NOT NULL",
+    )
+    .bind(vec![plain_one, plain_two])
+    .fetch_one(&f.tenant)
+    .await
+    .expect("count");
+    assert_eq!(deleted, 2);
+
+    let held_row: (bool, bool) =
+        sqlx::query_as("SELECT legal_hold, deleted_at IS NULL FROM assets WHERE id = $1")
+            .bind(held)
+            .fetch_one(&f.tenant)
+            .await
+            .expect("held row");
+    assert!(
+        held_row.1,
+        "the legal-held asset survives — the hold did its job"
+    );
+
+    // The per-item report: the schema's whole point is "exactly which rows did not apply".
+    let items = bulk::items(&f.tenant, id, 100).await.expect("items");
+    let by_id = |target: Uuid| {
+        items
+            .iter()
+            .find(|item| item.asset_id == target)
+            .expect("every target has an item")
+    };
+    assert_eq!(by_id(held).state, "skipped");
+    assert_eq!(
+        by_id(held).reason.as_deref(),
+        Some("legal hold blocks deletion")
+    );
+    assert_eq!(by_id(gone_already).state, "skipped");
+    assert_eq!(
+        by_id(gone_already).reason.as_deref(),
+        Some("already deleted")
+    );
+    assert_eq!(by_id(never_existed).state, "failed");
+    assert_eq!(
+        by_id(never_existed).reason.as_deref(),
+        Some("no such asset")
+    );
+
+    // Only what changed is reported for re-indexing. Re-indexing a skipped asset is wasted work; *not*
+    // re-indexing a deleted one leaves a ghost in every search result.
+    let mut touched = executed.touched.clone();
+    touched.sort_unstable();
+    let mut expected = vec![plain_one, plain_two];
+    expected.sort_unstable();
+    assert_eq!(touched, expected);
+}
+
+async fn re_running_a_finished_operation_changes_nothing(f: &Fixture) {
+    // The queue is at-least-once, so this is the normal case rather than the odd one.
+    let target = asset(f, "rerun.jpg").await;
+    let id = operation(f, "delete", serde_json::json!({}), &[target]).await;
+
+    let first = run(f, id).await.expect("first");
+    assert_eq!(first.state, "completed");
+    let second = run(f, id).await.expect("second");
+    assert_eq!(second.state, "completed");
+    assert_eq!(second.done, 1, "the counters must not move on a re-run");
+    assert!(
+        second.touched.is_empty(),
+        "and nothing is re-touched, so nothing is pointlessly re-indexed"
+    );
+}
+
+// ─── metadata_set ───────────────────────────────────────────────────────────
+
+async fn a_bulk_metadata_set_merges_into_every_target(f: &Fixture) {
+    field(f, "campaign").await;
+    field(f, "caption").await;
+
+    let fresh = asset(f, "meta-fresh.jpg").await;
+    let existing = asset(f, "meta-existing.jpg").await;
+    sqlx::query("INSERT INTO asset_metadata (asset_id, values) VALUES ($1, $2)")
+        .bind(existing)
+        .bind(serde_json::json!({"caption": "keep me", "campaign": "old"}))
+        .execute(&f.tenant)
+        .await
+        .expect("seed metadata");
+
+    let id = operation(
+        f,
+        "metadata_set",
+        serde_json::json!({"values": {"campaign": "spring-2026"}}),
+        &[fresh, existing],
+    )
+    .await;
+    let executed = run(f, id).await.expect("run");
+    assert_eq!(executed.state, "completed");
+    assert_eq!(executed.done, 2);
+
+    // A merge, not a replacement: the field not named survives.
+    let kept: serde_json::Value =
+        sqlx::query_scalar("SELECT values FROM asset_metadata WHERE asset_id = $1")
+            .bind(existing)
+            .fetch_one(&f.tenant)
+            .await
+            .expect("values");
+    assert_eq!(kept["campaign"], "spring-2026");
+    assert_eq!(kept["caption"], "keep me", "an absent key is left alone");
+
+    // An asset with no metadata row at all gains one.
+    let gained: serde_json::Value =
+        sqlx::query_scalar("SELECT values FROM asset_metadata WHERE asset_id = $1")
+            .bind(fresh)
+            .fetch_one(&f.tenant)
+            .await
+            .expect("values");
+    assert_eq!(gained["campaign"], "spring-2026");
+}
+
+async fn an_invalid_patch_fails_before_any_asset_is_touched(f: &Fixture) {
+    // The patch is identical for every target, so a bad one fails all 40,000 identically. Saying it once —
+    // permanently, with the field named — beats recording the same failure per item.
+    let target = asset(f, "meta-invalid.jpg").await;
+    let id = operation(
+        f,
+        "metadata_set",
+        serde_json::json!({"values": {"not_a_field": "x"}}),
+        &[target],
+    )
+    .await;
+
+    let error = run(f, id)
+        .await
+        .expect_err("an undefined field cannot be set in bulk");
+    assert!(
+        !error.is_transient(),
+        "retrying will not define the field: {error}"
+    );
+    assert!(
+        format!("{error}").contains("no asset was touched"),
+        "the failure says the operation never started: {error}"
+    );
+
+    // And that claim is checked, not just stated.
+    let items = bulk::items(&f.tenant, id, 10).await.expect("items");
+    assert!(items.iter().all(|item| item.state == "pending"));
+}
+
+// ─── refusals ───────────────────────────────────────────────────────────────
+
+async fn an_unimplemented_kind_is_refused_by_name(f: &Fixture) {
+    // The schema's vocabulary is wider than what is executable. "Completing" while doing nothing would put a
+    // success in the history for work that never happened — the named refusal is the honest gap.
+    let target = asset(f, "unimpl.jpg").await;
+    let id = operation(f, "download_zip", serde_json::json!({}), &[target]).await;
+
+    let error = run(f, id)
+        .await
+        .expect_err("download_zip has no executor yet");
+    assert!(!error.is_transient());
+    assert!(format!("{error}").contains("download_zip"), "{error}");
+}
+
+async fn a_vanished_operation_is_permanent(f: &Fixture) {
+    let error = run(f, Uuid::new_v4()).await.expect_err("no such operation");
+    assert!(!error.is_transient(), "{error}");
+}
+
+// ─── through the worker ─────────────────────────────────────────────────────
+
+async fn the_worker_runs_it_and_queues_the_reindex(f: &Fixture) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let context = dam_pipeline::worker::Context {
+        global: f.global.clone(),
+        store: std::sync::Arc::new(dam_store::FakeS3Store::with_test_clock().0),
+        indexes: std::sync::Arc::new(dam_search::IndexPool::new(dam_search::PoolConfig::new(
+            dir.path(),
+        ))),
+        worker: "bulk-test-worker".to_owned(),
+    };
+
+    let target = asset(f, "via-worker.jpg").await;
+    let untouchable = asset(f, "via-worker-held.jpg").await;
+    sqlx::query("UPDATE assets SET legal_hold = true WHERE id = $1")
+        .bind(untouchable)
+        .execute(&f.tenant)
+        .await
+        .expect("hold");
+
+    let op = operation(f, "delete", serde_json::json!({}), &[target, untouchable]).await;
+    let job_id = dam_pipeline::worker::enqueue_bulk(&f.global, f.tenant_id, op)
+        .await
+        .expect("enqueue");
+
+    let claimed = dam_db::jobs::claim(
+        &f.global,
+        "bulk-test-worker",
+        dam_db::jobs::ClaimOptions::default(),
+    )
+    .await
+    .expect("claim");
+    let job = claimed
+        .iter()
+        .find(|j| j.id == job_id)
+        .expect("the bulk job");
+    assert_eq!(job.kind, dam_pipeline::worker::kind::BULK);
+    dam_pipeline::worker::handle(&context, job)
+        .await
+        .expect("handle");
+    dam_db::jobs::complete(&f.global, job_id)
+        .await
+        .expect("complete");
+
+    // The deleted asset — and only it — has an index job waiting, so search stops returning a ghost.
+    let queued: Vec<(String, serde_json::Value)> = sqlx::query_as(
+        "SELECT kind, payload FROM dam_global.jobs WHERE state = 'queued' AND kind = 'index'",
+    )
+    .fetch_all(&f.global)
+    .await
+    .expect("queued");
+    assert_eq!(queued.len(), 1, "one reindex, for the one changed asset");
+    assert_eq!(
+        queued[0].1["asset_id"].as_str().expect("an id"),
+        target.to_string()
+    );
+}
+
+#[tokio::test]
+async fn bulk_execution_holds() {
+    let f = fixture().await;
+    a_bulk_delete_deletes_what_it_may_and_reports_the_rest(&f).await;
+    re_running_a_finished_operation_changes_nothing(&f).await;
+    a_bulk_metadata_set_merges_into_every_target(&f).await;
+    an_invalid_patch_fails_before_any_asset_is_touched(&f).await;
+    an_unimplemented_kind_is_refused_by_name(&f).await;
+    a_vanished_operation_is_permanent(&f).await;
+    the_worker_runs_it_and_queues_the_reindex(&f).await;
+}

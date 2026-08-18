@@ -132,10 +132,16 @@ const FIELDS = [
 ];
 
 /** Requests the page made, so a test can assert what the server was actually asked. */
-type Recorder = { urls: string[]; patches: Record<string, unknown>[] };
+type Recorder = {
+	urls: string[];
+	patches: Record<string, unknown>[];
+	bulk: { url: string; body: { kind: string; asset_ids: string[] } }[];
+};
+let bulkPolls = 0;
 
 async function connect(page: Page): Promise<Recorder> {
-	const recorder: Recorder = { urls: [], patches: [] };
+	const recorder: Recorder = { urls: [], patches: [], bulk: [] };
+	bulkPolls = 0;
 
 	// Before any navigation: the session reads `localStorage` at module load, so setting it afterwards
 	// would leave the first render unconnected and the page would show the Settings prompt.
@@ -216,6 +222,62 @@ async function connect(page: Page): Promise<Recorder> {
 			return route.fulfill({
 				contentType: 'image/webp',
 				body: Buffer.from(WEBP_1PX, 'base64')
+			});
+		}
+		if (path.pathname === '/bulk/preview') {
+			const body = route.request().postDataJSON() as { kind: string; asset_ids: string[] };
+			recorder.bulk.push({ url: url, body });
+			// One id is "out of scope", so the dialog's honesty about the difference is testable.
+			const inScope = Math.max(body.asset_ids.length - 1, 1);
+			return route.fulfill({
+				json: {
+					kind: body.kind,
+					target_count: inScope,
+					sample: body.asset_ids.slice(0, inScope),
+					out_of_scope: body.asset_ids.length - inScope
+				}
+			});
+		}
+		if (path.pathname === '/bulk') {
+			const body = route.request().postDataJSON() as { kind: string; asset_ids: string[] };
+			recorder.bulk.push({ url: url, body });
+			return route.fulfill({
+				status: 202,
+				json: {
+					id: '00000000-0000-4000-8000-00000000b01c',
+					kind: body.kind,
+					state: 'queued',
+					target_count: Math.max(body.asset_ids.length - 1, 1),
+					done_count: 0,
+					failed_count: 0,
+					terminal: false,
+					failures: []
+				}
+			});
+		}
+		if (path.pathname.startsWith('/bulk/')) {
+			// First poll: running. Second: partial, with a named failure — the state a UI must not show as a
+			// green tick.
+			bulkPolls += 1;
+			const finished = bulkPolls >= 2;
+			return route.fulfill({
+				json: {
+					id: path.pathname.split('/').pop(),
+					kind: 'delete',
+					state: finished ? 'partial' : 'running',
+					target_count: 2,
+					done_count: finished ? 1 : 0,
+					failed_count: finished ? 1 : 0,
+					terminal: finished,
+					failures: finished
+						? [
+								{
+									asset_id: '00000000-0000-4000-8000-000000000001',
+									reason: 'legal hold blocks deletion'
+								}
+							]
+						: []
+				}
 			});
 		}
 		if (path.pathname === '/health') {
@@ -653,4 +715,102 @@ test('the lightbox has no axe violations', async ({ page }) => {
 		.map((v) => `${v.id} (${v.impact}): ${v.nodes.map((n) => n.failureSummary).join(' | ')}`)
 		.join('\n');
 	expect(results.violations, `axe violations in the lightbox:\n${detail}`).toEqual([]);
+});
+
+test('the bulk bar appears with a selection and runs a delete to its honest end state', async ({
+	page
+}) => {
+	const recorder = await connect(page);
+	await page.goto('/assets');
+
+	// No selection, no bar: a toolbar for nothing is noise.
+	await expect(page.getByRole('toolbar', { name: 'Bulk operations' })).toHaveCount(0);
+
+	// Click selects one; ctrl-click adds a second.
+	await page.getByRole('gridcell').nth(0).click();
+	await page
+		.getByRole('gridcell')
+		.nth(1)
+		.click({ modifiers: ['ControlOrMeta'] });
+
+	const bar = page.getByRole('toolbar', { name: 'Bulk operations' });
+	await expect(bar).toBeVisible();
+	await expect(bar).toContainText('2 selected');
+
+	// Delete goes through the preview first, and the dialog carries the server's numbers — including how many
+	// of the selection fell outside the caller's scope.
+	await bar.getByRole('button', { name: 'Delete…' }).click();
+	await expect(bar).toContainText('Delete 1 asset?');
+	await expect(bar).toContainText('1 of the selection is outside your scope');
+	const previewCall = recorder.bulk.find((c) => c.url.includes('/bulk/preview'));
+	expect(previewCall?.body.kind).toBe('delete');
+	expect(previewCall?.body.asset_ids).toHaveLength(2);
+
+	// Confirming creates the operation with the same selection the preview saw.
+	await bar.getByRole('button', { name: 'Delete 1 asset' }).click();
+	const createCall = recorder.bulk.find((c) => c.url.endsWith('/bulk'));
+	expect(createCall?.body.asset_ids).toEqual(previewCall?.body.asset_ids);
+
+	// The end state is `partial`, rendered as exactly that — the named failure and no green tick.
+	await expect(bar).toContainText('partial: 1 applied, 1 failed');
+	await expect(bar).toContainText('legal hold blocks deletion');
+
+	// Dismissing clears the selection, so the next operation starts from nothing.
+	await bar.getByRole('button', { name: 'Dismiss' }).click();
+	await expect(page.getByRole('toolbar', { name: 'Bulk operations' })).toHaveCount(0);
+});
+
+test('the bulk metadata flow sends one field as a patch', async ({ page }) => {
+	const recorder = await connect(page);
+	await page.goto('/assets');
+	await page.getByRole('gridcell').nth(0).click();
+	await page
+		.getByRole('gridcell')
+		.nth(1)
+		.click({ modifiers: ['ControlOrMeta'] });
+
+	const bar = page.getByRole('toolbar', { name: 'Bulk operations' });
+	await bar.getByRole('button', { name: 'Set metadata…' }).click();
+	await bar.getByLabel('Field').selectOption('campaign');
+	await bar.getByLabel('Value').fill('spring-2026');
+	await bar.getByRole('button', { name: 'Preview' }).click();
+	await expect(bar).toContainText('Update 1 asset?');
+	await bar.getByRole('button', { name: 'Update 1 asset' }).click();
+
+	const createCall = recorder.bulk.find((c) => c.url.endsWith('/bulk'));
+	expect(createCall?.body.kind).toBe('metadata_set');
+	expect(
+		(createCall?.body as { params?: { values?: Record<string, string> } }).params?.values
+	).toEqual({
+		campaign: 'spring-2026'
+	});
+});
+
+test('changing the selection abandons an unconfirmed bulk dialog', async ({ page }) => {
+	// The previewed numbers are for another set; confirming them against a new selection would delete
+	// something the dialog never described.
+	await connect(page);
+	await page.goto('/assets');
+	await page.getByRole('gridcell').nth(0).click();
+
+	const bar = page.getByRole('toolbar', { name: 'Bulk operations' });
+	await bar.getByRole('button', { name: 'Delete…' }).click();
+	await expect(bar).toContainText('Delete 1 asset?');
+
+	await page
+		.getByRole('gridcell')
+		.nth(2)
+		.click({ modifiers: ['ControlOrMeta'] });
+	await expect(bar).not.toContainText('Delete 1 asset?');
+	await expect(bar).toContainText('2 selected');
+});
+
+test('the bulk bar has no axe violations', async ({ page }) => {
+	await connect(page);
+	await page.goto('/assets');
+	await page.getByRole('gridcell').nth(0).click();
+	await expect(page.getByRole('toolbar', { name: 'Bulk operations' })).toBeVisible();
+
+	const results = await new AxeBuilder({ page }).withTags(WCAG_21_AA).analyze();
+	expect(results.violations).toEqual([]);
 });

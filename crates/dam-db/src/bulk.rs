@@ -113,6 +113,23 @@ pub async fn create(
     spec: &OperationSpec<'_>,
     targets: &[Uuid],
 ) -> Result<Operation, Error> {
+    let mut tx = pool.begin().await?;
+    let operation = create_on(&mut tx, spec, targets).await?;
+    tx.commit().await?;
+    Ok(operation)
+}
+
+/// The same creation, on a connection the caller has already scoped.
+///
+/// A request handler and the worker both hold a [`crate::TenantConn`], whose `search_path` is
+/// transaction-scoped — so these statements have to run on *that* connection or the unqualified
+/// `bulk_operations` resolves against whatever schema the pooled connection last had. The caller's
+/// transaction also provides the atomicity the pool version got from its own.
+pub async fn create_on(
+    conn: &mut sqlx::PgConnection,
+    spec: &OperationSpec<'_>,
+    targets: &[Uuid],
+) -> Result<Operation, Error> {
     if targets.is_empty() {
         // Refused rather than recorded as instantly complete. An operation over nothing is a mis-built query or a
         // stale selection, and a "completed" row would hide it.
@@ -123,7 +140,6 @@ pub async fn create(
     }
 
     let id = Uuid::new_v4();
-    let mut tx = pool.begin().await?;
 
     sqlx::query(
         "INSERT INTO bulk_operations (id, kind, actor_id, predicate, target_count, params, state) \
@@ -135,7 +151,7 @@ pub async fn create(
     .bind(&spec.predicate)
     .bind(i64::try_from(targets.len()).unwrap_or(i64::MAX))
     .bind(&spec.params)
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?;
 
     // Deduplicated, because a selection assembled from several pages can repeat an id and the primary key would
@@ -151,18 +167,17 @@ pub async fn create(
     )
     .bind(id)
     .bind(&unique)
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?;
 
     // The count is corrected to the deduplicated size, so `done + failed = target` can actually hold at the end.
     sqlx::query("UPDATE bulk_operations SET target_count = $2 WHERE id = $1")
         .bind(id)
         .bind(i64::try_from(unique.len()).unwrap_or(i64::MAX))
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await?;
 
-    tx.commit().await?;
-    load(pool, id).await?.ok_or_else(|| {
+    load_on(conn, id).await?.ok_or_else(|| {
         Error::Inconsistent(format!(
             "bulk operation {id} vanished immediately after creation"
         ))
@@ -171,13 +186,19 @@ pub async fn create(
 
 /// Loads an operation.
 pub async fn load(pool: &sqlx::PgPool, id: Uuid) -> Result<Option<Operation>, Error> {
+    let mut conn = pool.acquire().await?;
+    load_on(&mut conn, id).await
+}
+
+/// The same read, on a scoped connection.
+pub async fn load_on(conn: &mut sqlx::PgConnection, id: Uuid) -> Result<Option<Operation>, Error> {
     let row = sqlx::query_as::<_, OperationRow>(
         "SELECT id, kind, actor_id, target_count, state, done_count, failed_count, resume_after, \
                 params, started_at, finished_at \
          FROM bulk_operations WHERE id = $1",
     )
     .bind(id)
-    .fetch_optional(pool)
+    .fetch_optional(conn)
     .await?;
     Ok(row.map(into_operation))
 }
@@ -200,6 +221,16 @@ pub async fn next_batch(
     operation_id: Uuid,
     limit: i64,
 ) -> Result<Vec<Uuid>, Error> {
+    let mut conn = pool.acquire().await?;
+    next_batch_on(&mut conn, operation_id, limit).await
+}
+
+/// The same claim, on a scoped connection.
+pub async fn next_batch_on(
+    conn: &mut sqlx::PgConnection,
+    operation_id: Uuid,
+    limit: i64,
+) -> Result<Vec<Uuid>, Error> {
     let ids: Vec<Uuid> = sqlx::query_scalar(
         "SELECT asset_id FROM bulk_operation_items \
          WHERE operation_id = $1 AND state = 'pending' \
@@ -207,20 +238,30 @@ pub async fn next_batch(
     )
     .bind(operation_id)
     .bind(limit)
-    .fetch_all(pool)
+    .fetch_all(conn)
     .await?;
     Ok(ids)
 }
 
 /// Marks the operation running.
 pub async fn start(pool: &sqlx::PgPool, id: Uuid, now: DateTime<Utc>) -> Result<bool, Error> {
+    let mut conn = pool.acquire().await?;
+    start_on(&mut conn, id, now).await
+}
+
+/// The same transition, on a scoped connection.
+pub async fn start_on(
+    conn: &mut sqlx::PgConnection,
+    id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<bool, Error> {
     let updated = sqlx::query(
         "UPDATE bulk_operations SET state = 'running', started_at = coalesce(started_at, $2) \
          WHERE id = $1 AND state IN ('queued', 'paused')",
     )
     .bind(id)
     .bind(now)
-    .execute(pool)
+    .execute(conn)
     .await?
     .rows_affected();
     Ok(updated > 0)
@@ -237,13 +278,30 @@ pub async fn record_outcome(
     asset_id: Uuid,
     outcome: ItemOutcome<'_>,
 ) -> Result<(), Error> {
+    let mut tx = pool.begin().await?;
+    record_outcome_on(&mut tx, operation_id, asset_id, outcome).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// The same recording, on a connection whose transaction the caller holds.
+///
+/// The atomicity the pool version buys with its own transaction comes from the caller's here — a
+/// [`crate::TenantConn`] is one, which is also what scopes the unqualified table names. Calling this on a bare
+/// autocommit connection would let a crash land the item state without the counters, and then the operation's
+/// own progress report is the thing that is wrong.
+pub async fn record_outcome_on(
+    conn: &mut sqlx::PgConnection,
+    operation_id: Uuid,
+    asset_id: Uuid,
+    outcome: ItemOutcome<'_>,
+) -> Result<(), Error> {
     let (state, reason) = match outcome {
         ItemOutcome::Done => ("done", None),
         ItemOutcome::Skipped(reason) => ("skipped", Some(reason)),
         ItemOutcome::Failed(reason) => ("failed", Some(reason)),
     };
 
-    let mut tx = pool.begin().await?;
     let updated = sqlx::query(
         "UPDATE bulk_operation_items SET state = $3, reason = $4 \
          WHERE operation_id = $1 AND asset_id = $2 AND state = 'pending'",
@@ -252,7 +310,7 @@ pub async fn record_outcome(
     .bind(asset_id)
     .bind(state)
     .bind(reason)
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?
     .rows_affected();
 
@@ -282,10 +340,9 @@ pub async fn record_outcome(
         .bind(failed)
         .bind(asset_id)
         .bind(if state == "failed" { reason } else { None })
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await?;
     }
-    tx.commit().await?;
     Ok(())
 }
 
@@ -304,6 +361,16 @@ pub enum ItemOutcome<'a> {
 /// The caller does not get to say "completed": the state is derived from the counters, so an operation with
 /// failures cannot be reported green. That is the schema's `partial` state doing its job.
 pub async fn finish(pool: &sqlx::PgPool, id: Uuid, now: DateTime<Utc>) -> Result<Operation, Error> {
+    let mut conn = pool.acquire().await?;
+    finish_on(&mut conn, id, now).await
+}
+
+/// The same finishing, on a scoped connection.
+pub async fn finish_on(
+    conn: &mut sqlx::PgConnection,
+    id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<Operation, Error> {
     sqlx::query(
         "UPDATE bulk_operations SET \
              state = CASE \
@@ -316,10 +383,10 @@ pub async fn finish(pool: &sqlx::PgPool, id: Uuid, now: DateTime<Utc>) -> Result
     )
     .bind(id)
     .bind(now)
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
-    load(pool, id)
+    load_on(conn, id)
         .await?
         .ok_or_else(|| Error::Inconsistent(format!("bulk operation {id} vanished while finishing")))
 }
@@ -360,13 +427,23 @@ pub async fn failures(
     operation_id: Uuid,
     limit: i64,
 ) -> Result<Vec<Item>, Error> {
+    let mut conn = pool.acquire().await?;
+    failures_on(&mut conn, operation_id, limit).await
+}
+
+/// The same read, on a scoped connection.
+pub async fn failures_on(
+    conn: &mut sqlx::PgConnection,
+    operation_id: Uuid,
+    limit: i64,
+) -> Result<Vec<Item>, Error> {
     let rows = sqlx::query_as::<_, (Uuid, String, Option<String>)>(
         "SELECT asset_id, state, reason FROM bulk_operation_items \
          WHERE operation_id = $1 AND state = 'failed' ORDER BY asset_id LIMIT $2",
     )
     .bind(operation_id)
     .bind(limit)
-    .fetch_all(pool)
+    .fetch_all(conn)
     .await?;
     Ok(rows
         .into_iter()

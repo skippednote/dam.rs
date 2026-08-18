@@ -55,6 +55,57 @@ export interface paths {
         patch: operations["update_metadata"];
         trace?: never;
     };
+    "/bulk": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Creates a bulk operation and queues its execution. */
+        post: operations["create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/bulk/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Previews a bulk operation without recording anything. */
+        post: operations["preview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/bulk/{operation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The progress of one operation. */
+        get: operations["status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/fields": {
         parameters: {
             query?: never;
@@ -251,6 +302,60 @@ export interface components {
              *     the round trip back into a query goes through the field's kind anyway.
              */
             value: string;
+        };
+        /** @description One failed row, for the report. */
+        BulkFailure: {
+            /** Format: uuid */
+            asset_id: string;
+            reason?: string | null;
+        };
+        /** @description What a preview reports. */
+        BulkPreview: {
+            kind: string;
+            /**
+             * Format: int64
+             * @description How many of the submitted ids fell out of scope. Reported as a count and nothing more: which ones,
+             *     and whether they exist at all, is exactly what §7 says a caller must not learn.
+             */
+            out_of_scope: number;
+            /** @description A sample of the targets, for a dialog to name a few rather than list thousands. */
+            sample: string[];
+            /**
+             * Format: int64
+             * @description How many assets the operation would touch — after the caller's own scope is applied, so it is the
+             *     number that will actually be touched.
+             */
+            target_count: number;
+        };
+        /** @description What a client asks for. */
+        BulkRequest: {
+            /** @description The selection. Deduplicated server-side; ids the caller may not manage fall out silently. */
+            asset_ids: string[];
+            /** @description `metadata_set` or `delete`. */
+            kind: string;
+            /**
+             * @description Kind-specific parameters — for `metadata_set`, `{ "values": { … } }` with the same patch semantics
+             *     as the single-asset endpoint: `null` clears, absent leaves alone.
+             */
+            params?: unknown;
+        };
+        /** @description An operation as the UI polls it. */
+        BulkStatus: {
+            /** Format: int64 */
+            done_count: number;
+            /** Format: int64 */
+            failed_count: number;
+            /** @description The first failures, row by row — "must report exactly which rows did not apply". */
+            failures: components["schemas"]["BulkFailure"][];
+            /** Format: uuid */
+            id: string;
+            kind: string;
+            /** @description `queued`, `running`, `completed`, `partial`, `failed`, `cancelled`. */
+            state: string;
+            /** Format: int64 */
+            target_count: number;
+            /** @description Whether the state is final, so a client polls this instead of re-implementing the state vocabulary. */
+            terminal: boolean;
         };
         /** @description One facetable field and its buckets. */
         Facet: {
@@ -534,6 +639,139 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ValidationProblem"][];
                 };
+            };
+        };
+    };
+    create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BulkRequest"];
+            };
+        };
+        responses: {
+            /** @description Accepted; poll the returned operation */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BulkStatus"];
+                };
+            };
+            /** @description No usable credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authenticated, and holds no manage scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The kind is not executable, or nothing in the selection is manageable */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BulkRequest"];
+            };
+        };
+        responses: {
+            /** @description What the operation would touch, under the caller's own scope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BulkPreview"];
+                };
+            };
+            /** @description No usable credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authenticated, and holds no manage scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The kind is not executable */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The operation */
+                operation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BulkStatus"];
+                };
+            };
+            /** @description No usable credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authenticated, and holds no manage scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such operation */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

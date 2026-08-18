@@ -173,6 +173,128 @@
         }
       }
     },
+    "/bulk": {
+      "post": {
+        "tags": [
+          "bulk"
+        ],
+        "summary": "Creates a bulk operation and queues its execution.",
+        "operationId": "create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted; poll the returned operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential"
+          },
+          "403": {
+            "description": "Authenticated, and holds no manage scope"
+          },
+          "422": {
+            "description": "The kind is not executable, or nothing in the selection is manageable"
+          }
+        }
+      }
+    },
+    "/bulk/preview": {
+      "post": {
+        "tags": [
+          "bulk"
+        ],
+        "summary": "Previews a bulk operation without recording anything.",
+        "operationId": "preview",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What the operation would touch, under the caller's own scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkPreview"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential"
+          },
+          "403": {
+            "description": "Authenticated, and holds no manage scope"
+          },
+          "422": {
+            "description": "The kind is not executable"
+          }
+        }
+      }
+    },
+    "/bulk/{operation_id}": {
+      "get": {
+        "tags": [
+          "bulk"
+        ],
+        "summary": "The progress of one operation.",
+        "operationId": "status",
+        "parameters": [
+          {
+            "name": "operation_id",
+            "in": "path",
+            "description": "The operation",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential"
+          },
+          "403": {
+            "description": "Authenticated, and holds no manage scope"
+          },
+          "404": {
+            "description": "No such operation"
+          }
+        }
+      }
+    },
     "/fields": {
       "get": {
         "tags": [
@@ -587,6 +709,133 @@
           "value": {
             "type": "string",
             "description": "The value as text. A number or a boolean is rendered rather than typed, because a rail displays it and\nthe round trip back into a query goes through the field's kind anyway."
+          }
+        }
+      },
+      "BulkFailure": {
+        "type": "object",
+        "description": "One failed row, for the report.",
+        "required": [
+          "asset_id"
+        ],
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "BulkPreview": {
+        "type": "object",
+        "description": "What a preview reports.",
+        "required": [
+          "kind",
+          "target_count",
+          "sample",
+          "out_of_scope"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "out_of_scope": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many of the submitted ids fell out of scope. Reported as a count and nothing more: which ones,\nand whether they exist at all, is exactly what §7 says a caller must not learn."
+          },
+          "sample": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "A sample of the targets, for a dialog to name a few rather than list thousands."
+          },
+          "target_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many assets the operation would touch — after the caller's own scope is applied, so it is the\nnumber that will actually be touched."
+          }
+        }
+      },
+      "BulkRequest": {
+        "type": "object",
+        "description": "What a client asks for.",
+        "required": [
+          "kind",
+          "asset_ids"
+        ],
+        "properties": {
+          "asset_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "The selection. Deduplicated server-side; ids the caller may not manage fall out silently."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`metadata_set` or `delete`."
+          },
+          "params": {
+            "description": "Kind-specific parameters — for `metadata_set`, `{ \"values\": { … } }` with the same patch semantics\nas the single-asset endpoint: `null` clears, absent leaves alone."
+          }
+        }
+      },
+      "BulkStatus": {
+        "type": "object",
+        "description": "An operation as the UI polls it.",
+        "required": [
+          "id",
+          "kind",
+          "state",
+          "target_count",
+          "done_count",
+          "failed_count",
+          "terminal",
+          "failures"
+        ],
+        "properties": {
+          "done_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "failed_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "failures": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BulkFailure"
+            },
+            "description": "The first failures, row by row — \"must report exactly which rows did not apply\"."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "description": "`queued`, `running`, `completed`, `partial`, `failed`, `cancelled`."
+          },
+          "target_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "terminal": {
+            "type": "boolean",
+            "description": "Whether the state is final, so a client polls this instead of re-implementing the state vocabulary."
           }
         }
       },

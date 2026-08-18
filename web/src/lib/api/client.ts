@@ -23,6 +23,8 @@ export type ValidationProblem = components['schemas']['ValidationProblem'];
 export type QueryProblem = components['schemas']['QueryProblem'];
 export type SortOrder = components['schemas']['SortOrder'];
 export type FieldDefinition = components['schemas']['FieldDefinition'];
+export type BulkPreview = components['schemas']['BulkPreview'];
+export type BulkStatus = components['schemas']['BulkStatus'];
 
 /** A failed request, with whatever the server said about it. */
 export class ApiError extends Error {
@@ -175,6 +177,41 @@ export async function saveMetadata(
 export function deliveryUrl(url: string): string {
 	if (/^https?:\/\//.test(url)) return url;
 	return `${session.base}${url.startsWith('/') ? '' : '/'}${url}`;
+}
+
+/**
+ * Previews a bulk operation: how many of the selected assets the server will actually touch.
+ *
+ * The same scope filter creation applies, run server-side — so the number in the confirmation dialog is the
+ * number the operation will act on, not the number the client selected.
+ */
+export async function previewBulk(
+	kind: string,
+	assetIds: string[],
+	params: Record<string, unknown> = {}
+): Promise<BulkPreview> {
+	return request<BulkPreview>('/bulk/preview', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ kind, asset_ids: assetIds, params })
+	});
+}
+
+/** Starts a bulk operation. Returns immediately; poll [`bulkStatus`] until `terminal`. */
+export async function createBulk(
+	kind: string,
+	assetIds: string[],
+	params: Record<string, unknown> = {}
+): Promise<BulkStatus> {
+	return request<BulkStatus>('/bulk', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ kind, asset_ids: assetIds, params })
+	});
+}
+
+export async function bulkStatus(operationId: string): Promise<BulkStatus> {
+	return request<BulkStatus>(`/bulk/${operationId}`);
 }
 
 /** Liveness, for the Settings page's connection check. Deliberately not authenticated. */

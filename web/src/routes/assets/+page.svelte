@@ -24,6 +24,7 @@
 	import DetailPanel from '$lib/components/detail/DetailPanel.svelte';
 	import Lightbox from '$lib/components/detail/Lightbox.svelte';
 	import UploadQueue from '$lib/components/upload/UploadQueue.svelte';
+	import BulkBar from '$lib/components/bulk/BulkBar.svelte';
 	import {
 		ApiError,
 		deliveryUrl,
@@ -56,6 +57,9 @@
 	/** Whether the selected asset is open full-screen. Separate from `selected`, because the panel and the
 	    lightbox show the same asset and closing one must not close the other. */
 	let lightbox = $state(false);
+	/** The grid's selection, as it reports it. Lives in the grid; this is the read model. */
+	let selection = $state<string[]>([]);
+	let grid = $state<{ clearSelection: () => void } | null>(null);
 
 	/** Discards a stale response, so a fast second search cannot be overwritten by a slow first one. */
 	let generation = 0;
@@ -266,10 +270,23 @@
 					columns={4}
 					height={640}
 					rowHeight={224}
+					bind:this={grid}
 					thumbnail={deliveryUrl}
-					onselect={(asset) => open(asset.id)}
+					onselect={(asset, ids) => {
+						selection = ids;
+						void open(asset.id);
+					}}
 					onactivate={(asset) => {
 						void open(asset.id).then(() => (lightbox = true));
+					}}
+				/>
+				<BulkBar
+					assetIds={selection}
+					{fields}
+					onfinished={load}
+					onclear={() => {
+						grid?.clearSelection();
+						selection = [];
 					}}
 				/>
 			{:else if !loading && !error}

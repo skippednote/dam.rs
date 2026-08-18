@@ -176,6 +176,19 @@
 		onselect?.(items[index], [...selected]);
 	}
 
+	/**
+	 * Clears the selection from outside.
+	 *
+	 * Exported because the selection *lives* here — a `SvelteSet`, so mutation stays O(1) per click — and the
+	 * bulk bar needs to reset it after an operation without the page owning the set. Reported through
+	 * `onselect` like any other change, so listeners cannot drift from the truth.
+	 */
+	export function clearSelection() {
+		selected.clear();
+		const current = items[focused];
+		if (current) onselect?.(current, []);
+	}
+
 	function onclick(event: MouseEvent, index: number) {
 		select(index, {
 			toggle: event.metaKey || event.ctrlKey,

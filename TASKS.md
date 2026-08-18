@@ -1106,7 +1106,34 @@ the grid against sample data; these wire it to the API and make it a thing a per
   *Reduced motion is honoured globally* rather than per component, because a component-level
   `transition-colors` cannot be switched off by a user who asked for less motion, and a grid of forty
   thousand cells has enough hover states for that to matter.
-- [ ] **F.11 Bulk-operations bar, share/portal UI, schema admin, restore UX.** The remaining surfaces.
+- [x] **F.11a The bulk-operations bar, and the executor it needed.** 2.10 built the bookkeeping and nothing
+  drove it — a created operation sat `queued` forever. The full slice landed together.
+  *`dam_pipeline::bulk_exec`* drives an operation to its terminal state: batch, apply, record, repeat, then
+  derive the state from the counters. Two kinds are executable — `metadata_set` and `delete` — and the rest
+  of the schema's vocabulary is refused **by name**, permanently: an operation that "completed" while doing
+  nothing puts a success in the history for work that never happened. Legal hold blocks a bulk delete per
+  item with its reason (`Skipped("legal hold blocks deletion")`), the guards live in the UPDATE's own WHERE
+  so a hold cannot land between check and change, and an invalid metadata patch fails **before any item** —
+  it is the same patch for every asset, so it would fail all 40,000 identically. Changed assets — and only
+  changed ones — are re-queued for indexing, or a bulk delete leaves ghosts in every search result. Lease
+  renews per batch; `LeaseLost` surfaces as "stop, another worker owns this". Seven mutations, all caught.
+  *The API (`/bulk/preview`, `/bulk`, `/bulk/{id}`)* filters the client-assembled id list through the
+  caller's **Manage** predicate in every request — a caller scoped to one group must not bulk-delete another
+  group's assets by guessing ids. Out-of-scope ids fall out silently and are reported as a *count*, never a
+  list (§7 applied to writes). Preview and creation share the filter, so the dialog's number is the
+  operation's number. A selection with nothing manageable is 422, not an instantly-completed no-op. Four
+  endpoint mutations, all caught — including status requiring Manage rather than Read.
+  *The bar* appears with a selection, previews before every confirm, polls the worker's progress, and renders
+  `partial` as exactly that — the named failures, no green tick. Changing the selection abandons an
+  unconfirmed dialog, because the previewed numbers are for another set.
+  *A reactivity bug the e2e caught:* the abandon-on-selection-change effect also read `flow`, so setting
+  `flow` to `confirm` re-triggered it and the dialog closed itself in the same tick. `untrack` is
+  load-bearing there, and the comment says so.
+  *Verified against the real stack:* two assets selected in the browser, previewed, confirmed, executed by
+  the real worker — 25 → 23 live, operation `completed 2/2`, index jobs run.
+  *`_on` variants* landed across `dam_db::bulk` so the executor and the API run on tenant-scoped
+  connections; the pool versions are now thin wrappers, and the existing suite passed unchanged.
+- [ ] **F.11b Share/portal UI, schema admin, restore UX.** The remaining surfaces.
 
 **The gap the UI runs into, stated plainly:** `dam-worker` has no queue consumer, so nothing generates a
 derivative and nothing finalises an upload into an asset. An upload lands in staging and stops there — the

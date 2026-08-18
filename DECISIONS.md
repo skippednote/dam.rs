@@ -1566,3 +1566,34 @@ page would remove the limit.
 **`preview_url` is on the detail endpoint only.** A list response of sixty preview URLs would mint sixty tokens
 for images no grid draws — the grid uses the thumbnail — and a lightbox opens one asset at a time. Reversible:
 yes.
+
+**Bulk targets are filtered through the caller's Manage predicate on every request, and out-of-scope ids fall
+out silently.** A bulk request is a client-assembled id list, and a caller scoped to one corner of the library
+must not act on the rest by naming it. Falling out silently rather than erroring is deliberate: a stale grid
+legitimately holds an id re-scoped a moment ago, and refusing the whole request over it makes bulk work flaky
+exactly when the library is busy. The caller learns a *count* of what fell out and nothing more — which ids, and
+whether they exist at all, is §7's disclosure applied to writes. Preview and creation share one filter so the
+confirmation dialog's number is the operation's number. Reversible: no.
+
+**Unexecutable bulk kinds are refused by name, at the API (422) and again in the executor (permanent).** The
+schema's kind vocabulary is wider than what can run — `download_zip`, `tier`, `restore` need machinery that does
+not exist yet — and an operation that "completed" while doing nothing would put a success in the history for
+work that never happened. The API refusal is a message in the requester's face; the executor refusal covers
+operations created by a future path that skips the API. Reversible: yes — each kind becomes executable by
+gaining an `Action` arm.
+
+**An invalid bulk metadata patch fails before any item is touched.** The patch is identical for every target, so
+a malformed one would fail all 40,000 items identically; validating once and failing permanently with the field
+named beats recording the same failure per row. The claim "no asset was touched" is asserted in a test, not just
+stated in the message. Reversible: no.
+
+**The bulk delete's guards live in the UPDATE's own WHERE.** `deleted_at IS NULL AND NOT legal_hold` in the same
+statement as the change, so a hold cannot land between a check and the delete. A skip then says which guard
+held — "legal hold blocks deletion" vs "already deleted" — because a silent skip is indistinguishable from a
+bug. Reversible: no.
+
+**Svelte effects that react to one prop read everything else under `untrack`.** The bulk bar's
+abandon-on-selection-change effect also read `flow`, making `flow` a dependency — so setting it to `confirm`
+re-ran the effect, which saw `confirm` and reset it to `idle` in the same tick. The dialog closed itself, and
+only the e2e caught it. An effect's dependency set is whatever it reads; the comment at the site now says which
+read is the trigger and why the rest are untracked. Reversible: no, it is the fix.
