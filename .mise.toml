@@ -94,8 +94,11 @@ run = "cargo run -q -p damctl -- migrate --all"
 
 # ─── driving it by hand ─────────────────────────────────────────────────────
 #
-# `up` → `dev:seed` → `dev:api` in one terminal, `dev:web` in another, then open
+# `up` → `dev:seed`, then `dev:api`, `dev:worker` and `dev:web` in three terminals, then open
 # http://localhost:5173/settings and paste the key `dev:seed` printed.
+#
+# The worker is not optional: without it an upload lands in staging and never becomes an asset, and no
+# asset gets a thumbnail.
 #
 # Kept as separate tasks rather than one "start everything" script: the API and the Vite
 # server are both long-running, and a single task holding two of them makes Ctrl-C
@@ -121,6 +124,12 @@ cargo run -q -p damctl -- issue-key --tenant acme --email dev@example.com --admi
 [tasks."dev:api"]
 description = "Run damd against the local stack"
 run = "cargo run -p damd"
+
+[tasks."dev:worker"]
+description = "Run the job worker: finalise uploads, render derivatives, index"
+# Its own terminal, like the API. Nothing appears in the grid without it: an upload lands in staging and
+# stops there until this finalises it.
+run = "cargo run -p dam-worker"
 
 [tasks."dev:web"]
 description = "Run the Svelte app against the local damd"
