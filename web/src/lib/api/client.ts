@@ -1,0 +1,175 @@
+/**
+ * The typed client.
+ *
+ * Every shape here comes from `schema.d.ts`, which `damctl openapi --write` generates from the Rust
+ * annotations — so the chain F.3 established runs unbroken from a database CHECK constraint to this file.
+ * Nothing below re-declares a wire type; a field renamed in Rust becomes a TypeScript error here.
+ *
+ * ## Errors carry the server's own explanation
+ *
+ * A 422 from the metadata endpoint names the field and a stable code; a 400 from search names the column
+ * the parser stopped at. Collapsing those into "request failed" throws away the only part a user can act
+ * on, so [`ApiError`] keeps the parsed body and the callers render it.
+ */
+import type { components } from './schema';
+import { session } from './session.svelte';
+
+export type AssetSummary = components['schemas']['AssetSummary'];
+export type AssetPage = components['schemas']['AssetPage'];
+export type AssetDetail = components['schemas']['AssetDetail'];
+export type Facet = components['schemas']['Facet'];
+export type Bucket = components['schemas']['Bucket'];
+export type ValidationProblem = components['schemas']['ValidationProblem'];
+export type QueryProblem = components['schemas']['QueryProblem'];
+export type SortOrder = components['schemas']['SortOrder'];
+export type FieldDefinition = components['schemas']['FieldDefinition'];
+
+/** A failed request, with whatever the server said about it. */
+export class ApiError extends Error {
+	readonly status: number;
+	/** The parsed body, when there was one. `null` for a status-only refusal. */
+	readonly body: unknown;
+
+	constructor(status: number, message: string, body: unknown = null) {
+		super(message);
+		this.name = 'ApiError';
+		this.status = status;
+		this.body = body;
+	}
+
+	/** Field problems from a 422, or an empty list. */
+	get problems(): ValidationProblem[] {
+		return this.status === 422 && Array.isArray(this.body)
+			? (this.body as ValidationProblem[])
+			: [];
+	}
+
+	/** The query problem from a 400 or 501, when the body carries one. */
+	get query(): QueryProblem | null {
+		if (this.status !== 400 && this.status !== 501) return null;
+		const body = this.body as QueryProblem | null;
+		return body && typeof body.message === 'string' ? body : null;
+	}
+
+	/** Whether the credential is the problem, so a caller can send the user to reconnect. */
+	get unauthenticated(): boolean {
+		return this.status === 401;
+	}
+}
+
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+	if (!session.connected) {
+		// Thrown rather than attempted: an unauthenticated request produces a 401 that looks like a bad
+		// key, and the user would go looking for one they never entered.
+		throw new ApiError(401, 'Not connected. Add an API key in Settings.');
+	}
+
+	const response = await fetch(`${session.base}${path}`, {
+		...init,
+		headers: {
+			...(init.headers ?? {}),
+			Authorization: `Bearer ${session.key}`
+		}
+	});
+
+	if (!response.ok) {
+		// Best-effort: a 401 has no body at all, and a failure to parse must not turn a 401 into a
+		// different error than the one the server sent.
+		let body: unknown;
+		try {
+			body = await response.json();
+		} catch {
+			body = null;
+		}
+		throw new ApiError(response.status, describe(response.status, body), body);
+	}
+
+	if (response.status === 204) return undefined as T;
+	return (await response.json()) as T;
+}
+
+/** A sentence a user can act on, from a status and whatever body came with it. */
+function describe(status: number, body: unknown): string {
+	const problem = body as { message?: string } | null;
+	if (problem && typeof problem.message === 'string') return problem.message;
+	switch (status) {
+		case 401:
+			return 'The API key was not accepted. Check it in Settings.';
+		case 403:
+			return 'That key does not have permission for this.';
+		case 404:
+			return 'Not found.';
+		case 422:
+			return 'Some fields were refused.';
+		case 501:
+			return 'The search index cannot answer that query.';
+		case 504:
+			return 'The server took too long.';
+		default:
+			return `Request failed (${status}).`;
+	}
+}
+
+export async function listAssets(params: {
+	offset?: number;
+	limit?: number;
+	order?: SortOrder;
+}): Promise<AssetPage> {
+	const query = new URLSearchParams();
+	if (params.offset !== undefined) query.set('offset', String(params.offset));
+	if (params.limit !== undefined) query.set('limit', String(params.limit));
+	if (params.order) query.set('order', params.order);
+	return request<AssetPage>(`/assets?${query}`);
+}
+
+export async function searchAssets(params: {
+	q: string;
+	offset?: number;
+	limit?: number;
+}): Promise<AssetPage> {
+	const query = new URLSearchParams({ q: params.q });
+	if (params.offset !== undefined) query.set('offset', String(params.offset));
+	if (params.limit !== undefined) query.set('limit', String(params.limit));
+	return request<AssetPage>(`/search?${query}`);
+}
+
+export async function loadFacets(q: string): Promise<Facet[]> {
+	return request<Facet[]>(`/search/facets?${new URLSearchParams({ q })}`);
+}
+
+/**
+ * The tenant's field definitions.
+ *
+ * Fetched rather than inferred. An earlier version guessed the field list from the facet keys, which meant
+ * the editor did not know whether a field was multivalued — so it sent `"blue, red"` to a field that takes an
+ * array and the server refused it with a message about delimiters the user could do nothing with. Found by
+ * editing a multivalued field in a real browser.
+ */
+export async function loadFields(): Promise<FieldDefinition[]> {
+	return request<FieldDefinition[]>('/fields');
+}
+
+export async function getAsset(id: string): Promise<AssetDetail> {
+	return request<AssetDetail>(`/assets/${id}`);
+}
+
+export async function saveMetadata(
+	id: string,
+	values: Record<string, unknown>
+): Promise<{ values: Record<string, unknown> }> {
+	return request(`/assets/${id}/metadata`, {
+		method: 'PATCH',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ values })
+	});
+}
+
+/** Liveness, for the Settings page's connection check. Deliberately not authenticated. */
+export async function health(base: string): Promise<boolean> {
+	try {
+		const response = await fetch(`${base.replace(/\/+$/, '')}/health`);
+		return response.ok;
+	} catch {
+		return false;
+	}
+}

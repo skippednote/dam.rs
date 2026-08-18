@@ -55,6 +55,23 @@ export interface paths {
         patch: operations["update_metadata"];
         trace?: never;
     };
+    "/fields": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The tenant's field definitions, in display order. */
+        get: operations["fields"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/search": {
         parameters: {
             query?: never;
@@ -224,6 +241,32 @@ export interface components {
             key: string;
             /** @description Whether buckets were dropped by the limit. Reported rather than left implicit — see [`FACET_BUCKETS`]. */
             truncated: boolean;
+        };
+        /** @description One field definition, as a form needs it. */
+        FieldDefinition: {
+            /** @description Whether an enrichment run may write it. */
+            ai_writable: boolean;
+            facetable: boolean;
+            key: string;
+            /** @description The database spelling of the kind, so a client can pick an input type. */
+            kind: string;
+            /** @description The tenant's own label. A form shows this rather than the key. */
+            label: string;
+            /**
+             * @description Whether the field takes an array.
+             *
+             *     Load-bearing rather than informational: a client that does not know this sends a comma-joined string
+             *     to a field that takes an array, and the server refuses it with a message about delimiters that the
+             *     user cannot act on. Discovered exactly that way, editing a multivalued field in a real browser.
+             */
+            multivalued: boolean;
+            /** @description Set by ingest or by a connector; an editor must not offer it. */
+            read_only: boolean;
+            required: boolean;
+            /** @description The shorthand prefix, when the tenant defined one: `bra:acme` for `brand`. */
+            search_alias?: string | null;
+            /** Format: uuid */
+            taxonomy_id?: string | null;
         };
         /**
          * @description How long a `GET` takes to become possible.
@@ -474,6 +517,40 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ValidationProblem"][];
                 };
+            };
+        };
+    };
+    fields: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every field definition, in display order */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FieldDefinition"][];
+                };
+            };
+            /** @description No usable credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authenticated, and holds no read scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

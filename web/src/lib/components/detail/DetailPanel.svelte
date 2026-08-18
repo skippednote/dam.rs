@@ -1,0 +1,179 @@
+<!--
+	The detail panel: everything about one asset, and the metadata editor.
+
+	**The tier decides what the download control says, and the server decided the tier.** `AssetTier` is
+	derived server-side from storage class and restore state precisely so this component does not
+	reimplement the rule — the trap the schema warns about twice is that an *expired* restore of an archived
+	object is archived again, and conflating it with `restored` leaves a download button enabled until the
+	day somebody presses it. Here that shows up as one check: `hot`, `cool` and `restored` can hand over the
+	original; `archive` and `restoring` cannot.
+
+	**A rights badge is not a permission.** Enforcement is at the distribution chokepoint (D12); this field
+	dims a button and explains why. A UI that treated `allowed` as authorisation would be one stale cache
+	away from offering a download the server refuses — so the control is dimmed as a courtesy and the server
+	is still the one that says no.
+-->
+<script lang="ts">
+	import type { AssetDetail, FieldDefinition } from '$lib/api/client';
+	import TierBadge from '$lib/components/state/TierBadge.svelte';
+	import RightsBadge from '$lib/components/state/RightsBadge.svelte';
+	import ProvenanceBadge from '$lib/components/state/ProvenanceBadge.svelte';
+	import MetadataEditor from './MetadataEditor.svelte';
+
+	let {
+		asset,
+		fields,
+		onchanged,
+		onclose
+	}: {
+		asset: AssetDetail;
+		/** The tenant's definitions, so the editor knows each field's shape. */
+		fields: FieldDefinition[];
+		onchanged?: (values: Record<string, unknown>) => void;
+		onclose?: () => void;
+	} = $props();
+
+	const values = $derived((asset.values ?? {}) as Record<string, unknown>);
+	const technical = $derived((asset.technical ?? {}) as Record<string, unknown>);
+
+	/** Whether the original can be fetched right now. See the component docs. */
+	const originalAvailable = $derived(
+		asset.tier === 'hot' || asset.tier === 'cool' || asset.tier === 'restored'
+	);
+
+	function bytes(n: number): string {
+		// Binary units, because that is what the storage layer counts in and a DAM's users compare against
+		// what their operating system reports.
+		const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+		let value = n;
+		let unit = 0;
+		while (value >= 1024 && unit < units.length - 1) {
+			value /= 1024;
+			unit += 1;
+		}
+		return `${value < 10 && unit > 0 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
+	}
+
+	function when(iso: string): string {
+		// The visible text is locale-formatted and the `datetime` attribute carries the machine-readable
+		// value, which is what makes a screen reader and a copy-paste both correct.
+		return new Date(iso).toLocaleString();
+	}
+</script>
+
+<!--
+	A plain `div`, not a landmark. The page wraps this in an `aside` that is already named "Selected asset",
+	and two nested landmarks naming the same thing is announced twice — the panel's own heading is the
+	filename, which is the useful name.
+-->
+<div class="flex h-full flex-col gap-4 overflow-y-auto p-4">
+	<header class="space-y-2">
+		<div class="flex items-start justify-between gap-2">
+			<h2 class="text-sm font-semibold break-all" title={asset.filename}>{asset.filename}</h2>
+			{#if onclose}
+				<button
+					type="button"
+					class="shrink-0 rounded p-1 text-muted hover:text-fg"
+					onclick={onclose}
+					aria-label="Close detail panel"
+				>
+					✕
+				</button>
+			{/if}
+		</div>
+
+		<div class="flex flex-wrap items-center gap-1.5">
+			<TierBadge tier={asset.tier} />
+			<RightsBadge state={asset.rights_state} />
+			<ProvenanceBadge state={asset.provenance_state} />
+			{#if asset.legal_hold}
+				<!--
+					Surfaced because a user who cannot delete an asset deserves to know why rather than to meet a
+					failing button. Legal hold blocks tiering *and* deletion.
+				-->
+				<span class="rounded bg-surface px-1.5 py-0.5 text-xs font-medium">Legal hold</span>
+			{/if}
+		</div>
+	</header>
+
+	<div class="rounded-md bg-surface p-3">
+		{#if originalAvailable}
+			<p class="text-xs text-muted">
+				The original is available. Downloads pass the rights check at the point of delivery, so this
+				may still be refused — the badge above is what it will say.
+			</p>
+		{:else if asset.tier === 'restoring'}
+			<p class="text-xs text-muted">
+				A restore is in flight. The proxy stays searchable and previewable while it runs.
+			</p>
+		{:else}
+			<p class="text-xs text-muted">
+				The original is in cold storage and needs a restore, which takes between a minute and 48
+				hours depending on the class. Search and preview work now.
+			</p>
+		{/if}
+	</div>
+
+	<dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+		<dt class="text-muted">Type</dt>
+		<dd class="font-mono">{asset.mime}</dd>
+		<dt class="text-muted">Size</dt>
+		<dd class="tabular-nums">{bytes(asset.bytes)}</dd>
+		{#if asset.width && asset.height}
+			<dt class="text-muted">Dimensions</dt>
+			<dd class="tabular-nums">{asset.width} × {asset.height}</dd>
+		{/if}
+		{#if asset.duration_ms}
+			<dt class="text-muted">Duration</dt>
+			<dd class="tabular-nums">{(asset.duration_ms / 1000).toFixed(1)} s</dd>
+		{/if}
+		{#if asset.page_count}
+			<dt class="text-muted">Pages</dt>
+			<dd class="tabular-nums">{asset.page_count}</dd>
+		{/if}
+		{#if asset.color_space}
+			<dt class="text-muted">Colour</dt>
+			<dd>{asset.color_space}</dd>
+		{/if}
+		<dt class="text-muted">Status</dt>
+		<dd>{asset.status}</dd>
+		<dt class="text-muted">Enrichment</dt>
+		<dd>{asset.enrichment_state}</dd>
+		<dt class="text-muted">Version</dt>
+		<dd class="tabular-nums">{asset.version_no}</dd>
+		<dt class="text-muted">Added</dt>
+		<dd><time datetime={asset.created_at}>{when(asset.created_at)}</time></dd>
+		{#if asset.expires_at}
+			<dt class="text-muted">Expires</dt>
+			<dd><time datetime={asset.expires_at}>{when(asset.expires_at)}</time></dd>
+		{/if}
+		<dt class="text-muted">Hash</dt>
+		<!-- Truncated in the middle: the leading and trailing hex are what somebody compares by eye. -->
+		<dd class="font-mono text-[10px] break-all">{asset.content_hash}</dd>
+	</dl>
+
+	<div>
+		<h3 class="mb-2 text-xs font-semibold tracking-wide text-muted uppercase">Metadata</h3>
+		<MetadataEditor assetId={asset.id} {values} {fields} onsaved={onchanged} />
+	</div>
+
+	{#if Object.keys(technical).length > 0}
+		<details>
+			<summary class="cursor-pointer text-xs font-semibold tracking-wide text-muted uppercase">
+				Technical
+			</summary>
+			<!--
+				Read-only and shown verbatim. These facts are shaped by the file rather than by the tenant's
+				schema, which is why they are not merged into the editable document above.
+			-->
+			<dl class="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+				{#each Object.entries(technical) as [key, value] (key)}
+					<dt class="text-muted">{key}</dt>
+					<dd class="break-all">
+						{typeof value === 'object' ? JSON.stringify(value) : String(value)}
+					</dd>
+				{/each}
+			</dl>
+		</details>
+	{/if}
+</div>

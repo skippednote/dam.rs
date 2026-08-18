@@ -2,6 +2,7 @@
 	import './layout.css';
 	import { page } from '$app/state';
 	import SkipLink from '$lib/components/a11y/SkipLink.svelte';
+	import Nav from '$lib/components/shell/Nav.svelte';
 	import favicon from '$lib/assets/favicon.svg';
 
 	let { children } = $props();
@@ -18,6 +19,8 @@
 </svelte:head>
 
 <SkipLink />
+
+<Nav />
 
 <!--
 	`tabindex="-1"` is what makes the skip link work. Without it the browser scrolls to the landmark

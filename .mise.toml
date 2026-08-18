@@ -41,6 +41,10 @@ DAMRS_STORAGE__SECRET_ACCESS_KEY = "damrsdevsecret"
 AWS_ACCESS_KEY_ID = "damrsdev"
 AWS_SECRET_ACCESS_KEY = "damrsdevsecret"
 
+# Where the per-tenant Tantivy indexes live locally. Under the working directory, not
+# /var/lib: a default that needs root to create is a default that fails on a first run.
+DAMRS_SEARCH__INDEX_ROOT = "./data/search"
+
 [tasks.openapi]
 description = "Regenerate openapi.json and the TypeScript client from it"
 run = """
@@ -77,6 +81,49 @@ run = "docker compose -f docker/compose.dev.yml down -v"
 [tasks.migrate]
 description = "Apply global + tenant migrations to the local stack"
 run = "cargo run -q -p damctl -- migrate --all"
+
+# ─── driving it by hand ─────────────────────────────────────────────────────
+#
+# `up` → `dev:seed` → `dev:api` in one terminal, `dev:web` in another, then open
+# http://localhost:5173/settings and paste the key `dev:seed` printed.
+#
+# Kept as separate tasks rather than one "start everything" script: the API and the Vite
+# server are both long-running, and a single task holding two of them makes Ctrl-C
+# ambiguous about what it stopped.
+
+[tasks."dev:seed"]
+description = "Provision the dev tenant, create the bucket, and print an API key"
+run = """
+set -eu
+cargo run -q -p damctl -- migrate
+cargo run -q -p damctl -- provision-tenant --slug acme --name "Acme Corp" >/dev/null
+
+# The bucket is created by infrastructure in a deployment; locally there is no infrastructure.
+# Idempotent — `weed shell` reports an existing bucket and exits zero.
+docker compose -f docker/compose.dev.yml exec -T seaweedfs \
+  sh -c 'echo "s3.bucket.create -name damrs-dev" | weed shell' >/dev/null 2>&1 || true
+
+echo
+echo "Paste this into http://localhost:5173/settings (it is printed once and only hashed):"
+cargo run -q -p damctl -- issue-key --tenant acme --email dev@example.com --admin
+"""
+
+[tasks."dev:api"]
+description = "Run damd against the local stack"
+run = "cargo run -p damd"
+
+[tasks."dev:web"]
+description = "Run the Svelte app against the local damd"
+dir = "web"
+run = "pnpm install && pnpm run dev"
+
+[tasks."dev:reindex"]
+description = "Rebuild the dev tenant's search index from Postgres"
+run = "cargo run -q -p damctl -- reindex --tenant acme"
+
+[tasks."dev:eval"]
+description = "Score the dev tenant's relevance judgements against the live index"
+run = "cargo run -q -p damctl -- eval --tenant acme"
 
 [tasks.check]
 description = "The bar: fmt, clippy, test — Postgres shared, SeaweedFS per harness"

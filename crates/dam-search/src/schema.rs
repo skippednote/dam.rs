@@ -30,8 +30,8 @@
 
 use dam_core::fields::FieldDef;
 use tantivy::schema::{
-    FAST, Field, INDEXED, STORED, STRING, Schema, SchemaBuilder, TEXT, TextFieldIndexing,
-    TextOptions,
+    FAST, Field, INDEXED, JsonObjectOptions, STORED, STRING, Schema, SchemaBuilder,
+    TextFieldIndexing, TextOptions,
 };
 
 /// The fixed field names. Public so a test can assert against them rather than a magic string.
@@ -88,10 +88,29 @@ impl IndexSchema {
             ),
         );
 
-        // The dynamic half. Not `expand_dots_enabled`: a field key cannot contain a dot
-        // (`field_defs_key_shape` forbids it), so enabling it would only create a way for a value
-        // containing a dot to be read as a path.
-        let metadata = builder.add_json_field(METADATA, TEXT | FAST);
+        // The dynamic half, indexed with the **raw** tokeniser rather than the default one. That is a
+        // correctness requirement, not a tuning choice: a field query is an *equality* test, and SQL renders
+        // it as jsonb containment — which compares the whole value, case-sensitively. Under the default
+        // tokeniser a stored "Acme Corp" becomes the tokens `acme` and `corp`, so `brand:acme` matched it in
+        // Tantivy and not in SQL. Measured on a real corpus: 22 results against 11, for the same query. That
+        // is exactly §12's divergence, and it survived the differential suite because every fixture value
+        // there was a single lowercase word.
+        //
+        // Free text is unaffected — it searches the separate `text` blob, which stays analysed. The split is
+        // the point: one field for matching values exactly, one for searching prose.
+        //
+        // Not `expand_dots_enabled`: a field key cannot contain a dot (`field_defs_key_shape` forbids it),
+        // so enabling it would only create a way for a value containing a dot to be read as a path.
+        let metadata = builder.add_json_field(
+            METADATA,
+            JsonObjectOptions::default()
+                .set_fast(None)
+                .set_indexing_options(
+                    TextFieldIndexing::default()
+                        .set_tokenizer("raw")
+                        .set_index_option(tantivy::schema::IndexRecordOption::Basic),
+                ),
+        );
 
         Self {
             schema: builder.build(),

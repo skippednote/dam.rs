@@ -71,6 +71,86 @@ where
         .collect()
 }
 
+/// A field definition as an editor needs it.
+///
+/// Wider than [`FieldDef`], which is the *validator's* view and deliberately carries no presentation: a
+/// label and a search alias are affordances rather than properties of the field. A form needs both, plus
+/// `multivalued` and `read_only` — and those two are not cosmetic. A UI that does not know a field is
+/// multivalued sends a comma-joined string to a field that takes an array and gets a 422 the user cannot
+/// act on, and one that does not know a field is read-only offers an edit the server will refuse.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Catalogued {
+    pub key: String,
+    pub label: String,
+    /// The database spelling, so a client can pick an input type.
+    pub kind: String,
+    pub multivalued: bool,
+    pub required: bool,
+    pub read_only: bool,
+    pub ai_writable: bool,
+    pub facetable: bool,
+    pub search_alias: Option<String>,
+    /// The taxonomy a term field is bound to, when it is one.
+    pub taxonomy_id: Option<Uuid>,
+}
+
+/// Every field definition, in display order, with everything a form needs.
+pub async fn catalog<'e, E>(executor: E) -> Result<Vec<Catalogued>, Error>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    let rows = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            String,
+            bool,
+            bool,
+            bool,
+            bool,
+            bool,
+            Option<String>,
+            Option<Uuid>,
+        ),
+    >(
+        "SELECT key, label, kind, multivalued, required, read_only, ai_writable, facetable, \
+                search_alias, taxonomy_id \
+         FROM field_defs ORDER BY display_order, key",
+    )
+    .fetch_all(executor)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(
+                key,
+                label,
+                kind,
+                multivalued,
+                required,
+                read_only,
+                ai_writable,
+                facetable,
+                search_alias,
+                taxonomy_id,
+            )| Catalogued {
+                key,
+                label,
+                kind,
+                multivalued,
+                required,
+                read_only,
+                ai_writable,
+                facetable,
+                search_alias,
+                taxonomy_id,
+            },
+        )
+        .collect())
+}
+
 /// The tenant's search aliases: `search_alias` → field key.
 ///
 /// Separate from [`load`] because a `FieldDef` deliberately does not carry the alias — the alias is a search

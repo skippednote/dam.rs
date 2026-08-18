@@ -893,10 +893,100 @@ routers existed, and neither was mounted anywhere.
   harness run against it. The key's plaintext is printed once and never stored — only a hash — so it
   cannot be recovered from a database backup. Its prefix goes to the log; the secret goes to stdout and
   nowhere else.
-- [ ] **A.6 Thumbnails.** Blocked on a rights decision, written up in `NEEDS-REVIEW.md`: a thumbnail is
+- [x] **A.6 `GET /fields`.** Added because the UI needed it and nothing else would do. The metadata editor
+  has to know each field's **shape** — `multivalued` decides whether a value is a string or an array — and
+  an earlier version inferred the field list from the facet keys, which carry no shape. It sent
+  `"blue, red"` to a field that takes an array and the server refused it with a message about delimiters
+  the user could do nothing with.
+  *Found by editing a multivalued field in a real browser,* not by any test that existed at the time. Four
+  e2e cases now cover it: the array is sent as an array, a read-only field is not offered, a required field
+  is announced as required rather than only marked with an asterisk, and the comma hint is bound to the
+  field with `aria-describedby`.
+  *`Read`, not `Manage`:* a schema is not secret and every reader needs it to render a form or a rail.
+- [ ] **A.7 Thumbnails.** Blocked on a rights decision, written up in `NEEDS-REVIEW.md`: a thumbnail is
   a render, a render passes the D12 chokepoint, and an unlicensed asset is `rights_state = 'unknown'`
   which denies — so a fresh library would show no thumbnails at all. `AssetSummary.thumbnail_url` is
   `None` until that is answered, which is a shape the wire type already documents.
+
+- [x] **A.x A §12 divergence, found by running the thing.** `bra:acme` returned **22** results through
+  Tantivy and **11** through SQL on the same corpus. Not a leak — both sides were inside the access
+  predicate — but it is precisely what §12 forbids: the same query returning different rows depending on
+  which back end served it.
+  *Cause:* the metadata JSON field was indexed with the **default** tokeniser and `json_term` lowercased
+  its literal to match. So a stored `"Acme Corp"` indexed as `acme` + `corp`, and `brand:acme` matched it —
+  while SQL renders equality as jsonb containment, which compares the whole value, case-sensitively.
+  *Fix:* the JSON field takes the **raw** tokeniser and the literal is passed verbatim. Free text is
+  unaffected: it searches the separate `text` blob, which stays analysed. One field for matching values
+  exactly, one for searching prose.
+  *Why the differential suite missed it:* every fixture value in it was a single lowercase word. It now
+  carries a multi-word, mixed-case one, plus four cases — one word of a two-word value, the whole value,
+  the wrong case, and a two-word value inside a multivalued field. Both halves of the fix are
+  mutation-verified: restoring either the tokeniser or the lowercasing fails the suite.
+
+## F — The UI
+
+Continues the frontend track. F.1–F.4 built the scaffold, the token vocabulary, the generated client and
+the grid against sample data; these wire it to the API and make it a thing a person can drive.
+
+- [x] **F.5 The application shell and the connection screen.** Nav with `aria-current="page"`, and a
+  `/settings` page that stores an API key and *proves* it works before letting the user leave.
+  *The check is two requests, deliberately:* `/health` first, then an authenticated `/assets`. One request
+  cannot tell "wrong port" from "wrong key", and somebody re-issues a credential that was fine. A third
+  case is called out separately — a key that authenticates and grants nothing is a machine key with no
+  membership, and saying "no permission" rather than "bad key" is the difference between fixing it and
+  re-issuing it.
+  *A key that fails is not stored.* A stored key that does not work produces a 401 on every screen and
+  reads as a broken app rather than an unconfigured one.
+  *The exposure is written down rather than hidden:* the key lives in `localStorage`, which script on this
+  origin can read. A cookie would move the risk (CSRF) rather than remove it; the real fix is a session
+  endpoint, which is a backend change. Until then only the key's *prefix* is ever displayed — the same
+  thing `api_keys.key_prefix` stores and an audit log shows.
+- [x] **F.6 The asset browser.** Search box, facet rail, grid, detail panel, upload, all against the live
+  API. 29 e2e cases through a real browser, every route axe-scanned at WCAG 2.1 AA.
+  *One query string, and the URL owns it.* The box, the rail and the address bar hold the same value, which
+  is what makes a search shareable and the back button work — and it removes the class of bug where a
+  rail's selection and a box's text disagree about what is being shown.
+  *The rail writes shorthand, with quoting, and that is tested:* `brand:Acme Corp` parses as a brand filter
+  plus the free text "Corp" — the wrong assets, and it looks like a search bug rather than a quoting one.
+  13 unit cases on the composer alone, including a hand-typed `year:>2020` the rail must **not** rewrite
+  when a facet is clicked.
+  *`truncated` is rendered.* A rail that silently cuts off makes "no other brands" and "ninety other
+  brands" look identical.
+  *Two bugs the browser found that no component test would have:*
+  1. **"Saved" flashed and vanished.** The editor diffed against its `values` prop, so a successful save
+     updated the parent, the parent re-rendered, and the seeding effect cleared the confirmation. It diffs
+     against its own copy of the document now.
+  2. **A single click did not open the panel.** The grid's selection lived in a `SvelteSet` inside the
+     component with nothing outside able to read it. It reports `onselect` now — lifting the selection into
+     the parent instead would clone a set on every click, which a shift-range over 40,000 assets makes
+     O(n).
+- [x] **F.7 The metadata editor.** The server is the validator; this puts its answer next to the field it
+  names, with `aria-invalid` and `aria-describedby`. An error in a banner at the top of a twenty-field form
+  is one a screen-reader user meets after leaving the field that caused it.
+  *A patch, not a document.* Only changed fields are sent, an emptied box is an explicit `null` (the
+  server's "clear" instruction), and the panel re-seeds from the *server's* normalised document — a date it
+  reformatted has to be what the panel shows, or the next read looks like an unexplained change.
+- [x] **F.8 The upload queue.** TUS by hand, ~130 lines, no `tus-js-client`.
+  *The offset always comes from the server.* After any failure the next `PATCH` starts at whatever `HEAD`
+  reports, never at what the client last sent — trusting the client's counter either re-sends bytes the
+  server has (slow) or skips bytes it does not (corrupt, and only visible when someone opens the file). A
+  409 re-reads rather than failing, which is the whole point of a resumable protocol.
+  *One upload at a time,* because eight-MiB chunks times six parallel uploads is six times the memory and
+  the multipart state for no gain on one connection — and six bars at 40% tell a user nothing about when
+  they can leave.
+  *A failure keeps its place in the queue* and resumes, rather than being dropped.
+  *`btoa` is Latin-1 only,* so `Upload-Metadata` goes through `TextEncoder` — otherwise a filename with an
+  accent or an em dash throws, and in a DAM those are the normal case.
+  *Verified by uploading through the browser:* 120,000 bytes, create → PATCH → `HEAD` reporting
+  120000/120000, and the `upload_sessions` row to match.
+- [ ] **F.9 Lightbox, bulk-operations bar, share/portal UI, schema admin, restore UX.** The grid's
+  `onactivate` is wired and unused: the "open this" gesture wants a lightbox, and there is no proxy to show
+  in it until the worker generates one (see below).
+
+**The gap the UI runs into, stated plainly:** `dam-worker` has no queue consumer, so nothing generates a
+derivative and nothing finalises an upload into an asset. An upload lands in staging and stops there — the
+browser says so rather than leaving the user to wonder. That is 0.9's remainder and the first thing M4
+needs, since every M4 deliverable is a job.
 
 ## M3 — Delivery, sharing, restore
 

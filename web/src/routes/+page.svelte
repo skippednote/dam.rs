@@ -2,6 +2,7 @@
 	// The scaffold's landing page, replaced with something that exercises the stack the milestone
 	// actually specifies: Svelte 5 runes, Tailwind 4 tokens, and a bits-ui primitive.
 	import { Accordion } from 'bits-ui';
+	import { resolve } from '$app/paths';
 
 	let uploads = $state(0);
 </script>
@@ -9,8 +10,10 @@
 <div class="mx-auto max-w-3xl p-8">
 	<h1 class="text-2xl font-semibold tracking-tight">damrs</h1>
 	<p class="mt-2 text-muted">
-		Digital asset management. The UI shell — the asset grid, filter rail and upload queue land in
-		F.4 and beyond.
+		Digital asset management. Search, browse, upload and edit metadata in
+		<a class="underline" href={resolve('/assets')}>Assets</a>; point the app at a server and paste a
+		key in
+		<a class="underline" href={resolve('/settings')}>Settings</a>.
 	</p>
 
 	<!-- Proves runes are compiled and reactive, which is what D9 chose Svelte for. -->

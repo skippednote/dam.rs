@@ -113,6 +113,18 @@ fn corpus(group_a: Uuid, group_b: Uuid) -> Vec<Fixture> {
             values: serde_json::json!({"brand": "Acme", "year": 2026}),
         },
         Fixture {
+            id: id(6),
+            // A **multi-word, mixed-case** value, which is the fixture this suite was missing. Every value
+            // here used to be a single lowercase word, and that is why a real divergence survived it: under
+            // the default tokeniser "Acme Corp" indexed as `acme` + `corp`, so `brand:Acme` matched it in
+            // Tantivy and not in SQL — 22 results against 11 on a real corpus.
+            filename: "acme-corp-launch.jpg",
+            deleted: false,
+            groups: vec![group_a],
+            values: serde_json::json!({"brand": "Acme Corp", "year": 2024,
+                                       "colours": ["Deep Blue", "red"]}),
+        },
+        Fixture {
             id: id(4),
             // In no group at all: visible to an administrator, invisible to anyone scoped to groups.
             filename: "ungrouped.jpg",
@@ -272,6 +284,37 @@ async fn both_back_ends_return_identical_sets_for_every_shared_query_shape() {
             },
         ),
         (
+            // The case the multi-word fixture exists for: matching one word of a two-word value must return
+            // the same set from both back ends, and SQL's jsonb containment compares the whole value.
+            "equals one word of a two-word value",
+            Query::Field {
+                key: "brand".to_owned(),
+                op: Comparison::Equals(Literal::Text("Acme".to_owned())),
+            },
+        ),
+        (
+            "equals a two-word value in full",
+            Query::Field {
+                key: "brand".to_owned(),
+                op: Comparison::Equals(Literal::Text("Acme Corp".to_owned())),
+            },
+        ),
+        (
+            // Case is part of the value for both back ends: `@>` is case-sensitive, so the index must be too.
+            "equals text in the wrong case",
+            Query::Field {
+                key: "brand".to_owned(),
+                op: Comparison::Equals(Literal::Text("acme".to_owned())),
+            },
+        ),
+        (
+            "equals a two-word value in a multivalued field",
+            Query::Field {
+                key: "colours".to_owned(),
+                op: Comparison::Equals(Literal::Text("Deep Blue".to_owned())),
+            },
+        ),
+        (
             "equals in a multivalued field",
             Query::Field {
                 key: "colours".to_owned(),
@@ -397,8 +440,8 @@ async fn both_back_ends_return_identical_sets_for_every_shared_query_shape() {
     let everything = Planned::new(Query::All, access(None), &defs()).expect("valid");
     assert_eq!(
         via_sql(&sql, &everything).await.len(),
-        4,
-        "the corpus must have four visible assets, or the comparisons above are between empty sets"
+        5,
+        "the corpus must have five visible assets, or the comparisons above are between empty sets"
     );
 }
 

@@ -53,7 +53,74 @@ pub fn router(state: AssetState) -> Router {
         .route("/assets", get(list))
         .route("/assets/{asset_id}", get(detail))
         .route("/assets/{asset_id}/metadata", patch(update_metadata))
+        .route("/fields", get(fields))
         .with_state(Arc::new(state))
+}
+
+/// One field definition, as a form needs it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct FieldDefinition {
+    pub key: String,
+    /// The tenant's own label. A form shows this rather than the key.
+    pub label: String,
+    /// The database spelling of the kind, so a client can pick an input type.
+    pub kind: String,
+    /// Whether the field takes an array.
+    ///
+    /// Load-bearing rather than informational: a client that does not know this sends a comma-joined string
+    /// to a field that takes an array, and the server refuses it with a message about delimiters that the
+    /// user cannot act on. Discovered exactly that way, editing a multivalued field in a real browser.
+    pub multivalued: bool,
+    pub required: bool,
+    /// Set by ingest or by a connector; an editor must not offer it.
+    pub read_only: bool,
+    /// Whether an enrichment run may write it.
+    pub ai_writable: bool,
+    pub facetable: bool,
+    /// The shorthand prefix, when the tenant defined one: `bra:acme` for `brand`.
+    pub search_alias: Option<String>,
+    pub taxonomy_id: Option<Uuid>,
+}
+
+/// The tenant's field definitions, in display order.
+#[utoipa::path(
+    get,
+    path = "/fields",
+    responses(
+        (status = 200, description = "Every field definition, in display order", body = Vec<FieldDefinition>),
+        (status = 401, description = "No usable credential"),
+        (status = 403, description = "Authenticated, and holds no read scope"),
+    ),
+    tag = "assets",
+)]
+pub async fn fields(
+    State(state): State<Arc<AssetState>>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<FieldDefinition>>, Failure> {
+    // `Read`, not `Manage`: a schema is not secret and every reader needs it to render a form or a filter
+    // rail. Editing one is schema administration and will have its own endpoint and its own action.
+    let caller = caller::authorize(&state.global, &headers, Action::Read).await?;
+    let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
+    let catalogued = dam_db::fields::catalog(conn.executor()).await?;
+    conn.commit().await?;
+
+    Ok(Json(
+        catalogued
+            .into_iter()
+            .map(|def| FieldDefinition {
+                key: def.key,
+                label: def.label,
+                kind: def.kind,
+                multivalued: def.multivalued,
+                required: def.required,
+                read_only: def.read_only,
+                ai_writable: def.ai_writable,
+                facetable: def.facetable,
+                search_alias: def.search_alias,
+                taxonomy_id: def.taxonomy_id,
+            })
+            .collect(),
+    ))
 }
 
 /// How a client asks for a page.

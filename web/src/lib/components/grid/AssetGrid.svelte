@@ -29,7 +29,8 @@
 		columns = 4,
 		height = 600,
 		rowHeight = 160,
-		onactivate
+		onactivate,
+		onselect
 	}: {
 		items: AssetSummary[];
 		total: number;
@@ -37,7 +38,17 @@
 		columns?: number;
 		height?: number;
 		rowHeight?: number;
+		/** Enter, or a double click: the "open this" gesture. */
 		onactivate?: (asset: AssetSummary) => void;
+		/**
+		 * A change of selection, with the asset that caused it and every id now selected.
+		 *
+		 * Reported because the selection lives in here — a `SvelteSet`, so mutation is cheap — and a detail
+		 * panel or a bulk-operations bar outside the grid has no other way to read it. Without this the
+		 * selection would have to be lifted into the parent, and every click would clone a set that a
+		 * shift-range over 40,000 assets makes O(n).
+		 */
+		onselect?: (asset: AssetSummary, ids: string[]) => void;
 	} = $props();
 
 	let viewport = $state<HTMLDivElement | null>(null);
@@ -149,6 +160,8 @@
 			anchor = index;
 		}
 		focused = index;
+		// After the mutation, so a listener sees the selection as it now is rather than as it was.
+		onselect?.(items[index], [...selected]);
 	}
 
 	function onclick(event: MouseEvent, index: number) {

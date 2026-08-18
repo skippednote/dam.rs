@@ -173,6 +173,36 @@
         }
       }
     },
+    "/fields": {
+      "get": {
+        "tags": [
+          "assets"
+        ],
+        "summary": "The tenant's field definitions, in display order.",
+        "operationId": "fields",
+        "responses": {
+          "200": {
+            "description": "Every field definition, in display order",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/FieldDefinition"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential"
+          },
+          "403": {
+            "description": "Authenticated, and holds no read scope"
+          }
+        }
+      }
+    },
     "/search": {
       "get": {
         "tags": [
@@ -574,6 +604,65 @@
           "truncated": {
             "type": "boolean",
             "description": "Whether buckets were dropped by the limit. Reported rather than left implicit — see [`FACET_BUCKETS`]."
+          }
+        }
+      },
+      "FieldDefinition": {
+        "type": "object",
+        "description": "One field definition, as a form needs it.",
+        "required": [
+          "key",
+          "label",
+          "kind",
+          "multivalued",
+          "required",
+          "read_only",
+          "ai_writable",
+          "facetable"
+        ],
+        "properties": {
+          "ai_writable": {
+            "type": "boolean",
+            "description": "Whether an enrichment run may write it."
+          },
+          "facetable": {
+            "type": "boolean"
+          },
+          "key": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "The database spelling of the kind, so a client can pick an input type."
+          },
+          "label": {
+            "type": "string",
+            "description": "The tenant's own label. A form shows this rather than the key."
+          },
+          "multivalued": {
+            "type": "boolean",
+            "description": "Whether the field takes an array.\n\nLoad-bearing rather than informational: a client that does not know this sends a comma-joined string\nto a field that takes an array, and the server refuses it with a message about delimiters that the\nuser cannot act on. Discovered exactly that way, editing a multivalued field in a real browser."
+          },
+          "read_only": {
+            "type": "boolean",
+            "description": "Set by ingest or by a connector; an editor must not offer it."
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "search_alias": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The shorthand prefix, when the tenant defined one: `bra:acme` for `brand`."
+          },
+          "taxonomy_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
           }
         }
       },

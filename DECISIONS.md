@@ -1348,3 +1348,49 @@ absence of a decision, so yes.
 **`damctl issue-key` prints the plaintext once and stores only a hash.** A key an operator can read back out
 of the database is a key a database backup hands over. The prefix goes to the log so a key can be recognised
 in an audit; the secret goes to stdout and nowhere else. Reversible: no.
+
+**The metadata JSON field is indexed with the `raw` tokeniser, not the default one.** A field query is an
+*equality* test, and SQL renders it as jsonb containment — which compares the whole value, case-sensitively.
+Under the default tokeniser a stored `"Acme Corp"` indexed as `acme` + `corp`, so `brand:acme` matched it in
+Tantivy and not in SQL: measured on a real corpus, 22 results against 11 for one query. That is §12's
+divergence, and it survived the differential suite because every fixture value there was a single lowercase
+word. The literal is no longer lowercased either — the two changes are one fix. Free text is unaffected: it
+searches the separate `text` blob, which stays analysed. One field for matching values exactly, one for
+searching prose. Reversible: no — reverting either half reintroduces the divergence, and both halves are
+mutation-verified.
+
+**The UI authenticates with an API key in `localStorage`, and the exposure is written down rather than
+hidden.** The backend has `api_keys` with a hashed secret; it has no session endpoint. A bearer token in a
+header is what makes the permissive dev CORS policy defensible — a cross-origin request without the header is
+anonymous — but it has to be somewhere script can read, so an XSS on this origin can exfiltrate it. A cookie
+would move the risk to CSRF rather than remove it. The real fix is a session endpoint issuing a short-lived
+`HttpOnly` `SameSite=Strict` cookie, which is a backend change and not in this milestone. Two mitigations are
+deliberate: only the key's *prefix* is ever displayed — the same thing `api_keys.key_prefix` stores and an
+audit log shows — and forgetting it is one click. Reversible: yes, and it should be.
+
+**`GET /fields` exists because a client cannot guess a field's shape.** `multivalued` decides whether a value
+is a string or an array, and an editor that inferred its field list from facet keys had no way to know: it
+sent `"blue, red"` to a field that takes an array and got a 422 about delimiters that a user can do nothing
+with. Found by editing a multivalued field in a real browser. The endpoint requires `Read` rather than
+`Manage` — a schema is not secret, and every reader needs it to render a form or a filter rail. Reversible:
+no; a client without it cannot write a multivalued field correctly.
+
+**The filter rail edits the query string rather than filtering results.** A rail holding its own state beside
+the search box leaves a user with two filters and no way to see the whole thing, and "copy this search" copies
+half of it. One string means what the user sees is what the server got — and it makes a search shareable
+through the URL. The cost is that the rail has to write the shorthand language correctly, including quoting a
+value with a space: `brand:Acme Corp` parses as a brand filter plus the free text "Corp". That is 13 unit
+cases rather than a comment. Reversible: yes.
+
+**Uploads run one at a time, and the client half of TUS is hand-written.** `tus-js-client` would hide the four
+lines that matter — resuming from the server's offset rather than the client's idea of it — and those decide
+whether a 4 GB upload survives a dropped connection. One at a time because eight-MiB chunks times six parallel
+uploads is six times the memory and the multipart state for no gain on a single connection, and a queue showing
+six bars at 40% tells a user nothing about when they can leave. Reversible: yes.
+
+**The web gate mocks the API rather than running `damd`.** The Rust gate already proves the endpoints against a
+real Postgres, and both sides' types are generated from one `openapi.json` — so a divergence is a build error
+rather than something an integration test would catch. What only a browser can test is the browser half: a
+facet click rewriting the query, a 422 landing next to the field it names, a grid reporting the collection's
+row count rather than its rendered one. Keeping Docker out of the web gate is also what keeps it fast enough
+to run on every push. Reversible: yes.

@@ -253,9 +253,12 @@ fn render_field(key: &str, op: &Comparison, schema: &IndexSchema) -> Result<Box<
 fn json_term(field: tantivy::schema::Field, key: &str, literal: &Literal) -> Result<Term> {
     let mut term = Term::from_field_json_path(field, key, false);
     match literal {
-        // Lowercased: the JSON field is indexed with the default tokeniser, so a stored "Acme" is the
-        // token "acme". Comparing against the raw case would silently never match.
-        Literal::Text(text) => term.append_type_and_str(&text.to_lowercase()),
+        // Verbatim, **not** lowercased. The JSON field is indexed with the raw tokeniser (see
+        // `crate::schema`), so a stored "Acme Corp" is the single token "Acme Corp" — which is what makes
+        // this equality test agree with SQL's jsonb containment. An earlier version lowercased here to match
+        // the default tokeniser, and that combination made `brand:acme` match "Acme Corp" in the index and
+        // not in SQL: 22 results against 11 on a real corpus.
+        Literal::Text(text) => term.append_type_and_str(text),
         Literal::Uuid(id) => term.append_type_and_str(&id.to_string()),
         Literal::Date(date) => term.append_type_and_str(&date.format("%Y-%m-%d").to_string()),
         Literal::DateTime(at) => term.append_type_and_str(&at.to_rfc3339()),
