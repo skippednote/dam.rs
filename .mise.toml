@@ -79,7 +79,50 @@ description = "Apply global + tenant migrations to the local stack"
 run = "cargo run -q -p damctl -- migrate --all"
 
 [tasks.check]
-description = "The bar: fmt, clippy, test"
+description = "The bar: fmt, clippy, test — Postgres shared, SeaweedFS per harness"
+# The tests share one Postgres and start a SeaweedFS per harness. Both halves are measured, and the
+# asymmetry is the finding rather than an oversight.
+#
+# Startup, in isolation: a Postgres container 6.2s, a SeaweedFS one 14.2s, all twelve migrations 0.5s. With
+# 19 Postgres-backed suites and 8 S3-backed ones — 75 `Harness::start()` call sites — startup was
+# essentially the whole run, and starting twenty at once made each roughly five times slower than alone
+# (`uploads_repo`: 6.2s isolated, 37.3s in the full run).
+#
+# Sharing Postgres works: a database per harness costs milliseconds, isolation is unchanged, and nothing
+# degrades. Sharing SeaweedFS does not. A full run creates ~75 buckets, each a SeaweedFS *collection*, and
+# past some point the instance stops accepting writes to new ones — the same container that had served
+# fifty suites failed eleven of the next twelve. `-volume.max=200` made no difference, so the volume count
+# is not the limit. A gate that fails one run in five is worse than a gate that is slow, so that half was
+# reverted rather than shipped.
+run = """
+set -eu
+PG=damrs-check-postgres
+cleanup() { docker rm -f "$PG" >/dev/null 2>&1 || true; }
+trap cleanup EXIT
+cleanup
+
+docker run -d --rm --name "$PG" -p 0:5432 \
+  -e POSTGRES_USER=damrs -e POSTGRES_PASSWORD=damrs -e POSTGRES_DB=damrs \
+  pgvector/pgvector:pg17 \
+  postgres -c fsync=off -c full_page_writes=off -c max_connections=900 >/dev/null
+
+PG_PORT=$(docker port "$PG" 5432/tcp | head -1 | sed 's/.*://')
+# The log line is necessary but not sufficient — the socket accepts before recovery finishes — so the
+# harness's own connect retry still covers the rest.
+for _ in $(seq 1 60); do
+  if docker exec "$PG" pg_isready -U damrs -q; then break; fi
+  sleep 1
+done
+
+cargo fmt --all --check
+cargo clippy --all-targets --all-features -- -D warnings
+DAM_TEST_PG_URL="postgres://damrs:damrs@127.0.0.1:$PG_PORT/damrs" cargo test --all-features
+"""
+
+# Everything on its own container, including Postgres. Slower, and what CI does where a long-lived side
+# container is awkward.
+[tasks."check:isolated"]
+description = "The same gate with a container per harness, Postgres included"
 run = [
   "cargo fmt --all --check",
   "cargo clippy --all-targets --all-features -- -D warnings",

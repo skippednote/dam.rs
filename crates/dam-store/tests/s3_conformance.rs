@@ -263,3 +263,60 @@ async fn the_compatible_path_retries_transient_backend_errors() {
         "the S3-compatible path must retry; nothing here ever contacts the endpoint"
     );
 }
+
+#[tokio::test]
+async fn a_plain_http_endpoint_gets_a_client_with_no_tls_at_all() {
+    // Not an optimisation for its own sake. The SDK's default client enables the platform native root
+    // store, and `aws-smithy-http-client` loads it **once per process** into a `LazyLock`. If that single
+    // load returns empty — concurrent macOS keychain reads can cause it — then every later client
+    // construction in the process trips a `debug_assert!` on "no valid root certificates parsed".
+    //
+    // That is what took out nine cases in this suite at once, including this file's retry test, which
+    // never opens a connection. A plain-HTTP endpoint cannot reach that code path at all.
+    //
+    // Neither call here contacts anything.
+    let plain = dam_store::S3Store::compatible(
+        "http://127.0.0.1:1",
+        "damrs-test",
+        "us-east-1",
+        "key",
+        "secret",
+        dam_store::Capabilities::full(),
+        "test",
+    );
+    assert!(
+        !plain.uses_tls(),
+        "an http:// endpoint must not get a TLS-capable client; loading a root store it can never \
+         consult is both wasted work on every deployment and a process-wide failure source"
+    );
+
+    let secure = dam_store::S3Store::compatible(
+        "https://minio.example.invalid",
+        "damrs-test",
+        "us-east-1",
+        "key",
+        "secret",
+        dam_store::Capabilities::full(),
+        "test",
+    );
+    assert!(
+        secure.uses_tls(),
+        "an https:// endpoint must keep the platform store — an empty one would reject every \
+         connection, and a private CA is only findable there"
+    );
+
+    // The scheme is case-insensitive per RFC 3986, so this must not fall through to the TLS path.
+    let shouty = dam_store::S3Store::compatible(
+        "HTTP://127.0.0.1:1",
+        "damrs-test",
+        "us-east-1",
+        "key",
+        "secret",
+        dam_store::Capabilities::full(),
+        "test",
+    );
+    assert!(
+        !shouty.uses_tls(),
+        "the scheme comparison must be case-insensitive"
+    );
+}

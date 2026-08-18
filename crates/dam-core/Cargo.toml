@@ -18,6 +18,10 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 url = { workspace = true }
 regex = { workspace = true }
+base64 = { workspace = true }
+subtle = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
 figment = { workspace = true }
 
 [dev-dependencies]

@@ -724,20 +724,32 @@ shorthand search, the rights model (G4), and the eval harness (G8).
   *Governance:* only `facetable` fields, and geo is refused even when marked — a coordinate has no discrete
   values, so it would produce one bucket per asset. Truncation is **reported**, because a rail that
   silently truncates makes "no other brands" and "ninety other brands" look identical.
-- [ ] **2.x Test-gate throughput, and the TLS defect it exposed.** *Not blocking anything; recorded so it
-  is not rediscovered.* The Rust gate had grown past ten minutes — thirty container-backed suites at ~10 s
-  of Postgres startup each. `dam_db::testing::SHARED_URL_ENV` (`DAM_TEST_PG_URL`) now lets every harness
-  create a **database** on one shared server instead of starting a container, which keeps the isolation and
-  takes the run to about 6.5 minutes. Available as `mise run check:shared-pg`; **not** the default, because
-  removing that accidental serialisation exposed a separate defect.
-  *The defect:* at full parallelism, `aws_sdk_s3` **client construction** panics inside rustls' native-root
-  loading — "TrustStore configured to enable native roots but no valid root certificates parsed" — in nine
-  S3 cases that all pass in isolation, including one that never opens a connection. Concurrent macOS
-  keychain reads are the suspect. Worth fixing at the source rather than working around: an `http://`
-  endpoint has no use for a TLS trust store, and **every self-hosted deployment pays to load one**. The fix
-  is to build the client without native roots when the endpoint is plain HTTP.
-  *Also found:* `DAMRS_TEST_PG_URL` was the first name tried, and it broke every config load — `Config::load`
-  claims the whole `DAMRS_` namespace and refuses unknown keys. The strictness is right; the name was wrong.
+- [x] **2.x Test-gate throughput, and the TLS defect it exposed.** The Rust gate had grown past ten
+  minutes — measured: a Postgres container takes **6.2 s** to become usable, a SeaweedFS one **14.2 s**, and
+  all twelve migrations together **0.5 s**. With 19 Postgres-backed and 8 S3-backed suites (75
+  `Harness::start()` call sites) startup *was* the run, and starting twenty at once made each ~5× slower
+  than alone (`uploads_repo`: 6.2 s isolated, 37.3 s in the full run).
+  *Postgres is now shared* via `dam_db::testing::SHARED_URL_ENV` (`DAM_TEST_PG_URL`) — a **database** per
+  harness, so isolation is unchanged and the cost is milliseconds.
+  *SeaweedFS is deliberately **not**.* Sharing it was built, measured, and reverted: a full run creates ~75
+  buckets, each a SeaweedFS *collection*, and past some point the instance stops accepting writes to new
+  ones — the same container that had served fifty suites failed **eleven of the next twelve**.
+  `-volume.max=200` changed nothing, so the volume count is not the limit. A gate that fails one run in
+  five is worse than one that is slow.
+  *The TLS defect, fixed at the source.* `aws_sdk_s3`'s default client enables the platform root store, and
+  `aws-smithy-http-client` loads it **once per process** into a `LazyLock`; one failed macOS keychain read
+  then trips `debug_assert!(valid > 0)` for **every later client construction in that binary** — which is
+  why nine cases failed together, one of them never opening a connection. Plain-`http://` endpoints now get
+  a connector with no TLS at all. `https://` keeps the platform store, since an empty one rejects
+  everything and a private CA is only findable there. Every self-hosted deployment was paying for a root
+  store it could never consult.
+  *Also fixed:* **a created bucket is not a writable one** — SeaweedFS allocates volumes lazily and the
+  first PUT can 500 past all five client retries, so the harness now probes with a write until it succeeds.
+  This is the same layered-readiness pattern as the bucket-create retry, one level up, and it removed
+  flakes in the per-container mode too.
+  *And a naming trap:* `DAMRS_TEST_PG_URL` broke **every** config load — `Config::load` claims that whole
+  prefix and refuses unknown keys. The strictness is right; the name was wrong.
+
 - [x] **2.8 Rights model (G4).** Licences, scopes, releases, and the distribution chokepoint that D12
   requires — enforced, not recorded.
   *Done:* `dam_core::rights_eval` (30 pure cases) + `dam_db::rights` (14 cases, one container). The

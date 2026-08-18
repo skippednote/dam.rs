@@ -2,6 +2,7 @@
 //!
 //! [`openapi`] is the wire contract, generated from `utoipa` and checked in as `openapi.json`.
 
+pub mod delivery;
 pub mod dto;
 pub mod openapi;
 pub mod tus;

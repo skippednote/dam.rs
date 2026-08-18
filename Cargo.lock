@@ -1905,11 +1905,15 @@ dependencies = [
 name = "dam-core"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "figment",
+ "hmac 0.12.1",
  "regex",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "subtle",
  "thiserror 2.0.20",
  "url",
  "utoipa",
@@ -2005,6 +2009,7 @@ dependencies = [
  "aws-config",
  "aws-credential-types",
  "aws-sdk-s3",
+ "aws-smithy-http-client",
  "aws-smithy-types",
  "blake3",
  "bytes",

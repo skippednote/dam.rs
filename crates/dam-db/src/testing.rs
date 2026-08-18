@@ -39,8 +39,38 @@ pub struct PostgresHarness {
     // teardown and clutter otherwise-passing test output.
     pool: PgPool,
     port: u16,
-    _container: ContainerAsync<GenericImage>,
+    /// This harness's own database. Distinct per harness in both modes — see [`SHARED_URL_ENV`].
+    database: String,
+    /// `None` when a shared server is being reused rather than a container started.
+    _container: Option<ContainerAsync<GenericImage>>,
 }
+
+/// When set, harnesses create a database on this server instead of starting a container.
+///
+/// A container per harness is the right isolation and costs about ten seconds each; at thirty
+/// container-backed suites that is most of the workspace test run, and the run had grown past the point
+/// where it could be executed as one command. Creating a database on a warm server costs milliseconds.
+///
+/// The isolation is unchanged: each harness still gets a database of its own, so nothing is shared but
+/// the process. What is given up is the guarantee that a test cannot affect a *server* another test is
+/// using — which matters for exactly one thing, a test that deliberately breaks the server, and there
+/// isn't one.
+///
+/// Pools are sized down in this mode. A harness opens two — its own and usually a `pool_for_schema` — and
+/// eight connections each is generous for a test but ruinous shared: nineteen suites of several harneses
+/// apiece exhausts any server's `max_connections`, and the symptom is `PoolTimedOut` in an unrelated suite.
+///
+/// **Deliberately not `DAMRS_`-prefixed.** `Config::load` claims that whole namespace and refuses unknown
+/// keys, so a `DAMRS_TEST_PG_URL` in the environment does not merely get ignored — it makes every config
+/// load fail with "unknown field". That strictness is right (a typo'd config key should not be silently
+/// dropped) and it means a test-only variable has to live outside the prefix.
+pub const SHARED_URL_ENV: &str = "DAM_TEST_PG_URL";
+
+/// Connections per pool when a server is shared. See [`SHARED_URL_ENV`].
+const SHARED_POOL_CONNECTIONS: u32 = 3;
+
+/// Connections per pool when this harness owns its container, where nothing else is competing.
+const OWNED_POOL_CONNECTIONS: u32 = 8;
 
 impl std::fmt::Debug for PostgresHarness {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -54,7 +84,57 @@ impl std::fmt::Debug for PostgresHarness {
 
 impl PostgresHarness {
     /// Starts a container, waits for readiness, and applies the bootstrap.
+    ///
+    /// Reuses a shared server when [`SHARED_URL_ENV`] is set, creating a fresh database on it.
     pub async fn start() -> Result<Self, Error> {
+        if let Ok(shared) = std::env::var(SHARED_URL_ENV) {
+            return Self::start_on_shared(&shared).await;
+        }
+        Self::start_container().await
+    }
+
+    /// Creates a database on an already-running server.
+    async fn start_on_shared(admin_url: &str) -> Result<Self, Error> {
+        let admin = Self::connect_with_retry(admin_url).await?;
+
+        // Named from a UUID rather than a counter: suites run as separate processes, so a counter would
+        // collide across them and the collision would look like test pollution.
+        let database = format!("damrs_t_{}", uuid::Uuid::new_v4().simple());
+        // `AssertSqlSafe` because `CREATE DATABASE` takes no bind parameters. The name is a UUID's
+        // hex rendering with a fixed prefix, so there is nothing here that came from outside this
+        // function — which is the assertion the wrapper is asking for.
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "CREATE DATABASE \"{database}\""
+        )))
+        .execute(&admin)
+        .await
+        .map_err(|e| Error::Harness(format!("creating {database}: {e}")))?;
+        admin.close().await;
+
+        let opts = sqlx::postgres::PgConnectOptions::from_str(admin_url)
+            .map_err(|e| Error::Harness(format!("parsing {SHARED_URL_ENV}: {e}")))?
+            .database(&database);
+        let port = opts.get_port();
+        let pool = PgPoolOptions::new()
+            .max_connections(Self::pool_size())
+            .acquire_timeout(Duration::from_secs(20))
+            .connect_with(opts)
+            .await
+            .map_err(|e| Error::Harness(format!("connecting to {database}: {e}")))?;
+        Self::bootstrap(&pool).await?;
+
+        // The database is deliberately left behind. Dropping it needs an async round trip and `Drop` is
+        // synchronous; blocking in `Drop` inside a test runtime deadlocks. The shared server is
+        // ephemeral — the task that started it removes it — so the databases go with it.
+        Ok(Self {
+            pool,
+            port,
+            database,
+            _container: None,
+        })
+    }
+
+    async fn start_container() -> Result<Self, Error> {
         let container = GenericImage::new(IMAGE, TAG)
             .with_exposed_port(5432.tcp())
             // Postgres logs "ready to accept connections" once while initialising
@@ -90,19 +170,29 @@ impl PostgresHarness {
         Ok(Self {
             pool,
             port,
-            _container: container,
+            database: DATABASE.to_owned(),
+            _container: Some(container),
         })
     }
 
     /// Connects with a bounded retry. The log-message wait above is necessary but
     /// not sufficient — the socket can accept before the database finishes
     /// recovery, and a bare connect intermittently fails on a loaded machine.
+    /// Connections per pool, which depends on whether the server is shared.
+    fn pool_size() -> u32 {
+        if std::env::var(SHARED_URL_ENV).is_ok() {
+            SHARED_POOL_CONNECTIONS
+        } else {
+            OWNED_POOL_CONNECTIONS
+        }
+    }
+
     async fn connect_with_retry(url: &str) -> Result<PgPool, Error> {
         const ATTEMPTS: u32 = 40;
         let mut last = None;
         for attempt in 0..ATTEMPTS {
             match PgPoolOptions::new()
-                .max_connections(8)
+                .max_connections(Self::pool_size())
                 .acquire_timeout(Duration::from_secs(5))
                 .connect(url)
                 .await
@@ -174,17 +264,27 @@ impl PostgresHarness {
                 format!("\"{schema}\",dam_global,extensions,public"),
             )]);
         PgPoolOptions::new()
-            .max_connections(8)
-            .acquire_timeout(Duration::from_secs(5))
+            .max_connections(Self::pool_size())
+            // Twenty seconds, not five. Under a shared server a pool can legitimately wait behind other
+            // suites' connections, and a five-second timeout turns ordinary contention into a failure in
+            // whichever suite happened to ask last.
+            .acquire_timeout(Duration::from_secs(20))
             .connect_with(opts)
             .await
             .map_err(|e| Error::Harness(format!("pool for schema {schema}: {e}")))
     }
 
-    /// The mapped host port. Exposed mainly so tests can assert two harnesses are
-    /// genuinely separate containers.
+    /// The mapped host port.
+    ///
+    /// Not a proxy for "which harness is this": under [`SHARED_URL_ENV`] every harness reports the same
+    /// port and they are still isolated. Use [`Self::database`] to tell two harnesses apart.
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    /// This harness's database name. Distinct per harness in both modes.
+    pub fn database(&self) -> &str {
+        &self.database
     }
 
     /// Connection URL for a subprocess or a second pool.
@@ -193,8 +293,8 @@ impl PostgresHarness {
     /// a `Display` impl — a harness printed in a failure message must not leak it.
     pub fn url(&self) -> String {
         format!(
-            "postgres://{USER}:{PASSWORD}@127.0.0.1:{}/{DATABASE}",
-            self.port
+            "postgres://{USER}:{PASSWORD}@127.0.0.1:{}/{}",
+            self.port, self.database
         )
     }
 

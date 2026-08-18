@@ -67,6 +67,13 @@ aws-sdk-s3 = { version = "1", default-features = false, features = [
 ] }
 aws-credential-types = "1"
 aws-smithy-types = "1"
+# For a TLS-free HTTP client on plain-http:// endpoints. The SDK's default client loads the platform root
+# store even for an endpoint that can never use it; on macOS that load is slow and, under concurrency, a
+# failure source that poisons every later client in the process. See dam-store/src/s3.rs.
+#
+# `default-client` only — deliberately not a `rustls-*` feature, since the point is to build a connector
+# that has no TLS at all.
+aws-smithy-http-client = { version = "1", default-features = false, features = ["default-client"] }
 
 # ── search ────────────────────────────────────────────────────────────────────
 tantivy = "0.26"
@@ -175,6 +182,20 @@ testcontainers-modules = { version = "0.15", features = ["postgres"] }
 lto = "thin"
 codegen-units = 1
 panic = "abort"
+
+# `line-tables-only` rather than full debug info. Measured: the target directory reached **125 GB** and
+# filled a 460 GB disk, which broke a build mid-run. Full debug info for every dependency in every test
+# binary is most of that — aws-sdk-s3, tantivy and c2pa alone are a very large type graph, duplicated into
+# each of ~30 test executables.
+#
+# Line tables keep what the tests actually use: a panic still reports its file and line, which is what every
+# assertion message depends on. What is lost is stepping through dependency internals in a debugger, and
+# `debug = 2` is one flag away when somebody needs that.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
 
 # Media and AI workers are CPU-bound; debug builds of image/vips/ort are
 # unusably slow, so optimise dependencies even in dev.

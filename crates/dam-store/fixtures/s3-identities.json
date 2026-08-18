@@ -1,0 +1,16 @@
+{
+  "identities": [
+    {
+      "name": "damrs-admin",
+      "credentials": [{ "accessKey": "damrsdev", "secretKey": "damrsdevsecret" }],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging", "DeleteBucket"]
+    },
+    {
+      "name": "damrs-limited",
+      "credentials": [{ "accessKey": "damrslimited", "secretKey": "damrslimitedsecret" }],
+      "actions": ["Read", "Write", "List", "Tagging",
+                  "GetObjectRetention", "PutObjectRetention",
+                  "GetObjectLegalHold", "PutObjectLegalHold"]
+    }
+  ]
+}

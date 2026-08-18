@@ -20,6 +20,7 @@ pub mod rights;
 pub mod rights_eval;
 pub mod secret;
 pub mod shorthand;
+pub mod signed_url;
 pub mod storage;
 pub mod tenant;
 

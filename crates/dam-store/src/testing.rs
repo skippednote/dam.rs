@@ -13,7 +13,7 @@
 //! so the test would pass for the wrong reason. Two identities are declared so that both
 //! directions are provable: one that may bypass, and one that may not.
 
-use crate::{Error, Result, s3::S3Store};
+use crate::{BlobStore, Error, Result, s3::S3Store};
 use std::time::Duration;
 use testcontainers::{
     ContainerAsync, GenericImage, ImageExt,
@@ -49,25 +49,15 @@ pub const LIMITED_SECRET: &str = "damrslimitedsecret";
 
 /// Identity config copied into the container.
 ///
-/// `Admin` is what grants the bypass; the limited identity is given every object-lock
-/// action *except* that one, so a refused bypass proves the permission is enforced rather
-/// than the operation being unimplemented.
-const S3_CONFIG: &str = r#"{
-  "identities": [
-    {
-      "name": "damrs-admin",
-      "credentials": [{ "accessKey": "damrsdev", "secretKey": "damrsdevsecret" }],
-      "actions": ["Admin", "Read", "Write", "List", "Tagging", "DeleteBucket"]
-    },
-    {
-      "name": "damrs-limited",
-      "credentials": [{ "accessKey": "damrslimited", "secretKey": "damrslimitedsecret" }],
-      "actions": ["Read", "Write", "List", "Tagging",
-                  "GetObjectRetention", "PutObjectRetention",
-                  "GetObjectLegalHold", "PutObjectLegalHold"]
-    }
-  ]
-}"#;
+/// `Admin` is what grants the bypass; the limited identity is given every object-lock action *except*
+/// that one, so a refused bypass proves the permission is enforced rather than the operation being
+/// unimplemented.
+///
+/// Read from a file rather than written inline because it has **two** consumers: this harness copies it
+/// into a container it starts, and `mise run check` mounts it into the shared server. Two copies of a
+/// credential list is two things to keep in step, and the failure when they drift is a permission test
+/// that passes against the wrong identity.
+const S3_CONFIG: &str = include_str!("../fixtures/s3-identities.json");
 
 /// A running SeaweedFS with one bucket.
 ///
@@ -113,6 +103,17 @@ impl SeaweedfsHarness {
         Self::start_inner(true).await
     }
 
+    /// A container per harness, and **not** a bucket on a shared server.
+    ///
+    /// Sharing one SeaweedFS was tried and measured: it works for a while and then stops. A full run
+    /// creates roughly seventy-five buckets, each of which is a SeaweedFS *collection*, and past some
+    /// point the instance stops accepting writes to new ones — the same container that had served fifty
+    /// suites failed eleven of the next twelve. Raising `-volume.max` does not help, so the volume count
+    /// is not the limit.
+    ///
+    /// The Postgres harness *does* share a server (`dam_db::testing::SHARED_URL_ENV`), because a database
+    /// per harness costs milliseconds and does not degrade. This one pays its fourteen seconds, because a
+    /// gate that fails one run in five is worse than a gate that is slow.
     async fn start_inner(object_lock: bool) -> Result<Self> {
         let container = GenericImage::new(IMAGE, TAG)
             .with_exposed_port(S3_PORT.tcp())
@@ -158,7 +159,53 @@ impl SeaweedfsHarness {
             _container: container,
         };
         harness.create_bucket_with_retry(object_lock).await?;
+        harness.wait_until_writable().await?;
         Ok(harness)
+    }
+
+    /// Writes and deletes a probe object, retrying until the bucket actually accepts a write.
+    ///
+    /// A created bucket is not yet a writable one. SeaweedFS allocates volumes lazily, so the first `PUT`
+    /// to a new bucket can return `500 InternalError` while that happens — and on a shared server, where
+    /// several buckets are created in quick succession, it reliably does. The client's own retry policy is
+    /// five attempts over a few hundred milliseconds, which is not long enough.
+    ///
+    /// This is the same layered-readiness problem as `create_bucket_with_retry`, one level up: the
+    /// gateway answering `CreateBucket` is necessary and not sufficient. Paying the wait once here beats
+    /// every test carrying its own retry, and beats the alternative of a suite that fails one run in ten
+    /// and teaches people to re-run instead of read.
+    async fn wait_until_writable(&self) -> Result<()> {
+        const ATTEMPTS: u32 = 40;
+        let store = self.store();
+        let key = unique_key("harness-probe");
+        let mut last = String::new();
+
+        for attempt in 0..ATTEMPTS {
+            match store
+                .put(
+                    &key,
+                    bytes::Bytes::from_static(b"probe"),
+                    dam_core::StorageClass::Standard,
+                )
+                .await
+            {
+                Ok(_placement) => {
+                    // Removed so a conformance test counting objects does not see it. A failure to delete
+                    // is not worth failing the harness over — the bucket is ephemeral either way.
+                    let _ = store.delete(&key).await;
+                    return Ok(());
+                }
+                Err(e) => {
+                    last = e.to_string();
+                    tokio::time::sleep(Duration::from_millis(250 * u64::from(attempt.min(4) + 1)))
+                        .await;
+                }
+            }
+        }
+        Err(Error::Backend(format!(
+            "seaweedfs bucket {} did not accept a write after {ATTEMPTS} attempts: {last}",
+            self.bucket
+        )))
     }
 
     /// Creates the bucket, retrying while the S3 gateway finishes coming up.

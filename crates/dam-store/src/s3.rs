@@ -55,6 +55,30 @@ const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long to wait for the connection itself. Short, because a wrong endpoint should fail fast.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Whether `endpoint` is plain HTTP, and therefore has no use for a certificate store.
+///
+/// Not a style question. The SDK's default HTTP client enables the platform native root store, and
+/// `aws-smithy-http-client` loads it **once per process** into a `LazyLock`. Two consequences on a
+/// self-hosted deployment talking to `http://minio:9000`:
+///
+/// - it pays a root-store load (about 300ms on macOS) for certificates that can never be consulted; and
+/// - if that one load comes back empty — which concurrent macOS keychain reads can cause — then *every*
+///   subsequent client construction in the process trips
+///   `debug_assert!(valid > 0, "TrustStore configured to enable native roots but no valid root
+///   certificates parsed!")`.
+///
+/// That second one is not theoretical: it took out nine S3 test cases at once, including one that never
+/// opens a connection, because the poisoned `LazyLock` is process-wide. A plain-HTTP endpoint gets a
+/// connector with no TLS at all, which cannot reach that code.
+///
+/// An `https://` endpoint keeps the default. An empty trust store there would reject every connection,
+/// and a deployment with a private CA needs the platform store to find it.
+fn is_plain_http(endpoint: &str) -> bool {
+    // Case-insensitive: a scheme is case-insensitive per RFC 3986, and getting this wrong would silently
+    // send an `HTTP://` endpoint down the TLS path.
+    endpoint.len() >= 7 && endpoint[..7].eq_ignore_ascii_case("http://")
+}
+
 /// The retry and timeout policy, applied to both constructors.
 ///
 /// Stated on the AWS path too, rather than inherited from `aws_config::defaults()`. Two paths with
@@ -81,6 +105,8 @@ pub struct S3Store {
     capabilities: Capabilities,
     latency_class: LatencyClass,
     driver: &'static str,
+    /// Whether this store's client can do TLS at all. See [`is_plain_http`].
+    tls: bool,
 }
 
 impl S3Store {
@@ -99,7 +125,17 @@ impl S3Store {
             capabilities: Capabilities::full(),
             latency_class: LatencyClass::Instant,
             driver: "s3",
+            // Real AWS is always HTTPS, so the root store is both needed and used.
+            tls: true,
         }
+    }
+
+    /// Whether this store's HTTP client has TLS support.
+    ///
+    /// `false` for a plain-HTTP endpoint, where the client is built without it so the platform root store
+    /// is never loaded. Exposed so that decision is assertable rather than inferred from timing.
+    pub fn uses_tls(&self) -> bool {
+        self.tls
     }
 
     /// Retry attempts this store is configured for, including the first.
@@ -129,21 +165,28 @@ impl S3Store {
     ) -> Self {
         let creds = Credentials::new(access_key, secret_key, None, None, "damrs-static");
         let (retry, timeout) = resilience();
-        let conf = aws_sdk_s3::Config::builder()
+        let mut conf = aws_sdk_s3::Config::builder()
             .behavior_version(BehaviorVersion::latest())
             .region(Region::new(region.to_owned()))
             .endpoint_url(endpoint)
             .credentials_provider(creds)
             .force_path_style(true)
             .retry_config(retry)
-            .timeout_config(timeout)
-            .build();
+            .timeout_config(timeout);
+
+        let plain_http = is_plain_http(endpoint);
+        if plain_http {
+            // See `is_plain_http`. A connector with no TLS, so the native root store is never touched.
+            conf = conf.http_client(aws_smithy_http_client::Builder::new().build_http());
+        }
+        let conf = conf.build();
         Self {
             client: Client::from_conf(conf),
             bucket: bucket.to_owned(),
             capabilities,
             latency_class: LatencyClass::Instant,
             driver,
+            tls: !plain_http,
         }
     }
 

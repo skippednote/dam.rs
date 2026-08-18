@@ -74,11 +74,16 @@ async fn the_vector_type_is_usable_schema_qualified() {
 
 #[tokio::test]
 async fn two_harnesses_are_independent() {
-    // Suites run in parallel, so each harness must get its own container on its
-    // own port. A shared container would make test order significant.
+    // Suites run in parallel, so a harness must not be able to see another's data — otherwise test
+    // order becomes significant and a failure is unreproducible on its own.
+    //
+    // Asserted on the connection URL rather than on the port or the database name, because which of
+    // those two differs depends on the mode: a container each gives different ports and the same database
+    // name, while a shared server gives the same port and different names. The URL differs either way,
+    // and it is the thing that actually identifies "where this harness's data lives".
     let a = PostgresHarness::start().await.expect("start a");
     let b = PostgresHarness::start().await.expect("start b");
-    assert_ne!(a.port(), b.port(), "harnesses must not share a container");
+    assert_ne!(a.url(), b.url(), "harnesses must not share a database");
 
     sqlx::query("CREATE TABLE only_in_a (x int)")
         .execute(a.pool())
