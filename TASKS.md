@@ -616,7 +616,24 @@ shorthand search, the rights model (G4), and the eval harness (G8).
   not `(parent_id, slug)`, so **a vocabulary cannot have the same leaf label twice** — no "Other" under
   two parents. That makes path collision unreachable; the guard stays anyway. Logged as Taxonomy 3 and
   worth a product decision before a real vocabulary import.
-- [ ] **2.3 Collections.** Membership, ordering, `pin_hot` interaction with the lifecycle engine.
+- [x] **2.3 Collections.** Membership, ordering, `pin_hot` interaction with the lifecycle engine.
+  *Done:* `dam_db::collections`, 15 cases in one container. Both key properties mutation-verified.
+  *Order has to be stable.* `position` defaults to 0 with no uniqueness, so not managing it leaves every
+  row at 0 and the order is whatever the planner returns — a customer's presentation reshuffling between
+  page loads looks like a bug in *their* work. Positions are kept **dense** (`0..n-1`) and reads order by
+  `(position, asset_id)` so even a corrupt tie is deterministic. Dense rather than sparse-with-gaps
+  because a sparse scheme needs the rebalance anyway and meanwhile "is this collection well-ordered" is
+  unstateable. Renumbering is one window-function UPDATE, so there is no half-renumbered window.
+  *`pin_hot` is a **union**, not a flag.* An asset in several collections stays pinned while any pinned
+  one holds it. Computing it per collection and letting the last writer win is the bug — and its symptom
+  is a master tiered to Glacier while a live portal page still links it, appearing hours later as a broken
+  image. `pins()` is one query for the whole batch, because the caller is the lifecycle worker walking
+  thousands of placements.
+  *Judgement calls:* a move past the end is **clamped**, not refused (a drag-and-drop reporting "47 of 30"
+  is an off-by-one, and refusing loses the user's action); re-adding an asset leaves its position alone,
+  so a retry cannot reorder somebody's curation; and a **soft-deleted asset is not pinned** by membership
+  — the pin keeps things reachable for people, and nobody is reaching a deleted asset. Legal hold is
+  separate and still blocks tiering *and* purge.
 - [ ] **2.4 Query IR.** One parsed representation shared by SQL and Tantivy, with the access predicate
   as an injected term rather than a post-filter (§7, §12).
 - [ ] **2.5 Shorthand search syntax.** `bra:acme`, quoted phrases, ranges, negation. *Test first:* an
