@@ -1394,3 +1394,11 @@ rather than something an integration test would catch. What only a browser can t
 facet click rewriting the query, a 422 landing next to the field it names, a grid reporting the collection's
 row count rather than its rendered one. Keeping Docker out of the web gate is also what keeps it fast enough
 to run on every push. Reversible: yes.
+
+**The delivery tenant can be named in configuration, and is inferred only when unambiguous.** `damd` refused
+to start on a dev database that had grown a second tenant — correctly, since delivery resolves its tenant
+from configuration rather than from the signed claim, and guessing would mint URLs against the wrong tenant's
+objects. But "delete a tenant" is not an acceptable way past that, so `server.delivery_tenant` names it. The
+refusal stays for the unset-and-ambiguous case and now says which slugs it found and which variable to set.
+Naming it is also the right posture for a deployment that later grows a second tenant: the answer does not
+silently change under it. Reversible: yes, and it becomes unnecessary once 3.x puts the tenant in the claim.

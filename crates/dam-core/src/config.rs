@@ -60,6 +60,14 @@ pub struct ServerConfig {
     pub url_signing_key: Secret<String>,
     /// Wall-clock budget for a single request, in seconds.
     pub request_timeout_secs: u64,
+    /// Which tenant the delivery routes serve, by slug.
+    ///
+    /// Needed because the delivery path resolves its tenant from configuration rather than from the
+    /// signed claim (3.x moves it into the token). With one active tenant this can be left unset and
+    /// the tenant is inferred; with several, inferring would mint delivery URLs against the wrong
+    /// tenant's objects, so it must be named. Naming it is also the right posture for a deployment
+    /// that later grows a second tenant: the answer does not silently change under it.
+    pub delivery_tenant: Option<String>,
     /// Origins the browser API accepts in production.
     ///
     /// Empty outside production, where any origin is allowed so a Vite dev server on a different port works
@@ -159,6 +167,7 @@ impl Default for ServerConfig {
             port: 8080,
             url_signing_key: Secret::new(DEV_SIGNING_KEY.into()),
             request_timeout_secs: 30,
+            delivery_tenant: None,
             allowed_origins: Vec::new(),
         }
     }

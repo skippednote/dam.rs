@@ -3,7 +3,7 @@
 #![forbid(unsafe_code)]
 
 use anyhow::{Context, bail};
-use dam_core::{Config, Secret};
+use dam_core::{Config, Secret, TenantSlug};
 use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 use std::time::Duration;
@@ -46,7 +46,7 @@ async fn main() -> anyhow::Result<()> {
     // Delivery resolves its tenant from configuration for now rather than from the token. Recorded here
     // rather than hidden: a single-tenant deployment is the shape this serves, and 3.x makes the tenant part
     // of the signed claim so one process can deliver for many.
-    let delivery_tenant = single_tenant(&global).await?;
+    let delivery_tenant = delivery_tenant(&global, cfg.server.delivery_tenant.as_deref()).await?;
 
     let app = dam_api::app::router(
         &cfg,
@@ -113,25 +113,52 @@ async fn build_store(cfg: &Config) -> anyhow::Result<dam_store::S3Store> {
 
 /// The tenant the delivery routes serve.
 ///
-/// Exactly one, and it is an error to be ambiguous. A deployment with several tenants and a delivery path
-/// that silently picked the first would serve one tenant's derivatives under another's URLs, which is the
-/// worst available failure and would look like a caching bug.
-async fn single_tenant(global: &sqlx::PgPool) -> anyhow::Result<uuid::Uuid> {
-    let ids: Vec<uuid::Uuid> = sqlx::query_scalar(
-        "SELECT id FROM dam_global.tenants WHERE status = 'active' ORDER BY slug",
+/// Named in configuration when there is one to name, and inferred only when the answer is unambiguous. A
+/// deployment with several tenants and a delivery path that silently picked the first would serve one
+/// tenant's derivatives under another's URLs — the worst available failure, and one that would read as a
+/// caching bug rather than a cross-tenant read.
+async fn delivery_tenant(
+    global: &sqlx::PgPool,
+    configured: Option<&str>,
+) -> anyhow::Result<uuid::Uuid> {
+    if let Some(slug) = configured {
+        let slug = TenantSlug::new(slug).context("server.delivery_tenant")?;
+        return sqlx::query_scalar(
+            "SELECT id FROM dam_global.tenants WHERE slug = $1 AND status = 'active'",
+        )
+        .bind(slug.as_str())
+        .fetch_optional(global)
+        .await
+        .context("looking up the delivery tenant")?
+        .ok_or_else(|| {
+            anyhow::anyhow!("server.delivery_tenant names {slug}, which is not an active tenant")
+        });
+    }
+
+    let slugs: Vec<String> = sqlx::query_scalar(
+        "SELECT slug FROM dam_global.tenants WHERE status = 'active' ORDER BY slug",
     )
     .fetch_all(global)
     .await
     .context("listing tenants")?;
 
-    match ids.as_slice() {
-        [only] => Ok(*only),
+    match slugs.as_slice() {
+        [only] => {
+            let slug = TenantSlug::new(only).context("stored tenant slug")?;
+            sqlx::query_scalar("SELECT id FROM dam_global.tenants WHERE slug = $1")
+                .bind(slug.as_str())
+                .fetch_one(global)
+                .await
+                .context("resolving the only tenant")
+        }
         [] => bail!("no active tenant; run `damctl provision-tenant --slug <slug>` first"),
         many => bail!(
-            "{} active tenants, and the delivery path resolves its tenant from configuration rather than \
-             from the signed token (3.x). Serving several from one process would mint URLs for the wrong \
-             tenant's objects, so this refuses rather than guessing.",
-            many.len()
+            "{} active tenants ({}), and the delivery path resolves its tenant from configuration rather \
+             than from the signed token (3.x). Serving several from one process would mint URLs for the \
+             wrong tenant's objects, so this refuses rather than guessing — set \
+             DAMRS_SERVER__DELIVERY_TENANT (or server.delivery_tenant) to the slug this process serves.",
+            many.len(),
+            many.join(", ")
         ),
     }
 }

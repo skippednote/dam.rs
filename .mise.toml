@@ -45,6 +45,10 @@ AWS_SECRET_ACCESS_KEY = "damrsdevsecret"
 # /var/lib: a default that needs root to create is a default that fails on a first run.
 DAMRS_SEARCH__INDEX_ROOT = "./data/search"
 
+# Which tenant the delivery routes serve. Named rather than inferred, because a dev database that has
+# grown a second tenant makes the answer ambiguous and `damd` then refuses to start rather than guess.
+DAMRS_SERVER__DELIVERY_TENANT = "acme"
+
 [tasks.openapi]
 description = "Regenerate openapi.json and the TypeScript client from it"
 run = """

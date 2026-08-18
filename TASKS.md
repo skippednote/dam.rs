@@ -840,9 +840,11 @@ routers existed, and neither was mounted anywhere.
   and a route added without a timeout becomes visible rather than inheriting nothing.
   *`/health` says `ok` and nothing else.* A health endpoint reporting version, tenant counts or database
   state is an unauthenticated disclosure endpoint, and it is the first thing anybody scans.
-  *`damd` refuses to start with several active tenants,* because the delivery path still resolves its
+  *`damd` refuses to start when the delivery tenant is ambiguous,* because that path still resolves its
   tenant from configuration rather than from the signed token. Serving several from one process would
-  mint URLs against the wrong tenant's objects, which would look like a caching bug.
+  mint URLs against the wrong tenant's objects, which would look like a caching bug. Hit for real on a dev
+  database that had grown a second tenant — so `server.delivery_tenant` names it, and the refusal (which
+  now lists the slugs it found and the variable to set) is only for unset-and-ambiguous.
   *CORS is permissive outside production and configured inside it.* Defensible because the credential is
   a bearer token in a header rather than a cookie: a cross-origin request without the header is
   anonymous. Written down rather than left as an unexamined `Any`.
