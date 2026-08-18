@@ -15,6 +15,7 @@ pub mod config;
 pub mod error;
 pub mod fields;
 pub mod policy;
+pub mod query;
 pub mod rights;
 pub mod secret;
 pub mod storage;

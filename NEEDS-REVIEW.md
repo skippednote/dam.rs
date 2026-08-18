@@ -1,3 +1,48 @@
+# Open — one access-control question, 2026-08-18 (2.4)
+
+**Rule-based asset groups are still refused, and I am not wiring them without your view.**
+
+`asset_groups.predicate` is documented in the schema as holding "the same query IR the search layer
+compiles, so a group is literally a saved search". 2.4 has now built that IR, so the missing piece is
+nominally there — and `dam_db::access::check_groups_are_renderable` still refuses a rule-based group,
+exactly as it did before.
+
+I am leaving it refused because connecting the two creates a recursion ARCHITECTURE does not settle:
+
+- Every user query carries an `AccessPredicate`, which is expressed in terms of **asset-group
+  membership**.
+- A rule-based group's membership would be defined by a query.
+- So a group whose rule referenced group membership — directly, or through another group — would need
+  its own membership resolved in order to resolve its own membership.
+
+That is not a hypothetical. `Query` today can express `InCollection`, and a collection is a saved set;
+adding a `InGroup` clause is the obvious next request, and at that point the cycle is one configuration
+away. The failure mode is a hung request or an unbounded query, and it would be reachable by an
+administrator editing a group definition rather than by an attacker — which makes it more likely, not
+less.
+
+**What I would do** (needs your yes, because it is an access-control semantic):
+
+1. A group's rule predicate is evaluated **without** an access filter. It *defines* access; filtering it
+   by access is circular. This means a rule predicate is a privileged object and only an administrator
+   may write one — which is already true of `asset_groups`.
+2. A rule predicate may not reference group membership at all, enforced by validating it against a
+   restricted subset of `Query` rather than by documentation. Enforced structurally, the cycle cannot be
+   configured.
+3. Group membership is materialised by a worker into `asset_group_members` rather than evaluated live, so
+   the request path keeps the single indexed subquery it has now. Decision 4 in DECISIONS.md currently
+   says rule-based groups are "evaluated live"; that is the part I would want to change, and it is why
+   this is a question rather than a task.
+
+Point 3 contradicts a recorded decision, which is why I have not simply taken the reversible option. The
+alternative — live evaluation — is a nested access-filtered subquery per request per group, and I do not
+think it holds up at the pagination-count level §7 cares about.
+
+Nothing is blocked on this: explicit groups work, and a rule-based group fails closed with a message
+naming the gap.
+
+---
+
 # Answered — decisions delegated, 2026-08-18
 
 You said "complete m0 and m1 and then complete m2 and m3". Every open question below carried a

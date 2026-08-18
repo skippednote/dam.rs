@@ -634,8 +634,35 @@ shorthand search, the rights model (G4), and the eval harness (G8).
   so a retry cannot reorder somebody's curation; and a **soft-deleted asset is not pinned** by membership
   — the pin keeps things reachable for people, and nobody is reaching a deleted asset. Legal hold is
   separate and still blocks tiering *and* purge.
-- [ ] **2.4 Query IR.** One parsed representation shared by SQL and Tantivy, with the access predicate
+- [x] **2.4 Query IR.** One parsed representation shared by SQL and Tantivy, with the access predicate
   as an injected term rather than a post-filter (§7, §12).
+  *Done:* `dam_core::query` (the IR + validation) and `dam_db::query_sql` (the SQL consumer), 14 cases +
+  5 unit. Tantivy is the second consumer and lands with 2.6, together with 0.10's deferred differential
+  test.
+  *The access filter cannot be forgotten, structurally.* `Planned`'s only constructor takes an
+  `AccessPredicate`, so **no value of the renderer's input type lacks one** — a stronger guarantee than a
+  test, because it survives whoever adds a third back end. The user's query and the access predicate are
+  kept as separate trees so an access term can never end up inside a `Not`, and a test asserts the filter
+  precedes any `NOT (` in the rendered SQL. Mutation-verified: short-circuiting `Query::All` to `true` —
+  the obvious optimisation — fails immediately.
+  *The jsonb trap, measured rather than assumed.* jsonb's "an array contains a primitive" rule applies
+  only at the **top level**: `'{"c":["red","blue"]}' @> '{"c":"blue"}'` is **false**, while
+  `@> '{"c":["blue"]}'` is true. So the obvious single-`@>` equality silently misses every multivalued
+  field — most tag-like fields — with no error anywhere. Both forms are emitted; both use the GIN index.
+  *`!=` renders as `NOT (@>)`, not `<>`*: `<>` compares the whole array, so "not red" would match an
+  asset tagged red *and* blue.
+  *Other things that would be quietly wrong:* an empty `Or` must render `false` (rendering nothing drops
+  the filter and returns the tenant's whole library); ranges cast before comparing (`'9' > '10'` is true
+  as text); `LIKE` metacharacters are escaped **backslash-first** with an explicit `ESCAPE` (unescaped,
+  `contains("50%")` becomes a prefix match on "50"); `Missing` covers absent, `null` **and** `[]`; and
+  taxonomy queries match `confirmed` tags only, so an unreviewed AI suggestion cannot affect results.
+  *Depth and node bounds* are checked before rendering — both consumers recurse, so a few kilobytes of
+  nested boolean is a stack overflow, not a slow query. `depth()` itself is iterative, or the check would
+  overflow while measuring.
+  *Left for review:* rule-based asset groups stay refused. The IR exists now, but wiring it creates a
+  recursion ARCHITECTURE does not settle — a group's membership defined by a query whose access predicate
+  is defined by group membership. See NEEDS-REVIEW.md; it contradicts Decision 4, so I did not take it
+  unilaterally.
 - [ ] **2.5 Shorthand search syntax.** `bra:acme`, quoted phrases, ranges, negation. *Test first:* an
   unclosed quote is a parse error with a column, not a silent whole-string match.
 - [ ] **2.6 Tantivy index per tenant.** Schema derived from `field_defs`, an LRU writer pool (§19), and
