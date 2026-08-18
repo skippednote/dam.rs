@@ -16,6 +16,8 @@ fast_image_resize = { workspace = true }
 kamadak-exif = { workspace = true }
 image_hasher = { workspace = true }
 blake3 = { workspace = true }
+# ffprobe speaks JSON, and it is inconsistent about whether numbers are numbers.
+serde_json = { workspace = true }
 infer = { workspace = true }
 uuid = { workspace = true }
 symphonia = { workspace = true }

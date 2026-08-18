@@ -1578,6 +1578,7 @@ dependencies = [
  "image_hasher",
  "infer",
  "kamadak-exif",
+ "serde_json",
  "symphonia",
  "tempfile",
  "thiserror",

@@ -7,6 +7,7 @@
 // production code honest only add noise there. Matches dam-store.
 #![cfg_attr(test, allow(clippy::expect_used, clippy::unwrap_used, clippy::panic))]
 
+pub mod avprobe;
 pub mod derive;
 pub mod ingest;
 pub mod probe;
