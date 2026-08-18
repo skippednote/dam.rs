@@ -1299,3 +1299,52 @@ had to be edited by rote for migration 0013 — and a number edited by rote is a
 compare against `migrate::tenant_migration_count()` now, which still catches the case the test was written
 for (a migration file added but not committed, or a stale build, since the macro embeds at compile time)
 without inviting a mechanical edit every time. Reversible: yes.
+
+**The API surface is composed in one file, and the layers that must apply to everything live there.**
+`dam_api::app::router` merges each feature router and then applies the request timeout, the JSON body limit,
+`X-Content-Type-Options: nosniff` and CORS *outside* the merge. A handler that forgets a timeout holds a
+connection until the client goes away, and a route added later would inherit nothing if each router set its
+own. The `nosniff` header is not decoration: a delivery response carries a content type the uploader
+influenced, and a browser that sniffs its way to `text/html` on an uploaded file is stored XSS. Reversible:
+yes.
+
+**CORS is permissive outside production, configured inside it, and that is defensible for a specific
+reason.** The credential is a bearer token in a header rather than a cookie, so there is no ambient authority
+for a hostile origin to ride — a cross-origin request without the header is anonymous, and one with it had to
+be given the key. Written down rather than left as an unexamined `Any`, because the argument stops holding the
+moment anything moves to cookie auth. Reversible: yes.
+
+**`damd` refuses to start when several tenants are active.** The delivery path resolves its tenant from
+configuration rather than from the signed claim (3.x moves it into the token). A process serving several
+tenants would mint delivery URLs against the wrong tenant's objects, and the symptom would look like a caching
+bug rather than a cross-tenant read. Refusing at startup is the only point where that is cheap to notice.
+Reversible: yes, and it becomes unnecessary once the tenant is in the claim.
+
+**The asset page's total comes from a window function in the same statement as the rows.** §7 says pagination
+counts alone disclose the existence of assets a caller cannot see. Two statements would also be two snapshots,
+so a concurrent upload between them makes the total disagree with the page it describes — a scrollbar that
+does not match its own contents. Mutation-verified: counting without the predicate fails two cases.
+Reversible: no.
+
+**Placements are joined with a `LEFT JOIN LATERAL … LIMIT 1` that picks the warmest present copy.** A plain
+join duplicates a replicated asset, because `object_placements` is keyed `(object_key, pool_id)` — it appeared
+twice in the grid and twice in the window count. Warmest rather than first: the tier answers "can this be
+fetched now", and a Deep Archive replica of an object that is also in Standard must not report `archive` and
+disable a download that would have worked. `object_key` breaks the remaining tie so the choice is
+deterministic; an order that varied between statements would make a tier flicker between two page loads with
+nothing having changed. Reversible: no.
+
+**A metadata PATCH validates the patch, not the merged document.** `Mode::Patch` is what makes editing one
+caption possible on an asset missing a required field — which is every asset the moment an administrator adds
+one. Validating the merge instead would refuse the edit and the message would name a field the user was not
+touching. Clearing a required field is still refused, because a present `null` is an instruction rather than an
+absence. Reversible: no.
+
+**`AssetSummary.thumbnail_url` is `None` until the internal-preview rights question is answered.** See
+`NEEDS-REVIEW.md`. Deliberately not worked around: every available workaround is either a second path around
+the D12 chokepoint or a silent decision that internal display is not distribution. Reversible: it is the
+absence of a decision, so yes.
+
+**`damctl issue-key` prints the plaintext once and stores only a hash.** A key an operator can read back out
+of the database is a key a database backup hands over. The prefix goes to the log so a key can be recognised
+in an audit; the secret goes to stdout and nowhere else. Reversible: no.

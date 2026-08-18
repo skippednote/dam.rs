@@ -825,6 +825,79 @@ shorthand search, the rights model (G4), and the eval harness (G8).
   queryable row by row; and cancelling **rolls nothing back** and says so, because a bulk tag over 31,000
   assets cannot be undone by a cancellation without a second bulk operation.
 
+## A — The HTTP API surface
+
+Unnumbered in the original plan and discovered to be missing when the UI needed something to talk to.
+The backend was complete through M3 and `damd` had no server at all: only the TUS and delivery
+routers existed, and neither was mounted anywhere.
+
+- [x] **A.1 The server, and one place that composes it.** `dam_api::app::router` merges every feature
+  router and applies the layers that must wrap *everything* — a request timeout, a JSON body limit,
+  `X-Content-Type-Options: nosniff`, CORS, tracing. `damd` binds, serves, and drains on SIGTERM as well
+  as SIGINT, because a container runtime sends SIGTERM and a server that only handled Ctrl-C would be
+  killed rather than drained on every deploy.
+  *Composition in one file is the point:* "is this endpoint authenticated" is answerable by reading it,
+  and a route added without a timeout becomes visible rather than inheriting nothing.
+  *`/health` says `ok` and nothing else.* A health endpoint reporting version, tenant counts or database
+  state is an unauthenticated disclosure endpoint, and it is the first thing anybody scans.
+  *`damd` refuses to start with several active tenants,* because the delivery path still resolves its
+  tenant from configuration rather than from the signed token. Serving several from one process would
+  mint URLs against the wrong tenant's objects, which would look like a caching bug.
+  *CORS is permissive outside production and configured inside it.* Defensible because the credential is
+  a bearer token in a header rather than a cookie: a cross-origin request without the header is
+  anonymous. Written down rather than left as an unexamined `Any`.
+- [x] **A.2 One authorization path for every handler.** `dam_api::caller::authorize` authenticates the
+  bearer token, loads grants across the D2 boundary, compiles the predicate through the *same*
+  `policy::compile` every other consumer uses, and refuses a caller whose scope matches nothing.
+  *Three unit cases on the header alone,* which sounds trivial and is not: the scheme is
+  case-insensitive per RFC 9110 so `bearer` must work, and a key pasted from a terminal carries a
+  trailing newline whose hash is not the key's hash — producing a 401 that survives every attempt to
+  check the credential.
+  *A machine key grants nothing.* No identity means no membership means no roles. Fail-closed, and the
+  safe direction for a shape the role model does not yet describe.
+- [x] **A.3 `GET /assets`, `GET /assets/{id}`, `PATCH /assets/{id}/metadata`.** `dam_db::assets` does
+  the reading; 14 database cases and 16 HTTP cases.
+  *§7's leak is the property the whole read layer is shaped around:* the total is counted by a window
+  function **in the same statement as the rows**, under the caller's own predicate. A post-filter
+  returns exactly the right rows and leaks through `total` — a caller learns their library has seven
+  assets somebody has hidden from them. Mutation-verified: counting without the predicate fails two
+  cases.
+  *A real bug found while writing it:* a plain `LEFT JOIN` to `object_placements` returns a replicated
+  asset once per placement — the primary key is `(object_key, pool_id)` — so a two-pool asset appeared
+  twice in the grid *and* twice in the window count. A `LEFT JOIN LATERAL … LIMIT 1` makes one row per
+  asset structural, and it picks the **warmest** present copy: ordering by class alone would let a Deep
+  Archive replica of a hot object report `archive` and disable a download that would have worked.
+  *The ORDER BY tie-breaks on `assets.id`,* because `created_at` is not unique and an offset walk over a
+  non-total order skips and repeats rows between pages — a virtualised grid scrolling back would show
+  different assets, which reads as data corruption. The test needed **600 rows sharing one timestamp**:
+  at twenty rows Postgres returns a stable physical order and the case passed with no tie-break at all.
+  *A metadata PATCH validates as a patch* (`Mode::Patch`), so editing one caption does not demand every
+  required field — and clearing a required field is still refused, with the stable code a UI maps to a
+  message. The read, the validation and the write are one transaction: two would let a concurrent edit
+  land between them, and the loser's merge would silently revert the winner rather than conflict.
+  *404 for a forbidden asset, on read and on write alike.* A 403 confirms the asset exists.
+- [x] **A.4 `GET /search`, `GET /search/facets`.** Shorthand → IR → Tantivy, hydrated through Postgres.
+  *Tantivy ranks, Postgres authorises,* and both halves run: the predicate is rendered into the index
+  query *and* applied again when the ids are hydrated. The index carries group membership so it can
+  narrow, but it is eventually consistent and therefore *permissive* while stale — and a permissive
+  stale index used as the gate on a governed library is a leak.
+  *The ids are overfetched 4×,* because hydration drops rows: without it a page would be short whenever
+  anything was filtered, and a grid reads a short page as the end of the results.
+  *Facets are counted under the same query the results were,* or a rail says "240 outdoor" beside three
+  visible assets. One `plan` helper serves both handlers for exactly that reason.
+  *A clause the index cannot answer is 501, not 400.* The query is valid and this back end cannot answer
+  it; a 400 sends somebody looking for a typo that is not there. And it is refused rather than dropped,
+  because a dropped filter returns *more* than was asked for.
+- [x] **A.5 `damctl issue-key`, `damctl reindex`, `damctl eval`.** The three commands that make a
+  deployment usable: a credential to talk to the API with, an index built from Postgres, and the eval
+  harness run against it. The key's plaintext is printed once and never stored — only a hash — so it
+  cannot be recovered from a database backup. Its prefix goes to the log; the secret goes to stdout and
+  nowhere else.
+- [ ] **A.6 Thumbnails.** Blocked on a rights decision, written up in `NEEDS-REVIEW.md`: a thumbnail is
+  a render, a render passes the D12 chokepoint, and an unlicensed asset is `rights_state = 'unknown'`
+  which denies — so a fresh library would show no thumbnails at all. `AssetSummary.thumbnail_url` is
+  `None` until that is answered, which is a shape the wire type already documents.
+
 ## M3 — Delivery, sharing, restore
 
 Scope from §13: signed transform delivery, embeds, CDN, video + HLS, share links, restore flow with

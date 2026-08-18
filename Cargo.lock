@@ -2087,6 +2087,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -2094,18 +2095,22 @@ name = "damd"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "clap",
  "dam-api",
  "dam-core",
  "dam-db",
  "dam-mcp",
+ "dam-search",
  "dam-store",
  "dam-telemetry",
  "figment",
  "serde",
+ "sqlx 0.9.0",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

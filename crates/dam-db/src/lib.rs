@@ -7,6 +7,7 @@
 )]
 
 pub mod access;
+pub mod assets;
 pub mod auth;
 pub mod bulk;
 pub mod collections;

@@ -13,6 +13,7 @@ dam-telemetry = { path = "../../crates/dam-telemetry" }
 dam-db = { path = "../../crates/dam-db" }
 dam-store = { path = "../../crates/dam-store" }
 dam-api = { path = "../../crates/dam-api" }
+dam-search = { path = "../../crates/dam-search" }
 dam-mcp = { path = "../../crates/dam-mcp" }
 anyhow = { workspace = true }
 tokio = { workspace = true }
@@ -21,6 +22,9 @@ tracing-subscriber = { workspace = true }
 figment = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
+sqlx = { workspace = true }
+axum = { workspace = true }
+uuid = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"

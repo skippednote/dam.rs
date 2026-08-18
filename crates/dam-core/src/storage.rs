@@ -231,6 +231,30 @@ impl std::fmt::Display for RestoreState {
     }
 }
 
+impl FromStr for RestoreState {
+    type Err = Error;
+
+    /// Reads the database spelling back.
+    ///
+    /// An unknown value is an error rather than a default. Defaulting to `None` would report a restore in
+    /// flight as "no live copy", which `AssetTier::of` then renders as `Archive` — a download button
+    /// disabled on an asset that is about to become available, or worse the reverse if the default went the
+    /// other way.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "none" => Ok(Self::None),
+            "requested" => Ok(Self::Requested),
+            "ongoing" => Ok(Self::Ongoing),
+            "available" => Ok(Self::Available),
+            "expired" => Ok(Self::Expired),
+            other => Err(Error::validation(
+                "restore_state",
+                format!("unknown: {other}"),
+            )),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,0 +1,409 @@
+//! The asset endpoints the UI reads (`GET /assets`, `GET /assets/{id}`, `PATCH /assets/{id}/metadata`).
+//!
+//! Every read renders the caller's compiled predicate through `dam_db::assets`, which puts it *in* the query.
+//! §7 is the reason it is not a post-filter: pagination counts alone disclose the existence of assets a
+//! caller cannot see, and the two implementations return the same rows so the leak is invisible until
+//! somebody compares a count.
+//!
+//! ## A missing asset and a forbidden one answer the same way
+//!
+//! 404 for both. A 403 on an asset in a group the caller does not hold confirms the asset exists, which is
+//! the disclosure the group scoping was for.
+//!
+//! ## `thumbnail_url` is `None` for now, and that is a pending decision rather than an omission
+//!
+//! A thumbnail is a render, a render passes the signed-URL chokepoint, and the chokepoint enforces rights
+//! (D12). An asset with no licence is `RightsState::Unknown`, and unknown denies — so a fresh library's
+//! thumbnails would all be refused. Resolving that means deciding whether an internal preview is
+//! distribution, which is a rights question ARCHITECTURE does not settle; it is written up in
+//! `NEEDS-REVIEW.md`. Until it is answered the field is absent, which the wire type already allows.
+
+use crate::caller;
+use crate::dto::{AssetPage, AssetSummary};
+use axum::extract::{Path, Query, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, patch};
+use axum::{Json, Router};
+use dam_core::policy::Action;
+use dam_db::assets::{self, Order};
+use serde::{Deserialize, Serialize};
+use sqlx::PgPool;
+use std::sync::Arc;
+use utoipa::{IntoParams, ToSchema};
+use uuid::Uuid;
+
+/// What the asset endpoints need.
+pub struct AssetState {
+    /// The shared pool. Tenant scoping happens per request through `TenantConn`, not by holding a pool per
+    /// tenant — §5.2's reason is that a thousand tenants is a thousand idle connection sets.
+    pub global: PgPool,
+}
+
+impl std::fmt::Debug for AssetState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The pool's own Debug prints its connection string, password included.
+        f.debug_struct("AssetState").finish_non_exhaustive()
+    }
+}
+
+/// The asset routes.
+pub fn router(state: AssetState) -> Router {
+    Router::new()
+        .route("/assets", get(list))
+        .route("/assets/{asset_id}", get(detail))
+        .route("/assets/{asset_id}/metadata", patch(update_metadata))
+        .with_state(Arc::new(state))
+}
+
+/// How a client asks for a page.
+#[derive(Debug, Clone, Deserialize, IntoParams)]
+pub struct ListParams {
+    /// Zero-based index of the first row wanted. A virtualised grid sends the window it is about to draw.
+    #[serde(default)]
+    pub offset: i64,
+    /// Rows wanted. Clamped server-side; see `dam_db::assets::MAX_LIMIT`.
+    #[serde(default = "default_limit")]
+    pub limit: i64,
+    #[serde(default)]
+    pub order: SortOrder,
+}
+
+fn default_limit() -> i64 {
+    50
+}
+
+/// The orders a client may ask for.
+///
+/// A closed set on the wire as well as in SQL. Accepting a column name would make the ORDER BY
+/// caller-supplied, and validating one against a list is the same list written twice.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SortOrder {
+    #[default]
+    Newest,
+    Oldest,
+    FilenameAsc,
+    FilenameDesc,
+    LargestFirst,
+}
+
+impl From<SortOrder> for Order {
+    fn from(order: SortOrder) -> Self {
+        match order {
+            SortOrder::Newest => Self::Newest,
+            SortOrder::Oldest => Self::Oldest,
+            SortOrder::FilenameAsc => Self::FilenameAsc,
+            SortOrder::FilenameDesc => Self::FilenameDesc,
+            SortOrder::LargestFirst => Self::LargestFirst,
+        }
+    }
+}
+
+/// One asset in full, as the detail panel draws it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct AssetDetail {
+    #[serde(flatten)]
+    pub summary: AssetSummary,
+    /// The validated metadata, keyed by field definition key.
+    pub values: serde_json::Value,
+    /// Probed technical facts — EXIF, codec, colour. Read-only, and shaped by the file rather than by the
+    /// tenant's schema, so it is not merged into `values`.
+    pub technical: serde_json::Value,
+    pub duration_ms: Option<i64>,
+    pub page_count: Option<i32>,
+    pub color_space: Option<String>,
+    pub has_alpha: Option<bool>,
+    /// BLAKE3 of the original bytes, lowercase hex. What deduplication and integrity both key on.
+    pub content_hash: String,
+    pub status: String,
+    pub enrichment_state: String,
+    /// Blocks tiering *and* deletion. Surfaced because a user who cannot delete an asset deserves to know
+    /// why rather than to see a failing button.
+    pub legal_hold: bool,
+    pub release_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub version_no: i32,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// A page of assets the caller may see.
+#[utoipa::path(
+    get,
+    path = "/assets",
+    params(ListParams),
+    responses(
+        (status = 200, description = "One page, with the total counted under the caller's own scope", body = AssetPage),
+        (status = 401, description = "No usable credential"),
+        (status = 403, description = "Authenticated, and holds no read scope"),
+    ),
+    tag = "assets",
+)]
+pub async fn list(
+    State(state): State<Arc<AssetState>>,
+    headers: HeaderMap,
+    Query(params): Query<ListParams>,
+) -> Result<Json<AssetPage>, Failure> {
+    let caller = caller::authorize(&state.global, &headers, Action::Read).await?;
+    // Scoped by a transaction rather than by a per-tenant pool: `SET LOCAL search_path` is
+    // transaction-bound, so the pooled connection returns clean and no tenant's path can leak onto a later
+    // request (§5.2).
+    let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
+    let page = assets::page(
+        conn.executor(),
+        &caller.predicate,
+        params.order.into(),
+        params.offset,
+        params.limit,
+    )
+    .await?;
+    conn.commit().await?;
+
+    Ok(Json(AssetPage {
+        items: page.items.iter().map(summary_of).collect(),
+        total: page.total,
+        offset: page.offset,
+    }))
+}
+
+/// One asset in full.
+#[utoipa::path(
+    get,
+    path = "/assets/{asset_id}",
+    params(("asset_id" = Uuid, Path, description = "The asset")),
+    responses(
+        (status = 200, body = AssetDetail),
+        (status = 401, description = "No usable credential"),
+        (status = 403, description = "Authenticated, and holds no read scope"),
+        (status = 404, description = "No such asset, or not one this caller may see — deliberately the same answer"),
+    ),
+    tag = "assets",
+)]
+pub async fn detail(
+    State(state): State<Arc<AssetState>>,
+    headers: HeaderMap,
+    Path(asset_id): Path<Uuid>,
+) -> Result<Json<AssetDetail>, Failure> {
+    let caller = caller::authorize(&state.global, &headers, Action::Read).await?;
+    let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
+    let found = assets::detail(conn.executor(), &caller.predicate, asset_id).await?;
+    conn.commit().await?;
+    let found = found.ok_or(Failure::NotFound)?;
+
+    Ok(Json(AssetDetail {
+        summary: summary_of(&found.summary),
+        values: found.values,
+        technical: found.technical,
+        duration_ms: found.duration_ms,
+        page_count: found.page_count,
+        color_space: found.color_space,
+        has_alpha: found.has_alpha,
+        content_hash: found.content_hash,
+        status: found.status,
+        enrichment_state: found.enrichment_state,
+        legal_hold: found.legal_hold,
+        release_at: found.release_at,
+        expires_at: found.expires_at,
+        version_no: found.version_no,
+        created_at: found.created_at,
+        updated_at: found.updated_at,
+    }))
+}
+
+/// A metadata edit: the fields to change, keyed by definition key.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct MetadataPatch {
+    /// A merge, not a replacement. `null` for a value clears that field; a key that is absent is left
+    /// alone. Two clients editing different fields of one asset must not overwrite each other, and a PUT of
+    /// the whole document guarantees they do.
+    pub values: serde_json::Map<String, serde_json::Value>,
+}
+
+/// The outcome of a metadata edit.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct MetadataAccepted {
+    /// The stored document after the merge, so a client does not have to guess what the validator
+    /// normalised — a date reformatted or a number coerced would otherwise show up as an unexplained diff
+    /// on the next read.
+    pub values: serde_json::Value,
+}
+
+/// Why an edit was refused, field by field.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ValidationProblem {
+    /// The payload key, or the field key for a missing required field.
+    pub key: String,
+    /// A stable machine-readable code. Stable because a client branches on it and a UI maps it to a message
+    /// in the user's language, neither of which can be done with prose.
+    pub code: String,
+    pub detail: String,
+}
+
+/// Edits an asset's metadata.
+#[utoipa::path(
+    patch,
+    path = "/assets/{asset_id}/metadata",
+    params(("asset_id" = Uuid, Path, description = "The asset")),
+    request_body = MetadataPatch,
+    responses(
+        (status = 200, body = MetadataAccepted),
+        (status = 401, description = "No usable credential"),
+        (status = 403, description = "Authenticated, and holds no manage scope"),
+        (status = 404, description = "No such asset, or not one this caller may see"),
+        (status = 422, description = "The payload failed validation", body = Vec<ValidationProblem>),
+    ),
+    tag = "assets",
+)]
+pub async fn update_metadata(
+    State(state): State<Arc<AssetState>>,
+    headers: HeaderMap,
+    Path(asset_id): Path<Uuid>,
+    Json(patch): Json<MetadataPatch>,
+) -> Result<Json<MetadataAccepted>, Failure> {
+    // `Manage`, not `Read`. A caller who can see an asset is not thereby allowed to relabel it, and reading
+    // the action from the handler rather than from the route is how that stays true when a route is copied.
+    let caller = caller::authorize(&state.global, &headers, Action::Manage).await?;
+
+    // The read, the validation and the write are one transaction. Two would let a concurrent edit land
+    // between them, and the loser's merge would be computed against a document that no longer exists —
+    // which silently reverts the winner's change rather than conflicting with it.
+    let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
+
+    // The predicate is applied first, so an asset the caller may not see cannot be written to — and it
+    // answers 404 rather than 403 for the same reason the read does.
+    let existing = assets::detail(conn.executor(), &caller.predicate, asset_id)
+        .await?
+        .ok_or(Failure::NotFound)?;
+
+    // Validated as a *patch*, which is what `Mode::Patch` means: an absent key is left alone so `required`
+    // does not apply to it, while a key present with `null` is an instruction to clear — and clearing a
+    // required field is refused. Merging first and validating the whole document would lose that distinction
+    // and demand every required field on every edit of one caption.
+    let accepted = match dam_db::fields::validate_on(
+        conn.executor(),
+        &patch.values,
+        dam_core::fields::Mode::Patch,
+        dam_core::fields::Writer::Human,
+    )
+    .await
+    {
+        Ok(accepted) => accepted,
+        Err(dam_db::fields::ValidationOutcome::Rejected(rejections)) => {
+            return Err(Failure::Invalid(
+                rejections
+                    .into_iter()
+                    .map(|r| ValidationProblem {
+                        key: r.key,
+                        code: r.code.to_owned(),
+                        detail: r.detail,
+                    })
+                    .collect(),
+            ));
+        }
+        Err(dam_db::fields::ValidationOutcome::Failed(error)) => return Err(error.into()),
+    };
+
+    // Merged onto the stored document, using the *normalised* values rather than the ones that arrived — a
+    // date reformatted or a number coerced has to be what lands, or the next read shows an unexplained diff.
+    let mut merged = existing.values.as_object().cloned().unwrap_or_default();
+    for (key, value) in accepted.values {
+        if value.is_null() {
+            merged.remove(&key);
+        } else {
+            merged.insert(key, value);
+        }
+    }
+    let stored = serde_json::Value::Object(merged);
+
+    sqlx::query(
+        "INSERT INTO asset_metadata (asset_id, values) VALUES ($1, $2) \
+         ON CONFLICT (asset_id) DO UPDATE SET values = excluded.values, updated_at = now()",
+    )
+    .bind(asset_id)
+    .bind(&stored)
+    .execute(conn.executor())
+    .await
+    .map_err(dam_db::Error::from)?;
+
+    // The asset's own `updated_at` moves too, or a metadata edit is invisible to anything watching the
+    // asset — the reindex queue and the connector both key off it.
+    sqlx::query("UPDATE assets SET updated_at = now() WHERE id = $1")
+        .bind(asset_id)
+        .execute(conn.executor())
+        .await
+        .map_err(dam_db::Error::from)?;
+
+    conn.commit().await?;
+
+    Ok(Json(MetadataAccepted { values: stored }))
+}
+
+/// Everything that can go wrong in these handlers.
+#[derive(Debug)]
+pub enum Failure {
+    Refused(caller::Refusal),
+    /// No such asset, or not one this caller may see. One variant, because they answer the same.
+    NotFound,
+    Invalid(Vec<ValidationProblem>),
+    Internal,
+}
+
+impl IntoResponse for Failure {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Refused(refusal) => refusal.into_response(),
+            Self::NotFound => StatusCode::NOT_FOUND.into_response(),
+            // 422 rather than 400: the request was well-formed JSON and the *content* was refused, which is
+            // the distinction a client needs in order to decide whether to show field errors or to retry.
+            Self::Invalid(problems) => {
+                (StatusCode::UNPROCESSABLE_ENTITY, Json(problems)).into_response()
+            }
+            Self::Internal => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        }
+    }
+}
+
+impl From<caller::Refusal> for Failure {
+    fn from(refusal: caller::Refusal) -> Self {
+        Self::Refused(refusal)
+    }
+}
+
+impl From<dam_db::Error> for Failure {
+    fn from(error: dam_db::Error) -> Self {
+        match error {
+            // A tenant whose schema is gone is not a 500 in the caller's terms — but it is not something a
+            // caller can act on either, and naming it would describe the deployment's state to them.
+            dam_db::Error::TenantNotProvisioned(schema) => {
+                tracing::error!(%schema, "an authenticated key names a tenant with no schema");
+                Self::Internal
+            }
+            other => {
+                tracing::error!(error = %other, "asset endpoint database error");
+                Self::Internal
+            }
+        }
+    }
+}
+
+/// The wire summary for a read row.
+///
+/// Public because the search handler builds the same page shape, and two mappings of one row is how a field
+/// ends up populated on one endpoint and null on the other.
+pub fn summary_of(row: &assets::Summary) -> AssetSummary {
+    AssetSummary {
+        id: row.id,
+        filename: row.filename.clone(),
+        mime: row.mime.clone(),
+        bytes: row.bytes,
+        width: row.width,
+        height: row.height,
+        tier: row.tier,
+        rights_state: row.rights_state,
+        provenance_state: row.provenance_state,
+        // See the module docs: pending the rights decision in NEEDS-REVIEW.md.
+        thumbnail_url: None,
+        tag_confidence: row.tag_confidence,
+    }
+}

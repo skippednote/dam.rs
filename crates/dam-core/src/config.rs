@@ -60,6 +60,12 @@ pub struct ServerConfig {
     pub url_signing_key: Secret<String>,
     /// Wall-clock budget for a single request, in seconds.
     pub request_timeout_secs: u64,
+    /// Origins the browser API accepts in production.
+    ///
+    /// Empty outside production, where any origin is allowed so a Vite dev server on a different port works
+    /// without configuration. In production an empty list means no cross-origin browser client can reach the
+    /// API at all — fail-closed, and loud, rather than a wildcard nobody remembers setting.
+    pub allowed_origins: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -153,6 +159,7 @@ impl Default for ServerConfig {
             port: 8080,
             url_signing_key: Secret::new(DEV_SIGNING_KEY.into()),
             request_timeout_secs: 30,
+            allowed_origins: Vec::new(),
         }
     }
 }

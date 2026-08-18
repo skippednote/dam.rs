@@ -3,10 +3,131 @@
  * Do not make direct changes to the file.
  */
 
-export type paths = Record<string, never>;
+export interface paths {
+    "/assets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A page of assets the caller may see. */
+        get: operations["list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assets/{asset_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One asset in full. */
+        get: operations["detail"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assets/{asset_id}/metadata": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Edits an asset's metadata. */
+        patch: operations["update_metadata"];
+        trace?: never;
+    };
+    "/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Ranked results for a shorthand query. */
+        get: operations["search"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/search/facets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Facet counts for the caller's visible library, narrowed by the same query the results were. */
+        get: operations["facets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+}
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description One asset in full, as the detail panel draws it. */
+        AssetDetail: components["schemas"]["AssetSummary"] & {
+            color_space?: string | null;
+            /** @description BLAKE3 of the original bytes, lowercase hex. What deduplication and integrity both key on. */
+            content_hash: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: int64 */
+            duration_ms?: number | null;
+            enrichment_state: string;
+            /** Format: date-time */
+            expires_at?: string | null;
+            has_alpha?: boolean | null;
+            /**
+             * @description Blocks tiering *and* deletion. Surfaced because a user who cannot delete an asset deserves to know
+             *     why rather than to see a failing button.
+             */
+            legal_hold: boolean;
+            /** Format: int32 */
+            page_count?: number | null;
+            /** Format: date-time */
+            release_at?: string | null;
+            status: string;
+            /**
+             * @description Probed technical facts — EXIF, codec, colour. Read-only, and shaped by the file rather than by the
+             *     tenant's schema, so it is not merged into `values`.
+             */
+            technical: unknown;
+            /** Format: date-time */
+            updated_at: string;
+            /** @description The validated metadata, keyed by field definition key. */
+            values: unknown;
+            /** Format: int32 */
+            version_no: number;
+        };
         /**
          * @description One page of results.
          *
@@ -81,6 +202,29 @@ export interface components {
          * @enum {string}
          */
         AssetTier: "hot" | "cool" | "archive" | "restoring" | "restored";
+        /** @description One facet bucket. */
+        Bucket: {
+            /** Format: int64 */
+            count: number;
+            /**
+             * Format: uuid
+             * @description A stable identifier where one exists — a taxonomy term id. Absent for a metadata value, whose identity
+             *     *is* its text.
+             */
+            id?: string | null;
+            /**
+             * @description The value as text. A number or a boolean is rendered rather than typed, because a rail displays it and
+             *     the round trip back into a query goes through the field's kind anyway.
+             */
+            value: string;
+        };
+        /** @description One facetable field and its buckets. */
+        Facet: {
+            buckets: components["schemas"]["Bucket"][];
+            key: string;
+            /** @description Whether buckets were dropped by the limit. Reported rather than left implicit — see [`FACET_BUCKETS`]. */
+            truncated: boolean;
+        };
         /**
          * @description How long a `GET` takes to become possible.
          *
@@ -89,6 +233,26 @@ export interface components {
          * @enum {string}
          */
         LatencyClass: "instant" | "seconds" | "minutes" | "hours" | "days";
+        /** @description The outcome of a metadata edit. */
+        MetadataAccepted: {
+            /**
+             * @description The stored document after the merge, so a client does not have to guess what the validator
+             *     normalised — a date reformatted or a number coerced would otherwise show up as an unexplained diff
+             *     on the next read.
+             */
+            values: unknown;
+        };
+        /** @description A metadata edit: the fields to change, keyed by definition key. */
+        MetadataPatch: {
+            /**
+             * @description A merge, not a replacement. `null` for a value clears that field; a key that is absent is left
+             *     alone. Two clients editing different fields of one asset must not overwrite each other, and a PUT of
+             *     the whole document guarantees they do.
+             */
+            values: {
+                [key: string]: unknown;
+            };
+        };
         /**
          * @description Lifecycle state of one `object_placements` row.
          *
@@ -112,6 +276,20 @@ export interface components {
          * @enum {string}
          */
         ProvenanceState: "none" | "valid" | "invalid" | "untrusted";
+        /** @description Where a query was refused, so a UI can point at the character. */
+        QueryProblem: {
+            /**
+             * @description One-based column the parser stopped at, when it has one. A filter rail underlines from here; without it
+             *     a user gets "invalid query" and no idea which word.
+             */
+            at?: number | null;
+            /**
+             * @description A stable machine-readable code, when the parser gave one. A UI maps it to a message in the user's
+             *     language, which prose cannot be.
+             */
+            code?: string | null;
+            message: string;
+        };
         /**
          * @description Where a restore has got to, matching `object_placements.restore_state`.
          * @enum {string}
@@ -128,10 +306,29 @@ export interface components {
          */
         RightsState: "allowed" | "expiring" | "denied" | "unknown";
         /**
+         * @description The orders a client may ask for.
+         *
+         *     A closed set on the wire as well as in SQL. Accepting a column name would make the ORDER BY
+         *     caller-supplied, and validating one against a list is the same list written twice.
+         * @enum {string}
+         */
+        SortOrder: "newest" | "oldest" | "filename_asc" | "filename_desc" | "largest_first";
+        /**
          * @description S3 storage classes, matching `object_placements.storage_class`.
          * @enum {string}
          */
         StorageClass: "STANDARD" | "STANDARD_IA" | "ONEZONE_IA" | "INTELLIGENT_TIERING" | "GLACIER_IR" | "GLACIER" | "DEEP_ARCHIVE";
+        /** @description Why an edit was refused, field by field. */
+        ValidationProblem: {
+            /**
+             * @description A stable machine-readable code. Stable because a client branches on it and a UI maps it to a message
+             *     in the user's language, neither of which can be done with prose.
+             */
+            code: string;
+            detail: string;
+            /** @description The payload key, or the field key for a missing required field. */
+            key: string;
+        };
     };
     responses: never;
     parameters: never;
@@ -140,4 +337,249 @@ export interface components {
     pathItems: never;
 }
 export type $defs = Record<string, never>;
-export type operations = Record<string, never>;
+export interface operations {
+    list: {
+        parameters: {
+            query?: {
+                /** @description Zero-based index of the first row wanted. A virtualised grid sends the window it is about to draw. */
+                offset?: number;
+                /** @description Rows wanted. Clamped server-side; see `dam_db::assets::MAX_LIMIT`. */
+                limit?: number;
+                order?: components["schemas"]["SortOrder"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page, with the total counted under the caller's own scope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssetPage"];
+                };
+            };
+            /** @description No usable credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authenticated, and holds no read scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    detail: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The asset */
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssetDetail"];
+                };
+            };
+            /** @description No usable credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authenticated, and holds no read scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such asset, or not one this caller may see — deliberately the same answer */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_metadata: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The asset */
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MetadataPatch"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetadataAccepted"];
+                };
+            };
+            /** @description No usable credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authenticated, and holds no manage scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such asset, or not one this caller may see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The payload failed validation */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidationProblem"][];
+                };
+            };
+        };
+    };
+    search: {
+        parameters: {
+            query?: {
+                /** @description Shorthand: `bra:acme`, quoted phrases, ranges, negation. Empty matches everything the caller may see. */
+                q?: string;
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page of ranked results */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssetPage"];
+                };
+            };
+            /** @description The query does not parse, or names a field that does not exist */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueryProblem"];
+                };
+            };
+            /** @description No usable credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authenticated, and holds no read scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A clause the index cannot answer — refused rather than dropped, because dropping it would return more than was asked for */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueryProblem"];
+                };
+            };
+        };
+    };
+    facets: {
+        parameters: {
+            query?: {
+                /** @description Shorthand: `bra:acme`, quoted phrases, ranges, negation. Empty matches everything the caller may see. */
+                q?: string;
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every facetable field with its buckets and counts */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Facet"][];
+                };
+            };
+            /** @description The query does not parse */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueryProblem"];
+                };
+            };
+            /** @description No usable credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authenticated, and holds no read scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+}

@@ -11,14 +11,23 @@
 //! - **The frontend imports the generated types.** A variant removed here becomes a TypeScript error
 //!   there, which is the only version of this gate that survives contact with a deadline.
 //!
-//! Paths are absent for now: the HTTP surface is stopped pending the authentication decisions in
-//! `NEEDS-REVIEW.md`. The wiring is what F.3 asked for, and endpoints flow through it as they land.
+//! Every endpoint is listed here explicitly rather than discovered. `utoipa` cannot see a route the router
+//! merges, so a handler annotated with `#[utoipa::path]` and left out of this list is absent from the
+//! document, absent from the generated client, and therefore unreachable from the frontend in a way that
+//! type-checks. The `openapi_contract` test is what catches it.
 
 use utoipa::OpenApi;
 
 /// The document root.
 #[derive(Debug, OpenApi)]
 #[openapi(
+    paths(
+        crate::assets::list,
+        crate::assets::detail,
+        crate::assets::update_metadata,
+        crate::search::search,
+        crate::search::facets,
+    ),
     info(
         title = "damrs API",
         description = "Digital asset management: ingest, search, rights, provenance.",
@@ -27,6 +36,14 @@ use utoipa::OpenApi;
     components(schemas(
         crate::dto::AssetSummary,
         crate::dto::AssetPage,
+        crate::assets::AssetDetail,
+        crate::assets::MetadataPatch,
+        crate::assets::MetadataAccepted,
+        crate::assets::ValidationProblem,
+        crate::assets::SortOrder,
+        crate::search::Facet,
+        crate::search::Bucket,
+        crate::search::QueryProblem,
         dam_core::AssetTier,
         dam_core::RightsState,
         dam_core::ProvenanceState,

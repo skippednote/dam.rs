@@ -8,9 +8,415 @@
     },
     "version": "0.1.0"
   },
-  "paths": {},
+  "paths": {
+    "/assets": {
+      "get": {
+        "tags": [
+          "assets"
+        ],
+        "summary": "A page of assets the caller may see.",
+        "operationId": "list",
+        "parameters": [
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Zero-based index of the first row wanted. A virtualised grid sends the window it is about to draw.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Rows wanted. Clamped server-side; see `dam_db::assets::MAX_LIMIT`.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/SortOrder"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page, with the total counted under the caller's own scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetPage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential"
+          },
+          "403": {
+            "description": "Authenticated, and holds no read scope"
+          }
+        }
+      }
+    },
+    "/assets/{asset_id}": {
+      "get": {
+        "tags": [
+          "assets"
+        ],
+        "summary": "One asset in full.",
+        "operationId": "detail",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "description": "The asset",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential"
+          },
+          "403": {
+            "description": "Authenticated, and holds no read scope"
+          },
+          "404": {
+            "description": "No such asset, or not one this caller may see — deliberately the same answer"
+          }
+        }
+      }
+    },
+    "/assets/{asset_id}/metadata": {
+      "patch": {
+        "tags": [
+          "assets"
+        ],
+        "summary": "Edits an asset's metadata.",
+        "operationId": "update_metadata",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "description": "The asset",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MetadataPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetadataAccepted"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential"
+          },
+          "403": {
+            "description": "Authenticated, and holds no manage scope"
+          },
+          "404": {
+            "description": "No such asset, or not one this caller may see"
+          },
+          "422": {
+            "description": "The payload failed validation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ValidationProblem"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/search": {
+      "get": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Ranked results for a shorthand query.",
+        "operationId": "search",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Shorthand: `bra:acme`, quoted phrases, ranges, negation. Empty matches everything the caller may see.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of ranked results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The query does not parse, or names a field that does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueryProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential"
+          },
+          "403": {
+            "description": "Authenticated, and holds no read scope"
+          },
+          "501": {
+            "description": "A clause the index cannot answer — refused rather than dropped, because dropping it would return more than was asked for",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueryProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/search/facets": {
+      "get": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Facet counts for the caller's visible library, narrowed by the same query the results were.",
+        "operationId": "facets",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Shorthand: `bra:acme`, quoted phrases, ranges, negation. Empty matches everything the caller may see.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Every facetable field with its buckets and counts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Facet"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The query does not parse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueryProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential"
+          },
+          "403": {
+            "description": "Authenticated, and holds no read scope"
+          }
+        }
+      }
+    }
+  },
   "components": {
     "schemas": {
+      "AssetDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/AssetSummary"
+          },
+          {
+            "type": "object",
+            "required": [
+              "values",
+              "technical",
+              "content_hash",
+              "status",
+              "enrichment_state",
+              "legal_hold",
+              "version_no",
+              "created_at",
+              "updated_at"
+            ],
+            "properties": {
+              "color_space": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "content_hash": {
+                "type": "string",
+                "description": "BLAKE3 of the original bytes, lowercase hex. What deduplication and integrity both key on."
+              },
+              "created_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "duration_ms": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int64"
+              },
+              "enrichment_state": {
+                "type": "string"
+              },
+              "expires_at": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "has_alpha": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "legal_hold": {
+                "type": "boolean",
+                "description": "Blocks tiering *and* deletion. Surfaced because a user who cannot delete an asset deserves to know\nwhy rather than to see a failing button."
+              },
+              "page_count": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int32"
+              },
+              "release_at": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "status": {
+                "type": "string"
+              },
+              "technical": {
+                "description": "Probed technical facts — EXIF, codec, colour. Read-only, and shaped by the file rather than by the\ntenant's schema, so it is not merged into `values`."
+              },
+              "updated_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "values": {
+                "description": "The validated metadata, keyed by field definition key."
+              },
+              "version_no": {
+                "type": "integer",
+                "format": "int32"
+              }
+            }
+          }
+        ],
+        "description": "One asset in full, as the detail panel draws it."
+      },
       "AssetPage": {
         "type": "object",
         "description": "One page of results.\n\n`total` is separate from `items.len()` and load-bearing for accessibility: a virtualised grid must\nreport the real row count in `aria-rowcount`, or a screen reader announces \"20 items\" for a library\nof a hundred thousand.",
@@ -121,6 +527,56 @@
           "restored"
         ]
       },
+      "Bucket": {
+        "type": "object",
+        "description": "One facet bucket.",
+        "required": [
+          "value",
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "A stable identifier where one exists — a taxonomy term id. Absent for a metadata value, whose identity\n*is* its text."
+          },
+          "value": {
+            "type": "string",
+            "description": "The value as text. A number or a boolean is rendered rather than typed, because a rail displays it and\nthe round trip back into a query goes through the field's kind anyway."
+          }
+        }
+      },
+      "Facet": {
+        "type": "object",
+        "description": "One facetable field and its buckets.",
+        "required": [
+          "key",
+          "buckets",
+          "truncated"
+        ],
+        "properties": {
+          "buckets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Bucket"
+            }
+          },
+          "key": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Whether buckets were dropped by the limit. Reported rather than left implicit — see [`FACET_BUCKETS`]."
+          }
+        }
+      },
       "LatencyClass": {
         "type": "string",
         "description": "How long a `GET` takes to become possible.\n\nThe download path and the UI branch on **this**, not on the provider name. That is\nwhat lets Azure Archive or LTO tape slot in later without special-casing (§6.1).",
@@ -131,6 +587,35 @@
           "hours",
           "days"
         ]
+      },
+      "MetadataAccepted": {
+        "type": "object",
+        "description": "The outcome of a metadata edit.",
+        "required": [
+          "values"
+        ],
+        "properties": {
+          "values": {
+            "description": "The stored document after the merge, so a client does not have to guess what the validator\nnormalised — a date reformatted or a number coerced would otherwise show up as an unexplained diff\non the next read."
+          }
+        }
+      },
+      "MetadataPatch": {
+        "type": "object",
+        "description": "A metadata edit: the fields to change, keyed by definition key.",
+        "required": [
+          "values"
+        ],
+        "properties": {
+          "values": {
+            "type": "object",
+            "description": "A merge, not a replacement. `null` for a value clears that field; a key that is absent is left\nalone. Two clients editing different fields of one asset must not overwrite each other, and a PUT of\nthe whole document guarantees they do.",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
       },
       "PlacementState": {
         "type": "string",
@@ -153,6 +638,33 @@
           "invalid",
           "untrusted"
         ]
+      },
+      "QueryProblem": {
+        "type": "object",
+        "description": "Where a query was refused, so a UI can point at the character.",
+        "required": [
+          "message"
+        ],
+        "properties": {
+          "at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "One-based column the parser stopped at, when it has one. A filter rail underlines from here; without it\na user gets \"invalid query\" and no idea which word.",
+            "minimum": 0
+          },
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A stable machine-readable code, when the parser gave one. A UI maps it to a message in the user's\nlanguage, which prose cannot be."
+          },
+          "message": {
+            "type": "string"
+          }
+        }
       },
       "RestoreState": {
         "type": "string",
@@ -184,6 +696,17 @@
           "unknown"
         ]
       },
+      "SortOrder": {
+        "type": "string",
+        "description": "The orders a client may ask for.\n\nA closed set on the wire as well as in SQL. Accepting a column name would make the ORDER BY\ncaller-supplied, and validating one against a list is the same list written twice.",
+        "enum": [
+          "newest",
+          "oldest",
+          "filename_asc",
+          "filename_desc",
+          "largest_first"
+        ]
+      },
       "StorageClass": {
         "type": "string",
         "description": "S3 storage classes, matching `object_placements.storage_class`.",
@@ -196,6 +719,28 @@
           "GLACIER",
           "DEEP_ARCHIVE"
         ]
+      },
+      "ValidationProblem": {
+        "type": "object",
+        "description": "Why an edit was refused, field by field.",
+        "required": [
+          "key",
+          "code",
+          "detail"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "A stable machine-readable code. Stable because a client branches on it and a UI maps it to a message\nin the user's language, neither of which can be done with prose."
+          },
+          "detail": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string",
+            "description": "The payload key, or the field key for a missing required field."
+          }
+        }
       }
     }
   }

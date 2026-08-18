@@ -1,3 +1,68 @@
+# Open — the UI's thumbnails need a rights decision, 2026-08-18 (API surface)
+
+**Every asset in a fresh library has `rights_state = 'unknown'`, and `unknown` denies. So if the grid's
+thumbnails go through the delivery chokepoint unchanged, a new tenant sees no thumbnails at all.**
+
+This is not a bug in any layer — each piece is behaving as decided:
+
+- D12: rights are enforced at the point of distribution, which is the signed-URL chokepoint.
+  `delivery::issue` and `deliver` both call `rights::effective` and refuse anything that is not
+  `allowed` or `expiring`.
+- 2.8, on your recommendation: **unknown is not a soft yes**. An asset with no licence attached is
+  `Unknown`, because the cost of guessing wrong is a rights claim made on a customer's behalf.
+- An asset with no licence is the *normal* state of a freshly uploaded asset, and of an entire
+  migrated archive on day one.
+
+Put together: a thumbnail is a render of a derivative, a render passes the chokepoint, the chokepoint
+asks about rights, and rights say unknown. A correct DAM UI is unusable.
+
+ARCHITECTURE is close to settling this and does not quite. §2's tier table says a Deep Archive asset
+"is a first-class search result **with a working thumbnail**; it just cannot hand over the 400 MB
+original without notice" — that is the *tiering* answer, and the distinction it draws (proxy yes,
+original with notice) is exactly the shape of the answer I think this needs. But it is about storage
+class, not about rights, and I am not reading a rights conclusion out of a storage sentence.
+
+**What I would do** (needs your yes, because it is rights enforcement):
+
+1. **The signed claim gains a purpose,** signed into the token alongside the transform and channel, so
+   a caller cannot flip it: `distribution` (today's behaviour, rights-checked at issue *and* at
+   delivery) or `internal_preview`.
+2. **`internal_preview` is restricted structurally, not by trust.** It may only name a proxy-class
+   transform — `thumb_256`, `preview_1024`, the master proxy — never the original and never a
+   tenant-defined render profile. `profiles.rs` already separates these, so the check is a match on a
+   known profile rather than a string comparison.
+3. **`internal_preview` requires an identity in the claim** and a live `asset:read` grant, and it is
+   refused for a share link. A share is distribution by definition: an external recipient looking at a
+   thumbnail of an unlicensed asset is the exact exposure the rights model exists to prevent.
+4. **Everything else stays as it is.** Downloading an original, rendering for a channel, and every
+   share-link delivery keep the full rights check. The chokepoint is still the only path; it just knows
+   what it is being asked for.
+
+The argument for it is already in this repo, made for a different gate: 2.8 records that the AI gates
+are answered **independently of the distribution verdict**, "since a territorial restriction says
+nothing about internal cataloguing". A thumbnail in the DAM's own grid, shown to a member of the tenant
+who holds `asset:read`, is internal cataloguing by the same reasoning. What I am asking you to confirm
+is that the reasoning transfers — because if it does not, the answer is that a DAM must not display an
+asset it has no licence for even to its own librarians, and the product then requires a licence before
+an upload is visible. That is a defensible position; it is just a very different product, and it is not
+mine to choose.
+
+**What is blocked, precisely.** `AssetSummary.thumbnail_url` is `None` for every asset until this is
+answered — a shape the field already documents ("absent while a newly-uploaded asset is still being
+processed"), so the grid renders its placeholder rather than breaking. Everything else in the API
+surface and the UI proceeds: list, detail, search, facets, metadata editing, upload, collections. You
+will be able to drive the whole UI; the cells will be placeholders.
+
+**Cost of the wrong guess.** Choosing `internal_preview` when you wanted strict enforcement means
+thumbnails of unlicensed assets were shown internally for however long it takes to notice — visible
+only to tenant members with a read grant, and not distributable, but still a display we were not
+authorised to make. Choosing strict enforcement when you wanted previews means the product looks broken
+on day one for every customer, which is the failure that gets discovered by a prospect rather than by
+us. Neither is recoverable by a refactor; both are one config flag apart if the purpose is in the claim
+from the start, which is why point 1 is worth doing whichever way you answer.
+
+---
+
 # Open — one access-control question, 2026-08-18 (2.4)
 
 **Rule-based asset groups are still refused, and I am not wiring them without your view.**

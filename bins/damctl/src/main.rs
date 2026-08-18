@@ -37,6 +37,30 @@ enum Command {
     /// Print the resolved configuration. Secrets stay redacted.
     Config,
 
+    /// Issue an API key for a tenant, printing the plaintext exactly once.
+    ///
+    /// The plaintext is never stored — only a hash — so it cannot be recovered afterwards. That is
+    /// deliberate: a key an operator can read back out of the database is a key a database backup
+    /// hands over.
+    IssueKey {
+        #[arg(long)]
+        tenant: String,
+        /// The person the key acts as. Created if absent, because a key with no identity behind it has
+        /// no membership and therefore no grants at all — fail-closed, and confusing if unexplained.
+        #[arg(long)]
+        email: String,
+        /// A label, so a key can be recognised in an audit later.
+        #[arg(long, default_value = "damctl")]
+        name: String,
+        /// Restrict the key to these permission strings. Empty means unscoped, which is *not* the same as
+        /// unlimited: the identity's roles still bound it.
+        #[arg(long, value_delimiter = ',')]
+        scope: Vec<String>,
+        /// Make the identity a tenant administrator.
+        #[arg(long)]
+        admin: bool,
+    },
+
     /// Rebuild a tenant's search index from Postgres.
     ///
     /// Postgres is the record and the index is derived, so this is the command that regenerates the
@@ -179,6 +203,83 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 print!("{json}");
             }
+        }
+
+        Command::IssueKey {
+            tenant,
+            email,
+            name,
+            scope,
+            admin,
+        } => {
+            let slug = TenantSlug::new(&tenant).context("tenant slug")?;
+            let url = cfg.database.url.expose();
+            let pool = connect(url, &cfg).await?;
+
+            let tenant_id: uuid::Uuid =
+                sqlx::query_scalar("SELECT id FROM dam_global.tenants WHERE slug = $1")
+                    .bind(slug.as_str())
+                    .fetch_optional(&pool)
+                    .await
+                    .context("looking up the tenant")?
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "no tenant {slug}; run `damctl provision-tenant --slug {slug}` first"
+                        )
+                    })?;
+
+            // Idempotent on the email, so re-running does not create a second identity for one person —
+            // which would leave their roles on the first and their key on the second. The unique index is on
+            // the *generated* `email_lower` column, so that is what `ON CONFLICT` has to name: addresses are
+            // case-insensitive in practice and "Dev@" and "dev@" are one person.
+            let identity_id: uuid::Uuid = sqlx::query_scalar(
+                "INSERT INTO dam_global.identities (id, email, display_name) \
+                 VALUES (gen_random_uuid(), $1, $1) \
+                 ON CONFLICT (email_lower) DO UPDATE SET updated_at = now() RETURNING id",
+            )
+            .bind(&email)
+            .fetch_one(&pool)
+            .await
+            .context("creating the identity")?;
+
+            sqlx::query(
+                "INSERT INTO dam_global.tenant_members (tenant_id, identity_id, role_names, is_tenant_admin) \
+                 VALUES ($1, $2, '{}', $3) \
+                 ON CONFLICT (tenant_id, identity_id) DO UPDATE SET is_tenant_admin = excluded.is_tenant_admin",
+            )
+            .bind(tenant_id)
+            .bind(identity_id)
+            .bind(admin)
+            .execute(&pool)
+            .await
+            .context("recording the membership")?;
+
+            let key = dam_db::auth::ApiKey::generate();
+            sqlx::query(
+                "INSERT INTO dam_global.api_keys \
+                 (id, tenant_id, identity_id, name, key_prefix, key_hash, scopes) \
+                 VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)",
+            )
+            .bind(tenant_id)
+            .bind(identity_id)
+            .bind(&name)
+            .bind(key.prefix())
+            .bind(key.hash())
+            .bind(&scope)
+            .execute(&pool)
+            .await
+            .context("storing the key")?;
+
+            // The prefix goes to the log; the secret goes to stdout and nowhere else. A key in a log file is a
+            // key in every log aggregator it was shipped to.
+            tracing::info!(
+                tenant = %slug,
+                identity = %identity_id,
+                prefix = key.prefix(),
+                admin,
+                "api key issued"
+            );
+            println!("{}", key.into_plaintext());
         }
 
         Command::Reindex { tenant, batch } => {

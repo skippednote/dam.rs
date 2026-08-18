@@ -22,6 +22,7 @@ figment = { workspace = true }
 clap = { workspace = true }
 sqlx = { workspace = true }
 chrono = { workspace = true }
+uuid = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"

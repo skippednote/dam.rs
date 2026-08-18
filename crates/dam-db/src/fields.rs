@@ -126,6 +126,37 @@ where
     }
 }
 
+/// The same validation, on a connection rather than a pool.
+///
+/// [`validate`] requires `E: Copy` because it uses the executor twice, and `&mut PgConnection` is not `Copy`
+/// — so a handler working inside a [`crate::TenantConn`] cannot call it. That handler is exactly the one that
+/// must: reading the asset, validating, and writing have to be one transaction, or a concurrent edit lands
+/// between them and the loser's merge is computed against a document that no longer exists, silently
+/// reverting the winner rather than conflicting with it.
+///
+/// The two functions do the same three steps in the same order. That duplication is deliberate — the
+/// alternative is a generic over "executor or connection" that both callers have to satisfy, which is more
+/// machinery than six lines of body is worth.
+pub async fn validate_on(
+    conn: &mut sqlx::PgConnection,
+    payload: &Map<String, Value>,
+    mode: Mode,
+    writer: Writer,
+) -> Result<Accepted, ValidationOutcome> {
+    let defs = load(&mut *conn).await.map_err(ValidationOutcome::Failed)?;
+    let accepted = dam_core::fields::validate(&defs, payload, mode, writer)
+        .map_err(ValidationOutcome::Rejected)?;
+
+    let rejections = check_taxonomy_refs(&mut *conn, &accepted.taxonomy_refs)
+        .await
+        .map_err(ValidationOutcome::Failed)?;
+    if rejections.is_empty() {
+        Ok(accepted)
+    } else {
+        Err(ValidationOutcome::Rejected(rejections))
+    }
+}
+
 /// Either the payload was refused, or the check itself could not be completed.
 ///
 /// Separate variants because they are different answers to the caller: a rejection is a `400` naming

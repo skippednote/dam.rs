@@ -89,14 +89,31 @@ pub async fn count(
     defs: &[FieldDef],
     requests: &[FacetRequest],
 ) -> Result<Vec<Facet>, Error> {
+    let mut conn = pool.acquire().await?;
+    count_on(&mut conn, planned, defs, requests).await
+}
+
+/// The same counting, on a connection.
+///
+/// A request handler holds a [`crate::TenantConn`], whose `search_path` is transaction-scoped — so the
+/// counts have to run on *that* connection or they resolve against the wrong schema. Taking a pool here
+/// would mean a second, differently-scoped connection, and the failure mode is not an error: unqualified
+/// table names would resolve to whatever the pooled connection last had, which in a schema-per-tenant system
+/// is a cross-tenant read with nothing attached to it.
+pub async fn count_on(
+    conn: &mut sqlx::PgConnection,
+    planned: &Planned,
+    defs: &[FieldDef],
+    requests: &[FacetRequest],
+) -> Result<Vec<Facet>, Error> {
     let mut facets = Vec::with_capacity(requests.len());
     for request in requests {
         facets.push(match request {
             FacetRequest::Field { key, limit } => {
-                count_field(pool, planned, defs, key, *limit).await?
+                count_field(&mut *conn, planned, defs, key, *limit).await?
             }
             FacetRequest::Taxonomy { taxonomy_id, limit } => {
-                count_taxonomy(pool, planned, *taxonomy_id, *limit).await?
+                count_taxonomy(&mut *conn, planned, *taxonomy_id, *limit).await?
             }
         });
     }
@@ -104,7 +121,7 @@ pub async fn count(
 }
 
 async fn count_field(
-    pool: &PgPool,
+    conn: &mut sqlx::PgConnection,
     planned: &Planned,
     defs: &[FieldDef],
     key: &str,
@@ -165,12 +182,12 @@ async fn count_field(
     );
     builder.push_bind(effective + 1);
 
-    let rows: Vec<(String, i64)> = builder.build_query_as().fetch_all(pool).await?;
+    let rows: Vec<(String, i64)> = builder.build_query_as().fetch_all(&mut *conn).await?;
     Ok(finish(key.to_owned(), rows, effective, None))
 }
 
 async fn count_taxonomy(
-    pool: &PgPool,
+    conn: &mut sqlx::PgConnection,
     planned: &Planned,
     taxonomy_id: Uuid,
     limit: i64,
@@ -198,7 +215,7 @@ async fn count_taxonomy(
     builder.push(" GROUP BY ancestor.id, ancestor.label ORDER BY n DESC, ancestor.label LIMIT ");
     builder.push_bind(effective + 1);
 
-    let rows: Vec<(String, String, i64)> = builder.build_query_as().fetch_all(pool).await?;
+    let rows: Vec<(String, String, i64)> = builder.build_query_as().fetch_all(&mut *conn).await?;
     let with_ids: Vec<(String, i64)> = rows
         .iter()
         .map(|(_, label, n)| (label.clone(), *n))
