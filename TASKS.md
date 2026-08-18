@@ -937,8 +937,31 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   `mdat`), which a parse-check cannot see and which is the commonest reason a valid MP4 "does not play"; and
   HLS segments are read from the **playlist**, not a directory glob, since a glob sorts lexically and stops
   working past 99,999 segments.
-- [ ] **3.6 Notifications and Paths (G9).** `paths`, `path_firings`, and delivery that is idempotent
+- [x] **3.6 Notifications and Paths (G9).** `paths`, `path_firings`, and delivery that is idempotent
   under retry.
+  *Done:* `dam_db::paths` — 13 cases + 8 unit.
+  *The digest key **is** the deduplication,* since `path_firings_dedupe_idx` is `UNIQUE (path_id, digest_key)`.
+  A daily "expiring in 30 days" sweep sees the same asset thirty times: keyed on the **deadline** it warns
+  once, keyed on when the sweep ran it warns thirty times — after which the recipient filters the path to
+  trash and misses the real one. The inverse matters too: a **renewed** licence gets a fresh warning, or
+  renewing once silences an asset forever.
+  *A test that passed for a timing reason.* The thirty-sweeps case cannot catch a sweep-time-keyed mutation —
+  thirty iterations finish inside one wall-clock second, so `Utc::now()` deduplicates by accident. Replaced
+  with a case demonstrating the realistic **call-site** mistake (reaching for `Subject::Recurring { bucket: now }`,
+  which is the natural thing to write) and contrasting five notifications against one.
+  *A test that was simply wrong.* I asserted four sweeps six hours apart share a daily bucket. They do not:
+  buckets truncate **from the epoch**, so a one-day window has midnight boundaries and noon + 18 h is the next
+  day. The code was right. Epoch truncation is what lets two workers agree on a bucket without coordinating,
+  so the boundaries are not negotiable.
+  *A throttled firing leaves **no** ledger row* — a suppressed row would claim the digest key and turn a rate
+  limit into permanent silence. Throttling is per **asset**, not per path: a bulk import touches many assets,
+  and a global throttle would notify about the first and silently drop the rest.
+  *On "idempotent under retry", stated honestly:* there is no local-only way to get it. A worker that sends and
+  then crashes before recording `sent` leaves a queued row — retry may duplicate, not retrying may lose.
+  Insert-then-send is at-least-once; send-then-insert is at-most-once. For a notification, at-least-once is the
+  right side to fail on, so the firing is recorded first and the digest key is handed to the provider as **its**
+  idempotency key, which is where the duplicate actually collapses. The module docs say so rather than claiming
+  the ledger alone suffices.
 - [ ] **3.7 Saved searches (G15).** Stored query IR, re-evaluated against current access rather than the
   access at save time.
 

@@ -14,6 +14,7 @@ pub mod facets;
 pub mod fields;
 pub mod jobs;
 pub mod migrate;
+pub mod paths;
 pub mod provenance;
 pub mod provision;
 pub mod query_sql;
