@@ -32,6 +32,8 @@ async-trait = { workspace = true }
 # testcontainers landing in a production build.
 testcontainers = { workspace = true, optional = true }
 
+argon2 = { workspace = true }
+
 [features]
 testing = ["dep:testcontainers"]
 

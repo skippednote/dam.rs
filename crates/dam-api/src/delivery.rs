@@ -189,6 +189,39 @@ pub async fn issue(
     ttl: ChronoDuration,
     now: DateTime<Utc>,
 ) -> Result<String, Refusal> {
+    issue_for_share(
+        state,
+        asset_id,
+        transform,
+        usage,
+        identity_id,
+        None,
+        ttl,
+        now,
+    )
+    .await
+}
+
+/// Mints a delivery URL on behalf of a share link.
+///
+/// The share's id goes **into the signature**, and delivery re-checks the share on every use. That is what
+/// makes revoking a share take effect on the URLs it has already issued — without it, revocation would leave
+/// every outstanding delivery token working for its own TTL, and "revoke" would mean "revoke, eventually".
+#[expect(
+    clippy::too_many_arguments,
+    reason = "every one of these is signed into the token; a struct would hide that and invite a caller to \
+              build a claim with a field left at its default"
+)]
+pub async fn issue_for_share(
+    state: &DeliveryState,
+    asset_id: Uuid,
+    transform: &str,
+    usage: &Usage,
+    identity_id: Option<Uuid>,
+    share_link_id: Option<Uuid>,
+    ttl: ChronoDuration,
+    now: DateTime<Utc>,
+) -> Result<String, Refusal> {
     let verdict = rights::effective(&state.global, asset_id, usage, now).await?;
     if !permits(verdict) {
         let codes = reason_codes(&state.global, asset_id, usage, now).await;
@@ -207,6 +240,7 @@ pub async fn issue(
         channel: usage.channel.clone(),
         territory: usage.territory.clone(),
         identity_id,
+        share_link_id,
         expires_at: now + ttl,
         // Replaced by the keyring; see `signed_url::sign`.
         key_id: String::new(),
@@ -227,6 +261,16 @@ async fn deliver(
         tracing::debug!(?reason, "delivery token rejected");
         Refusal::NotDeliverable
     })?;
+
+    // Re-checked before anything else about the asset. A revoked share must stop working immediately, and it
+    // must stop working *for the same reason* whether the URL was minted a second or a day ago.
+    if let Some(share_id) = claim.share_link_id
+        && !dam_db::shares::is_live(&state.global, share_id, now).await?
+    {
+        // The same flat 404 an unsigned token gets. A revoked share is no longer a thing this URL names, and
+        // saying "revoked" here would confirm the asset exists to whoever now holds the link.
+        return Err(Refusal::NotDeliverable);
+    }
 
     let usage = Usage {
         channel: claim.channel.clone(),

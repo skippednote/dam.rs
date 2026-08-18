@@ -39,7 +39,13 @@ use uuid::Uuid;
 ///
 /// So a format change is a verification failure rather than a misparse. Without it, adding a field later
 /// would make old tokens decode into new ones with a shifted meaning.
-pub const VERSION: u8 = 1;
+///
+/// Bumped to 2 by 3.3, which added `share_link_id`. A v1 token has one fewer field, so under v1's layout its
+/// `expires_at` bytes would be read as the share link id and its key id as the expiry — exactly the shifted
+/// meaning this constant exists to prevent. Outstanding v1 tokens stop verifying, which is correct: they were
+/// issued for at most 24 hours (`delivery::MAX_TOKEN_TTL`), and the alternative is supporting two layouts so
+/// that a URL from yesterday can bypass a check added today.
+pub const VERSION: u8 = 2;
 
 /// What a signed URL asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +67,12 @@ pub struct DeliveryClaim {
     pub identity_id: Option<Uuid>,
     /// When the token stops being accepted.
     pub expires_at: DateTime<Utc>,
+    /// The share link this URL was issued through, when it was.
+    ///
+    /// Signed and re-checked at delivery, which is what makes revoking a share take effect on URLs it has
+    /// **already issued**. Without it, revoking a share would leave every outstanding delivery token working
+    /// for its own TTL — and "revoke" would mean "revoke, eventually".
+    pub share_link_id: Option<Uuid>,
     /// Which signing key was used, so a key can be rotated without invalidating every outstanding URL.
     pub key_id: String,
 }
@@ -210,6 +222,10 @@ fn canonical(claim: &DeliveryClaim) -> Vec<u8> {
         // collide — an omitted field would shorten the encoding and change what the next length means.
         None => push_field(&mut out, &[]),
     }
+    match claim.share_link_id {
+        Some(id) => push_field(&mut out, id.as_bytes()),
+        None => push_field(&mut out, &[]),
+    }
     push_field(&mut out, &claim.expires_at.timestamp().to_be_bytes());
     push_field(&mut out, claim.key_id.as_bytes());
     out
@@ -234,12 +250,8 @@ fn parse(payload: &[u8]) -> Result<DeliveryClaim, VerifyError> {
     let transform = take_string(&mut cursor)?;
     let channel = take_string(&mut cursor)?;
     let territory = take_string(&mut cursor)?;
-    let identity_raw = take_field(&mut cursor)?;
-    let identity_id = if identity_raw.is_empty() {
-        None
-    } else {
-        Some(Uuid::from_slice(identity_raw).map_err(|_| VerifyError::Malformed)?)
-    };
+    let identity_id = take_optional_uuid(&mut cursor)?;
+    let share_link_id = take_optional_uuid(&mut cursor)?;
     let expiry_raw = take_field(&mut cursor)?;
     let seconds = i64::from_be_bytes(expiry_raw.try_into().map_err(|_| VerifyError::Malformed)?);
     let expires_at = DateTime::from_timestamp(seconds, 0).ok_or(VerifyError::Malformed)?;
@@ -258,9 +270,21 @@ fn parse(payload: &[u8]) -> Result<DeliveryClaim, VerifyError> {
         channel,
         territory,
         identity_id,
+        share_link_id,
         expires_at,
         key_id,
     })
+}
+
+/// A UUID field that may be a zero-length placeholder for `None`.
+fn take_optional_uuid(cursor: &mut &[u8]) -> Result<Option<Uuid>, VerifyError> {
+    let raw = take_field(cursor)?;
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    Uuid::from_slice(raw)
+        .map(Some)
+        .map_err(|_| VerifyError::Malformed)
 }
 
 fn take_byte(cursor: &mut &[u8]) -> Result<u8, VerifyError> {

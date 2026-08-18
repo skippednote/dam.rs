@@ -545,6 +545,134 @@ async fn the_channel_in_the_token_selects_which_licence_terms_apply(f: &Fixture)
     assert_eq_forbidden(&get(&f.app, &forged_channel).await);
 }
 
+// ─── share links ────────────────────────────────────────────────────────────
+
+async fn revoking_a_share_stops_a_url_it_already_issued(f: &Fixture) {
+    // The requirement TASKS.md names for 3.3, and the reason the share id is inside the signature.
+    //
+    // Resolving the share token per request makes revoking the *share page* immediate. But a share mints
+    // delivery URLs, and one of those is valid for its own TTL — so without re-checking, revoking a share
+    // would leave every outstanding download URL working for up to a day. "Revoke" would mean "revoke,
+    // eventually", which is not what anybody means when they revoke a link they sent to the wrong client.
+    let id = asset_with_bytes(f, "shared").await;
+    licence(f, id, None).await;
+
+    let share = dam_db::shares::create(
+        &f.pool,
+        &dam_db::shares::ShareSpec {
+            kind: "asset",
+            target_id: Some(id),
+            search_query: None,
+            passcode: None,
+            expires_at: None,
+            max_downloads: None,
+            allow_original: false,
+            requires_eula: false,
+            created_by: None,
+        },
+    )
+    .await
+    .expect("create a share");
+
+    let token = delivery::issue_for_share(
+        &f.state,
+        id,
+        "web-2048",
+        &web(),
+        None,
+        Some(share.id),
+        // Deliberately long-lived, which is exactly the case revocation has to reach.
+        Duration::hours(20),
+        now(),
+    )
+    .await
+    .expect("issue");
+
+    assert_eq!(
+        get(&f.app, &token).await.status(),
+        StatusCode::FOUND,
+        "the URL works while the share is live"
+    );
+
+    dam_db::shares::revoke(&f.pool, share.id, now())
+        .await
+        .expect("revoke");
+
+    assert_eq!(
+        get(&f.app, &token).await.status(),
+        StatusCode::NOT_FOUND,
+        "the same URL, unchanged, must stop working the moment the share is revoked"
+    );
+}
+
+async fn an_exhausted_share_stops_its_issued_urls_too(f: &Fixture) {
+    // Same mechanism, different reason. A share with a download limit that has been spent is no longer live,
+    // so URLs it issued stop — otherwise the limit bounds how many times the *share page* is opened rather
+    // than how many times the asset leaves.
+    let id = asset_with_bytes(f, "share-limited").await;
+    licence(f, id, None).await;
+
+    let share = dam_db::shares::create(
+        &f.pool,
+        &dam_db::shares::ShareSpec {
+            kind: "asset",
+            target_id: Some(id),
+            search_query: None,
+            passcode: None,
+            expires_at: None,
+            max_downloads: Some(1),
+            allow_original: false,
+            requires_eula: false,
+            created_by: None,
+        },
+    )
+    .await
+    .expect("create a share");
+
+    let token = delivery::issue_for_share(
+        &f.state,
+        id,
+        "web-2048",
+        &web(),
+        None,
+        Some(share.id),
+        Duration::hours(20),
+        now(),
+    )
+    .await
+    .expect("issue");
+    assert_eq!(get(&f.app, &token).await.status(), StatusCode::FOUND);
+
+    dam_db::shares::consume_download(&f.pool, share.id, now())
+        .await
+        .expect("spend the one download");
+
+    assert_eq!(
+        get(&f.app, &token).await.status(),
+        StatusCode::NOT_FOUND,
+        "a spent limit must stop the URL, not just the share page"
+    );
+}
+
+async fn a_url_with_no_share_is_unaffected_by_share_state(f: &Fixture) {
+    // The share check must be scoped to tokens that carry one. A URL issued to a logged-in user has no share
+    // link, and must not be refused because some unrelated share was revoked.
+    let id = asset_with_bytes(f, "no-share").await;
+    licence(f, id, None).await;
+    let token = delivery::issue(
+        &f.state,
+        id,
+        "web-2048",
+        &web(),
+        None,
+        Duration::hours(1),
+        now(),
+    )
+    .await
+    .expect("issue");
+    assert_eq!(get(&f.app, &token).await.status(), StatusCode::FOUND);
+}
+
 // ─── tokens that should get nowhere ─────────────────────────────────────────
 
 async fn an_expiring_licence_still_delivers(f: &Fixture) {
@@ -703,6 +831,7 @@ fn mint_directly(
             channel: usage.channel.clone(),
             territory: usage.territory.clone(),
             identity_id: None,
+            share_link_id: None,
             expires_at,
             key_id: String::new(),
         },
@@ -736,6 +865,9 @@ async fn the_delivery_chokepoint_holds() {
     a_legal_hold_stops_delivery_of_an_already_issued_url(&f).await;
 
     an_expiring_licence_still_delivers(&f).await;
+    revoking_a_share_stops_a_url_it_already_issued(&f).await;
+    an_exhausted_share_stops_its_issued_urls_too(&f).await;
+    a_url_with_no_share_is_unaffected_by_share_state(&f).await;
     a_tampered_or_unsigned_token_is_a_flat_404(&f).await;
     an_expired_token_is_refused_even_though_the_rights_are_fine(&f).await;
     a_deleted_asset_is_not_deliverable(&f).await;

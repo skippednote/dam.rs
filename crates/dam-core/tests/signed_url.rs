@@ -33,6 +33,7 @@ fn claim() -> DeliveryClaim {
         channel: "web".to_owned(),
         territory: "GB".to_owned(),
         identity_id: Some(Uuid::from_u128(0x1de)),
+        share_link_id: None,
         expires_at: now() + Duration::minutes(15),
         key_id: "k1".to_owned(),
     }
@@ -137,6 +138,13 @@ fn every_field_is_covered_by_the_signature() {
             "no identity",
             DeliveryClaim {
                 identity_id: None,
+                ..claim()
+            },
+        ),
+        (
+            "share link",
+            DeliveryClaim {
+                share_link_id: Some(Uuid::from_u128(0x5a1e)),
                 ..claim()
             },
         ),
@@ -268,8 +276,10 @@ fn a_length_prefix_longer_than_the_payload_is_refused_rather_than_panicking() {
     // delivery endpoint is a denial of service reachable by anyone who can construct a URL.
     use base64::Engine as _;
     let encoder = base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    // Version byte, then a field claiming 4 GB.
-    let payload = [1u8, 0xff, 0xff, 0xff, 0xff];
+    // The *current* version byte, then a field claiming 4 GB. Written as the constant rather than a literal
+    // so a future format bump does not silently turn this into a version test — which is what happened when
+    // 3.3 moved it to 2.
+    let payload = [signed_url::VERSION, 0xff, 0xff, 0xff, 0xff];
     let token = format!("{}.{}", encoder.encode(payload), encoder.encode([0u8; 32]));
     assert_eq!(
         signed_url::verify(&keyring(), &token, now()),

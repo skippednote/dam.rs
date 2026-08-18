@@ -861,8 +861,31 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   *Rejected:* S3 Object Lambda / Lambda@Edge image resizing. It would replace the derivative pipeline and
   lose libvips (RAW/PSD), ICC control (D11) and C2PA preservation (D13) — differentiators, not overhead.
 
-- [ ] **3.3 Share links.** Passcode, expiry, download limits, revocation — and revocation that takes
+- [x] **3.3 Share links.** Passcode, expiry, download limits, revocation — and revocation that takes
   effect on an already-issued URL.
+  *Done:* `dam_db::shares` (14 cases) + 3 delivery cases for the end-to-end property.
+  *The named requirement is real, not aspirational.* Resolving the share token per request makes revoking the
+  *share page* immediate — but a share mints delivery URLs valid for their own TTL, so without more, revoking
+  would leave every outstanding download URL working for up to a day. The share's id is therefore **inside
+  the signature** and delivery re-checks it, the same shape as D12's rights check. Mutation-verified: bypass
+  the re-check and a revoked share's URL still returns 302. A spent download limit stops issued URLs by the
+  same mechanism — otherwise the limit bounds how often the share *page* is opened, not how often the asset
+  leaves.
+  *Two secrets, two hashes, opposite reasons — and the asymmetry is the point.* The token is 256 CSPRNG bits:
+  no dictionary, so BLAKE3, and argon2 would add ~100 ms to every share view for nothing. The passcode is
+  human-chosen: `spring2026` **is** in a dictionary, so argon2id and salted, since BLAKE3 would make an
+  offline attack on a leaked digest instant. Salting is tested too — two shares with the same passcode must
+  not share a digest, or cracking one cracks them all.
+  *The download-limit race is closed in one statement.* Read-compare-increment lets two concurrent requests
+  both take the last slot; under that mutation eight concurrent downloads against `max_downloads = 1` grant
+  **two**, and the asset leaves twice from a link that said once.
+  *Refusals are distinguished* — revoked / expired / exhausted / passcode-required / passcode-wrong — which is
+  a deliberate disclosure: the token is 256 random bits so nobody can enumerate one, and the recipient is the
+  person who needs to know whether to ask for a new link or re-read the email. Revocation is checked *first*,
+  being the most absolute reason.
+  *Token format bumped to v2*, since the payload gained a field. Outstanding v1 tokens stop verifying, which
+  is correct — they were issued for at most 24 h, and the alternative is supporting two layouts so a URL from
+  yesterday can bypass a check added today.
 - [ ] **3.4 Restore flow (§6.5).** `202` with an ETA and a cost estimate, batching sibling requests, and
   the expiry sweep. ffmpeg is mise-installable, so video lands here.
 - [ ] **3.5 Video and HLS.** ffmpeg in the subprocess sandbox, loudness normalisation, the 720p H.264

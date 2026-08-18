@@ -1926,6 +1926,7 @@ dependencies = [
 name = "dam-db"
 version = "0.1.0"
 dependencies = [
+ "argon2",
  "async-trait",
  "blake3",
  "bytes",
