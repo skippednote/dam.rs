@@ -18,6 +18,9 @@ const TIERS = ['hot', 'cool', 'archive', 'restoring', 'restored'] as const;
 const RIGHTS = ['allowed', 'expiring', 'denied', 'unknown'] as const;
 const PROVENANCE = ['valid', 'none', 'invalid', 'untrusted'] as const;
 
+/** A 1x1 WebP, so an `<img>` in the grid has real bytes to decode. */
+const WEBP_1PX = 'UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA==';
+
 function summary(index: number) {
 	return {
 		id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
@@ -29,7 +32,16 @@ function summary(index: number) {
 		tier: TIERS[index % TIERS.length],
 		rights_state: RIGHTS[index % RIGHTS.length],
 		provenance_state: PROVENANCE[index % PROVENANCE.length],
-		thumbnail_url: null,
+		// Two shapes, because the server emits both: absolute when `server.public_url` is configured, and
+		// root-relative otherwise — and a root-relative URL resolved against the *frontend's* origin is the bug
+		// this covers. Index 2 onwards has none at all, which is the normal state between an upload finishing
+		// and the worker deriving it.
+		thumbnail_url:
+			index === 0
+				? 'http://127.0.0.1:8099/d/absolute-token'
+				: index === 1
+					? '/d/relative-token'
+					: null,
 		tag_confidence: index % 3 === 0 ? null : 0.55 + (index % 40) / 100
 	};
 }
@@ -197,6 +209,12 @@ async function connect(page: Page): Promise<Recorder> {
 					created_at: '2026-08-01T09:00:00Z',
 					updated_at: '2026-08-01T09:00:00Z'
 				}
+			});
+		}
+		if (path.pathname.startsWith('/d/')) {
+			return route.fulfill({
+				contentType: 'image/webp',
+				body: Buffer.from(WEBP_1PX, 'base64')
 			});
 		}
 		if (path.pathname === '/health') {
@@ -479,4 +497,65 @@ test('a multivalued field says how to separate values, and the hint is announced
 	const describedBy = await colours.getAttribute('aria-describedby');
 	expect(describedBy).toBeTruthy();
 	await expect(page.locator(`#${describedBy}`)).toHaveText('Separate values with commas.');
+});
+
+test('an asset with a thumbnail renders it, and one without says it is processing', async ({
+	page
+}) => {
+	// The chain's visible end. Between an upload finishing and the worker deriving it there is no thumbnail, and
+	// a cell that rendered an empty box would look like a broken image rather than work in progress.
+	const recorder = await connect(page);
+	await page.goto('/assets');
+	await expect(page.getByRole('grid')).toBeVisible();
+
+	const cells = page.getByRole('gridcell');
+	const first = cells.nth(0).locator('img');
+	await expect(first).toHaveAttribute('src', 'http://127.0.0.1:8099/d/absolute-token');
+	// Decoded, not merely present: a 404 would still be an `<img>` in the DOM.
+	await expect(first).toHaveJSProperty('naturalWidth', 1);
+
+	// Index 2 is `archive` in the fixture, and the placeholder says so rather than "processing": an archived
+	// asset is not being worked on, it is in cold storage, and telling a user "processing" about something that
+	// will never finish is worse than saying nothing.
+	await expect(cells.nth(2).getByTestId('thumbnail-placeholder')).toHaveText('archived');
+	await expect(cells.nth(2).locator('img')).toHaveCount(0);
+	// Index 3 is `restoring`, which is neither hot nor archived — it falls through to "processing".
+	await expect(cells.nth(3).getByTestId('thumbnail-placeholder')).toHaveText('processing');
+
+	expect(recorder.urls.some((url) => url.includes('/d/absolute-token'))).toBe(true);
+});
+
+test('a root-relative thumbnail URL is resolved against the API, not the page', async ({
+	page
+}) => {
+	// The server sends `/d/<token>` unless the deployment configures its public origin. A browser resolves that
+	// against *this* origin — in development a Vite port — and gets a 404 from the wrong server. Found exactly
+	// that way.
+	await connect(page);
+	await page.goto('/assets');
+
+	const second = page.getByRole('gridcell').nth(1).locator('img');
+	await expect(second).toHaveAttribute('src', 'http://127.0.0.1:8099/d/relative-token');
+	await expect(second).toHaveJSProperty('naturalWidth', 1);
+});
+
+test('a thumbnail is not announced twice', async ({ page }) => {
+	// The filename beneath is already the cell's accessible name. A screen reader reading "harbour.jpg, image,
+	// harbour.jpg" is worse than one that reads it once — so the image is decorative *in this context*, and the
+	// asset's real alt text is a metadata field for where the image carries content.
+	await connect(page);
+	await page.goto('/assets');
+
+	const img = page.getByRole('gridcell').nth(0).locator('img');
+	await expect(img).toHaveAttribute('alt', '');
+	await expect(img).toHaveAttribute('aria-hidden', 'true');
+});
+
+test('the detail panel shows the thumbnail too', async ({ page }) => {
+	await connect(page);
+	await page.goto('/assets');
+	await page.getByRole('gridcell').first().click();
+
+	const panel = page.getByRole('complementary', { name: 'Selected asset' });
+	await expect(panel.locator('img')).toHaveJSProperty('naturalWidth', 1);
 });

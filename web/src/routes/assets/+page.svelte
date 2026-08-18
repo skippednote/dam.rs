@@ -25,6 +25,7 @@
 	import UploadQueue from '$lib/components/upload/UploadQueue.svelte';
 	import {
 		ApiError,
+		deliveryUrl,
 		getAsset,
 		listAssets,
 		loadFacets,
@@ -231,13 +232,20 @@
 						· ranked by relevance, capped at the first 1,000
 					{/if}
 				</p>
+				<!--
+					The row height is mostly thumbnail. `thumb-256` is a 256px square (Cover fit), so a cell is
+					sized to show one near its natural size rather than squeezing it into a strip — the first
+					version gave it 32 pixels of a 96-pixel cell, which is a grid of captions with a smear on
+					top.
+				-->
 				<AssetGrid
 					items={result.items}
 					total={result.total}
 					offset={result.offset}
 					columns={4}
-					height={520}
-					rowHeight={112}
+					height={640}
+					rowHeight={224}
+					thumbnail={deliveryUrl}
 					onselect={(asset) => open(asset.id)}
 					onactivate={(asset) => open(asset.id)}
 				/>

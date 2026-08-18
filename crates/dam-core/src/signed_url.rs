@@ -45,12 +45,91 @@ use uuid::Uuid;
 /// meaning this constant exists to prevent. Outstanding v1 tokens stop verifying, which is correct: they were
 /// issued for at most 24 hours (`delivery::MAX_TOKEN_TTL`), and the alternative is supporting two layouts so
 /// that a URL from yesterday can bypass a check added today.
-pub const VERSION: u8 = 2;
+///
+/// Bumped to 3 by A.7, which added [`Purpose`]. That one is not merely a layout change: a v2 token carries no
+/// purpose, and defaulting a missing purpose either way would be wrong in a different direction each time —
+/// defaulting to `Distribution` breaks every preview URL, and defaulting to `InternalPreview` would let a
+/// token issued before this existed skip the rights check. Refusing v2 outright is the only reading that
+/// cannot be exploited.
+pub const VERSION: u8 = 3;
+
+/// What a signed URL is *for*.
+///
+/// This is the distinction the A.7 rights decision turns on. Both purposes go through the same chokepoint —
+/// D12 is intact, there is still exactly one code path — but the chokepoint now knows what it is being asked
+/// for, and only one of the two answers is a distribution.
+///
+/// ## Why an internal preview does not consult the rights verdict
+///
+/// An asset with no licence attached is [`crate::RightsState::Unknown`], and unknown denies: 2.8 settled that
+/// deliberately, because the cost of guessing wrong is a rights claim made on a customer's behalf. An
+/// unlicensed asset is also the *normal* state of a freshly uploaded one, and of an entire migrated archive
+/// on day one. So gating the grid's thumbnails on the distribution verdict makes a correct DAM unusable: a
+/// new tenant sees no thumbnails at all.
+///
+/// The reasoning that resolves it is already in this repository, made for a different gate. 2.8 records that
+/// the AI gates are answered **independently of the distribution verdict**, "since a territorial restriction
+/// says nothing about internal cataloguing". A thumbnail in the DAM's own grid, shown to a member of the
+/// tenant who holds `asset:read`, is internal cataloguing by the same argument. ARCHITECTURE §2 points the
+/// same way: a Deep Archive asset "is a first-class search result **with a working thumbnail**; it just
+/// cannot hand over the 400 MB original without notice."
+///
+/// ## What keeps it from becoming a hole
+///
+/// Three structural restrictions, not conventions — each enforced where the token is minted and again where
+/// it is served:
+///
+/// 1. **Only a proxy-class transform.** `thumb-256`, `preview-1024`, `web-2048`. Never `original`, and never
+///    a name that is not a known built-in profile. The original is the thing a licence is about.
+/// 2. **Never a share link.** A share is distribution by definition — an external recipient looking at a
+///    thumbnail of an unlicensed asset is precisely the exposure the rights model exists to prevent.
+/// 3. **Always an identity.** An anonymous internal preview is a contradiction; "internal" means a member of
+///    the tenant, and the audit trail needs to say which one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Purpose {
+    /// A download or a channel render. Rights are evaluated, at issue and again at delivery.
+    Distribution,
+    /// A preview inside the DAM's own interface. See the type docs.
+    InternalPreview,
+}
+
+impl Purpose {
+    /// The wire byte. Explicit rather than derived from the variant order, so reordering the enum cannot
+    /// silently reinterpret every outstanding token.
+    fn as_byte(self) -> u8 {
+        match self {
+            Self::Distribution => 1,
+            Self::InternalPreview => 2,
+        }
+    }
+
+    fn from_byte(byte: u8) -> Option<Self> {
+        match byte {
+            1 => Some(Self::Distribution),
+            2 => Some(Self::InternalPreview),
+            // An unknown purpose is malformed, not a default. A future purpose must not decode as one of
+            // these — that is the whole reason the version byte exists, and this is the same argument one
+            // field down.
+            _ => None,
+        }
+    }
+
+    /// Whether the rights verdict gates this delivery.
+    pub fn is_distribution(self) -> bool {
+        matches!(self, Self::Distribution)
+    }
+}
 
 /// What a signed URL asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeliveryClaim {
     pub asset_id: Uuid,
+    /// What the URL is for. See [`Purpose`].
+    ///
+    /// Signed, and that is the entire safety argument: a caller holding an internal-preview URL cannot edit
+    /// it into a distribution one, and — more importantly — cannot edit a distribution URL into a preview to
+    /// skip the rights check. A purpose passed as a query parameter would be exactly that hole.
+    pub purpose: Purpose,
     /// The named derivative profile, or `original`.
     ///
     /// Part of the signature, so a thumbnail URL cannot be edited into a request for the master. That is
@@ -212,6 +291,9 @@ fn mac(secret: &Secret<String>, payload: &[u8]) -> Option<Vec<u8>> {
 fn canonical(claim: &DeliveryClaim) -> Vec<u8> {
     let mut out = Vec::with_capacity(160);
     out.push(VERSION);
+    // Immediately after the version and inside the same length-prefixed scheme. A fixed-width byte would be
+    // fine here too, but going through `push_field` keeps one rule for the whole payload rather than two.
+    push_field(&mut out, &[claim.purpose.as_byte()]);
     push_field(&mut out, claim.asset_id.as_bytes());
     push_field(&mut out, claim.transform.as_bytes());
     push_field(&mut out, claim.channel.as_bytes());
@@ -246,6 +328,11 @@ fn parse(payload: &[u8]) -> Result<DeliveryClaim, VerifyError> {
         return Err(VerifyError::WrongVersion);
     }
 
+    let purpose_raw = take_field(&mut cursor)?;
+    let purpose = match purpose_raw {
+        [byte] => Purpose::from_byte(*byte).ok_or(VerifyError::Malformed)?,
+        _ => return Err(VerifyError::Malformed),
+    };
     let asset_id = take_uuid(&mut cursor)?;
     let transform = take_string(&mut cursor)?;
     let channel = take_string(&mut cursor)?;
@@ -265,6 +352,7 @@ fn parse(payload: &[u8]) -> Result<DeliveryClaim, VerifyError> {
     }
 
     Ok(DeliveryClaim {
+        purpose,
         asset_id,
         transform,
         channel,

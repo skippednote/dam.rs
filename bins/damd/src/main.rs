@@ -46,12 +46,25 @@ async fn main() -> anyhow::Result<()> {
     // Delivery resolves its tenant from configuration for now rather than from the token. Recorded here
     // rather than hidden: a single-tenant deployment is the shape this serves, and 3.x makes the tenant part
     // of the signed claim so one process can deliver for many.
-    let delivery_tenant = delivery_tenant(&global, cfg.server.delivery_tenant.as_deref()).await?;
+    let (delivery_tenant, delivery_slug) =
+        delivery_tenant(&global, cfg.server.delivery_tenant.as_deref()).await?;
+
+    // Pinned to the delivery tenant's schema. The delivery route reads `assets`, `derivatives`, the rights
+    // tables and `share_links` unqualified, so the global pool resolves none of them — it failed with
+    // `relation "derivatives" does not exist` the first time there was a real derivative to serve.
+    let delivery_pool = dam_db::tenant_conn::single_tenant_pool(
+        cfg.database.url.expose(),
+        &delivery_slug,
+        cfg.database.max_connections.min(8),
+    )
+    .await
+    .context("connecting to the delivery tenant's schema")?;
 
     let app = dam_api::app::router(
         &cfg,
         dam_api::app::AppDeps {
             global,
+            delivery_pool,
             store: Arc::clone(&store) as Arc<dyn dam_store::ResumableStore>,
             delivery_store: store as Arc<dyn dam_store::BlobStore>,
             indexes,
@@ -120,17 +133,18 @@ async fn build_store(cfg: &Config) -> anyhow::Result<dam_store::S3Store> {
 async fn delivery_tenant(
     global: &sqlx::PgPool,
     configured: Option<&str>,
-) -> anyhow::Result<uuid::Uuid> {
+) -> anyhow::Result<(uuid::Uuid, TenantSlug)> {
     if let Some(slug) = configured {
         let slug = TenantSlug::new(slug).context("server.delivery_tenant")?;
-        return sqlx::query_scalar(
+        let id: Option<uuid::Uuid> = sqlx::query_scalar(
             "SELECT id FROM dam_global.tenants WHERE slug = $1 AND status = 'active'",
         )
         .bind(slug.as_str())
         .fetch_optional(global)
         .await
-        .context("looking up the delivery tenant")?
-        .ok_or_else(|| {
+        .context("looking up the delivery tenant")?;
+
+        return id.map(|id| (id, slug.clone())).ok_or_else(|| {
             anyhow::anyhow!("server.delivery_tenant names {slug}, which is not an active tenant")
         });
     }
@@ -145,11 +159,13 @@ async fn delivery_tenant(
     match slugs.as_slice() {
         [only] => {
             let slug = TenantSlug::new(only).context("stored tenant slug")?;
-            sqlx::query_scalar("SELECT id FROM dam_global.tenants WHERE slug = $1")
-                .bind(slug.as_str())
-                .fetch_one(global)
-                .await
-                .context("resolving the only tenant")
+            let id: uuid::Uuid =
+                sqlx::query_scalar("SELECT id FROM dam_global.tenants WHERE slug = $1")
+                    .bind(slug.as_str())
+                    .fetch_one(global)
+                    .await
+                    .context("resolving the only tenant")?;
+            Ok((id, slug))
         }
         [] => bail!("no active tenant; run `damctl provision-tenant --slug <slug>` first"),
         many => bail!(

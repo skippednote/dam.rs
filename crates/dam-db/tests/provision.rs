@@ -23,10 +23,25 @@ fn slug(s: &str) -> TenantSlug {
     TenantSlug::new(s).expect("valid slug")
 }
 
+/// The storage pool a provisioned tenant gets.
+///
+/// Every field is a placeholder: these tests do not write objects, and provisioning only records where objects
+/// *would* go. `credentials_ref` is a reference by design — a credential in this column would be a credential
+/// in every backup.
+fn test_pool() -> dam_db::provision::StoragePool<'static> {
+    dam_db::provision::StoragePool {
+        endpoint: Some("http://127.0.0.1:1"),
+        region: "us-east-1",
+        bucket: "damrs-test",
+        force_path_style: true,
+        credentials_ref: "test",
+    }
+}
+
 #[tokio::test]
 async fn provisioning_creates_the_row_the_schema_and_the_migrations() {
     let (pg, pool) = ready().await;
-    let t = provision::tenant(&pool, &pg.url(), &slug("acme"), "Acme Corp")
+    let t = provision::tenant(&pool, &pg.url(), &slug("acme"), "Acme Corp", &test_pool())
         .await
         .expect("provision");
 
@@ -56,7 +71,7 @@ async fn provisioning_creates_the_row_the_schema_and_the_migrations() {
 #[tokio::test]
 async fn face_identify_is_seeded_off_and_requires_a_dpia() {
     let (pg, pool) = ready().await;
-    let t = provision::tenant(&pool, &pg.url(), &slug("acme"), "Acme")
+    let t = provision::tenant(&pool, &pg.url(), &slug("acme"), "Acme", &test_pool())
         .await
         .expect("provision");
 
@@ -78,7 +93,7 @@ async fn the_seeded_flags_cannot_be_flipped_on_without_a_dpia() {
     // Belt and braces: the seed sets requires_dpia, and the CHECK then makes the
     // flag unenableable without a reference and a legal basis.
     let (pg, pool) = ready().await;
-    let t = provision::tenant(&pool, &pg.url(), &slug("acme"), "Acme")
+    let t = provision::tenant(&pool, &pg.url(), &slug("acme"), "Acme", &test_pool())
         .await
         .expect("provision");
 
@@ -96,7 +111,7 @@ async fn the_seeded_flags_cannot_be_flipped_on_without_a_dpia() {
 #[tokio::test]
 async fn defaults_are_seeded_into_the_tenant_schema() {
     let (pg, pool) = ready().await;
-    provision::tenant(&pool, &pg.url(), &slug("acme"), "Acme")
+    provision::tenant(&pool, &pg.url(), &slug("acme"), "Acme", &test_pool())
         .await
         .expect("provision");
 
@@ -128,6 +143,7 @@ async fn defaults_are_seeded_into_the_tenant_schema() {
     }
 
     // The default group must exist and be the one marked default, because the ABAC
+
     // compiler (0.10) resolves an unscoped grant through it.
     let default_key: String =
         sqlx::query_scalar("SELECT key FROM t_acme.asset_groups WHERE is_default")
@@ -138,14 +154,47 @@ async fn defaults_are_seeded_into_the_tenant_schema() {
 }
 
 #[tokio::test]
+async fn provisioning_creates_the_tenant_a_storage_pool() {
+    // A tenant without one cannot ingest: finalisation records a placement and refuses without a pool. That
+    // was found the hard way — the first real upload through the pipeline failed with "no instant storage pool
+    // is configured" and went straight to `dead`, correctly, on a tenant `provision-tenant` had just created.
+    let (pg, pool) = ready().await;
+    let t = provision::tenant(&pool, &pg.url(), &slug("acme"), "Acme", &test_pool())
+        .await
+        .expect("provision");
+
+    let row: (String, String, String, bool, String, String) = sqlx::query_as(
+        "SELECT name, driver, bucket, force_path_style, credentials_ref, latency_class \
+         FROM dam_global.storage_pools WHERE tenant_id = $1",
+    )
+    .bind(t.id)
+    .fetch_one(&pool)
+    .await
+    .expect("the tenant's pool");
+
+    assert_eq!(row.0, "hot");
+    assert_eq!(row.1, "s3");
+    assert_eq!(row.2, "damrs-test");
+    assert!(row.3, "path style, which every non-AWS endpoint needs");
+    assert_eq!(
+        row.4, "test",
+        "a reference, never the credential: a secret here would be a secret in every backup"
+    );
+    assert_eq!(
+        row.5, "instant",
+        "the pool ingest looks for is the instant one — `finalise::default_pool` selects on this"
+    );
+}
+
+#[tokio::test]
 async fn provisioning_is_idempotent() {
     // A retried provisioning run — a crashed CLI, a re-run CI job — must not create a
     // second tenant or duplicate the seed data.
     let (pg, pool) = ready().await;
-    let a = provision::tenant(&pool, &pg.url(), &slug("acme"), "Acme")
+    let a = provision::tenant(&pool, &pg.url(), &slug("acme"), "Acme", &test_pool())
         .await
         .expect("first");
-    let b = provision::tenant(&pool, &pg.url(), &slug("acme"), "Acme")
+    let b = provision::tenant(&pool, &pg.url(), &slug("acme"), "Acme", &test_pool())
         .await
         .expect("second must succeed");
     assert_eq!(a.id, b.id, "the same tenant must be returned");
@@ -166,10 +215,10 @@ async fn provisioning_is_idempotent() {
 #[tokio::test]
 async fn two_tenants_are_fully_isolated() {
     let (pg, pool) = ready().await;
-    provision::tenant(&pool, &pg.url(), &slug("one"), "One")
+    provision::tenant(&pool, &pg.url(), &slug("one"), "One", &test_pool())
         .await
         .expect("one");
-    provision::tenant(&pool, &pg.url(), &slug("two"), "Two")
+    provision::tenant(&pool, &pg.url(), &slug("two"), "Two", &test_pool())
         .await
         .expect("two");
 
@@ -205,7 +254,7 @@ async fn a_failed_provisioning_does_not_leave_a_half_built_tenant() {
         .await
         .expect("create conflicting table");
 
-    let result = provision::tenant(&pool, &pg.url(), &slug("acme"), "Acme").await;
+    let result = provision::tenant(&pool, &pg.url(), &slug("acme"), "Acme", &test_pool()).await;
     assert!(result.is_err(), "provisioning should have failed");
 
     let tenants: i64 = sqlx::query_scalar("SELECT count(*) FROM dam_global.tenants")

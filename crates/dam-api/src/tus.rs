@@ -370,6 +370,30 @@ async fn patch_upload(
             uploads::save(conn.executor(), &session).await?;
             conn.commit().await?;
 
+            // The last chunk. Queued here rather than waiting for a sweeper, because this is the moment the
+            // upload is complete and a user is watching for their asset to appear — and queued rather than
+            // done inline, because assembling a multipart upload and hashing it is not work to do inside a
+            // request the client is holding open.
+            //
+            // A client with `Upload-Defer-Length` never declares a size, so there is nothing to compare
+            // against and nothing is queued: that client finalises through its own explicit call, which is
+            // what the deferred-length extension is for.
+            if session.declared_length == Some(new_offset) {
+                // A failure here is logged and not returned. The bytes are safely stored and the client's
+                // upload *did* succeed — answering 500 would make a well-behaved client retry a chunk that
+                // already landed, and the reaper plus a re-queue can recover a missing job. Losing the job is
+                // recoverable; telling the client its complete upload failed is not.
+                if let Err(error) = dam_pipeline::worker::enqueue_finalise(
+                    &state.global,
+                    caller.tenant_id,
+                    &upload_id,
+                )
+                .await
+                {
+                    tracing::error!(%error, upload_id, "could not queue finalisation for a completed upload");
+                }
+            }
+
             let mut out = HeaderMap::new();
             out.insert(
                 "upload-offset",

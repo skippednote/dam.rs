@@ -1402,3 +1402,81 @@ objects. But "delete a tenant" is not an acceptable way past that, so `server.de
 refusal stays for the unset-and-ambiguous case and now says which slugs it found and which variable to set.
 Naming it is also the right posture for a deployment that later grows a second tenant: the answer does not
 silently change under it. Reversible: yes, and it becomes unnecessary once 3.x puts the tenant in the claim.
+
+**An internal preview goes through the D12 chokepoint and does not consult the rights verdict (A.7).** Adopted
+on your instruction — "we should see thumbnails" — and implemented as a `Purpose` **signed into the delivery
+claim** rather than as a bypass. The argument: an asset with no licence is `RightsState::Unknown` and unknown
+denies (2.8, deliberately), and an unlicensed asset is the normal state of a freshly uploaded one and of an
+entire migrated archive on day one — so gating the grid's thumbnails on the distribution verdict leaves a new
+tenant with no thumbnails at all. The reasoning that resolves it is already in this repository, made for a
+different gate: 2.8 records that the AI gates are answered independently of the distribution verdict, "since a
+territorial restriction says nothing about internal cataloguing". ARCHITECTURE §2 points the same way — a Deep
+Archive asset "is a first-class search result **with a working thumbnail**". Three restrictions keep it from
+being a hole, checked at the mint *and* at delivery: a known built-in profile only, an identity required, a
+share link refused. Downloads are unchanged and a test asserts both on one asset. Reversible: yes — the purpose
+is one field in the claim, and flipping the policy is one branch.
+
+**The token format version is refused rather than defaulted across a purpose change.** A v2 token carries no
+purpose, and defaulting a missing one is wrong in a different direction each way: `Distribution` breaks every
+outstanding preview URL, `InternalPreview` lets a token minted before the field existed skip the rights check.
+Outstanding v2 tokens stop verifying, which is correct — they were issued for at most 24 hours. Reversible: no.
+
+**An unfalsifiable branch was deleted rather than left in.** The preview restriction also required the
+profile's role to be `thumbnail`, `preview` or `proxy`. Every built-in profile is proxy-class, so no test could
+distinguish that check from its absence — a mutation removing it survived. `by_name` over `profiles::ALL`
+already excludes both things the check was for (the original is not a profile; a tenant-defined render is not in
+`ALL`), so the branch is gone. An untested branch is one that will be wrong when it finally matters.
+Reversible: yes, and it should be revisited when a non-proxy built-in profile exists.
+
+**The ingest pipeline is a library, not the worker binary.** `dam-pipeline` holds finalisation, derivation and
+the queue consumer, because both stages need a real object store and a real database and an integration test
+cannot reach a binary's private modules. It also means `damctl` can run a stage by hand, which is what makes a
+stuck asset recoverable without a queue. Reversible: yes.
+
+**Every pipeline stage is idempotent, because the queue leases rather than deletes.** `jobs::claim` is
+at-least-once by design — a SIGKILLed worker must not lose its work — so a stage that is not safe to run twice
+turns that into duplicate assets or double-charged storage. Finalisation keys on the session's `asset_id`,
+derivation on `(asset_id, op_hash)`. Reversible: no.
+
+**A permanent failure is pushed to its final attempt instead of being retried.** A malformed file will not parse
+on the fifth try. `pipeline::Error::is_transient` decides, and the queue's backoff is reserved for the failures
+backoff helps. Discovered to matter immediately: the first real upload failed on a missing storage pool and went
+to `dead` in one step with an accurate message, rather than after four retries and twenty minutes. Reversible:
+yes.
+
+**A format no renderer can read is reported, not failed.** A DAM stores text files, spreadsheets and archives,
+and none has a thumbnail; the grid draws a placeholder. The first version returned a *transient* error for a
+`.txt`, so the queue would have retried it five times and dead-lettered it — caught by a test. A **missing
+tool** is the case that does fail the job, because that is a deployment mistake rather than a fact about the
+file, and the two are now separate variants. Reversible: no.
+
+**`upload_sessions.content_hash` makes finalisation resumable across its one unavoidable gap.** Promoting an
+object and recording an asset cannot be one transaction — one is an object store, the other is Postgres — so a
+failure between them leaves the bytes promoted, staging gone, and no asset row. The retry then failed
+*permanently* with "object not found" on an upload whose bytes were safely stored the whole time. Recording the
+digest as soon as the promotion succeeds closes it: a re-run reads the column, skips the promotion, and records
+the asset. Found by running the real pipeline, not by a test. Reversible: no.
+
+**Provisioning creates the tenant's hot storage pool.** A tenant without one cannot ingest: finalisation records
+a placement and refuses without a pool, which is exactly how the first real upload failed on a tenant
+`provision-tenant` had just created. The pool description is passed in rather than read inside `dam-db`, which
+has no business knowing how the deployment is configured, and `credentials_ref` is a *reference* — a credential
+in that column would be a credential in every backup. Reversible: no.
+
+**`server.public_url` makes delivery URLs absolute, and its absence makes them root-relative.** A browser
+resolves `/d/<token>` against the *page's* origin, which in development is a Vite port — a 404 from the wrong
+server, which is how this was found. Optional rather than required, because a required value is one that is
+wrong in every deployment behind a proxy until somebody sets it. The web client resolves a relative URL against
+the API base it already holds, so both shapes work. Reversible: yes.
+
+**The delivery route needs a pool pinned to the delivery tenant's schema.** It reads `assets`, `derivatives`,
+the rights tables and `share_links` unqualified, so the shared global pool resolves none of them — it failed
+with `relation "derivatives" does not exist` the first time there was a real derivative to serve. The delivery
+route serves exactly one tenant by construction (`damd` refuses to start otherwise), so a pinned pool is the
+right shape rather than a compromise. A second `DeliveryState` built from the global pool was the actual bug,
+and it also meant two keyrings — the next failure once one rotated. There is one now, shared with the asset
+endpoints that mint preview tokens. Reversible: yes; it goes away when 3.x puts the tenant in the claim.
+
+**`RUST_LOG` named the project rather than the crates.** `damrs=debug` matched no crate, so every binary logged
+nothing while looking configured — the worker started, ran jobs and reported none of it. Now
+`damd=info,dam_worker=info,dam_api=info,dam_pipeline=info,dam_db=info,sqlx=warn`. Reversible: yes.

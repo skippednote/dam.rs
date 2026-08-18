@@ -1,65 +1,33 @@
-# Open — the UI's thumbnails need a rights decision, 2026-08-18 (API surface)
+# Answered — thumbnails, 2026-08-18 (A.7)
 
-**Every asset in a fresh library has `rights_state = 'unknown'`, and `unknown` denies. So if the grid's
-thumbnails go through the delivery chokepoint unchanged, a new tenant sees no thumbnails at all.**
+**You said: "We should see thumbnails. We can worry about ai gates later."** So the internal-preview reading is
+adopted, and it is implemented as proposed rather than as a shortcut. What shipped:
 
-This is not a bug in any layer — each piece is behaving as decided:
+1. **`Purpose` is signed into the delivery claim** — `Distribution` or `InternalPreview` — and the token format
+   version went 2 → 3. A v2 token is now *refused* rather than defaulted, because defaulting a missing purpose
+   is wrong in a different direction each way: `Distribution` breaks every preview URL, `InternalPreview` lets a
+   token issued before this existed skip the rights check.
+2. **`InternalPreview` skips the rights verdict and nothing else.** It is still signed, still verified at the
+   chokepoint, still access-checked, still the only path to the bytes. D12's "one code path" holds; the
+   chokepoint now knows what it is being asked for.
+3. **Three restrictions, enforced at the mint *and* at delivery:** a known built-in profile only (so never the
+   original, never a typo, never a future tenant-defined render), an identity is required, and a share link is
+   refused outright — a share is distribution by definition.
+4. **Downloads are unchanged.** A `Distribution` token over an unlicensed asset is still `403`, and there is a
+   test that asserts both on the same asset in the same run: the preview is served and the download is refused.
 
-- D12: rights are enforced at the point of distribution, which is the signed-URL chokepoint.
-  `delivery::issue` and `deliver` both call `rights::effective` and refuse anything that is not
-  `allowed` or `expiring`.
-- 2.8, on your recommendation: **unknown is not a soft yes**. An asset with no licence attached is
-  `Unknown`, because the cost of guessing wrong is a rights claim made on a customer's behalf.
-- An asset with no licence is the *normal* state of a freshly uploaded asset, and of an entire
-  migrated archive on day one.
+All seven mutations of those restrictions now fail a test. Two survived the first pass and both were tests
+passing for the wrong reason — worth recording, because they are the failure mode this whole discipline exists
+to catch:
 
-Put together: a thumbnail is a render of a derivative, a render passes the chokepoint, the chokepoint
-asks about rights, and rights say unknown. A correct DAM UI is unusable.
+- The share-link case invented a share id that did not exist, so `shares::is_live` refused the token before the
+  preview restriction was ever consulted. It uses a **live** share now.
+- The refusal also required the profile's role to be proxy-class, and that branch was **unfalsifiable**: every
+  built-in profile is proxy-class, so no test could tell the check from its absence. The branch is gone rather
+  than left untested — when a non-proxy built-in exists, that is a decision to make then, with a test that can
+  see it.
 
-ARCHITECTURE is close to settling this and does not quite. §2's tier table says a Deep Archive asset
-"is a first-class search result **with a working thumbnail**; it just cannot hand over the 400 MB
-original without notice" — that is the *tiering* answer, and the distinction it draws (proxy yes,
-original with notice) is exactly the shape of the answer I think this needs. But it is about storage
-class, not about rights, and I am not reading a rights conclusion out of a storage sentence.
-
-**What I would do** (needs your yes, because it is rights enforcement):
-
-1. **The signed claim gains a purpose,** signed into the token alongside the transform and channel, so
-   a caller cannot flip it: `distribution` (today's behaviour, rights-checked at issue *and* at
-   delivery) or `internal_preview`.
-2. **`internal_preview` is restricted structurally, not by trust.** It may only name a proxy-class
-   transform — `thumb_256`, `preview_1024`, the master proxy — never the original and never a
-   tenant-defined render profile. `profiles.rs` already separates these, so the check is a match on a
-   known profile rather than a string comparison.
-3. **`internal_preview` requires an identity in the claim** and a live `asset:read` grant, and it is
-   refused for a share link. A share is distribution by definition: an external recipient looking at a
-   thumbnail of an unlicensed asset is the exact exposure the rights model exists to prevent.
-4. **Everything else stays as it is.** Downloading an original, rendering for a channel, and every
-   share-link delivery keep the full rights check. The chokepoint is still the only path; it just knows
-   what it is being asked for.
-
-The argument for it is already in this repo, made for a different gate: 2.8 records that the AI gates
-are answered **independently of the distribution verdict**, "since a territorial restriction says
-nothing about internal cataloguing". A thumbnail in the DAM's own grid, shown to a member of the tenant
-who holds `asset:read`, is internal cataloguing by the same reasoning. What I am asking you to confirm
-is that the reasoning transfers — because if it does not, the answer is that a DAM must not display an
-asset it has no licence for even to its own librarians, and the product then requires a licence before
-an upload is visible. That is a defensible position; it is just a very different product, and it is not
-mine to choose.
-
-**What is blocked, precisely.** `AssetSummary.thumbnail_url` is `None` for every asset until this is
-answered — a shape the field already documents ("absent while a newly-uploaded asset is still being
-processed"), so the grid renders its placeholder rather than breaking. Everything else in the API
-surface and the UI proceeds: list, detail, search, facets, metadata editing, upload, collections. You
-will be able to drive the whole UI; the cells will be placeholders.
-
-**Cost of the wrong guess.** Choosing `internal_preview` when you wanted strict enforcement means
-thumbnails of unlicensed assets were shown internally for however long it takes to notice — visible
-only to tenant members with a read grant, and not distributable, but still a display we were not
-authorised to make. Choosing strict enforcement when you wanted previews means the product looks broken
-on day one for every customer, which is the failure that gets discovered by a prospect rather than by
-us. Neither is recoverable by a refactor; both are one config flag apart if the purpose is in the claim
-from the start, which is why point 1 is worth doing whichever way you answer.
+The AI gates are untouched, as you said. They stay `false` without a licence.
 
 ---
 

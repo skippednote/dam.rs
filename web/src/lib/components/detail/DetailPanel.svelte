@@ -19,6 +19,7 @@
 	import RightsBadge from '$lib/components/state/RightsBadge.svelte';
 	import ProvenanceBadge from '$lib/components/state/ProvenanceBadge.svelte';
 	import MetadataEditor from './MetadataEditor.svelte';
+	import { deliveryUrl } from '$lib/api/client';
 
 	let {
 		asset,
@@ -95,6 +96,20 @@
 			{/if}
 		</div>
 	</header>
+
+	{#if asset.thumbnail_url}
+		<!--
+			The thumbnail, not the preview: `preview-1024` exists and belongs in a lightbox, and fetching a
+			megapixel image to draw it at 288 pixels wide is bandwidth spent on nothing. `alt=""` because the
+			filename is the heading directly above — see the grid for the same reasoning.
+		-->
+		<img
+			src={deliveryUrl(asset.thumbnail_url)}
+			alt=""
+			aria-hidden="true"
+			class="w-full rounded-md bg-surface object-contain"
+		/>
+	{/if}
 
 	<div class="rounded-md bg-surface p-3">
 		{#if originalAvailable}

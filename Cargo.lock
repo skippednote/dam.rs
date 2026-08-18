@@ -1865,6 +1865,7 @@ dependencies = [
  "dam-core",
  "dam-db",
  "dam-media",
+ "dam-pipeline",
  "dam-search",
  "dam-store",
  "governor",
@@ -1985,6 +1986,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "dam-pipeline"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "bytes",
+ "chrono",
+ "dam-core",
+ "dam-db",
+ "dam-media",
+ "dam-search",
+ "dam-store",
+ "image",
+ "serde",
+ "serde_json",
+ "sqlx 0.9.0",
+ "tantivy",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "dam-search"
 version = "0.1.0"
 dependencies = [
@@ -2060,10 +2086,12 @@ dependencies = [
  "dam-core",
  "dam-db",
  "dam-media",
+ "dam-pipeline",
  "dam-search",
  "dam-store",
  "dam-telemetry",
  "figment",
+ "sqlx 0.9.0",
  "tokio",
  "tracing",
  "tracing-subscriber",

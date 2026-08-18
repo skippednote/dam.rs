@@ -52,6 +52,33 @@ impl OutputFormat {
             Self::Avif => "avif",
         }
     }
+
+    /// The filename extension a stored rendition gets.
+    ///
+    /// `jpg` rather than `jpeg`, which is the one place this differs from [`Self::as_str`] — and the reason
+    /// they are separate methods rather than one: the object key uses the conventional extension while the
+    /// hash and the logs use the format's name.
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Jpeg => "jpg",
+            Self::Png => "png",
+            Self::WebP => "webp",
+            Self::Avif => "avif",
+        }
+    }
+
+    /// The media type to serve it as.
+    ///
+    /// Stored on the derivative row rather than guessed at delivery: a browser handed `application/octet-
+    /// stream` for a WebP downloads it instead of showing it, and the derivative is the one place that knows.
+    pub fn mime(self) -> &'static str {
+        match self {
+            Self::Jpeg => "image/jpeg",
+            Self::Png => "image/png",
+            Self::WebP => "image/webp",
+            Self::Avif => "image/avif",
+        }
+    }
 }
 
 /// How the source is fitted into the requested box.

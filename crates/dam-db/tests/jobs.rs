@@ -23,6 +23,21 @@ use sqlx::PgPool;
 use std::time::Duration;
 use uuid::Uuid;
 
+/// The storage pool a provisioned tenant gets.
+///
+/// Every field is a placeholder: these tests do not write objects, and provisioning only records where objects
+/// *would* go. `credentials_ref` is a reference by design — a credential in this column would be a credential
+/// in every backup.
+fn test_pool() -> dam_db::provision::StoragePool<'static> {
+    dam_db::provision::StoragePool {
+        endpoint: Some("http://127.0.0.1:1"),
+        region: "us-east-1",
+        bucket: "damrs-test",
+        force_path_style: true,
+        credentials_ref: "test",
+    }
+}
+
 async fn queue_db(slugs: &[&str]) -> (PostgresHarness, PgPool, Vec<Uuid>) {
     let pg = PostgresHarness::start().await.expect("start");
     migrate::global(&pg.url()).await.expect("global");
@@ -30,7 +45,7 @@ async fn queue_db(slugs: &[&str]) -> (PostgresHarness, PgPool, Vec<Uuid>) {
     let mut ids = Vec::new();
     for s in slugs {
         let slug = TenantSlug::new(s).expect("slug");
-        let t = provision::tenant(&pool, &pg.url(), &slug, s)
+        let t = provision::tenant(&pool, &pg.url(), &slug, s, &test_pool())
             .await
             .expect("provision");
         ids.push(t.id);

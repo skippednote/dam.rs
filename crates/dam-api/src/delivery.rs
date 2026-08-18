@@ -22,6 +22,17 @@
 //! the rights check, so [`PRESIGN_TTL`] is seconds rather than minutes: long enough for a browser to follow
 //! a redirect, short enough that a captured URL is useless.
 //!
+//! ## An internal preview goes through the same chokepoint and is not a distribution
+//!
+//! `Purpose::InternalPreview` (A.7) skips the *rights verdict* and nothing else. It is still a signed token,
+//! still verified here, still access-checked, and still the only path to the bytes — so D12's "one code
+//! path" holds. What changes is that the chokepoint distinguishes handing an asset to the outside world from
+//! showing a member of the tenant a 256-pixel thumbnail of it in their own library.
+//!
+//! Why that is not a hole is in [`signed_url::Purpose`]'s docs, and the three restrictions are enforced
+//! **twice**: once where the token is minted and once here. Checking only at issue would mean a token minted
+//! before a restriction tightened kept working, which is the same mistake as letting the signature authorise.
+//!
 //! ## A refusal says why, but only to someone who already has the asset
 //!
 //! A rights denial carries its reason codes, because a customer who cannot download their own asset needs
@@ -37,7 +48,7 @@ use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use dam_core::Clock;
 use dam_core::rights::RightsState;
 use dam_core::rights_eval::Usage;
-use dam_core::signed_url::{self, DeliveryClaim, Keyring};
+use dam_core::signed_url::{self, DeliveryClaim, Keyring, Purpose};
 use dam_db::rights;
 use dam_store::{BlobStore, Key};
 use sqlx::PgPool;
@@ -62,6 +73,16 @@ pub const MAX_TOKEN_TTL: ChronoDuration = ChronoDuration::hours(24);
 /// Everything the delivery path reads.
 #[derive(Clone)]
 pub struct DeliveryState {
+    /// A pool whose `search_path` resolves the **delivery tenant's** schema.
+    ///
+    /// Not the shared global pool, and the distinction is not cosmetic: almost everything this handler reads —
+    /// `assets`, `derivatives`, the rights tables, `share_links` — is tenant-schema, written unqualified, and
+    /// resolved through `search_path`. Handed the global pool it fails with `relation "derivatives" does not
+    /// exist`, which is what happened the first time a real derivative existed to serve. The delivery route
+    /// serves exactly one tenant by construction (`damd` refuses to start otherwise), so a pool pinned to that
+    /// tenant is the right shape rather than a compromise — see `dam_db::tenant_conn::single_tenant_pool`.
+    ///
+    /// The `dam_global.` reads in here are schema-qualified and work through either pool.
     global: PgPool,
     store: Arc<dyn BlobStore>,
     keyring: Keyring,
@@ -70,6 +91,11 @@ pub struct DeliveryState {
     /// A `Uuid` rather than a rendered prefix string, because `Key::original` builds the path — a caller
     /// passing a prefix would be one concatenation away from naming another tenant's.
     tenant_id: Uuid,
+    /// The origin to build absolute delivery URLs from, when configured.
+    ///
+    /// `None` means root-relative, which is right for a same-origin client and wrong for any other — see
+    /// `ServerConfig::public_url`.
+    public_url: Option<String>,
     /// Where "now" comes from.
     ///
     /// Injected rather than `Utc::now()` at the point of use, because every interesting property of this
@@ -102,8 +128,69 @@ impl DeliveryState {
             store,
             keyring,
             tenant_id,
+            public_url: None,
             clock: Arc::new(dam_core::SystemClock),
         }
+    }
+
+    /// Sets the origin absolute delivery URLs are built from.
+    #[must_use]
+    pub fn with_public_url(mut self, public_url: Option<String>) -> Self {
+        self.public_url = public_url.map(|url| url.trim_end_matches('/').to_owned());
+        self
+    }
+
+    /// The URL a client fetches for `token`.
+    ///
+    /// Absolute when the deployment says what its public origin is, root-relative otherwise. Built here rather
+    /// than at each call site so the route and the URL cannot disagree — a hand-written `/d/` somewhere else is
+    /// one rename away from a 404.
+    pub fn url_for(&self, token: &str) -> String {
+        match &self.public_url {
+            Some(base) => format!("{base}/d/{token}"),
+            None => format!("/d/{token}"),
+        }
+    }
+
+    /// Signs an internal-preview token, without touching the database.
+    ///
+    /// Synchronous, and that is the point: a page of sixty assets mints sixty of these, and each is an HMAC
+    /// over a few dozen bytes. Going through `issue_preview` would mean sixty async calls that each do no I/O,
+    /// and — worse — would tempt a future change to add a query to a per-row path.
+    ///
+    /// The rights verdict is not consulted here for the reason `signed_url::Purpose` documents. The three
+    /// restrictions are: the transform must be proxy-class, an identity is required, and a share link is
+    /// refused. They are checked here and again at delivery.
+    pub fn sign_preview(
+        &self,
+        asset_id: Uuid,
+        transform: &str,
+        identity_id: Uuid,
+        ttl: ChronoDuration,
+        now: DateTime<Utc>,
+    ) -> Result<String, Refusal> {
+        if !preview_is_permitted(transform, Some(identity_id), None) {
+            tracing::error!(%asset_id, transform, "refused to sign a preview that breaks its restrictions");
+            return Err(Refusal::NotDeliverable);
+        }
+        let ttl = ttl.min(MAX_TOKEN_TTL).max(ChronoDuration::seconds(1));
+        let claim = DeliveryClaim {
+            purpose: Purpose::InternalPreview,
+            asset_id,
+            transform: transform.to_owned(),
+            // Never evaluated for this purpose; `internal` is the honest label for what it names.
+            channel: "internal".to_owned(),
+            territory: "WORLD".to_owned(),
+            identity_id: Some(identity_id),
+            share_link_id: None,
+            expires_at: now + ttl,
+            key_id: String::new(),
+        };
+        // The URL, not the token: a bare token is not something a client can fetch, and returning one is how the
+        // first version put an unfetchable string in `thumbnail_url`.
+        signed_url::sign(&self.keyring, &claim)
+            .map(|token| self.url_for(&token))
+            .ok_or(Refusal::Internal)
     }
 
     /// Replaces the clock, for tests that need to move time.
@@ -114,6 +201,10 @@ impl DeliveryState {
     }
 
     /// The current instant, from this state's clock.
+    ///
+    /// Used by the asset endpoints too, so a preview token is minted against the *same* clock this handler
+    /// verifies it with. A caller reading `Utc::now()` instead is the bug that made an expiry case assert 404
+    /// and pass on a 302 — see the note on `clock`.
     pub fn now(&self) -> DateTime<Utc> {
         self.clock.now()
     }
@@ -121,9 +212,17 @@ impl DeliveryState {
 
 /// The delivery routes.
 pub fn router(state: DeliveryState) -> axum::Router {
+    router_from(Arc::new(state))
+}
+
+/// The same routes over a state the caller already holds.
+///
+/// The asset endpoints need the same `DeliveryState` in order to mint preview tokens with the same keyring and
+/// the same clock, so it has to be shareable rather than moved in here.
+pub fn router_from(state: Arc<DeliveryState>) -> axum::Router {
     axum::Router::new()
         .route("/d/{token}", get(deliver))
-        .with_state(Arc::new(state))
+        .with_state(state)
 }
 
 /// Why a delivery was refused.
@@ -189,8 +288,9 @@ pub async fn issue(
     ttl: ChronoDuration,
     now: DateTime<Utc>,
 ) -> Result<String, Refusal> {
-    issue_for_share(
+    issue_with_purpose(
         state,
+        Purpose::Distribution,
         asset_id,
         transform,
         usage,
@@ -200,6 +300,67 @@ pub async fn issue(
         now,
     )
     .await
+}
+
+/// Mints a preview URL for the DAM's own interface.
+///
+/// The rights verdict is not consulted — see [`Purpose`] for why that is a decision rather than an omission —
+/// so this must never be reachable from anything that hands a URL outside the tenant. It is called from the
+/// asset endpoints, for a caller who has already been access-checked, and it refuses anything but a
+/// proxy-class transform.
+pub async fn issue_preview(
+    state: &DeliveryState,
+    asset_id: Uuid,
+    transform: &str,
+    identity_id: Uuid,
+    ttl: ChronoDuration,
+    now: DateTime<Utc>,
+) -> Result<String, Refusal> {
+    issue_with_purpose(
+        state,
+        Purpose::InternalPreview,
+        asset_id,
+        transform,
+        // A preview is not a channel delivery, and the usage is carried only so the claim has one shape. It
+        // is never evaluated for this purpose; `internal` is the honest label for what it names.
+        &Usage {
+            channel: "internal".to_owned(),
+            territory: "WORLD".to_owned(),
+        },
+        Some(identity_id),
+        None,
+        ttl,
+        now,
+    )
+    .await
+}
+
+/// Whether `transform` may be delivered as an internal preview.
+///
+/// A **known built-in profile**, and nothing else. That covers both things this has to exclude: `original` is
+/// not a profile at all, and a future tenant-defined profile will not be in `profiles::ALL` — so it is refused
+/// until somebody decides deliberately whether a tenant's own render is an internal preview, which is the
+/// right default because the answer is not obvious.
+///
+/// An earlier version also required the profile's role to be `thumbnail`, `preview` or `proxy`. That branch was
+/// **unfalsifiable**: every built-in profile is proxy-class, so no test could distinguish the role check from
+/// its absence, and a mutation removing it survived. An untested branch is one that will be wrong when it
+/// finally matters, so it is gone — and when a non-proxy built-in profile exists, the decision about whether it
+/// is previewable is a decision to make then, with a test that can see it.
+fn previewable(transform: &str) -> bool {
+    dam_media::profiles::by_name(transform).is_some()
+}
+
+/// All three restrictions on an internal preview, in one predicate.
+///
+/// One function so the mint side and the serve side cannot check different subsets — which is the way this
+/// kind of restriction usually rots: a new field is checked where it is created and not where it is used.
+fn preview_is_permitted(
+    transform: &str,
+    identity_id: Option<Uuid>,
+    share_link_id: Option<Uuid>,
+) -> bool {
+    previewable(transform) && identity_id.is_some() && share_link_id.is_none()
 }
 
 /// Mints a delivery URL on behalf of a share link.
@@ -222,19 +383,62 @@ pub async fn issue_for_share(
     ttl: ChronoDuration,
     now: DateTime<Utc>,
 ) -> Result<String, Refusal> {
-    let verdict = rights::effective(&state.global, asset_id, usage, now).await?;
-    if !permits(verdict) {
-        let codes = reason_codes(&state.global, asset_id, usage, now).await;
-        return Err(Refusal::RightsDenied {
-            state: verdict,
-            codes,
-        });
+    issue_with_purpose(
+        state,
+        Purpose::Distribution,
+        asset_id,
+        transform,
+        usage,
+        identity_id,
+        share_link_id,
+        ttl,
+        now,
+    )
+    .await
+}
+
+/// The one place a token is minted.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "every one of these is signed into the token; a struct would hide that and invite a caller to \
+              build a claim with a field left at its default"
+)]
+async fn issue_with_purpose(
+    state: &DeliveryState,
+    purpose: Purpose,
+    asset_id: Uuid,
+    transform: &str,
+    usage: &Usage,
+    identity_id: Option<Uuid>,
+    share_link_id: Option<Uuid>,
+    ttl: ChronoDuration,
+    now: DateTime<Utc>,
+) -> Result<String, Refusal> {
+    if purpose.is_distribution() {
+        let verdict = rights::effective(&state.global, asset_id, usage, now).await?;
+        if !permits(verdict) {
+            let codes = reason_codes(&state.global, asset_id, usage, now).await;
+            return Err(Refusal::RightsDenied {
+                state: verdict,
+                codes,
+            });
+        }
+    } else if !preview_is_permitted(transform, identity_id, share_link_id) {
+        // `NotDeliverable`, not a distinct variant: the caller asking for this is our own code, and a
+        // programming mistake here should look like a dead URL rather than produce a hint that a preview of
+        // the original is a thing worth asking for.
+        tracing::error!(
+            %asset_id, transform, has_identity = identity_id.is_some(), shared = share_link_id.is_some(),
+            "refused to mint an internal preview that breaks its own restrictions"
+        );
+        return Err(Refusal::NotDeliverable);
     }
 
     // Clamped rather than refused. A caller asking for a year is asking for a share link, and answering
     // with a 24-hour URL is more useful than an error about a constant they cannot see.
     let ttl = ttl.min(MAX_TOKEN_TTL).max(ChronoDuration::seconds(1));
     let claim = DeliveryClaim {
+        purpose,
         asset_id,
         transform: transform.to_owned(),
         channel: usage.channel.clone(),
@@ -277,14 +481,21 @@ async fn deliver(
         territory: claim.territory.clone(),
     };
 
-    // Step 2. Asked afresh, which is what makes a lapsed licence stop an already-issued URL.
-    let verdict = rights::effective(&state.global, claim.asset_id, &usage, now).await?;
-    if !permits(verdict) {
-        let codes = reason_codes(&state.global, claim.asset_id, &usage, now).await;
-        return Err(Refusal::RightsDenied {
-            state: verdict,
-            codes,
-        });
+    if claim.purpose.is_distribution() {
+        // Step 2. Asked afresh, which is what makes a lapsed licence stop an already-issued URL.
+        let verdict = rights::effective(&state.global, claim.asset_id, &usage, now).await?;
+        if !permits(verdict) {
+            let codes = reason_codes(&state.global, claim.asset_id, &usage, now).await;
+            return Err(Refusal::RightsDenied {
+                state: verdict,
+                codes,
+            });
+        }
+    } else if !preview_is_permitted(&claim.transform, claim.identity_id, claim.share_link_id) {
+        // Re-checked here and not only where the token was minted. A token minted before a restriction
+        // tightened must stop working, which is the same argument as re-evaluating rights: a signature
+        // records what was asked for, never that it is still allowed.
+        return Err(Refusal::NotDeliverable);
     }
 
     let key = object_key(&state, &claim, now).await?;

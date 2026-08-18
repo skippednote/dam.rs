@@ -164,6 +164,19 @@ export async function saveMetadata(
 	});
 }
 
+/**
+ * A delivery URL the server may have sent root-relative, resolved against the API.
+ *
+ * The server sends an absolute URL only when the deployment configures `server.public_url`; otherwise it sends
+ * `/d/<token>`, which a browser would resolve against *this* origin. In development the app is on a Vite port
+ * and the API is on another, so that resolves to the wrong server and 404s — which is exactly how this was
+ * found.
+ */
+export function deliveryUrl(url: string): string {
+	if (/^https?:\/\//.test(url)) return url;
+	return `${session.base}${url.startsWith('/') ? '' : '/'}${url}`;
+}
+
 /** Liveness, for the Settings page's connection check. Deliberately not authenticated. */
 export async function health(base: string): Promise<boolean> {
 	try {

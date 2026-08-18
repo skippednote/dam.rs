@@ -194,7 +194,14 @@ export interface components {
              *     is not the same as zero, and the UI renders it differently.
              */
             tag_confidence?: number | null;
-            /** @description URL of the thumbnail. Absent while a newly-uploaded asset is still being processed. */
+            /**
+             * @description URL of the thumbnail, as a signed internal-preview delivery URL.
+             *
+             *     Absolute when the deployment configures `server.public_url`, root-relative otherwise — so a client on a
+             *     different origin must resolve it against the API's base rather than its own. Absent when the asset has
+             *     no thumbnail yet, which is the normal state between an upload finishing and the worker deriving it: a
+             *     URL minted regardless would 404, and a grid cannot tell a broken link from work still in progress.
+             */
             thumbnail_url?: string | null;
             /**
              * @description Where the original lives, derived server-side from storage class and restore state so the UI

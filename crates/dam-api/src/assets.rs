@@ -10,15 +10,20 @@
 //! 404 for both. A 403 on an asset in a group the caller does not hold confirms the asset exists, which is
 //! the disclosure the group scoping was for.
 //!
-//! ## `thumbnail_url` is `None` for now, and that is a pending decision rather than an omission
+//! ## `thumbnail_url` is an internal-preview token, and the rights argument for that is written down
 //!
-//! A thumbnail is a render, a render passes the signed-URL chokepoint, and the chokepoint enforces rights
-//! (D12). An asset with no licence is `RightsState::Unknown`, and unknown denies — so a fresh library's
-//! thumbnails would all be refused. Resolving that means deciding whether an internal preview is
-//! distribution, which is a rights question ARCHITECTURE does not settle; it is written up in
-//! `NEEDS-REVIEW.md`. Until it is answered the field is absent, which the wire type already allows.
+//! A thumbnail is a render, so it goes through the same signed-URL chokepoint as a download — D12's "one code
+//! path" is intact. What differs is the *purpose* signed into the token: `InternalPreview` does not consult the
+//! rights verdict, because an unlicensed asset is `RightsState::Unknown` and unknown denies, which would leave
+//! a fresh library with no thumbnails at all. The full argument, and the three restrictions that keep it from
+//! being a hole, are in `dam_core::signed_url::Purpose`.
+//!
+//! A URL is minted only for an asset that *has* a thumbnail derivative. Minting one regardless would produce a
+//! link that 404s, and a grid cannot tell a broken URL from an asset still being processed — so the absence of
+//! the field is how "not rendered yet" is expressed.
 
 use crate::caller;
+use crate::delivery::DeliveryState;
 use crate::dto::{AssetPage, AssetSummary};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -38,6 +43,10 @@ pub struct AssetState {
     /// The shared pool. Tenant scoping happens per request through `TenantConn`, not by holding a pool per
     /// tenant — §5.2's reason is that a thousand tenants is a thousand idle connection sets.
     pub global: PgPool,
+    /// Shared with the delivery routes, because a thumbnail URL is a delivery token and there must be exactly
+    /// one keyring. Two would mean tokens minted here failing verification there, which presents as an
+    /// intermittently broken grid rather than as a configuration error.
+    pub delivery: Option<Arc<DeliveryState>>,
 }
 
 impl std::fmt::Debug for AssetState {
@@ -225,10 +234,28 @@ pub async fn list(
         params.limit,
     )
     .await?;
+
+    // One query for the whole page, not one per asset. A page of sixty asking "do you have a thumbnail" sixty
+    // times is sixty round trips for information one `= ANY` answers.
+    let ids: Vec<Uuid> = page.items.iter().map(|item| item.id).collect();
+    let with_thumbnails =
+        dam_db::derivatives::which_have(conn.executor(), &ids, &thumb_profile().op_hash()).await?;
     conn.commit().await?;
 
+    let items = page
+        .items
+        .iter()
+        .map(|row| {
+            let mut summary = summary_of(row);
+            if with_thumbnails.contains(&row.id) {
+                summary.thumbnail_url = thumbnail_url(&state, &caller, row.id);
+            }
+            summary
+        })
+        .collect();
+
     Ok(Json(AssetPage {
-        items: page.items.iter().map(summary_of).collect(),
+        items,
         total: page.total,
         offset: page.offset,
     }))
@@ -255,11 +282,19 @@ pub async fn detail(
     let caller = caller::authorize(&state.global, &headers, Action::Read).await?;
     let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
     let found = assets::detail(conn.executor(), &caller.predicate, asset_id).await?;
+    let with_thumbnail =
+        dam_db::derivatives::which_have(conn.executor(), &[asset_id], &thumb_profile().op_hash())
+            .await?;
     conn.commit().await?;
     let found = found.ok_or(Failure::NotFound)?;
 
+    let mut summary = summary_of(&found.summary);
+    if with_thumbnail.contains(&asset_id) {
+        summary.thumbnail_url = thumbnail_url(&state, &caller, asset_id);
+    }
+
     Ok(Json(AssetDetail {
-        summary: summary_of(&found.summary),
+        summary,
         values: found.values,
         technical: found.technical,
         duration_ms: found.duration_ms,
@@ -452,6 +487,40 @@ impl From<dam_db::Error> for Failure {
             }
         }
     }
+}
+
+/// How long a thumbnail URL stays valid.
+///
+/// Long enough that a grid the user leaves open and comes back to still renders, short enough that a URL
+/// captured from a browser cache or a shared screenshot stops working the same day. It is well under
+/// `delivery::MAX_TOKEN_TTL`, which clamps it anyway.
+const THUMBNAIL_TTL: chrono::Duration = chrono::Duration::hours(6);
+
+/// The profile a grid cell draws.
+///
+/// Resolved through `profiles::by_name` rather than referencing the constant, so that if the name and the
+/// constant ever disagree this fails loudly here instead of minting tokens for a profile the delivery path
+/// cannot resolve.
+fn thumb_profile() -> &'static dam_media::profiles::Profile {
+    &dam_media::profiles::THUMB_256
+}
+
+/// A signed internal-preview URL for `asset_id`'s thumbnail, if this deployment can mint one.
+///
+/// `None` when the delivery state is absent — which is the case in the endpoint tests, and is why the field is
+/// optional in the first place rather than something a caller must have. A machine key has no identity, and an
+/// internal preview requires one, so it gets no URL either: that is the restriction in
+/// `signed_url::Purpose`, and it is enforced by the mint refusing rather than by this returning early.
+fn thumbnail_url(state: &AssetState, caller: &caller::Caller, asset_id: Uuid) -> Option<String> {
+    let delivery = state.delivery.as_ref()?;
+    let identity = caller.identity_id?;
+    let now = delivery.now();
+
+    // Blocking on the mint would be wrong here: it is HMAC over a few dozen bytes, so it is microseconds, and
+    // making it async would mean a page of sixty awaiting sixty futures for no I/O.
+    delivery
+        .sign_preview(asset_id, thumb_profile().name, identity, THUMBNAIL_TTL, now)
+        .ok()
 }
 
 /// The wire summary for a read row.

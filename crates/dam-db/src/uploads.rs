@@ -85,6 +85,80 @@ where
     Ok(session)
 }
 
+/// What the client said about the upload, plus what it became.
+///
+/// Read in one query rather than three. The three fields are wanted at the same moment — finalisation needs
+/// the declared type to sniff against, the declared filename to record, and the asset id to know whether it
+/// has already run — and three round trips inside one job is three chances to see a half-updated row.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Declared {
+    /// Preserved verbatim: it is what the user called their file. Never trusted for the type.
+    pub filename: Option<String>,
+    /// Recorded for the audit trail. The stored mime is sniffed from the bytes.
+    pub mime: Option<String>,
+    /// The asset this session became, when it has been finalised.
+    pub asset_id: Option<uuid::Uuid>,
+    /// BLAKE3 of the promoted object, when the promotion has happened.
+    ///
+    /// Its presence means the bytes are already at their content-addressed key — which is what makes
+    /// finalisation resumable across the gap between promoting an object and recording an asset. Those two
+    /// cannot be one transaction, so without this a crash between them left the bytes stored and the retry
+    /// failing at "staging object not found".
+    pub content_hash: Option<String>,
+}
+
+/// The declared fields for one upload, or `None` if there is no such session.
+pub async fn declared<'e, E>(
+    executor: E,
+    tenant: Uuid,
+    upload_id: &str,
+) -> Result<Option<Declared>, Error>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    let row = sqlx::query_as::<_, (Option<String>, Option<String>, Option<Uuid>, Option<String>)>(
+        "SELECT declared_filename, declared_mime, asset_id, content_hash FROM upload_sessions \
+         WHERE tenant_id = $1 AND upload_id = $2",
+    )
+    .bind(tenant)
+    .bind(upload_id)
+    .fetch_optional(executor)
+    .await?;
+
+    Ok(
+        row.map(|(filename, mime, asset_id, content_hash)| Declared {
+            filename,
+            mime,
+            asset_id,
+            content_hash,
+        }),
+    )
+}
+
+/// Records the digest of a promoted upload.
+///
+/// Called the moment the promotion succeeds and before the asset row exists — see [`Declared::content_hash`].
+pub async fn record_promotion<'e, E>(
+    executor: E,
+    tenant: Uuid,
+    upload_id: &str,
+    content_hash: &str,
+) -> Result<(), Error>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    sqlx::query(
+        "UPDATE upload_sessions SET content_hash = $3, updated_at = now() \
+         WHERE tenant_id = $1 AND upload_id = $2",
+    )
+    .bind(tenant)
+    .bind(upload_id)
+    .bind(content_hash)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
 /// Loads a session, or `None` if there is no such upload.
 ///
 /// Absence is a normal outcome — a client polling a completed upload's id arrives here — so it

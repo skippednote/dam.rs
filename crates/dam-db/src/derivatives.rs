@@ -132,8 +132,27 @@ pub struct NewDerivative<'a> {
 /// back the superseded object key. An upsert here would look tidier and would orphan an object on every
 /// proxy redefinition, with nothing in the schema recording that the old key still exists.
 pub async fn record(pool: &sqlx::PgPool, new: &NewDerivative<'_>) -> Result<Derivative, Error> {
+    let mut conn = pool.acquire().await?;
+    record_on(&mut conn, new).await
+}
+
+/// The same insert, on a connection.
+///
+/// A request handler and a worker stage both hold a [`crate::TenantConn`], whose `search_path` is
+/// transaction-scoped — so the unqualified `derivatives` below has to run on *that* connection or it resolves
+/// against whatever schema the pooled connection last had. In a schema-per-tenant system that is a
+/// cross-tenant write with no error attached to it.
+///
+/// This is the third `*_on` pairing in this crate (`fields::validate_on`, `facets::count_on`). The pattern is
+/// noted rather than abstracted: the right fix is for these functions to take a connection and for the
+/// pool-taking variants to disappear, which is a mechanical change across their callers and their tests, and
+/// worth doing deliberately rather than under a feature.
+pub async fn record_on(
+    conn: &mut sqlx::PgConnection,
+    new: &NewDerivative<'_>,
+) -> Result<Derivative, Error> {
     if new.role == "proxy"
-        && let Some(existing) = current_proxy(pool, new.asset_id).await?
+        && let Some(existing) = current_proxy(&mut *conn, new.asset_id).await?
         && existing.op_hash != new.op_hash
     {
         return Err(Error::Unsupported(format!(
@@ -158,10 +177,10 @@ pub async fn record(pool: &sqlx::PgPool, new: &NewDerivative<'_>) -> Result<Deri
     .bind(new.width)
     .bind(new.height)
     .bind(new.regen_cost_ms)
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
 
-    by_op_hash(pool, new.asset_id, new.op_hash)
+    by_op_hash(&mut *conn, new.asset_id, new.op_hash)
         .await?
         .ok_or_else(|| {
             Error::Inconsistent(format!(
@@ -169,6 +188,50 @@ pub async fn record(pool: &sqlx::PgPool, new: &NewDerivative<'_>) -> Result<Deri
                 new.op_hash, new.asset_id
             ))
         })
+}
+
+/// Every op hash already recorded for `asset_id`.
+///
+/// One query rather than one per profile. The derive stage asks "which of these three recipes do I still owe
+/// you", and asking per profile makes an idempotent re-run cost a round trip per profile for no information.
+pub async fn op_hashes_for<'e, E>(
+    executor: E,
+    asset_id: Uuid,
+) -> Result<std::collections::HashSet<String>, Error>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    let rows: Vec<String> =
+        sqlx::query_scalar("SELECT op_hash FROM derivatives WHERE asset_id = $1")
+            .bind(asset_id)
+            .fetch_all(executor)
+            .await?;
+    Ok(rows.into_iter().collect())
+}
+
+/// Which of `asset_ids` already have a derivative under `op_hash`.
+///
+/// One query for a whole page. The asset endpoints ask "which of these sixty have a thumbnail" in order to
+/// decide which get a URL, and asking per asset is sixty round trips for what one `= ANY` answers.
+pub async fn which_have<'e, E>(
+    executor: E,
+    asset_ids: &[Uuid],
+    op_hash: &str,
+) -> Result<std::collections::HashSet<Uuid>, Error>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    if asset_ids.is_empty() {
+        return Ok(std::collections::HashSet::new());
+    }
+    let rows: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT asset_id FROM derivatives WHERE asset_id = ANY($1) AND op_hash = $2",
+    )
+    .bind(asset_ids.to_vec())
+    .bind(op_hash)
+    .fetch_all(executor)
+    .await?;
+    Ok(rows.into_iter().collect())
 }
 
 /// The asset's current master proxy, if it has one.

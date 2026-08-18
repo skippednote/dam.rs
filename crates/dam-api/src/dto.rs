@@ -33,7 +33,12 @@ pub struct AssetSummary {
     /// chokepoint (D12), and this field is what dims a button rather than what protects an asset.
     pub rights_state: RightsState,
     pub provenance_state: ProvenanceState,
-    /// URL of the thumbnail. Absent while a newly-uploaded asset is still being processed.
+    /// URL of the thumbnail, as a signed internal-preview delivery URL.
+    ///
+    /// Absolute when the deployment configures `server.public_url`, root-relative otherwise — so a client on a
+    /// different origin must resolve it against the API's base rather than its own. Absent when the asset has
+    /// no thumbnail yet, which is the normal state between an upload finishing and the worker deriving it: a
+    /// URL minted regardless would 404, and a grid cannot tell a broken link from work still in progress.
     pub thumbnail_url: Option<String>,
     /// Model confidence in the asset's automatic tags, 0..1. `None` means nothing scored it — which
     /// is not the same as zero, and the UI renders it differently.

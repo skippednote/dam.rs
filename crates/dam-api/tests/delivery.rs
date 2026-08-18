@@ -826,6 +826,7 @@ fn mint_directly(
     dam_core::signed_url::sign(
         &Keyring::single("k1", Secret::new("a-signing-key".to_owned())),
         &dam_core::signed_url::DeliveryClaim {
+            purpose: dam_core::signed_url::Purpose::Distribution,
             asset_id,
             transform: transform.to_owned(),
             channel: usage.channel.clone(),
@@ -837,6 +838,187 @@ fn mint_directly(
         },
     )
     .expect("sign")
+}
+
+// ─── the internal-preview purpose (A.7) ─────────────────────────────────────
+
+/// A live share link over `asset_id`.
+///
+/// Live matters: the delivery handler re-checks the share before anything else, so a share that does not exist
+/// refuses the token for a reason that has nothing to do with what a test is asserting.
+async fn live_share(f: &Fixture, asset_id: Uuid) -> Uuid {
+    dam_db::shares::create(
+        &f.pool,
+        &dam_db::shares::ShareSpec {
+            kind: "asset",
+            target_id: Some(asset_id),
+            search_query: None,
+            passcode: None,
+            expires_at: None,
+            max_downloads: None,
+            allow_original: false,
+            requires_eula: false,
+            created_by: None,
+        },
+    )
+    .await
+    .expect("create a share")
+    .id
+}
+
+/// A preview token minted the way the asset endpoints mint one.
+fn mint_preview(asset_id: Uuid, transform: &str, identity: Option<Uuid>) -> String {
+    dam_core::signed_url::sign(
+        &Keyring::single("k1", Secret::new("a-signing-key".to_owned())),
+        &dam_core::signed_url::DeliveryClaim {
+            purpose: dam_core::signed_url::Purpose::InternalPreview,
+            asset_id,
+            transform: transform.to_owned(),
+            channel: "internal".to_owned(),
+            territory: "WORLD".to_owned(),
+            identity_id: identity,
+            share_link_id: None,
+            expires_at: now() + Duration::hours(1),
+            key_id: String::new(),
+        },
+    )
+    .expect("sign")
+}
+
+async fn a_preview_of_an_unlicensed_asset_is_delivered(f: &Fixture) {
+    // The whole point of A.7. An asset with no licence is `RightsState::Unknown` and unknown denies, so a
+    // *download* of this asset is refused — the case below asserts that has not changed. A thumbnail in the
+    // DAM's own grid is internal cataloguing rather than distribution, and this is what makes a fresh library
+    // show anything at all.
+    let asset_id = asset_with_bytes(f, "preview-unlicensed").await;
+
+    // The distribution path still says no, on the same asset, in the same test.
+    let download = mint_directly(
+        f,
+        asset_id,
+        "web-2048",
+        &web(),
+        now() + Duration::minutes(5),
+    );
+    assert_eq_forbidden(&get(&f.app, &download).await);
+
+    let preview = mint_preview(asset_id, "web-2048", Some(Uuid::from_u128(0x1de)));
+    let response = get(&f.app, &preview).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::FOUND,
+        "an internal preview of an unlicensed asset is delivered; a download of it is not"
+    );
+}
+
+async fn a_preview_of_the_original_is_refused(f: &Fixture) {
+    // Restriction one. The original is the thing a licence is *about*, so an internal preview may never name
+    // it — and this is checked at delivery as well as at the mint, because a token minted before a restriction
+    // tightened must stop working.
+    let asset_id = asset_with_bytes(f, "preview-original").await;
+    let token = mint_preview(asset_id, "original", Some(Uuid::from_u128(0x1de)));
+
+    let response = get(&f.app, &token).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "a preview token naming the original must be refused, not served"
+    );
+}
+
+async fn a_preview_with_no_identity_is_refused(f: &Fixture) {
+    // Restriction three. "Internal" means a member of the tenant; an anonymous internal preview is a
+    // contradiction, and the audit trail needs to say which person a preview was issued to.
+    let asset_id = asset_with_bytes(f, "preview-anonymous").await;
+    let token = mint_preview(asset_id, "web-2048", None);
+
+    assert_eq!(
+        get(&f.app, &token).await.status(),
+        StatusCode::NOT_FOUND,
+        "a preview with no identity must be refused"
+    );
+}
+
+async fn a_preview_token_cannot_carry_a_share_link(f: &Fixture) {
+    // Restriction two, and the sharpest of the three: a share is distribution by definition, so an external
+    // recipient looking at a thumbnail of an unlicensed asset is exactly the exposure the rights model exists
+    // to prevent. Minted by hand, because nothing in the codebase will produce this combination.
+    //
+    // The share is **live**, and that matters: an earlier version of this case invented a share id that did not
+    // exist, so `shares::is_live` refused the token before the preview restriction was ever consulted. The case
+    // passed and proved nothing — a mutation allowing a shared preview survived it.
+    let asset_id = asset_with_bytes(f, "preview-shared").await;
+    let share_id = live_share(f, asset_id).await;
+
+    let token = dam_core::signed_url::sign(
+        &Keyring::single("k1", Secret::new("a-signing-key".to_owned())),
+        &dam_core::signed_url::DeliveryClaim {
+            purpose: dam_core::signed_url::Purpose::InternalPreview,
+            asset_id,
+            transform: "web-2048".to_owned(),
+            channel: "internal".to_owned(),
+            territory: "WORLD".to_owned(),
+            identity_id: Some(Uuid::from_u128(0x1de)),
+            share_link_id: Some(share_id),
+            expires_at: now() + Duration::hours(1),
+            key_id: String::new(),
+        },
+    )
+    .expect("sign");
+
+    assert_eq!(
+        get(&f.app, &token).await.status(),
+        StatusCode::NOT_FOUND,
+        "a preview issued through a live share link must still be refused"
+    );
+}
+
+async fn a_preview_of_a_name_that_is_not_a_profile_is_refused(f: &Fixture) {
+    // The other half of restriction one. `original` is not a profile, and neither is a typo or a future
+    // tenant-defined render — all three land here, and all three are refused rather than approximated.
+    let asset_id = asset_with_bytes(f, "preview-unknown-profile").await;
+    for transform in ["original", "thumb-512", "tenant-hero-banner"] {
+        let token = mint_preview(asset_id, transform, Some(Uuid::from_u128(0x1de)));
+        assert_eq!(
+            get(&f.app, &token).await.status(),
+            StatusCode::NOT_FOUND,
+            "{transform} is not a built-in profile and must not be previewable"
+        );
+    }
+}
+
+async fn a_distribution_token_cannot_be_edited_into_a_preview(f: &Fixture) {
+    // The forgery this design has to survive. If the purpose were outside the signature, anyone holding a
+    // refused download URL could turn it into a preview and skip the rights check — strictly worse than not
+    // having the feature at all.
+    let asset_id = asset_with_bytes(f, "preview-forged").await;
+    let download = mint_directly(
+        f,
+        asset_id,
+        "web-2048",
+        &web(),
+        now() + Duration::minutes(5),
+    );
+    assert_eq_forbidden(&get(&f.app, &download).await);
+
+    // The payload's purpose byte flipped from `Distribution` (1) to `InternalPreview` (2), signature untouched.
+    let encoder = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let (payload_b64, signature_b64) = download.split_once('.').expect("two parts");
+    let mut payload = base64::Engine::decode(&encoder, payload_b64).expect("decodes");
+    // Version byte, a 4-byte length, then the purpose.
+    assert_eq!(payload[5], 1, "the premise: this is a distribution token");
+    payload[5] = 2;
+    let forged = format!(
+        "{}.{}",
+        base64::Engine::encode(&encoder, &payload),
+        signature_b64
+    );
+
+    assert_eq!(
+        get(&f.app, &forged).await.status(),
+        StatusCode::NOT_FOUND,
+        "flipping the purpose must break the signature, not the rights check"
+    );
 }
 
 fn assert_eq_forbidden(response: &axum::http::Response<Body>) {
@@ -872,6 +1054,13 @@ async fn the_delivery_chokepoint_holds() {
     an_expired_token_is_refused_even_though_the_rights_are_fine(&f).await;
     a_deleted_asset_is_not_deliverable(&f).await;
     a_token_ttl_is_clamped_rather_than_refused(&f).await;
+
+    a_preview_of_an_unlicensed_asset_is_delivered(&f).await;
+    a_preview_of_the_original_is_refused(&f).await;
+    a_preview_with_no_identity_is_refused(&f).await;
+    a_preview_token_cannot_carry_a_share_link(&f).await;
+    a_preview_of_a_name_that_is_not_a_profile_is_refused(&f).await;
+    a_distribution_token_cannot_be_edited_into_a_preview(&f).await;
 
     // Last: it edits every licence row, so it must not run before the cases above.
     a_licence_that_lapses_after_issue_stops_an_already_issued_url(&f).await;

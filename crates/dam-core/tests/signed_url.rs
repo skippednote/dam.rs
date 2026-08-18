@@ -15,7 +15,7 @@
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use dam_core::Secret;
-use dam_core::signed_url::{self, DeliveryClaim, Keyring, VerifyError};
+use dam_core::signed_url::{self, DeliveryClaim, Keyring, Purpose, VerifyError};
 use uuid::Uuid;
 
 fn now() -> DateTime<Utc> {
@@ -28,6 +28,7 @@ fn keyring() -> Keyring {
 
 fn claim() -> DeliveryClaim {
     DeliveryClaim {
+        purpose: Purpose::Distribution,
         asset_id: Uuid::from_u128(0xa55e7),
         transform: "web-2048".to_owned(),
         channel: "web".to_owned(),
@@ -429,5 +430,96 @@ fn a_token_from_another_format_version_is_refused_rather_than_misparsed() {
             Err(VerifyError::WrongVersion | VerifyError::BadSignature)
         ),
         "got {outcome:?}"
+    );
+}
+
+// ─── the purpose (A.7) ──────────────────────────────────────────────────────
+
+#[test]
+fn the_purpose_is_signed_so_it_cannot_be_edited() {
+    // The whole safety argument for `InternalPreview`. If the purpose travelled outside the signature, a
+    // caller holding any distribution URL could turn it into a preview and skip the rights check — which is
+    // strictly worse than not having the feature.
+    let distribution = claim();
+    let preview = DeliveryClaim {
+        purpose: Purpose::InternalPreview,
+        ..claim()
+    };
+
+    let one = sign(&distribution);
+    let other = sign(&preview);
+    assert_ne!(
+        one, other,
+        "two claims differing only in purpose must sign differently"
+    );
+
+    assert_eq!(
+        signed_url::verify(&keyring(), &one, now())
+            .expect("verifies")
+            .purpose,
+        Purpose::Distribution
+    );
+    assert_eq!(
+        signed_url::verify(&keyring(), &other, now())
+            .expect("verifies")
+            .purpose,
+        Purpose::InternalPreview
+    );
+}
+
+#[test]
+fn a_token_from_the_previous_format_version_is_refused_rather_than_defaulted() {
+    // A v2 token carries no purpose, and defaulting a missing one is wrong in a different direction each
+    // way: `Distribution` breaks every preview URL, `InternalPreview` lets a token issued before this
+    // existed skip the rights check. Refusing is the only reading that cannot be exploited.
+    //
+    // Built by hand, because the point is a payload this build cannot produce: the v2 layout with the
+    // version byte lowered.
+    let token = sign(&claim());
+    let encoder = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let (payload_b64, signature_b64) = token.split_once('.').expect("two parts");
+    let mut payload = base64::Engine::decode(&encoder, payload_b64).expect("decodes");
+    payload[0] = 2;
+
+    let downgraded = format!(
+        "{}.{}",
+        base64::Engine::encode(&encoder, &payload),
+        signature_b64
+    );
+    assert_eq!(
+        signed_url::verify(&keyring(), &downgraded, now()),
+        Err(VerifyError::WrongVersion)
+    );
+}
+
+#[test]
+fn an_unknown_purpose_byte_is_malformed_rather_than_a_default() {
+    // The same argument one field down: a purpose added later must not decode as one of today's. The byte is
+    // explicit in the wire format for this reason, so reordering the enum cannot reinterpret a token either.
+    let token = sign(&claim());
+    let encoder = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let (payload_b64, _) = token.split_once('.').expect("two parts");
+    let mut payload = base64::Engine::decode(&encoder, payload_b64).expect("decodes");
+    // Version byte, then a 4-byte length, then the purpose byte.
+    payload[5] = 9;
+
+    // Re-signed, so this tests the *parser* rather than the signature check — an attacker who could only
+    // flip the byte would fail on the signature, and that would tell us nothing about how a forged-but-valid
+    // payload is read.
+    let resigned = {
+        let mut hmac =
+            <hmac::Hmac<sha2::Sha256> as hmac::Mac>::new_from_slice(b"a-real-signing-key")
+                .expect("key");
+        hmac::Mac::update(&mut hmac, &payload);
+        hmac::Mac::finalize(hmac).into_bytes().to_vec()
+    };
+    let token = format!(
+        "{}.{}",
+        base64::Engine::encode(&encoder, &payload),
+        base64::Engine::encode(&encoder, &resigned)
+    );
+    assert_eq!(
+        signed_url::verify(&keyring(), &token, now()),
+        Err(VerifyError::Malformed)
     );
 }

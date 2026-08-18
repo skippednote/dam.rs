@@ -15,6 +15,7 @@ dam-store = { path = "../../crates/dam-store" }
 dam-media = { path = "../../crates/dam-media" }
 dam-ai = { path = "../../crates/dam-ai" }
 dam-search = { path = "../../crates/dam-search" }
+dam-pipeline = { path = "../../crates/dam-pipeline" }
 dam-connect = { path = "../../crates/dam-connect" }
 anyhow = { workspace = true }
 tokio = { workspace = true }
@@ -22,6 +23,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 figment = { workspace = true }
 clap = { workspace = true }
+sqlx = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"

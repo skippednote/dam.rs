@@ -24,6 +24,24 @@ use dam_core::TenantSlug;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+/// Where a new tenant's objects go.
+///
+/// Passed in rather than read from configuration here, because `dam-db` has no business knowing how the
+/// deployment is configured — and because a test provisions against its own container. The fields mirror
+/// `dam_global.storage_pools`, minus the ones this function fills in.
+#[derive(Debug, Clone, Copy)]
+pub struct StoragePool<'a> {
+    /// `None` for AWS, which resolves from the region.
+    pub endpoint: Option<&'a str>,
+    pub region: &'a str,
+    pub bucket: &'a str,
+    /// Required for SeaweedFS, MinIO, Ceph RGW and every other non-AWS endpoint.
+    pub force_path_style: bool,
+    /// Where the credential lives — a 1Password item, an SSM path, an environment variable name. Never the
+    /// credential itself.
+    pub credentials_ref: &'a str,
+}
+
 /// A provisioned tenant.
 #[derive(Debug, Clone)]
 pub struct Tenant {
@@ -44,6 +62,7 @@ pub async fn tenant(
     url: &str,
     slug: &TenantSlug,
     display_name: &str,
+    storage: &StoragePool<'_>,
 ) -> Result<Tenant, Error> {
     let schema_name = slug.schema_name();
 
@@ -81,6 +100,29 @@ pub async fn tenant(
     .await?;
 
     seed_feature_flags(&mut tx, id).await?;
+
+    // The tenant's hot pool, in the same transaction as the tenant row. Without one, ingest gets as far as
+    // recording a placement and refuses — which is exactly what happened the first time an upload ran through
+    // the real pipeline: the job failed with "no instant storage pool is configured" and went straight to
+    // `dead`. A tenant that cannot store anything is not provisioned, so it is created here rather than left
+    // for an operator to notice.
+    sqlx::query(
+        "INSERT INTO dam_global.storage_pools \
+           (id, tenant_id, name, driver, endpoint, region, bucket, force_path_style, \
+            credentials_ref, storage_class, latency_class) \
+         VALUES (gen_random_uuid(), $1, 'hot', 's3', $2, $3, $4, $5, $6, 'STANDARD', 'instant')",
+    )
+    .bind(id)
+    .bind(storage.endpoint)
+    .bind(storage.region)
+    .bind(storage.bucket)
+    .bind(storage.force_path_style)
+    // A *reference*, never a credential. The pool row says where to find the secret; the secret itself lives
+    // where secrets live, and a connection string in a table is a connection string in every backup.
+    .bind(storage.credentials_ref)
+    .execute(&mut *tx)
+    .await?;
+
     tx.commit().await?;
 
     Ok(Tenant {

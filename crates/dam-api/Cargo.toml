@@ -12,6 +12,7 @@ dam-core = { path = "../dam-core" }
 dam-db = { path = "../dam-db" }
 dam-store = { path = "../dam-store" }
 dam-media = { path = "../dam-media" }
+dam-pipeline = { path = "../dam-pipeline" }
 dam-search = { path = "../dam-search" }
 dam-connect = { path = "../dam-connect" }
 thiserror = { workspace = true }

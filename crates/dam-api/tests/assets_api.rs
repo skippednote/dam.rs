@@ -52,6 +52,9 @@ async fn fixture() -> Fixture {
 
     let app = router(AssetState {
         global: global.clone(),
+        // No delivery state: this suite is about the endpoints' contract, not about minting tokens, and
+        // `thumbnail_url` being absent is exactly what the case below asserts.
+        delivery: None,
     });
     let acme = pg_schema(&pg, "t_acme").await;
     let globex = pg_schema(&pg, "t_globex").await;

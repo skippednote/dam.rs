@@ -21,7 +21,9 @@ pnpm = "10"
 # query! can resolve tenant tables. See ARCHITECTURE.md §5.5.
 DATABASE_URL = "postgres://damrs:damrs@localhost:5440/damrs?options=-c%20search_path%3Dtenant_template,extensions,public"
 SQLX_OFFLINE = "true"    # CI and normal builds use .sqlx/; unset to regenerate
-RUST_LOG = "damrs=debug,sqlx=warn,tower_http=debug"
+# Crate names, not the project name: `damrs` is not a crate, so the old value silenced every binary while
+# looking like it configured them — the worker started and logged nothing at all.
+RUST_LOG = "damd=info,dam_worker=info,dam_api=info,dam_pipeline=info,dam_db=info,sqlx=warn"
 
 # Local dev stack (docker/compose.dev.yml). Tests use testcontainers on random
 # ports instead and ignore these.
@@ -48,6 +50,10 @@ DAMRS_SEARCH__INDEX_ROOT = "./data/search"
 # Which tenant the delivery routes serve. Named rather than inferred, because a dev database that has
 # grown a second tenant makes the answer ambiguous and `damd` then refuses to start rather than guess.
 DAMRS_SERVER__DELIVERY_TENANT = "acme"
+
+# Where the API is reached from a browser. Set locally because the Svelte dev server is on another port, and a
+# root-relative delivery URL would resolve against *it* — a 404 from the wrong server.
+DAMRS_SERVER__PUBLIC_URL = "http://localhost:8080"
 
 [tasks.openapi]
 description = "Regenerate openapi.json and the TypeScript client from it"

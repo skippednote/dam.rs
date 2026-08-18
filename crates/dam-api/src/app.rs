@@ -32,6 +32,12 @@ use tower_http::trace::TraceLayer;
 pub struct AppDeps {
     /// The shared pool. Tenant scoping is per request through `TenantConn` (§5.2).
     pub global: PgPool,
+    /// A pool pinned to the delivery tenant's schema.
+    ///
+    /// The delivery route reads tenant-schema tables written unqualified, and it serves exactly one tenant by
+    /// construction — see `DeliveryState::global`. Separate from `global` rather than derived here, because
+    /// building it needs the database URL and this function has a `Config` that redacts it.
+    pub delivery_pool: PgPool,
     pub store: Arc<dyn dam_store::ResumableStore>,
     /// The blob store the delivery path presigns from.
     pub delivery_store: Arc<dyn dam_store::BlobStore>,
@@ -57,9 +63,23 @@ const MAX_JSON_BODY: usize = 256 * 1024;
 
 /// Assembles the router.
 pub fn router(cfg: &Config, deps: AppDeps) -> Router {
+    // Built first and shared, because a thumbnail URL is a delivery token: the asset endpoints mint them and
+    // the delivery route verifies them, and two keyrings would mean tokens that fail verification — which
+    // presents as an intermittently broken grid rather than as a configuration error.
+    let delivery = Arc::new(
+        crate::delivery::DeliveryState::new(
+            deps.delivery_pool.clone(),
+            Arc::clone(&deps.delivery_store),
+            deps.keyring.clone(),
+            deps.delivery_tenant,
+        )
+        .with_public_url(cfg.server.public_url.clone()),
+    );
+
     let api = Router::new()
         .merge(crate::assets::router(crate::assets::AssetState {
             global: deps.global.clone(),
+            delivery: Some(Arc::clone(&delivery)),
         }))
         .merge(crate::search::router(crate::search::SearchState {
             global: deps.global.clone(),
@@ -75,14 +95,11 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
             deps.global.clone(),
             Arc::clone(&deps.store),
         )))
-        .merge(crate::delivery::router(
-            crate::delivery::DeliveryState::new(
-                deps.global,
-                deps.delivery_store,
-                deps.keyring,
-                deps.delivery_tenant,
-            ),
-        ))
+        // The *same* state the asset endpoints mint preview tokens with. A second `DeliveryState` here was a
+        // real bug: it was built from the global pool, so every delivery failed with `relation "derivatives"
+        // does not exist` while the mint side worked perfectly — and two keyrings would have been the next
+        // failure once one rotated.
+        .merge(crate::delivery::router_from(delivery))
         // Applied to every route above, including the ones a later change adds.
         // `with_status_code` rather than the deprecated `new`, and 504 rather than 408: the request did not
         // time out on the client's side, the server gave up on it, and a client retrying a 408 forever is the

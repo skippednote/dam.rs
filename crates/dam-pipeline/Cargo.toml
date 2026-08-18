@@ -1,0 +1,45 @@
+[package]
+name = "dam-pipeline"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+dam-core = { path = "../dam-core" }
+dam-db = { path = "../dam-db" }
+dam-store = { path = "../dam-store" }
+dam-media = { path = "../dam-media" }
+dam-search = { path = "../dam-search" }
+anyhow = { workspace = true }
+blake3 = { workspace = true }
+bytes = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["fs"] }
+tempfile = { workspace = true }
+tantivy = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+dam-db = { path = "../dam-db", features = ["testing"] }
+dam-store = { path = "../dam-store", features = ["testing"] }
+image = { workspace = true }
+blake3 = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+todo = "warn"
+dbg_macro = "deny"
+unwrap_used = "deny"
+expect_used = "deny"

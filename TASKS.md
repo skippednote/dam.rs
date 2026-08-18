@@ -905,10 +905,92 @@ routers existed, and neither was mounted anywhere.
   is announced as required rather than only marked with an asterisk, and the comma hint is bound to the
   field with `aria-describedby`.
   *`Read`, not `Manage`:* a schema is not secret and every reader needs it to render a form or a rail.
-- [ ] **A.7 Thumbnails.** Blocked on a rights decision, written up in `NEEDS-REVIEW.md`: a thumbnail is
-  a render, a render passes the D12 chokepoint, and an unlicensed asset is `rights_state = 'unknown'`
-  which denies — so a fresh library would show no thumbnails at all. `AssetSummary.thumbnail_url` is
-  `None` until that is answered, which is a shape the wire type already documents.
+- [x] **A.7 Thumbnails, and the rights decision they needed.** Answered: *"we should see thumbnails."*
+  Implemented as a `Purpose` **signed into the delivery claim** rather than as a bypass — `Distribution`
+  or `InternalPreview` — with the token format version bumped 2 → 3.
+  *`InternalPreview` skips the rights verdict and nothing else.* Still signed, still verified at the
+  chokepoint, still access-checked, still the only path to the bytes. D12's "one code path" holds; the
+  chokepoint now knows what it is being asked for.
+  *Three restrictions, checked at the mint and again at delivery:* a known built-in profile only (so never
+  the original, never a typo, never a future tenant-defined render), an identity required, a share link
+  refused — a share is distribution by definition.
+  *A v2 token is refused rather than defaulted.* Defaulting a missing purpose is wrong in a different
+  direction each way: `Distribution` breaks every preview URL, `InternalPreview` lets a token minted
+  before the field existed skip the rights check.
+  *Downloads are unchanged,* and one case asserts both on the same asset in the same run: the preview is
+  served, the download is 403.
+  *All seven mutations of the restrictions now fail a test.* Two survived the first pass, and both were
+  tests passing for the wrong reason — the share-link case invented a share id that did not exist, so
+  `shares::is_live` refused the token before the restriction was consulted; and the role check was
+  **unfalsifiable**, since every built-in profile is proxy-class. The share is live now and the branch is
+  gone rather than left untested.
+
+## P — The ingest pipeline
+
+0.9's remainder, and the reason nothing had a thumbnail. `dam_db::jobs` had the queue — leases,
+round-robin fairness, dedupe keys, attempt counting — and nothing consumed it, so every stage that is "a
+job" was unreachable: an upload landed in staging and stopped there.
+
+- [x] **P.1 `dam-pipeline`, and why it is a library.** Finalisation, derivation and the queue consumer.
+  Both stages need a real object store *and* a real database, and an integration test cannot reach a
+  binary's private modules — so it is a crate, which also lets `damctl` run a stage by hand and makes a
+  stuck asset recoverable without a queue.
+  *Every stage is idempotent, because the queue leases rather than deletes.* At-least-once is the design —
+  a SIGKILLed worker must not lose its work — so a stage that is not safe to run twice turns that into
+  duplicate assets. Finalisation keys on the session's `asset_id`, derivation on `(asset_id, op_hash)`.
+  *A permanent failure skips its remaining attempts.* A malformed file will not parse on the fifth try, and
+  this mattered immediately: the first real upload failed on a missing storage pool and landed in `dead` in
+  one step with an accurate message rather than after twenty minutes of backoff.
+- [x] **P.2 Finalisation: a staged upload becomes an asset.** Built on `dam_media::ingest::finalize`, which
+  already validated and promoted — heading the object, refusing an empty or oversized one from the HEAD
+  alone, sniffing from a ranged prefix, hashing in **bounded windows** so a 200 GB master never
+  materialises in memory. Deliberately not reimplemented: a second hashing path is a second answer to
+  "what is this object's digest".
+  *Deduplication falls out of content addressing rather than being a feature.* Two uploads of one file are
+  two assets sharing one object — asserted, because they have different filenames, metadata and rights.
+  *A real bug found by running it:* promoting an object and recording an asset cannot be one transaction,
+  so a failure between them left the bytes promoted, staging gone, and no asset row — and the retry failed
+  **permanently** with "object not found" on an upload whose bytes were safely stored the whole time.
+  Migration 0014 adds `upload_sessions.content_hash`, written the moment the promotion succeeds; a re-run
+  reads it, skips the promotion, and records the asset. Covered by a case that winds a session back to
+  exactly that state.
+- [x] **P.3 Derivation: thumbnail, preview, master proxy.** Pure-Rust renderer first, libvips for the
+  formats §18.2 puts behind it — inside `dam_media::sandbox`, because libvips marks 14 of its own loaders
+  untrusted. The original is read **once** for all three profiles, which is §18.3's budget.
+  *A design error the tests caught:* a text file came back as a *transient* failure, so the queue would
+  have retried a `.txt` five times and dead-lettered it. A format no renderer can read is now **reported,
+  not failed** — a DAM stores documents, and the grid draws a placeholder. A *missing tool* is the case
+  that does fail the job, because that is a deployment mistake rather than a fact about the file.
+- [x] **P.4 The worker.** `dam-worker` claims, dispatches, completes or fails, and drains on SIGTERM —
+  dropping claimed jobs would leave them locked until the lease lapsed, a two-minute stall per deploy.
+  Finalisation queues derivation, derivation queues indexing, in that order so an asset reaching search
+  already has a thumbnail to draw. An unknown job kind is **permanent**: it means version skew, and
+  retrying will not teach this binary a job it does not know.
+  *Polling, not `LISTEN`/`NOTIFY`,* which would need a dedicated connection per worker *and* a fallback
+  poll anyway — a notification delivered while nobody listened is lost, and a job that becomes runnable
+  through `run_after` generates none at all.
+  *Indexing is incremental:* the asset's own document is deleted and re-added, rather than rebuilding the
+  tenant's index, which would make ingest cost time proportional to the library.
+- [x] **P.5 The gaps running it exposed.** Four, each fixed at its source:
+  1. **Provisioning created no storage pool,** so a tenant `provision-tenant` had just made could not
+     ingest at all. Now created with the tenant row, from the deployment's own configuration, with
+     `credentials_ref` a *reference* — a credential in that column is a credential in every backup.
+  2. **A delivery URL was a bare token.** `server.public_url` makes them absolute; without it they are
+     root-relative and the client resolves them against the API base it already holds. A browser resolving
+     `/d/<token>` against a Vite port gets a 404 from the wrong server.
+  3. **The delivery route read tenant tables on the global pool** — `relation "derivatives" does not
+     exist`, invisible until a real derivative existed. It gets a pool pinned to the delivery tenant, and
+     the *second* `DeliveryState` that caused it is gone: there is one now, shared with the asset endpoints
+     that mint preview tokens, which also removes the two-keyrings failure waiting to happen.
+  4. **`RUST_LOG` named the project, not the crates,** so every binary logged nothing while looking
+     configured. The worker ran a full job chain silently.
+
+*Verified end to end in a browser:* a PNG uploaded through the UI → `finalise_upload` → `derive` →
+`index`, all three jobs `succeeded`, three derivative rows, and a 15 KB WebP thumbnail fetched through the
+signed chokepoint and rendered in the grid.
+
+*Still not wired:* re-enrichment, lifecycle transitions, notification firing and the restore poller are
+all jobs this worker will dispatch, and none has a handler yet.
 
 - [x] **A.x A §12 divergence, found by running the thing.** `bra:acme` returned **22** results through
   Tantivy and **11** through SQL on the same corpus. Not a leak — both sides were inside the access

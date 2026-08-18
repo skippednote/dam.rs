@@ -530,7 +530,7 @@
               "string",
               "null"
             ],
-            "description": "URL of the thumbnail. Absent while a newly-uploaded asset is still being processed."
+            "description": "URL of the thumbnail, as a signed internal-preview delivery URL.\n\nAbsolute when the deployment configures `server.public_url`, root-relative otherwise — so a client on a\ndifferent origin must resolve it against the API's base rather than its own. Absent when the asset has\nno thumbnail yet, which is the normal state between an upload finishing and the worker deriving it: a\nURL minted regardless would 404, and a grid cannot tell a broken link from work still in progress."
           },
           "tier": {
             "$ref": "#/components/schemas/AssetTier",

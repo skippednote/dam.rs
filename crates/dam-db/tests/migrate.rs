@@ -81,8 +81,9 @@ async fn tenant_migrations_apply_to_a_named_schema() {
         (
             "check constraints",
             "SELECT count(*) FROM pg_constraint c JOIN pg_namespace n ON n.oid=c.connamespace WHERE n.nspname='t_acme' AND c.contype='c'",
-            // 90 since 0012: a superseded term must be deprecated, and cannot supersede itself.
-            90,
+            // 91 since 0014, which added the `upload_sessions.content_hash` shape check. 90 came from 0012:
+            // a superseded term must be deprecated, and cannot supersede itself.
+            91,
         ),
         (
             "hnsw indexes",

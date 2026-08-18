@@ -30,7 +30,8 @@
 		height = 600,
 		rowHeight = 160,
 		onactivate,
-		onselect
+		onselect,
+		thumbnail: thumbnailProp
 	}: {
 		items: AssetSummary[];
 		total: number;
@@ -49,7 +50,18 @@
 		 * shift-range over 40,000 assets makes O(n).
 		 */
 		onselect?: (asset: AssetSummary, ids: string[]) => void;
+		/**
+		 * Resolves a thumbnail URL the server may have sent root-relative.
+		 *
+		 * Passed in rather than importing the session here, because this component is also the Drupal picker
+		 * (§11.2) — the same Svelte app embedded in a Media Library — and that build resolves against a
+		 * different base. A component that reached for a global would be a component that only works in one of
+		 * them.
+		 */
+		thumbnail?: (url: string) => string;
 	} = $props();
+
+	const thumbnail = $derived(thumbnailProp ?? ((url: string) => url));
 
 	let viewport = $state<HTMLDivElement | null>(null);
 	/** Index within `items` of the cell holding the tab stop. */
@@ -242,6 +254,38 @@
 								       bg-surface p-2 text-left text-xs
 								       aria-selected:ring-2 aria-selected:ring-accent"
 							>
+								<!--
+									`loading="lazy"` because a virtualised grid still mounts a row's worth of images at a
+									time and a scroll through 40,000 assets should not fetch 40,000 thumbnails.
+
+									`alt=""` and `aria-hidden`, deliberately: the filename beneath is already the cell's
+									accessible name, and a screen reader announcing "harbour.jpg, image, harbour.jpg" is
+									worse than one that says it once. A thumbnail is decoration *for this cell* — the
+									asset's real alt text is a metadata field, and it belongs where the image is used for
+									its content rather than as a picker affordance.
+								-->
+								{#if asset.thumbnail_url}
+									<img
+										src={thumbnail(asset.thumbnail_url)}
+										alt=""
+										aria-hidden="true"
+										loading="lazy"
+										decoding="async"
+										class="min-h-0 w-full flex-1 rounded bg-bg object-cover"
+									/>
+								{:else}
+									<!--
+										A placeholder rather than an empty box, and it says *why*: between an upload
+										finishing and the worker deriving it there is no thumbnail, and "processing" is
+										the honest label for that. An empty cell reads as a broken image.
+									-->
+									<div
+										class="flex min-h-0 flex-1 items-center justify-center rounded bg-bg text-[10px] text-muted"
+										data-testid="thumbnail-placeholder"
+									>
+										{asset.tier === 'archive' ? 'archived' : 'processing'}
+									</div>
+								{/if}
 								<span class="truncate font-medium">{asset.filename}</span>
 								<span class="flex flex-wrap gap-1">
 									<TierBadge tier={asset.tier} />

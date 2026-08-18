@@ -179,7 +179,20 @@ async fn main() -> anyhow::Result<()> {
                 .context("global migrations")?;
 
             let display = name.unwrap_or_else(|| slug.as_str().to_owned());
-            let tenant = dam_db::provision::tenant(&pool, url, &slug, &display)
+            // From this deployment's configuration, so a provisioned tenant's pool matches the store `damd`
+            // and the worker actually talk to. Passed in rather than read inside `dam-db`, which has no
+            // business knowing how the deployment is configured.
+            let storage = dam_db::provision::StoragePool {
+                endpoint: cfg.storage.endpoint.as_deref(),
+                region: &cfg.storage.region,
+                bucket: &cfg.storage.bucket,
+                force_path_style: cfg.storage.force_path_style,
+                // A reference, never the secret. `damd` and the worker read the credential from configuration;
+                // this column exists so an operator can see *which* credential a pool uses.
+                credentials_ref: "config:storage",
+            };
+
+            let tenant = dam_db::provision::tenant(&pool, url, &slug, &display, &storage)
                 .await
                 .context("provisioning tenant")?;
 

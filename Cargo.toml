@@ -6,6 +6,7 @@ members = [
     "crates/dam-db",
     "crates/dam-search",
     "crates/dam-media",
+    "crates/dam-pipeline",
     "crates/dam-ai",
     "crates/dam-connect",
     "crates/dam-telemetry",

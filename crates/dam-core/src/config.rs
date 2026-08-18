@@ -60,6 +60,16 @@ pub struct ServerConfig {
     pub url_signing_key: Secret<String>,
     /// Wall-clock budget for a single request, in seconds.
     pub request_timeout_secs: u64,
+    /// The origin this API is reached at, when it is not the same as where it binds.
+    ///
+    /// Used to make delivery URLs absolute. Without it they are root-relative, which is correct for a client
+    /// served from the same origin and wrong for one that is not — a browser resolving `/d/<token>` against
+    /// the *frontend's* origin gets a 404 from the wrong server, which is exactly what happened the first time
+    /// a thumbnail was fetched from a Vite dev server on another port.
+    ///
+    /// Optional rather than required, because a required value is one that is wrong in every deployment behind
+    /// a proxy until somebody sets it, and a root-relative URL at least works for the same-origin case.
+    pub public_url: Option<String>,
     /// Which tenant the delivery routes serve, by slug.
     ///
     /// Needed because the delivery path resolves its tenant from configuration rather than from the
@@ -167,6 +177,7 @@ impl Default for ServerConfig {
             port: 8080,
             url_signing_key: Secret::new(DEV_SIGNING_KEY.into()),
             request_timeout_secs: 30,
+            public_url: None,
             delivery_tenant: None,
             allowed_origins: Vec::new(),
         }
