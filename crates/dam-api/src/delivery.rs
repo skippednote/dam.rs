@@ -243,7 +243,7 @@ async fn deliver(
         });
     }
 
-    let key = object_key(&state, &claim).await?;
+    let key = object_key(&state, &claim, now).await?;
     let url = state
         .store
         .presign_get(&key, PRESIGN_TTL)
@@ -304,7 +304,11 @@ async fn reason_codes(
 /// The transform is looked up against `derivatives` rather than trusted as a path. A transform that reached
 /// the key builder directly would be a path-traversal parameter signed by us — the signature would make it
 /// *harder* to notice, not safer.
-async fn object_key(state: &DeliveryState, claim: &DeliveryClaim) -> Result<Key, Refusal> {
+async fn object_key(
+    state: &DeliveryState,
+    claim: &DeliveryClaim,
+    now: DateTime<Utc>,
+) -> Result<Key, Refusal> {
     if claim.transform == "original" {
         // Derived from the content hash rather than read from a column. Assets are content-addressed (D1),
         // so there is no stored path — and deriving it means a delivery URL cannot name an object the
@@ -325,19 +329,33 @@ async fn object_key(state: &DeliveryState, claim: &DeliveryClaim) -> Result<Key,
         });
     }
 
-    let key: Option<String> = sqlx::query_scalar(
-        "SELECT d.object_key FROM derivatives d \
-         JOIN assets a ON a.id = d.asset_id \
-         WHERE d.asset_id = $1 AND d.profile = $2 AND a.deleted_at IS NULL",
-    )
-    .bind(claim.asset_id)
-    .bind(&claim.transform)
-    .fetch_optional(&state.global)
-    .await
-    .map_err(dam_db::Error::from)?;
+    // Resolved name -> profile -> op_hash -> row, never name -> row.
+    //
+    // This shipped as `WHERE profile = $2` and that was a bug. `op_hash` covers the size, format, quality,
+    // fit, background, colour profile and rendering intent (§18.1), so a profile that has been *redefined*
+    // has a different hash — and a name lookup would keep serving the bytes rendered under the old
+    // definition forever, with no error anywhere and a customer seeing yesterday's quality setting
+    // indefinitely.
+    let profile = dam_media::profiles::by_name(&claim.transform)
+        // An unknown profile is not deliverable rather than approximated: rendering something plausible
+        // would silently hand back a different size than the caller integrated against.
+        .ok_or(Refusal::NotDeliverable)?;
 
-    let key = key.ok_or(Refusal::NotDeliverable)?;
-    Key::new(key).map_err(|error| {
+    let derivative =
+        dam_db::derivatives::by_op_hash(&state.global, claim.asset_id, &profile.op_hash())
+            .await?
+            // A miss is not a failure — it means this recipe has not been rendered yet. Returning
+            // `NotDeliverable` is the honest answer until 3.2's render-on-demand path exists; what it must
+            // never do is fall back to a name match, which is the bug above.
+            .ok_or(Refusal::NotDeliverable)?;
+
+    // Coarse by design — see `derivatives::SERVED_RESOLUTION`. Failing to record a serve must not fail the
+    // delivery: the bytes are authorised and the timestamp is a lifecycle hint.
+    if let Err(error) = dam_db::derivatives::mark_served(&state.global, derivative.id, now).await {
+        tracing::warn!(%error, "recording a derivative serve");
+    }
+
+    Key::new(derivative.object_key).map_err(|error| {
         tracing::error!(%error, "a derivative's stored object_key is not a valid key");
         Refusal::Internal
     })

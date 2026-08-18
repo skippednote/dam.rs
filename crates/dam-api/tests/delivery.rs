@@ -84,13 +84,19 @@ async fn asset_with_bytes(f: &Fixture, label: &str) -> Uuid {
     .await
     .expect("asset");
 
+    // The `op_hash` must be the profile's real one. Delivery resolves name -> profile -> op_hash -> row, so
+    // a fixture inventing a hash is a fixture whose derivative is correctly never served — which is how
+    // this test caught the change.
+    let profile = dam_media::profiles::by_name("web-2048").expect("a built-in profile");
     let derivative = format!("acme/p/{label}-2048");
     sqlx::query(
         "INSERT INTO derivatives (id, asset_id, role, profile, op_hash, object_key, mime, bytes) \
-         VALUES (gen_random_uuid(), $1, 'proxy', 'web-2048', $2, $3, 'image/jpeg', 5)",
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, 'image/jpeg', 5)",
     )
     .bind(id)
-    .bind(format!("op-{label}"))
+    .bind(profile.role)
+    .bind(profile.name)
+    .bind(profile.op_hash())
     .bind(&derivative)
     .execute(&f.pool)
     .await
@@ -226,9 +232,117 @@ async fn the_transform_selects_which_object_is_served(f: &Fixture) {
     }
 }
 
+async fn a_redefined_profile_misses_the_cache_instead_of_serving_stale_bytes(f: &Fixture) {
+    // The property 3.2 exists for, and the bug 3.1 shipped with. `op_hash` covers size, format, quality,
+    // fit, background, colour profile and rendering intent (§18.1). A lookup by profile *name* would keep
+    // serving bytes rendered under the old definition forever — no error, nothing in a log, and a customer
+    // seeing yesterday's quality setting indefinitely.
+    //
+    // Simulated by storing a derivative under a *different* recipe's hash, which is what an existing row
+    // becomes the moment a profile is redefined.
+    let id = asset_with_bytes(f, "redefined").await;
+    licence(f, id, None).await;
+
+    // Serving works while the recipe matches.
+    let token = delivery::issue(
+        &f.state,
+        id,
+        "web-2048",
+        &web(),
+        None,
+        Duration::minutes(10),
+        now(),
+    )
+    .await
+    .expect("issue");
+    assert_eq!(get(&f.app, &token).await.status(), StatusCode::FOUND);
+
+    // Now the profile changes. The stored row keeps its old hash, so the current recipe has no derivative.
+    let profile = dam_media::profiles::by_name("web-2048").expect("profile");
+    let mut redefined = *profile;
+    redefined.revision += 1;
+    assert_ne!(
+        redefined.op_hash(),
+        profile.op_hash(),
+        "a revision bump must move the hash, or this test proves nothing"
+    );
+
+    sqlx::query("UPDATE derivatives SET op_hash = $2 WHERE asset_id = $1")
+        .bind(id)
+        .bind(redefined.op_hash())
+        .execute(&f.pool)
+        .await
+        .expect("simulate a redefinition");
+
+    assert_eq!(
+        get(&f.app, &token).await.status(),
+        StatusCode::NOT_FOUND,
+        "a derivative rendered under a superseded recipe must not be served"
+    );
+}
+
+async fn a_serve_is_recorded_at_most_once_an_hour(f: &Fixture) {
+    // The lifecycle engine reads `last_served_at` to decide what is cold enough to evict. Writing it on
+    // every delivery turns the hottest read path in the system into a write, costing a row of WAL per
+    // download — the same argument `auth::LAST_USED_RESOLUTION` makes about API keys.
+    let id = asset_with_bytes(f, "served").await;
+    licence(f, id, None).await;
+    let token = delivery::issue(
+        &f.state,
+        id,
+        "web-2048",
+        &web(),
+        None,
+        Duration::minutes(10),
+        now(),
+    )
+    .await
+    .expect("issue");
+
+    for _ in 0..3 {
+        assert_eq!(get(&f.app, &token).await.status(), StatusCode::FOUND);
+    }
+
+    let served: Option<DateTime<Utc>> =
+        sqlx::query_scalar("SELECT last_served_at FROM derivatives WHERE asset_id = $1")
+            .bind(id)
+            .fetch_one(&f.pool)
+            .await
+            .expect("last_served_at");
+    assert_eq!(
+        served,
+        Some(now()),
+        "the first delivery records the serve at the clock's instant"
+    );
+
+    // A second write inside the window is refused, which is what makes the throttle observable.
+    let derivative_id: Uuid = sqlx::query_scalar("SELECT id FROM derivatives WHERE asset_id = $1")
+        .bind(id)
+        .fetch_one(&f.pool)
+        .await
+        .expect("id");
+    assert!(
+        !dam_db::derivatives::mark_served(&f.pool, derivative_id, now())
+            .await
+            .expect("mark"),
+        "a second serve inside the resolution window must not write"
+    );
+    assert!(
+        dam_db::derivatives::mark_served(
+            &f.pool,
+            derivative_id,
+            now() + dam_db::derivatives::SERVED_RESOLUTION + Duration::seconds(1)
+        )
+        .await
+        .expect("mark"),
+        "and a serve past the window must"
+    );
+}
+
 async fn an_unknown_transform_is_not_deliverable(f: &Fixture) {
-    // Signed by us, so the signature verifies — and there is no such derivative. It answers 404, the same
-    // as an unsigned token, so a caller cannot enumerate which profiles exist.
+    // Signed by us, so the signature verifies — and `print-a3` is not a built-in profile at all. It answers
+    // 404, the same as an unsigned token, so a caller cannot enumerate which profiles exist by watching the
+    // status change.
     let id = asset_with_bytes(f, "no-such-profile").await;
     licence(f, id, None).await;
 
@@ -614,6 +728,8 @@ async fn the_delivery_chokepoint_holds() {
     a_signed_url_for_a_licensed_asset_redirects_to_the_object(&f).await;
     the_transform_selects_which_object_is_served(&f).await;
     an_unknown_transform_is_not_deliverable(&f).await;
+    a_redefined_profile_misses_the_cache_instead_of_serving_stale_bytes(&f).await;
+    a_serve_is_recorded_at_most_once_an_hour(&f).await;
 
     a_valid_signature_over_an_unlicensed_asset_is_still_refused(&f).await;
     the_channel_in_the_token_selects_which_licence_terms_apply(&f).await;

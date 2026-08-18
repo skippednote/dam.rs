@@ -808,7 +808,59 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   clock, so a token minted one second before the fixture's `now()` was still in the *future* in real time —
   the expiry case asserted 404 and was handed a 302. The clock is injected now, which is what makes every
   time-dependent property here actually testable.
-- [ ] **3.2 Derivative delivery + cache.** `op_hash` keyed, with the profile and intent in the key.
+- [x] **3.2 Derivative delivery + cache.** `op_hash` keyed, with the profile and intent in the key.
+  *Done:* `dam_media::profiles` (5 unit) + `dam_db::derivatives` (12 cases) + delivery rewired, and **3.1's
+  cache lookup fixed** — it shipped resolving `WHERE profile = $2`, by *name*. `op_hash` covers size,
+  format, quality, fit, background, colour profile and rendering intent (§18.1), so a redefined profile has
+  a different hash; a name lookup keeps serving bytes rendered under the old definition **forever**, with no
+  error and a customer seeing yesterday's quality setting indefinitely. Delivery now resolves
+  name → profile → `op_hash` → row, and a test asserts a superseded recipe stops being served.
+  *`Profile::revision` exists for what `op_hash` cannot see.* If a change alters the **pipeline** rather
+  than the fields — a different resampling filter, a sharpening pass — every field stays identical and every
+  cached derivative keeps being served. A revision bump makes it a miss, which is the only safe default:
+  serving a stale rendition is invisible, re-rendering is merely work.
+  *The schema caught a design hole.* `derivatives_proxy_idx` is `UNIQUE (asset_id) WHERE role = 'proxy'` —
+  **one** master proxy per asset, because D5 makes it the search-and-AI substrate rather than one rendition
+  among many. So a redefined proxy cannot coexist with its predecessor the way a thumbnail can. `record`
+  refuses and names `replace_proxy`, which swaps the row and **returns the superseded object key** so the
+  caller reclaims it after committing — the row and the object live in different systems, and deleting first
+  risks a placement pointing at nothing. An upsert would have looked tidier and orphaned an object on every
+  proxy redefinition.
+  *Other choices:* two workers rendering the same recipe produce byte-identical output, so the loser's row
+  is redundant and `ON CONFLICT DO NOTHING` keeps the first `object_key` rather than orphaning it;
+  `last_served_at` is written at most hourly, because per-delivery writes turn the hottest read path into a
+  row of WAL per download (the same argument `auth::LAST_USED_RESOLUTION` makes); and `superseded` **refuses
+  an empty profile set** — `<> ALL('{}')` is true for every row, so it would propose evicting the entire
+  cache, which is a configuration failure rather than a plan.
+  *Not done here:* render-on-demand. A cache miss is an honest `404` until the render path is wired; what it
+  must never do is fall back to a name match. Tenant-defined profiles need a table of their own — see the
+  note in `dam_media::profiles`.
+- [ ] **3.x AWS-native features to rely on instead of building.** *Raised 2026-08-18; needs a decision on
+  items 1 and 2 because they change architecture.* Every item is AWS-only while D1 says S3-compatible, so
+  each belongs behind `dam_store::Capabilities` with a fallback — the pattern already exists, and the
+  conformance suite already refuses an operation a driver claims but does not implement.
+  1. **S3 Event Notifications for presigned-upload finalisation.** *This closes a real gap in 1.6.* The
+     presigned path records a session and hands out a URL; **nothing detects that the client finished.** A
+     client that uploads and then crashes before calling back leaves the object in staging until the reaper
+     deletes it — a silently lost upload. An event → queue → worker finalises regardless of the client.
+     MinIO supports bucket notifications; SeaweedFS partially.
+  2. **Intelligent-Tiering for originals.** §19 lists access-pattern prediction as an unknown sitting on the
+     lifecycle engine. Intelligent-Tiering does access-based movement with no retrieval fee between the
+     frequent and infrequent tiers. Our engine's value is the **policy** — never tier the master proxy (D5),
+     honour pins and legal hold, produce a reviewable plan — not guessing access. Hybrid: originals in
+     Intelligent-Tiering, policy stays ours.
+  3. **S3 Batch Operations for 3.4's bulk restore.** Manifest-driven, with retries, throttling and a
+     completion report. Better than a job loop. Does **not** help 2.10, which is database-side.
+  4. **S3 Inventory instead of LIST for reconciliation** — a daily manifest rather than paginated LIST.
+  5. **SSE-KMS for BYOK (G10).** Per-tenant key; building anything here would be worse.
+  6. **A lifecycle rule on `*/staging/`** as a safety net beneath the reaper. Prefix-based, so it maps onto
+     `Key::is_tier_exempt`'s existing scheme.
+  7. **CloudFront in front of derivatives — not replacing the chokepoint.** CloudFront signed URLs cannot
+     consult live database state, and D12 requires rights evaluated at delivery. It fronts the presigned URL
+     we redirect to.
+  *Rejected:* S3 Object Lambda / Lambda@Edge image resizing. It would replace the derivative pipeline and
+  lose libvips (RAW/PSD), ICC control (D11) and C2PA preservation (D13) — differentiators, not overhead.
+
 - [ ] **3.3 Share links.** Passcode, expiry, download limits, revocation — and revocation that takes
   effect on an already-issued URL.
 - [ ] **3.4 Restore flow (§6.5).** `202` with an ETA and a cost estimate, batching sibling requests, and
