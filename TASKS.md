@@ -1446,3 +1446,55 @@ M2 onward. If M0 completes and M1 is underway, that is the night's target met �
 this is ~110 engineer-weeks of work in total and no amount of autonomy compresses
 that. Stop at a green `mise run check` and a clean commit rather than leaving a
 half-built layer.
+
+## Q — Acquia DAM parity
+
+Surveyed against a live Acquia DAM tenant on 2026-08-19; the full inventory, the gap against damrs and the
+reasoning behind this order are in `ACQUIA-PARITY.md`. Read that first — the short version is that Acquia's
+catalogue turns out to be mostly a concretisation of M4–M6 and Pre-GA plus about a dozen features
+ARCHITECTURE never named, and that the product is *six applications* rather than one.
+
+Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driven against the real stack.
+
+- [ ] **Q.1 Metadata types bound to asset kinds.** Acquia groups fields into types (Image: 12 fields,
+  Video: 0, Archives: 1, plus custom) and an asset's detail page names its type. damrs has one flat
+  `field_defs` per tenant, so a video carries the print-resolution fields and an archive carries alt text.
+  Extends the schema administration in F.11b·2a.
+- [ ] **Q.2 Hierarchical asset categories**, distinct from taxonomies, plus the "assets without categories"
+  worklist that makes them enforceable.
+- [ ] **Q.3 Upload profiles.** Per-profile metadata defaults, required-field enforcement in the uploader,
+  and the per-profile AI switches Acquia's backfill respects.
+- [ ] **Q.4 Auto-import mappings.** Embedded metadata (XMP/EXIF/IPTC) → field definitions, on ingest.
+- [ ] **Q.5 Ratings, favourites, watch.** Three engagement features and their facets; favourites rank first
+  in search, watch is what makes notification worth having.
+- [ ] **Q.6 Comments.** Public and private, routed to chosen recipients, with statuses that carry approval.
+  This is M6's "annotations" with Acquia's shape.
+- [ ] **Q.7 Activity feed, dashboard sections, spotlight searches.** What turns the landing page from a
+  redirect into a place.
+- [ ] **Q.8 Versions.** Add a version, list them, download an earlier one, and the detail tab.
+  `version_group_id`/`version_no` already exist and nothing uses them.
+- [ ] **Q.9 Attached documents**, and the has-attachment facet. Rights and release paperwork on the asset.
+- [ ] **Q.10 History tab** over the existing audit log; alternate preview upload.
+- [ ] **Q.11 Asset conversions.** Named, user-selectable download formats per media class, each with a
+  description written for the person choosing and its own role permissions.
+- [ ] **Q.12 Intended-use capture.** The question asked before download, and the record that makes the
+  answer auditable. damrs has `Usage` in the rights evaluator; this is the capture and the reporting.
+- [ ] **Q.13 Orders.** Approval, a pickup page, metadata export with the order, multiple recipients, expiry,
+  and hiding an expired order's contents.
+- [ ] **Q.14 Portals.** Standard, Brand, Video and Channel, branded, over the share-portal foundation.
+- [ ] **Q.15 The built-in facets:** asset status, orientation, average rating, has-attachment. Orientation is
+  free — it is a function of dimensions already stored.
+- [ ] **Q.16 Search-within, substring, advanced search, multiple-asset search.**
+- [ ] **Q.17 Predictive search and did-you-mean.**
+- [ ] **Q.18 Export search results to CSV.**
+- [ ] **Q.19 Refine-search configuration**, including dependent metadata fields.
+- [ ] **Q.20 Site branding, webhook delivery, the admin worklists, tag vocabulary administration.** The
+  worklists are the cheapest real value on this list: they are queries over data damrs already holds.
+
+Absorbed by the existing roadmap rather than duplicated here: the AI set (tags, faces, document text,
+transcripts, semantic search, duplicate detection) is M4; conversational access is M5's MCP server; workflow
+and Insights are M6; FTP and import are Pre-GA G7; SAML/SSO and user administration are Pre-GA G10; the
+storage and usage reports are G19. Entries (the PIM) is a new application and lands after them.
+
+Not building: Hootsuite, Mobile, Templates, Video Creator, Syndicate, Digimarc, Google Analytics linkage —
+third-party or separate products, reached through the API and webhooks, which are on the list.
