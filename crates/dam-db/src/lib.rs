@@ -15,6 +15,7 @@ pub mod bulk;
 pub mod categories;
 pub mod collections;
 pub mod comments;
+pub mod conversions;
 pub mod derivatives;
 pub mod engagement;
 pub mod events;

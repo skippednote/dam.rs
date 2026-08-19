@@ -14,13 +14,24 @@
 //! to tell. That is the failure this module exists to prevent, and it is why [`Profile::revision`] exists:
 //! a definition change must move the hash even when the fields it changed are ones `op_hash` cannot see.
 //!
-//! ## Why the set is in code
+//! ## Why this set is in code, and where the other one lives
 //!
-//! There is no profiles table. `derivatives.profile` is free text, so the schema does not constrain the
-//! set — and a tenant-defined profile set is a real requirement that needs a table of its own, with the
-//! usual questions about who may edit one and what happens to derivatives already rendered under the old
-//! definition. That is worth doing deliberately rather than as a side effect of 3.2, so the built-in set is
-//! here and the gap is recorded in TASKS.md.
+//! These three are the profiles the *system* needs — a grid thumbnail, a lightbox preview, a web proxy. They
+//! are in code because the code depends on them by name: no tenant can delete `thumb-256` and leave the grid
+//! without cells.
+//!
+//! The formats a tenant *offers a person downloading* are a different set, and they live in the `conversions`
+//! table (Q.11): named, described, ordered, permission-gated, editable. They share this module's cache
+//! argument and its hash function — see [`tenant_op_hash`] — because the failure it prevents is the same one.
+//!
+//! ## The renderer revision applies to both
+//!
+//! [`Profile::revision`] handles one profile being redefined. A change to the *renderer* — a different
+//! resampling filter, a sharpening pass — leaves every field of every profile identical, so no per-profile
+//! revision can catch it. [`RENDERER_REVISION`] is folded into every hash for that: bumping it once
+//! invalidates every cached derivative, built-in and tenant alike, which is the only safe direction. A tenant
+//! row cannot be hand-bumped in the commit that changes the pipeline, so without this there would be nothing
+//! to bump.
 
 use crate::derive::{Fit, OutputFormat, Rendition, op_hash};
 
@@ -47,17 +58,66 @@ pub struct Profile {
     pub role: &'static str,
 }
 
+/// Bumped by hand when the *renderer* changes in a way no profile field describes.
+///
+/// A different resampling filter, a sharpening pass, a vips upgrade that changes output bytes: every field of
+/// every profile stays identical, so every cached derivative would keep being served. Folded into every hash —
+/// built-in and tenant — because a tenant's `conversions` row cannot be hand-bumped in the commit that changes
+/// the pipeline, and a mechanism that only covers the profiles somebody remembered is the mechanism that fails.
+///
+/// Bumping this invalidates every derivative in every tenant. That is the intent: re-rendering is work, and
+/// serving a stale rendition is invisible.
+pub const RENDERER_REVISION: u32 = 1;
+
 impl Profile {
     /// The cache key for this profile.
     ///
-    /// Includes the revision, so a definition change cannot be served from cache.
+    /// Includes both revisions, so neither a definition change nor a renderer change can be served from cache.
     pub fn op_hash(&self) -> String {
-        // The revision is folded in by appending it to the intent rather than by changing `op_hash`'s
-        // signature: `op_hash` is shared with the ingest path, and the length-prefixing it already does
-        // makes appending unambiguous.
-        let intent = format!("{}#r{}", self.intent, self.revision);
+        self.op_hash_at(RENDERER_REVISION)
+    }
+
+    /// The same key for a named renderer revision.
+    ///
+    /// Exists to be testable. [`RENDERER_REVISION`] is a constant, so no test can vary it — and a test that
+    /// re-derives the expected string by hand proves only that two hand-derived strings differ, which is
+    /// exactly what mutation testing showed: dropping the term from the real function left such a test passing.
+    /// Taking the revision as an argument makes "bumping it changes the key" a property rather than a
+    /// restatement, and leaves the public method a single line that cannot lose the term without failing.
+    pub fn op_hash_at(&self, renderer_revision: u32) -> String {
+        // Folded in by appending to the intent rather than by changing `op_hash`'s signature: `op_hash` is
+        // shared with the ingest path, and the length-prefixing it already does makes appending unambiguous.
+        let intent = format!("{}#r{}#p{}", self.intent, self.revision, renderer_revision);
         op_hash(&self.rendition, self.color_profile, &intent)
     }
+}
+
+/// The colour treatment every tenant conversion is rendered with.
+///
+/// Fixed, not configurable, and the reason is that `derive::render` does not apply either value — `op_hash`
+/// takes them (§18.1) and the renderer ignores them. A tenant-settable colour profile would change the cache
+/// key while the output stayed identical, which is a way to serve the same bytes under two names and call one
+/// of them a CMYK conversion. When the renderer honours them, these become columns.
+pub const TENANT_COLOR_PROFILE: &str = "srgb";
+/// See [`TENANT_COLOR_PROFILE`].
+pub const TENANT_INTENT: &str = "perceptual";
+
+/// The cache key for a tenant-defined conversion (Q.11).
+///
+/// Same function as a built-in's, and that is the point: one cache, one key derivation, so a tenant conversion
+/// whose recipe happens to match `web-2048` shares its rendered bytes rather than duplicating them.
+///
+/// There is no per-row revision term. Every field a tenant can edit is already an input here, so a
+/// redefinition *is* a different key — see the `conversions` migration on why a revision column would be a
+/// second mechanism for what this one already guarantees.
+pub fn tenant_op_hash(rendition: &Rendition) -> String {
+    tenant_op_hash_at(rendition, RENDERER_REVISION)
+}
+
+/// The same key for a named renderer revision. See [`Profile::op_hash_at`] on why this argument exists.
+pub fn tenant_op_hash_at(rendition: &Rendition, renderer_revision: u32) -> String {
+    let intent = format!("{TENANT_INTENT}#p{renderer_revision}");
+    op_hash(rendition, TENANT_COLOR_PROFILE, &intent)
 }
 
 /// A thumbnail for a grid cell. Square, cropped, small.
@@ -186,6 +246,77 @@ mod tests {
             base,
             "the rendering intent must be in the key"
         );
+    }
+
+    #[test]
+    fn bumping_the_renderer_revision_changes_every_hash() {
+        // The property the constant exists for: a renderer change leaves every profile field identical, so
+        // without this term bumping it would invalidate nothing and every cached derivative would keep being
+        // served — silently, which is the failure mode that matters.
+        for profile in ALL {
+            assert_ne!(
+                profile.op_hash_at(1),
+                profile.op_hash_at(2),
+                "{} ignores the renderer revision",
+                profile.name
+            );
+        }
+        assert_ne!(
+            tenant_op_hash_at(&WEB_2048.rendition, 1),
+            tenant_op_hash_at(&WEB_2048.rendition, 2),
+            "a tenant conversion ignores the renderer revision"
+        );
+    }
+
+    #[test]
+    fn the_public_hash_uses_the_current_renderer_revision() {
+        // The wiring, which is the half a property test cannot reach: the derivation above could be perfect
+        // while the public entry point passed nothing. Mutation testing found exactly that gap.
+        assert_eq!(WEB_2048.op_hash(), WEB_2048.op_hash_at(RENDERER_REVISION));
+        assert_eq!(
+            tenant_op_hash(&WEB_2048.rendition),
+            tenant_op_hash_at(&WEB_2048.rendition, RENDERER_REVISION)
+        );
+    }
+
+    #[test]
+    fn a_tenant_conversion_shares_the_cache_with_an_identical_built_in() {
+        // One cache, one derivation. A tenant conversion whose recipe matches `web-2048` should share its
+        // bytes rather than render a second identical object — which is only true while the colour treatment
+        // matches too, hence the assertion on that rather than on the recipe alone.
+        assert_eq!(WEB_2048.color_profile, TENANT_COLOR_PROFILE);
+        assert_eq!(WEB_2048.intent, TENANT_INTENT);
+
+        // Not equal, because `web-2048` carries a per-profile revision a tenant row has no field for. Asserted
+        // rather than glossed: the sharing is real for the *recipe*, and the revision term is what separates
+        // them. If a future change drops built-in revisions, these become one key.
+        assert_ne!(WEB_2048.op_hash(), tenant_op_hash(&WEB_2048.rendition));
+    }
+
+    #[test]
+    fn every_recipe_field_is_in_a_tenant_conversions_key() {
+        // The whole reason there is no revision column: a redefinition has to be a different key, and it is
+        // only a different key if every editable field is an input.
+        let base = tenant_op_hash(&WEB_2048.rendition);
+        for (label, mutate) in [
+            (
+                "width",
+                (|r: &mut Rendition| r.width = 1024) as fn(&mut Rendition),
+            ),
+            ("height", |r: &mut Rendition| r.height = 1024),
+            ("format", |r: &mut Rendition| r.format = OutputFormat::Png),
+            ("quality", |r: &mut Rendition| r.quality = 60),
+            ("fit", |r: &mut Rendition| r.fit = Fit::Cover),
+            ("background", |r: &mut Rendition| r.background = [0, 0, 0]),
+        ] {
+            let mut changed = WEB_2048.rendition;
+            mutate(&mut changed);
+            assert_ne!(
+                tenant_op_hash(&changed),
+                base,
+                "{label} is not in the key, so redefining it would serve stale bytes"
+            );
+        }
     }
 
     #[test]

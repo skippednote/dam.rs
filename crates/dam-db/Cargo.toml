@@ -13,6 +13,10 @@ dam-core = { path = "../dam-core" }
 # cycle: the session is storage vocabulary, and a second definition here is how the two
 # would drift out of step with the CHECK constraints in 0009_uploads.sql.
 dam-store = { path = "../dam-store" }
+# The rendition type and the cache-key derivation, for tenant-defined conversions (Q.11). dam-media knows
+# nothing about the database, so the direction is one-way — and the alternative was a second copy of
+# "these columns mean this Rendition" in whichever crate needed it next.
+dam-media = { path = "../dam-media" }
 thiserror = { workspace = true }
 sqlx = { workspace = true }
 serde = { workspace = true }
@@ -39,7 +43,6 @@ testing = ["dep:testcontainers"]
 
 [dev-dependencies]
 blake3 = { workspace = true }
-dam-media = { path = "../dam-media" }
 dam-db = { path = ".", features = ["testing"] }
 # The reaper aborts a real multipart upload, which is exactly what a fake cannot prove.
 dam-store = { path = "../dam-store", features = ["testing"] }

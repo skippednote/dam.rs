@@ -68,7 +68,8 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             // a watch is a standing request, and one table would carry a null column per unused role.
             // 68 since 0020: `asset_comments` and its routing table; 69 since 0021 added the default partition
             // that keeps an event write from failing outside January 2026 — see the migration.
-            69,
+            // 70 since 0023: `conversions`, the tenant's named download formats.
+            70,
         ),
         (
             "view count",
@@ -94,7 +95,10 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             //
             // 226 since 0018: auto_import_mappings gains a primary key, its source/field unique index and the
             // partial resolution index.
-            245,
+            //
+            // 247 since 0023: `conversions` gains a primary key, the unique index behind its key, and the partial
+            // offer index that the download dialog's one read uses.
+            248,
         ),
         (
             "check constraints",
@@ -103,6 +107,11 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             // a superseded term must be deprecated, and cannot supersede itself.
             // 100 since 0022: an attachment's kind is constrained, and two constraints keep the pair coherent —
             // both columns set or neither, and nothing attached to itself.
+            //
+            // 112 since 0023: a conversion's key shape, its reserved-name exclusion, label and description
+            // lengths, media class, both dimensions, format, quality, fit, background and permission shape are
+            // each constrained in the column — the constraints *are* the specification for a usable recipe, so
+            // the Rust layer reports which one refused rather than restating them.
             //
             // 97 since 0021: the events default partition inherits its parent's `actor_kind` check, for the same
             // reason it inherits the indexes.
@@ -115,7 +124,7 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             //
             // 92 since 0018: `auto_import_mappings.source` is shape-checked, because a mapping's left-hand side is
             // free text and a malformed one would silently never match.
-            100,
+            112,
         ),
         (
             "hnsw indexes",
