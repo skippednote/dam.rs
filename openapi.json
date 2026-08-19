@@ -1948,6 +1948,265 @@
         }
       }
     },
+    "/orders": {
+      "get": {
+        "tags": [
+          "orders"
+        ],
+        "summary": "The caller's own orders, newest first.",
+        "operationId": "mine",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OrderView"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "orders"
+        ],
+        "summary": "Places an order.",
+        "operationId": "place",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaceOrderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Nothing was asked for, or nothing asked for exists for this caller"
+          }
+        }
+      }
+    },
+    "/orders/queue": {
+      "get": {
+        "tags": [
+          "orders"
+        ],
+        "summary": "Orders waiting for a decision, oldest first.",
+        "operationId": "queue",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OrderView"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller holds no manage scope"
+          }
+        }
+      }
+    },
+    "/orders/{id}": {
+      "get": {
+        "tags": [
+          "orders"
+        ],
+        "summary": "One order.",
+        "description": "Readable by its requester and by anybody who may decide. Not by everybody: an order names what somebody\nwanted and why, which is theirs and their approver's business.",
+        "operationId": "one",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such order, or not one this caller may read"
+          }
+        }
+      }
+    },
+    "/orders/{id}/approve": {
+      "post": {
+        "tags": [
+          "orders"
+        ],
+        "summary": "Approves an order and opens its pickup window.",
+        "operationId": "approve",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderView"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Some of the assets are outside the approver's scope"
+          },
+          "404": {
+            "description": "No such order"
+          },
+          "409": {
+            "description": "It has already been decided"
+          }
+        }
+      }
+    },
+    "/orders/{id}/cancel": {
+      "post": {
+        "tags": [
+          "orders"
+        ],
+        "summary": "Withdraws an order, which only its requester may do, and only before a decision.",
+        "operationId": "cancel",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderView"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Somebody else's order"
+          },
+          "404": {
+            "description": "No such order"
+          },
+          "409": {
+            "description": "It has already been decided"
+          }
+        }
+      }
+    },
+    "/orders/{id}/reject": {
+      "post": {
+        "tags": [
+          "orders"
+        ],
+        "summary": "Refuses an order.",
+        "operationId": "reject",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such order"
+          },
+          "409": {
+            "description": "It has already been decided"
+          }
+        }
+      }
+    },
     "/people": {
       "get": {
         "tags": [
@@ -4002,6 +4261,19 @@
           }
         }
       },
+      "DecisionRequest": {
+        "type": "object",
+        "description": "A decision.",
+        "properties": {
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it was refused, or a condition on an approval."
+          }
+        }
+      },
       "DefineRequest": {
         "type": "object",
         "description": "A field to define. Flags default to the conservative reading when omitted.",
@@ -4491,6 +4763,24 @@
           }
         }
       },
+      "OrderItemView": {
+        "type": "object",
+        "description": "One asset in an order.",
+        "required": [
+          "asset_id",
+          "filename"
+        ],
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "filename": {
+            "type": "string",
+            "description": "The name as asked for, so an order reads sensibly after a rename or a deletion."
+          }
+        }
+      },
       "OrderRequest": {
         "type": "object",
         "description": "The complete field order, in the order fields should appear.",
@@ -4503,6 +4793,124 @@
             "items": {
               "type": "string"
             }
+          }
+        }
+      },
+      "OrderView": {
+        "type": "object",
+        "description": "One order.",
+        "required": [
+          "id",
+          "reference",
+          "purpose",
+          "include_metadata",
+          "recipients",
+          "state",
+          "expired",
+          "self_approved",
+          "created_at",
+          "items"
+        ],
+        "properties": {
+          "channel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "conversion_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "decided_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "decided_by": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PersonView"
+              }
+            ]
+          },
+          "decision_note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expired": {
+            "type": "boolean",
+            "description": "Whether the pickup window has closed. Derived from `expires_at` rather than stored — a stored `expired`\nwould need a sweeper to stay true and would be wrong between sweeps."
+          },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "include_metadata": {
+            "type": "boolean"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OrderItemView"
+            }
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "recipients": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reference": {
+            "type": "string",
+            "description": "Human-quotable, per tenant: `ORD-000123`."
+          },
+          "requested_by": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PersonView"
+              }
+            ]
+          },
+          "self_approved": {
+            "type": "boolean",
+            "description": "Whether the requester decided their own order. Reported rather than prevented — see the db module."
+          },
+          "state": {
+            "type": "string",
+            "description": "`submitted`, `approved`, `rejected`, `ready`, `collected`, `cancelled`."
+          },
+          "territory": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -4526,6 +4934,58 @@
           "name": {
             "type": "string",
             "description": "The name to show, falling back to the email when nobody set one."
+          }
+        }
+      },
+      "PlaceOrderRequest": {
+        "type": "object",
+        "description": "An order to place.",
+        "required": [
+          "asset_ids",
+          "purpose"
+        ],
+        "properties": {
+          "asset_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "The assets asked for. Narrowed to what this caller may see; see the db module on why silently."
+          },
+          "channel": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The intended use (Q.12), carried into the ledger when the pickup is collected."
+          },
+          "conversion_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Which named format (Q.11). Absent means the original."
+          },
+          "include_metadata": {
+            "type": "boolean"
+          },
+          "purpose": {
+            "type": "string",
+            "description": "Why. The entire question an approver answers, so it is required."
+          },
+          "recipients": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Who the delivery is for. Plural because an order is usually for a team."
+          },
+          "territory": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },

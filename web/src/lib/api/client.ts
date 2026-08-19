@@ -388,6 +388,51 @@ export async function requestDownload(
 	});
 }
 
+export type Order = components['schemas']['OrderView'];
+
+/** The private helper, under a name the order functions can use without shadowing their `request` argument. */
+const request_ = request;
+
+/**
+ * Places an order (Q.13).
+ *
+ * Read scope on the server, deliberately: an order exists for somebody who may see assets and not take them, so
+ * requiring download permission would restrict it to the people who do not need it.
+ */
+export async function placeOrder(request: {
+	asset_ids: string[];
+	purpose: string;
+	channel?: string;
+	territory?: string;
+	conversion_key?: string;
+	include_metadata?: boolean;
+	recipients?: string[];
+}): Promise<Order> {
+	return request_<Order>('/orders', { method: 'POST', body: JSON.stringify(request) });
+}
+
+/** The caller's own orders, newest first. */
+export async function loadMyOrders(): Promise<Order[]> {
+	return request_<Order[]>('/orders');
+}
+
+/** Orders waiting for a decision, oldest first. Manage scope. */
+export async function loadOrderQueue(): Promise<Order[]> {
+	return request_<Order[]>('/orders/queue');
+}
+
+/** Approves, refuses or withdraws an order. */
+export async function decideOrder(
+	id: string,
+	decision: 'approve' | 'reject' | 'cancel',
+	note?: string
+): Promise<Order> {
+	return request_<Order>(`/orders/${id}/${decision}`, {
+		method: 'POST',
+		body: JSON.stringify(note === undefined ? {} : { note })
+	});
+}
+
 export type UsageOptions = components['schemas']['UsageOptions'];
 export type UsageRecord = components['schemas']['UsageRecord'];
 

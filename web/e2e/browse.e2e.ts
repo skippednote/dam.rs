@@ -140,12 +140,19 @@ const FIELDS = [
 type Recorder = {
 	urls: string[];
 	patches: Record<string, unknown>[];
-	bulk: { url: string; body: { kind: string; asset_ids: string[] } }[];
+	bulk: {
+		url: string;
+		body: {
+			kind: string;
+			asset_ids: string[]; /** What the Order action sent: how many assets, and the reason. */
+			ordered: string[];
+		};
+	}[];
 };
 let bulkPolls = 0;
 
 async function connect(page: Page): Promise<Recorder> {
-	const recorder: Recorder = { urls: [], patches: [], bulk: [] };
+	const recorder: Recorder = { urls: [], patches: [], bulk: [], ordered: [] };
 	bulkPolls = 0;
 
 	// Before any navigation: the session reads `localStorage` at module load, so setting it afterwards
@@ -192,6 +199,35 @@ async function connect(page: Page): Promise<Recorder> {
 					territories: [],
 					default_channel: 'internal',
 					default_territory: 'WORLD'
+				}
+			});
+		}
+		if (path.pathname === '/orders' && route.request().method() === 'POST') {
+			const body = route.request().postDataJSON() as { asset_ids: string[]; purpose: string };
+			recorder.ordered.push(`${body.asset_ids.length}:${body.purpose}`);
+			// One fewer item than asked for, which is what the server does when part of a selection is outside the
+			// requester's scope — and the case the count in the reply exists for.
+			return route.fulfill({
+				status: 201,
+				json: {
+					id: 'o-1',
+					reference: 'ORD-000009',
+					requested_by: { id: 'p-ada', name: 'Ada', email: 'a@x' },
+					purpose: body.purpose,
+					channel: null,
+					territory: null,
+					conversion_key: null,
+					include_metadata: false,
+					recipients: [],
+					state: 'submitted',
+					expired: false,
+					decided_by: null,
+					decided_at: null,
+					decision_note: null,
+					self_approved: false,
+					expires_at: null,
+					created_at: '2026-08-01T09:00:00Z',
+					items: body.asset_ids.slice(0, -1).map((id) => ({ asset_id: id, filename: `${id}.jpg` }))
 				}
 			});
 		}
@@ -805,6 +841,42 @@ test('the bulk bar appears with a selection and runs a delete to its honest end 
 	// Dismissing clears the selection, so the next operation starts from nothing.
 	await bar.getByRole('button', { name: 'Dismiss' }).click();
 	await expect(page.getByRole('toolbar', { name: 'Bulk operations' })).toHaveCount(0);
+});
+
+test('ordering a selection reports the server’s count', async ({ page }) => {
+	// An order is not a bulk operation — it is a request for somebody's decision, so it skips the
+	// preview/confirm flow. What it keeps is the honesty about numbers: the server narrows the selection to what
+	// the requester may ask for, and the bar says so rather than implying all ten went.
+	const recorder = await connect(page);
+	await page.goto('/assets');
+	await page.getByRole('gridcell').nth(0).click();
+	await page
+		.getByRole('gridcell')
+		.nth(1)
+		.click({ modifiers: ['ControlOrMeta'] });
+
+	const bar = page.getByRole('toolbar', { name: 'Bulk operations' });
+	await bar.getByRole('button', { name: 'Order…' }).click();
+	await bar.getByLabel('Why').fill('The spring brochure');
+	await bar.getByRole('button', { name: 'Send request' }).click();
+
+	await expect(bar).toContainText('ORD-000009 sent for approval');
+	// The mock returns one fewer item than asked for, so the count is stated rather than assumed.
+	await expect(bar).toContainText('1 of 2 are yours to ask for');
+	expect(recorder.ordered).toEqual(['2:The spring brochure']);
+});
+
+test('an order needs a reason before it can be sent', async ({ page }) => {
+	// The reason is the entire question an approver answers, so the button is unavailable until there is one.
+	await connect(page);
+	await page.goto('/assets');
+	await page.getByRole('gridcell').nth(0).click();
+
+	const bar = page.getByRole('toolbar', { name: 'Bulk operations' });
+	await bar.getByRole('button', { name: 'Order…' }).click();
+	await expect(bar.getByRole('button', { name: 'Send request' })).toBeDisabled();
+	await bar.getByLabel('Why').fill('Because');
+	await expect(bar.getByRole('button', { name: 'Send request' })).toBeEnabled();
 });
 
 test('the bulk metadata flow sends one field as a patch', async ({ page }) => {

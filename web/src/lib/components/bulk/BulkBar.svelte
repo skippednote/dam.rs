@@ -24,6 +24,7 @@
 		ApiError,
 		bulkStatus,
 		createBulk,
+		placeOrder,
 		previewBulk,
 		type BulkPreview,
 		type BulkStatus,
@@ -56,6 +57,15 @@
 	let error = $state('');
 	/** The metadata mini-form. */
 	let metadataOpen = $state(false);
+	/**
+	 * The order mini-form (Q.13).
+	 *
+	 * Here rather than in the detail panel because an order is nearly always for several assets — one photograph
+	 * is a download, a shoot is a request — and the selection is where several assets already exist.
+	 */
+	let orderOpen = $state(false);
+	let orderPurpose = $state('');
+	let ordered = $state('');
 	let metadataField = $state('');
 	let metadataValue = $state('');
 
@@ -76,6 +86,32 @@
 			if (flow.step === 'confirm') flow = { step: 'idle' };
 		});
 	});
+
+	/**
+	 * Sends the selection as an order.
+	 *
+	 * Not a bulk operation: an order is a request for somebody's decision, not work to execute, so it does not go
+	 * through the preview/confirm flow. What it *does* share is the honesty about numbers — the server narrows the
+	 * selection to what the requester may see, and the reply says how many that was.
+	 */
+	function submitOrder() {
+		error = '';
+		ordered = '';
+		void (async () => {
+			try {
+				const order = await placeOrder({ asset_ids: assetIds, purpose: orderPurpose.trim() });
+				const count = order.items.length;
+				ordered =
+					count === assetIds.length
+						? `${order.reference} sent for approval.`
+						: `${order.reference} sent for approval — ${count} of ${assetIds.length} are yours to ask for.`;
+				orderOpen = false;
+				orderPurpose = '';
+			} catch (caught) {
+				error = caught instanceof ApiError ? caught.message : 'That order could not be sent.';
+			}
+		})();
+	}
 
 	async function preview(kind: string, params: Record<string, unknown>) {
 		error = '';
@@ -185,6 +221,41 @@
 				>
 					Preview
 				</button>
+			{/if}
+
+			<button
+				type="button"
+				class="rounded-md border border-line px-2.5 py-1 hover:bg-raised"
+				onclick={() => (orderOpen = !orderOpen)}
+				aria-expanded={orderOpen}
+			>
+				Order…
+			</button>
+
+			{#if orderOpen}
+				<!-- The reason, and nothing else. An order's other answers — format, intended use, recipients —
+				     have sensible absences, but the reason is the entire question an approver answers, so it is
+				     the one thing the bar asks for. -->
+				<label class="flex items-center gap-1.5">
+					<span class="text-xs text-muted">Why</span>
+					<input
+						class="rounded-md border border-line bg-bg px-2 py-1 text-sm"
+						bind:value={orderPurpose}
+						placeholder="The spring brochure"
+					/>
+				</label>
+				<button
+					type="button"
+					class="rounded-md bg-accent px-2.5 py-1 font-medium text-accent-fg disabled:opacity-50"
+					disabled={!orderPurpose.trim()}
+					onclick={() => submitOrder()}
+				>
+					Send request
+				</button>
+			{/if}
+
+			{#if ordered}
+				<span class="text-xs text-muted">{ordered}</span>
 			{/if}
 
 			<button

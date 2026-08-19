@@ -20,6 +20,7 @@
 		{ href: resolve('/favourites'), label: 'Favourites' },
 		{ href: resolve('/watches'), label: 'Watching' },
 		{ href: resolve('/shares'), label: 'Shares' },
+		{ href: resolve('/orders'), label: 'Orders' },
 		{ href: resolve('/schema'), label: 'Schema' },
 		{ href: resolve('/style'), label: 'Style' },
 		{ href: resolve('/settings'), label: 'Settings' }

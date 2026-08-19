@@ -2095,3 +2095,33 @@ scope references, inclusions and exclusions alike: every option is then one that
 "worldwide except China" makes `CN` worth offering because the honest answer to declaring it is a refusal with a
 reason rather than an absence from the list. A tenant wanting options no licence mentions needs a declared
 vocabulary of its own, which is a table and a screen. Reversible: yes.
+
+**An order grants nothing; fulfilment creates a share.** Approving an order is a recorded decision, not a new
+kind of grant. The alternative — approval granting the requester a scoped, expiring download right — would be a
+fourth grant type beside roles and shares, with its own interaction with the rights evaluation, and ARCHITECTURE
+settles neither it nor its lifetime. Routing the pickup through a share link means revocation, expiry, passcodes,
+download caps and rights-at-delivery all keep working exactly as they already do. Reversible: yes, and the
+alternative is written up in NEEDS-REVIEW.md.
+
+**Asking for an order is Read; deciding is Manage.** The feature exists for somebody who may see assets and not
+take them, so requiring Download to place an order would restrict it to precisely the people who do not need one.
+Reversible: no.
+
+**A partly-visible order narrows silently.** A requester who selects ten assets and may ask for nine gets an
+order for nine, and is told the count without being told which one was invisible — naming it would be the
+enumeration the visibility filter exists to prevent. The alternative, refusing the whole order, loses the nine
+they may have because of the one they may not. Reversible: yes.
+
+**An approver cannot approve assets outside their scope, but may reject them.** Agreeing to hand over something
+you cannot inspect is a signature on a blank page, so approval refuses with a count. Rejection carries no such
+requirement: saying no to something you cannot see is defensible, and requiring visibility would leave orders
+nobody is able to close. Reversible: yes.
+
+**Self-approval is recorded, not prevented.** A person holding the permission to approve does not need an order,
+so a self-approval is either a tenant where that is the normal path or something a reader of the trail should be
+able to see. `self_approved` travels on every order. Prohibiting it would be inventing a policy that belongs to a
+tenant. Reversible: yes.
+
+**An order's `expired` is derived, never stored.** An expiry is a timestamp passing rather than an event anybody
+performs, and a stored state would need a sweeper to keep it true — wrong between sweeps, and a second source of
+truth. Reversible: no.

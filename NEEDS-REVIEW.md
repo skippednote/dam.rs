@@ -359,3 +359,45 @@ download is attributed to the one with the most headroom, counting an uncapped s
 what `downloads_remaining` reports (a maximum), so the figure a caller watches goes down by one per download. It
 also means that while an uncapped alternative covers the usage, a capped scope's allowance is untouched — which
 is what "scopes are alternatives" already means in the evaluator, not a loophole added here.
+
+---
+
+## Orders: I chose the design that delegates nothing (Q.13)
+
+**Not blocking.** Implemented, and flagged because the alternative is the one most systems pick and it is an
+access-control decision ARCHITECTURE does not settle.
+
+An order lets somebody who may *see* assets but not take them ask for them. There are two ways to make that work:
+
+1. **Approval grants the requester a download right** on those assets, until an expiry. This is a fourth kind of
+   grant — neither a role nor a share — with its own scope, its own lifetime and its own interaction with the
+   rights evaluation at delivery. ARCHITECTURE settles roles (§7, §12) and share links (3.4); it says nothing
+   about this.
+
+2. **Approval leads to a share link.** The requester asks, an approver decides, and fulfilment creates a share
+   addressed to the recipients: a token, an optional passcode, an expiry, a download cap, revocation, and rights
+   re-evaluated on every delivery. Who may take bytes is answered exactly where it was already answered.
+
+**I implemented (2).** It needs no new concept, it is reversible, and it composes with what the last two slices
+added — the order carries the intended use (Q.12), so the pickup's downloads land in the ledger as declared, and
+it carries a format (Q.11), so an approver agrees to hand over a 2048px JPEG rather than a 40 MB master.
+
+What you get with (2) that (1) would not give you: revoking a pickup is revoking a share, which already works and
+already stops URLs it has issued. What you lose: the requester picks up through the share portal rather than
+seeing the assets appear in their own library. If that is the wrong trade for your users, (1) is the change, and
+it is a change to the access model rather than to this feature.
+
+**Two narrower decisions inside it**, either of which I will change on a word:
+
+- **Self-approval is recorded, not prevented.** A person who holds the permission to approve does not need an
+  order, so a self-approval is either a tenant where that is the normal path or something a reader of the trail
+  should see. `self_approved` is on every order for that reason. Prohibiting it would be inventing a policy that
+  belongs to a tenant.
+
+- **An approver cannot approve an order containing assets outside their scope** — they get a 403 with a count.
+  Agreeing to hand over something you cannot inspect is a signature on a blank page. Rejection has no such
+  requirement, because otherwise an order could reach a state nobody is able to close.
+
+**Not built yet:** fulfilment. An approved order sits at `approved` with no share, and the interface says
+"the pickup is being prepared" rather than pretending otherwise. That is the next slice: packaging, the
+multi-asset portal view (the portal currently handles single-asset shares only), and the metadata export.

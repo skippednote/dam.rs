@@ -18,6 +18,7 @@ pub mod dto;
 pub mod engagement;
 pub mod history;
 pub mod openapi;
+pub mod orders;
 pub mod schema;
 pub mod search;
 pub mod shares;

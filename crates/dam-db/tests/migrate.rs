@@ -69,7 +69,9 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             // 68 since 0020: `asset_comments` and its routing table; 69 since 0021 added the default partition
             // that keeps an event write from failing outside January 2026 — see the migration.
             // 70 since 0023: `conversions`, the tenant's named download formats.
-            70,
+            // 72 since 0025: `orders` and `order_items` — an order is a request plus the snapshotted set it was
+            // for, and the snapshot is what stops an approver's agreement widening under them.
+            72,
         ),
         (
             "view count",
@@ -98,7 +100,11 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             //
             // 247 since 0023: `conversions` gains a primary key, the unique index behind its key, and the partial
             // offer index that the download dialog's one read uses.
-            248,
+            //
+            // 254 since 0025: `orders` gains a primary key, the unique index behind its human-quotable
+            // reference, a requester index and the partial queue index; `order_items` a composite primary key
+            // and a by-asset index for "what has this been ordered for".
+            254,
         ),
         (
             "check constraints",
@@ -116,6 +122,10 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             // 113 since 0024: a `rights_usage` row may only claim a declaration if it is a download — the
             // column's meaning depends on another column's value, which is a thing a future writer gets wrong.
             //
+            // 117 since 0025: an order's purpose must say something, its state is a vocabulary, a decision has
+            // both a decider and a moment or neither, and a `ready` pickup has a share to pick up from — the last
+            // being what stops anything but fulfilment setting that state.
+            //
             // 97 since 0021: the events default partition inherits its parent's `actor_kind` check, for the same
             // reason it inherits the indexes.
             //
@@ -127,7 +137,7 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             //
             // 92 since 0018: `auto_import_mappings.source` is shape-checked, because a mapping's left-hand side is
             // free text and a malformed one would silently never match.
-            113,
+            117,
         ),
         (
             "hnsw indexes",

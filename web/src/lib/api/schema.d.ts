@@ -649,6 +649,113 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/orders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The caller's own orders, newest first. */
+        get: operations["mine"];
+        put?: never;
+        /** Places an order. */
+        post: operations["place"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orders/queue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Orders waiting for a decision, oldest first. */
+        get: operations["queue"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orders/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One order.
+         * @description Readable by its requester and by anybody who may decide. Not by everybody: an order names what somebody
+         *     wanted and why, which is theirs and their approver's business.
+         */
+        get: operations["one"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orders/{id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Approves an order and opens its pickup window. */
+        post: operations["approve"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orders/{id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Withdraws an order, which only its requester may do, and only before a decision. */
+        post: operations["cancel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orders/{id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Refuses an order. */
+        post: operations["reject"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/people": {
         parameters: {
             query?: never;
@@ -1465,6 +1572,11 @@ export interface components {
             /** @description Saved searches this caller may open, theirs first. */
             spotlights: components["schemas"]["Spotlight"][];
         };
+        /** @description A decision. */
+        DecisionRequest: {
+            /** @description Why it was refused, or a condition on an approval. */
+            note?: string | null;
+        };
         /** @description A field to define. Flags default to the conservative reading when omitted. */
         DefineRequest: {
             ai_writable?: boolean;
@@ -1720,9 +1832,48 @@ export interface components {
             retired: boolean;
             slug: string;
         };
+        /** @description One asset in an order. */
+        OrderItemView: {
+            /** Format: uuid */
+            asset_id: string;
+            /** @description The name as asked for, so an order reads sensibly after a rename or a deletion. */
+            filename: string;
+        };
         /** @description The complete field order, in the order fields should appear. */
         OrderRequest: {
             keys: string[];
+        };
+        /** @description One order. */
+        OrderView: {
+            channel?: string | null;
+            conversion_key?: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            decided_at?: string | null;
+            decided_by?: null | components["schemas"]["PersonView"];
+            decision_note?: string | null;
+            /**
+             * @description Whether the pickup window has closed. Derived from `expires_at` rather than stored — a stored `expired`
+             *     would need a sweeper to stay true and would be wrong between sweeps.
+             */
+            expired: boolean;
+            /** Format: date-time */
+            expires_at?: string | null;
+            /** Format: uuid */
+            id: string;
+            include_metadata: boolean;
+            items: components["schemas"]["OrderItemView"][];
+            purpose: string;
+            recipients: string[];
+            /** @description Human-quotable, per tenant: `ORD-000123`. */
+            reference: string;
+            requested_by?: null | components["schemas"]["PersonView"];
+            /** @description Whether the requester decided their own order. Reported rather than prevented — see the db module. */
+            self_approved: boolean;
+            /** @description `submitted`, `approved`, `rejected`, `ready`, `collected`, `cancelled`. */
+            state: string;
+            territory?: string | null;
         };
         /** @description A person, as a thread names them. */
         PersonView: {
@@ -1735,6 +1886,21 @@ export interface components {
             id: string;
             /** @description The name to show, falling back to the email when nobody set one. */
             name: string;
+        };
+        /** @description An order to place. */
+        PlaceOrderRequest: {
+            /** @description The assets asked for. Narrowed to what this caller may see; see the db module on why silently. */
+            asset_ids: string[];
+            /** @description The intended use (Q.12), carried into the ledger when the pickup is collected. */
+            channel?: string | null;
+            /** @description Which named format (Q.11). Absent means the original. */
+            conversion_key?: string | null;
+            include_metadata?: boolean;
+            /** @description Why. The entire question an approver answers, so it is required. */
+            purpose: string;
+            /** @description Who the delivery is for. Plural because an order is usually for a team. */
+            recipients?: string[];
+            territory?: string | null;
         };
         /**
          * @description Lifecycle state of one `object_placements` row.
@@ -3691,6 +3857,236 @@ export interface operations {
             };
             /** @description The key has no person behind it */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    mine: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderView"][];
+                };
+            };
+        };
+    };
+    place: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlaceOrderRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderView"];
+                };
+            };
+            /** @description Nothing was asked for, or nothing asked for exists for this caller */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    queue: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderView"][];
+                };
+            };
+            /** @description The caller holds no manage scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    one: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderView"];
+                };
+            };
+            /** @description No such order, or not one this caller may read */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    approve: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DecisionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderView"];
+                };
+            };
+            /** @description Some of the assets are outside the approver's scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such order */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description It has already been decided */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cancel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderView"];
+                };
+            };
+            /** @description Somebody else's order */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such order */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description It has already been decided */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    reject: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DecisionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderView"];
+                };
+            };
+            /** @description No such order */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description It has already been decided */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -251,7 +251,9 @@ that cheap high-value features are not stuck behind large ones.
 12. Intended-use capture before download, and the record that makes it auditable — done, and it turned
     `license_scopes.max_downloads` from a decorative number into a cap that refuses. A declared vocabulary of a
     tenant's own (rather than the one derived from its licences) is open
-13. Orders: approval, pickup, metadata export, multiple recipients, expiry
+13. Orders: approval, pickup, metadata export, multiple recipients, expiry — the request, the decision and the
+    lists are done; the pickup itself is open. The design deliberately delegates nothing: approval is a decision
+    and fulfilment creates a share link, so who may take bytes is still the share machinery's answer
 14. Portals: the four types, branded, over the share-portal foundation
 
 **Search, the whole set**

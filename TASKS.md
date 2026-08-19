@@ -26,14 +26,14 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M0–M3c** Foundation, ingest, metadata/search/rights, delivery/sharing/restore | complete |
 | **F** The UI: browse, detail, upload, filter rail, lightbox, bulk bar, design pass | complete |
 | **F.11b** Share/portal UI, schema administration, metadata types | complete except restore UX |
-| **Q** Acquia parity, 20 slices | Q.1–Q.12 done; Q.13–Q.20 open |
+| **Q** Acquia parity, 20 slices | Q.1–Q.12 done, Q.13 bar fulfilment; Q.14–Q.20 open |
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | schema exists, behaviour unwritten |
 | **M6** Workflow/proofing, annotations, analytics | not started |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** Q.13 orders
+**Next up, in order:** Q.13d order fulfilment (the pickup), then Q.14 portals
 → Q.6 comments → Q.7 activity feed → Q.8 versions → Q.9 attachments → Q.10 history → Q.11 conversions →
 Q.12 intended use → Q.13 orders → Q.14 portals → Q.15–Q.19 search → Q.20 sundries → M4 → M5 → M6 → M3d →
 Pre-GA → Entries.
@@ -1968,8 +1968,35 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
       rather than by a live click this time — the dev detail panel would not open to synthetic clicks, and the
       substance (vocabulary, declared and defaulted records, attribution, the ledger read) was verified against
       the live server directly.
-- [ ] **Q.13 Orders.** Approval, a pickup page, metadata export with the order, multiple recipients, expiry,
-  and hiding an expired order's contents.
+- [x] **Q.13a–c Orders: the request, the decision, and the two lists.** Fulfilment is Q.13d below.
+
+      **The design delegates nothing**, which is the decision worth keeping. An order could grant the requester a
+      download right on approval: a fourth kind of grant, with its own scope and lifetime, that ARCHITECTURE does
+      not settle. Instead approval is a *decision*, and fulfilment creates a share link — the machinery that
+      already answers who may take what, including rights re-evaluated at every delivery and revocation that
+      stops URLs already issued. Written up in NEEDS-REVIEW.md, because the delegating reading is what most
+      systems pick.
+
+      Asking is Read, deliberately: the feature exists for somebody who may see assets and not take them, so
+      requiring Download would restrict it to the people who do not need it. Deciding is Manage.
+
+      Three rules make it an audit trail rather than a form. You cannot order what you cannot see — and a
+      partly-visible request narrows rather than refusing, without saying which asset was invisible, because that
+      would be the enumeration the filter prevents. An approver cannot approve what they cannot see, and is told
+      how many are out of reach; rejection has no such requirement, or an order could reach a state nobody can
+      close. And a requester cannot cancel after a decision, because an approval is somebody else's recorded act.
+      Self-approval is recorded rather than prevented — prohibiting it would be inventing a tenant's policy.
+
+      `expired` is deliberately not a state: an expiry is a timestamp passing, and a stored one would need a
+      sweeper to stay true. The order carries the intended use (Q.12) and the format (Q.11), so the pickup's
+      downloads will land in the ledger as declared and an approver agrees to a 2048px JPEG rather than a master.
+
+      Twenty-five mutations caught across the model, the API and the two screens.
+
+- [ ] **Q.13d Order fulfilment: the pickup.** Packaging an approved order, the metadata export, and a
+  multi-asset portal view — the share portal handles single-asset shares only today and says so. Until this
+  exists an approved order sits at `approved` with no share, and the interface says "the pickup is being
+  prepared" rather than pretending otherwise. Hiding an expired order's contents belongs here too.
 - [ ] **Q.14 Portals.** Standard, Brand, Video and Channel, branded, over the share-portal foundation.
 - [ ] **Q.15 The built-in facets:** asset status, orientation, average rating, has-attachment. Orientation is
   free — it is a function of dimensions already stored.

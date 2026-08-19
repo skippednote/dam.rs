@@ -98,6 +98,9 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
                 global: deps.global.clone(),
             },
         ))
+        .merge(crate::orders::router(crate::orders::OrderState {
+            global: deps.global.clone(),
+        }))
         .merge(crate::downloads::router(crate::downloads::DownloadState {
             global: deps.global.clone(),
             delivery: Some(Arc::clone(&delivery)),
