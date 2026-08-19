@@ -297,6 +297,47 @@ export async function removeUploadProfile(id: string): Promise<void> {
 	await request<void>(`/upload-profiles/${id}`, { method: 'DELETE' });
 }
 
+export type Engagement = components['schemas']['EngagementView'];
+export type EngagementList = components['schemas']['ListPage'];
+
+/**
+ * Ratings, favourites and watches (Q.5c).
+ *
+ * Every call needs a person behind the key, and every one answers with the asset's engagement *afterwards* — so
+ * a star widget redraws from the write rather than from a read that raced it.
+ */
+export async function setRating(assetId: string, stars: number): Promise<Engagement> {
+	return request<Engagement>(`/assets/${assetId}/rating`, {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ stars })
+	});
+}
+
+/** Clears the caller's own rating. There is no zero star — see the API docs. */
+export async function clearRating(assetId: string): Promise<Engagement> {
+	return request<Engagement>(`/assets/${assetId}/rating`, { method: 'DELETE' });
+}
+
+export async function setFavourite(assetId: string, on: boolean): Promise<Engagement> {
+	return request<Engagement>(`/assets/${assetId}/favourite`, {
+		method: on ? 'PUT' : 'DELETE'
+	});
+}
+
+export async function setWatch(assetId: string, on: boolean): Promise<Engagement> {
+	return request<Engagement>(`/assets/${assetId}/watch`, { method: on ? 'PUT' : 'DELETE' });
+}
+
+/** The caller's own favourites, newest first. Ids only — the grid fetches the assets it draws. */
+export async function listFavourites(limit = 50, offset = 0): Promise<EngagementList> {
+	return request<EngagementList>(`/favourites?limit=${limit}&offset=${offset}`);
+}
+
+export async function listWatches(limit = 50, offset = 0): Promise<EngagementList> {
+	return request<EngagementList>(`/watches?limit=${limit}&offset=${offset}`);
+}
+
 /**
  * Auto-import mappings: what a file's own EXIF and XMP become.
  *

@@ -26,14 +26,14 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M0–M3c** Foundation, ingest, metadata/search/rights, delivery/sharing/restore | complete |
 | **F** The UI: browse, detail, upload, filter rail, lightbox, bulk bar, design pass | complete |
 | **F.11b** Share/portal UI, schema administration, metadata types | complete except restore UX |
-| **Q** Acquia parity, 20 slices | Q.1–Q.4 done; Q.5a–Q.5b done; Q.5c–Q.20 open |
+| **Q** Acquia parity, 20 slices | Q.1–Q.4 done; Q.5a–Q.5c·1 done; Q.5c·2–Q.20 open |
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | schema exists, behaviour unwritten |
 | **M6** Workflow/proofing, annotations, analytics | not started |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** Q.5c engagement UI
+**Next up, in order:** Q.5c·2 grid star and private lists
 → Q.6 comments → Q.7 activity feed → Q.8 versions → Q.9 attachments → Q.10 history → Q.11 conversions →
 Q.12 intended use → Q.13 orders → Q.14 portals → Q.15–Q.19 search → Q.20 sundries → M4 → M5 → M6 → M3d →
 Pre-GA → Entries.
@@ -1683,8 +1683,28 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
       Ten mutations, nine caught. The survivor is documented rather than papered over: `page_engagement` applies
       the caller's predicate a second time, and no current call site can observe it because the ids always come
       from a read that already filtered them.
-- [ ] **Q.5c The engagement UI.** Stars in the detail panel, a favourite toggle on the card, a watch toggle, and
-  the two private lists as places you can go.
+- [x] **Q.5c·1 The engagement panel.** Stars, a favourite toggle and a watch toggle in the detail panel. The
+      rating is a **radio group**, because five stars are five values of one thing — as buttons they are five
+      unrelated controls to a screen reader, with nothing saying which is chosen. The drawn stars show the
+      *average* and the checked radio the caller's own rating, stated separately in words, because a widget
+      showing one number could only be lying about the other. Clearing is its own control and appears only when
+      there is something to clear: a sixth star meaning "none" is exactly the conflation the model avoids. The
+      counts are people, never a list of them, and the panel says outright that nobody is told how many are
+      watching.
+
+      Nine mutations, all caught after two rounds. The first pass found the partial star fill untested — the claim
+      that 3.4 and 3.5 differ lived only in a comment — and nothing at all switching between assets, which is the
+      one thing the derived-override design exists to handle.
+
+      Two real problems surfaced. A stateful mock was needed because a fixed reply made the favourite click report
+      "watching", so the watch toggle correctly sent DELETE and the test read as a component bug. And adding a
+      required field to `AssetDetail` broke **ten existing browse and share cases**: their mocks predate it, and
+      reading a field off an undefined object took the *whole* detail panel down — metadata editor, categories and
+      sharing with it. The mocks are updated and the panel now hides itself rather than crashing, because absent
+      and "nobody has rated this" are different facts.
+
+- [ ] **Q.5c·2 The grid star and the two private lists.** A favourite toggle on the card that keeps the ARIA grid's
+  single tab stop, `/favourites` and `/watches` as places you can navigate to, and nav links to them.
 - [ ] **Cleanup: `Caller::identity_id` is `Option` but `authorize` guarantees `Some`.** Three call sites re-check
   it (`assets.rs`, `tus.rs`, `engagement.rs`), each with a different refusal, and one of them is unreachable code
   that looks load-bearing. Narrowing the type touches every handler, so it is its own change.

@@ -14,12 +14,13 @@
 	is still the one that says no.
 -->
 <script lang="ts">
-	import type { AssetDetail, FieldDefinition } from '$lib/api/client';
+	import type { AssetDetail, Engagement, FieldDefinition } from '$lib/api/client';
 	import TierBadge from '$lib/components/state/TierBadge.svelte';
 	import RightsBadge from '$lib/components/state/RightsBadge.svelte';
 	import ProvenanceBadge from '$lib/components/state/ProvenanceBadge.svelte';
 	import AssetTypePicker from './AssetTypePicker.svelte';
 	import CategoryPanel from './CategoryPanel.svelte';
+	import EngagementPanel from './EngagementPanel.svelte';
 	import MetadataEditor from './MetadataEditor.svelte';
 	import SharePanel from './SharePanel.svelte';
 	import { deliveryUrl } from '$lib/api/client';
@@ -28,12 +29,15 @@
 		asset,
 		fields,
 		onchanged,
+		onengagement,
 		onclose
 	}: {
 		asset: AssetDetail;
 		/** The tenant's definitions, so the editor knows each field's shape. */
 		fields: FieldDefinition[];
 		onchanged?: (values: Record<string, unknown>) => void;
+		/** So the grid can redraw one cell's star without refetching the page. */
+		onengagement?: (state: Engagement) => void;
 		onclose?: () => void;
 	} = $props();
 
@@ -195,6 +199,10 @@
 		<h3 class="mb-2 text-xs font-semibold tracking-wide text-muted uppercase">Metadata</h3>
 		<MetadataEditor assetId={asset.id} {values} fields={formFields} onsaved={onchanged} />
 	</div>
+
+	<!-- Engagement before filing and sharing: it is the cheapest thing a reader does — a star or a favourite is
+	     one click and needs no decision, while filing and sharing both do. -->
+	<EngagementPanel assetId={asset.id} initial={asset.engagement} onchanged={onengagement} />
 
 	<!-- Where it is filed, before sharing: a reader checking an asset asks "what is this and where does it
 	     live" before "who can have it". -->

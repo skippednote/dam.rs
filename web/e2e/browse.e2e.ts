@@ -42,7 +42,10 @@ function summary(index: number) {
 				: index === 1
 					? '/d/relative-token'
 					: null,
-		tag_confidence: index % 3 === 0 ? null : 0.55 + (index % 40) / 100
+		tag_confidence: index % 3 === 0 ? null : 0.55 + (index % 40) / 100,
+		// Engagement, as every summary now carries it (Q.5c).
+		is_favourite: false,
+		average_stars: null
 	};
 }
 
@@ -214,6 +217,18 @@ async function connect(page: Page): Promise<Recorder> {
 					version_no: 1,
 					created_at: '2026-08-01T09:00:00Z',
 					updated_at: '2026-08-01T09:00:00Z',
+					// The full engagement, as the detail payload now carries it (Q.5c). Present rather than
+					// omitted because the API always sends it, and a mock that lags the contract tests a shape
+					// the server never produces.
+					engagement: {
+						asset_id: '00000000-0000-4000-8000-000000000000',
+						average_stars: null,
+						rating_count: 0,
+						favourite_count: 0,
+						my_stars: null,
+						is_favourite: false,
+						is_watched: false
+					},
 					preview_url: 'http://127.0.0.1:8099/d/preview-token'
 				}
 			});

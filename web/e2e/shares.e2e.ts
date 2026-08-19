@@ -30,7 +30,10 @@ function summary() {
 		rights_state: 'allowed',
 		provenance_state: 'valid',
 		thumbnail_url: null,
-		tag_confidence: null
+		tag_confidence: null,
+		// Engagement, as every summary now carries it (Q.5c).
+		is_favourite: false,
+		average_stars: null
 	};
 }
 
@@ -150,6 +153,18 @@ async function connectManagement(page: Page): Promise<Recorder> {
 					version_no: 1,
 					created_at: '2026-08-01T09:00:00Z',
 					updated_at: '2026-08-01T09:00:00Z',
+					// The full engagement, as the detail payload now carries it (Q.5c). Present rather than
+					// omitted because the API always sends it, and a mock that lags the contract tests a shape
+					// the server never produces.
+					engagement: {
+						asset_id: '00000000-0000-4000-8000-000000000000',
+						average_stars: null,
+						rating_count: 0,
+						favourite_count: 0,
+						my_stars: null,
+						is_favourite: false,
+						is_watched: false
+					},
 					preview_url: null
 				}
 			});
