@@ -1908,3 +1908,33 @@ is offered last and explicitly, as the deliberate choice. Reversible: yes.
 **`require_complete` is applied by the uploader, and the drop target is gated too.** Disabling the file input
 alone would have left the drag-and-drop path working — making the mouse route quietly more permissive than the
 keyboard one, which is the accessible one. Both are gated on the same condition. Reversible: no.
+
+**Engagement writes go through the caller's access predicate, and a hidden asset is "unknown".** Rating an asset
+is not a metadata edit, so it looks harmless enough to skip the check. It is not: an endpoint accepting a rating
+for any id is an existence oracle, and one accepting a *favourite* for any id lets somebody assemble a private
+list of assets they cannot see and watch it fill in as their grants change. So every read and write resolves the
+asset under `Planned` first, and "you may not see it" and "it does not exist" are the same refusal — a different
+one for each is the oracle with extra steps. Reversible: no.
+
+**A private list is filtered by the predicate too.** "My favourites" is the case that looks exempt, because the
+caller owns every row. Access can be withdrawn after a favourite is made, so an unfiltered list would keep
+naming an asset the caller is no longer allowed to know exists, and the total would keep counting it. §7's rule
+is about counts and existence, not about who owns the row. Reversible: no.
+
+**Aggregates are disclosed; identities are not; watches have no public count at all.** A rating average and a
+favourite count are facts about an asset, so a caller who can see the asset can see them. *Who* rated or
+favourited it is never returned — nothing on any screen needs it, and "seven people favourited this, and here
+they are" is a different disclosure from "seven people did". Watches go further and have no count: how many
+colleagues are watching a file is closer to a fact about the colleagues than about the file. ARCHITECTURE.md does
+not settle any of this, so the minimum-disclosure option was taken; widening later is possible, un-disclosing is
+not. Reversible: yes, in the widening direction only.
+
+**A watch stores intent, not a frozen grant.** Notifications do not exist yet (M6). `watchers()` therefore takes
+no predicate and returns everyone watching, because the sender is not a caller and has no grants of its own — it
+must re-check each watcher's access at send time. Storing a copy of the grant alongside the watch would be
+storing a stale answer to the only question that matters. Reversible: no.
+
+**Clearing a rating deletes the row; there is no zero.** "No opinion" and "thinks it is bad" must not share a
+representation, or an average silently counts absences — wrong in a way nobody notices until the numbers are on
+a screen. Same for favourites and watches: no `false` column, just absence. Reversible: no.
+

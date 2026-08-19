@@ -14,6 +14,7 @@ pub mod bulk;
 pub mod categories;
 pub mod collections;
 pub mod derivatives;
+pub mod engagement;
 pub mod facets;
 pub mod fields;
 pub mod jobs;

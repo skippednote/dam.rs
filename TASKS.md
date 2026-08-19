@@ -26,14 +26,14 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M0–M3c** Foundation, ingest, metadata/search/rights, delivery/sharing/restore | complete |
 | **F** The UI: browse, detail, upload, filter rail, lightbox, bulk bar, design pass | complete |
 | **F.11b** Share/portal UI, schema administration, metadata types | complete except restore UX |
-| **Q** Acquia parity, 20 slices | Q.1–Q.4 done; Q.5–Q.20 open |
+| **Q** Acquia parity, 20 slices | Q.1–Q.4 done; Q.5a done; Q.5b–Q.20 open |
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | schema exists, behaviour unwritten |
 | **M6** Workflow/proofing, annotations, analytics | not started |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** Q.5 ratings/favourites/watch
+**Next up, in order:** Q.5b engagement API → Q.5c engagement UI
 → Q.6 comments → Q.7 activity feed → Q.8 versions → Q.9 attachments → Q.10 history → Q.11 conversions →
 Q.12 intended use → Q.13 orders → Q.14 portals → Q.15–Q.19 search → Q.20 sundries → M4 → M5 → M6 → M3d →
 Pre-GA → Entries.
@@ -1616,8 +1616,26 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
       store the guess as fact. **The UI failed both reads together**, so one bad mapping list emptied the source
       picker and left a `required` select that could never be satisfied.
 - [x] **Q.4 Auto-import mappings.** Embedded metadata (XMP/EXIF) → field definitions, on ingest.
-- [ ] **Q.5 Ratings, favourites, watch.** Three engagement features and their facets; favourites rank first
-  in search, watch is what makes notification worth having.
+- [x] **Q.5a Ratings, favourites and watches: the model, and the access rules that are the substance.** Migration
+      `0019`, three tables rather than one — a rating aggregates across people, a favourite is a private list, a
+      watch is a standing request, and one table would carry a null column per unused role. `dam_db::engagement`
+      puts every read *and write* through the caller's `Planned`: an endpoint that accepts a rating for any id is
+      an existence oracle, and one that accepts a favourite for any id lets somebody assemble a private list of
+      assets they cannot see. "Hidden" and "absent" are the same refusal. A private list is filtered too, because
+      access can be withdrawn after the row is made. Aggregates are disclosed, identities never are, and watches
+      have no public count — see `DECISIONS.md`. Clearing is deleting, so no average counts an absence.
+
+      Fourteen mutations, and the first pass found a test passing for the wrong reason: the "a refused write must
+      not write" assertion sat *after* the removal attempts, which deleted exactly what the write attempts had
+      written — so the visibility check could be removed from `visible()` entirely and the count was still zero.
+      Two more were coin-flips: a two-element ordering assertion that a reversed implementation passed half the
+      time, and nothing at all covering whether re-favouriting reshuffled the caller's own list.
+
+- [ ] **Q.5b The engagement API, and rating as a facet.** `PUT/DELETE /assets/{id}/rating`, `/favourite`,
+  `/watch`; engagement on the asset payload; `stars:>=4`, `is:favourite` and `is:watched` selectors; favourites
+  ranked first.
+- [ ] **Q.5c The engagement UI.** Stars in the detail panel, a favourite toggle on the card, a watch toggle, and
+  the two private lists as places you can go.
 - [ ] **Q.6 Comments.** Public and private, routed to chosen recipients, with statuses that carry approval.
   This is M6's "annotations" with Acquia's shape.
 - [ ] **Q.7 Activity feed, dashboard sections, spotlight searches.** What turns the landing page from a
