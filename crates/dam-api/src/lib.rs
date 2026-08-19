@@ -10,6 +10,7 @@ pub mod caller;
 pub mod categories;
 pub mod delivery;
 pub mod dto;
+pub mod engagement;
 pub mod openapi;
 pub mod schema;
 pub mod search;

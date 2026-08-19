@@ -108,6 +108,60 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/assets/{id}/favourite": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Adds the asset to the caller's favourites. Idempotent. */
+        put: operations["add_favourite"];
+        post?: never;
+        /** Removes it from the caller's favourites. Idempotent. */
+        delete: operations["remove_favourite"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assets/{id}/rating": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Sets the caller's rating. */
+        put: operations["set_rating"];
+        post?: never;
+        /** Clears the caller's rating. Clearing one that is not there is not an error. */
+        delete: operations["clear_rating"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assets/{id}/watch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Starts watching the asset. Idempotent. */
+        put: operations["add_watch"];
+        post?: never;
+        /** Stops watching. Idempotent. */
+        delete: operations["remove_watch"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auto-import-mappings": {
         parameters: {
             query?: never;
@@ -277,6 +331,23 @@ export interface paths {
         };
         /** How many of the caller's assets are in no category of this tree. */
         get: operations["uncategorised"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/favourites": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The caller's own favourites, newest first. */
+        get: operations["favourites"];
         put?: never;
         post?: never;
         delete?: never;
@@ -531,6 +602,23 @@ export interface paths {
         head?: never;
         /** Amends a profile. */
         patch: operations["amend"];
+        trace?: never;
+    };
+    "/watches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The caller's own watches, newest first. */
+        get: operations["watches"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
 }
@@ -892,6 +980,30 @@ export interface components {
             key: string;
             label: string;
         };
+        /** @description An asset's engagement, as the caller may see it. */
+        EngagementView: {
+            /** Format: uuid */
+            asset_id: string;
+            /**
+             * Format: double
+             * @description The mean of every rating, or null when nobody has rated it.
+             *
+             *     Null rather than zero: "unrated" and "rated badly by everyone" are different facts, and a widget that
+             *     drew them the same way would be lying about one of them.
+             */
+            average_stars?: number | null;
+            /** Format: int64 */
+            favourite_count: number;
+            is_favourite: boolean;
+            is_watched: boolean;
+            /**
+             * Format: int32
+             * @description This caller's own rating. Never anybody else's.
+             */
+            my_stars?: number | null;
+            /** Format: int64 */
+            rating_count: number;
+        };
         /** @description One facetable field and its buckets. */
         Facet: {
             buckets: components["schemas"]["Bucket"][];
@@ -933,6 +1045,19 @@ export interface components {
          * @enum {string}
          */
         LatencyClass: "instant" | "seconds" | "minutes" | "hours" | "days";
+        /** @description A page of the caller's own favourites or watches. */
+        ListPage: {
+            /**
+             * @description Asset ids, newest first. Ids rather than whole assets: the grid already knows how to fetch and render a
+             *     set of assets, and duplicating that shape here would be a second asset serialiser to keep in step.
+             */
+            asset_ids: string[];
+            /**
+             * Format: int64
+             * @description How many the caller has *and can still see* — the same predicate the page came from.
+             */
+            total: number;
+        };
         /** @description A mapping as a client sees it. */
         MappingRow: {
             enabled: boolean;
@@ -1111,6 +1236,14 @@ export interface components {
              */
             code?: string | null;
             message: string;
+        };
+        /** @description A rating to set. */
+        RatingRequest: {
+            /**
+             * Format: int32
+             * @description 1 to 5. There is no zero — clearing a rating is `DELETE`, because "no opinion" is not a low score.
+             */
+            stars: number;
         };
         /** @description What a removal did. */
         RemovedField: {
@@ -1531,6 +1664,227 @@ export interface operations {
             };
         };
     };
+    add_favourite: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EngagementView"];
+                };
+            };
+            /** @description The key has no person behind it */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such asset, or not one this caller may see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    remove_favourite: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EngagementView"];
+                };
+            };
+            /** @description The key has no person behind it */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such asset, or not one this caller may see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    set_rating: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RatingRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EngagementView"];
+                };
+            };
+            /** @description The key has no person behind it */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such asset, or not one this caller may see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not 1 to 5 stars */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    clear_rating: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EngagementView"];
+                };
+            };
+            /** @description The key has no person behind it */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such asset, or not one this caller may see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    add_watch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EngagementView"];
+                };
+            };
+            /** @description The key has no person behind it */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such asset, or not one this caller may see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    remove_watch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EngagementView"];
+                };
+            };
+            /** @description The key has no person behind it */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such asset, or not one this caller may see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     list: {
         parameters: {
             query?: never;
@@ -1942,6 +2296,35 @@ export interface operations {
             };
             /** @description No such category tree */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    favourites: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListPage"];
+                };
+            };
+            /** @description The key has no person behind it */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2717,6 +3100,35 @@ export interface operations {
             };
             /** @description The defaults do not validate */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    watches: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListPage"];
+                };
+            };
+            /** @description The key has no person behind it */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

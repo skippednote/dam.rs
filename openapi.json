@@ -378,6 +378,241 @@
         }
       }
     },
+    "/assets/{id}/favourite": {
+      "put": {
+        "tags": [
+          "engagement"
+        ],
+        "summary": "Adds the asset to the caller's favourites. Idempotent.",
+        "operationId": "add_favourite",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngagementView"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key has no person behind it"
+          },
+          "404": {
+            "description": "No such asset, or not one this caller may see"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "engagement"
+        ],
+        "summary": "Removes it from the caller's favourites. Idempotent.",
+        "operationId": "remove_favourite",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngagementView"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key has no person behind it"
+          },
+          "404": {
+            "description": "No such asset, or not one this caller may see"
+          }
+        }
+      }
+    },
+    "/assets/{id}/rating": {
+      "put": {
+        "tags": [
+          "engagement"
+        ],
+        "summary": "Sets the caller's rating.",
+        "operationId": "set_rating",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RatingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngagementView"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key has no person behind it"
+          },
+          "404": {
+            "description": "No such asset, or not one this caller may see"
+          },
+          "422": {
+            "description": "Not 1 to 5 stars"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "engagement"
+        ],
+        "summary": "Clears the caller's rating. Clearing one that is not there is not an error.",
+        "operationId": "clear_rating",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngagementView"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key has no person behind it"
+          },
+          "404": {
+            "description": "No such asset, or not one this caller may see"
+          }
+        }
+      }
+    },
+    "/assets/{id}/watch": {
+      "put": {
+        "tags": [
+          "engagement"
+        ],
+        "summary": "Starts watching the asset. Idempotent.",
+        "operationId": "add_watch",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngagementView"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key has no person behind it"
+          },
+          "404": {
+            "description": "No such asset, or not one this caller may see"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "engagement"
+        ],
+        "summary": "Stops watching. Idempotent.",
+        "operationId": "remove_watch",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngagementView"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key has no person behind it"
+          },
+          "404": {
+            "description": "No such asset, or not one this caller may see"
+          }
+        }
+      }
+    },
     "/auto-import-mappings": {
       "get": {
         "tags": [
@@ -831,6 +1066,50 @@
           },
           "404": {
             "description": "No such category tree"
+          }
+        }
+      }
+    },
+    "/favourites": {
+      "get": {
+        "tags": [
+          "engagement"
+        ],
+        "summary": "The caller's own favourites, newest first.",
+        "operationId": "favourites",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListPage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key has no person behind it"
           }
         }
       }
@@ -1655,6 +1934,50 @@
           }
         }
       }
+    },
+    "/watches": {
+      "get": {
+        "tags": [
+          "engagement"
+        ],
+        "summary": "The caller's own watches, newest first.",
+        "operationId": "watches",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListPage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key has no person behind it"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2455,6 +2778,53 @@
           }
         }
       },
+      "EngagementView": {
+        "type": "object",
+        "description": "An asset's engagement, as the caller may see it.",
+        "required": [
+          "asset_id",
+          "rating_count",
+          "favourite_count",
+          "is_favourite",
+          "is_watched"
+        ],
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "average_stars": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The mean of every rating, or null when nobody has rated it.\n\nNull rather than zero: \"unrated\" and \"rated badly by everyone\" are different facts, and a widget that\ndrew them the same way would be lying about one of them."
+          },
+          "favourite_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "is_favourite": {
+            "type": "boolean"
+          },
+          "is_watched": {
+            "type": "boolean"
+          },
+          "my_stars": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "This caller's own rating. Never anybody else's."
+          },
+          "rating_count": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "Facet": {
         "type": "object",
         "description": "One facetable field and its buckets.",
@@ -2548,6 +2918,29 @@
           "hours",
           "days"
         ]
+      },
+      "ListPage": {
+        "type": "object",
+        "description": "A page of the caller's own favourites or watches.",
+        "required": [
+          "asset_ids",
+          "total"
+        ],
+        "properties": {
+          "asset_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Asset ids, newest first. Ids rather than whole assets: the grid already knows how to fetch and render a\nset of assets, and duplicating that shape here would be a second asset serialiser to keep in step."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many the caller has *and can still see* — the same predicate the page came from."
+          }
+        }
       },
       "MappingRow": {
         "type": "object",
@@ -2917,6 +3310,20 @@
           },
           "message": {
             "type": "string"
+          }
+        }
+      },
+      "RatingRequest": {
+        "type": "object",
+        "description": "A rating to set.",
+        "required": [
+          "stars"
+        ],
+        "properties": {
+          "stars": {
+            "type": "integer",
+            "format": "int32",
+            "description": "1 to 5. There is no zero — clearing a rating is `DELETE`, because \"no opinion\" is not a low score."
           }
         }
       },

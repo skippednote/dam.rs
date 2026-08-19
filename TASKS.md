@@ -26,14 +26,14 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M0–M3c** Foundation, ingest, metadata/search/rights, delivery/sharing/restore | complete |
 | **F** The UI: browse, detail, upload, filter rail, lightbox, bulk bar, design pass | complete |
 | **F.11b** Share/portal UI, schema administration, metadata types | complete except restore UX |
-| **Q** Acquia parity, 20 slices | Q.1–Q.4 done; Q.5a done; Q.5b–Q.20 open |
+| **Q** Acquia parity, 20 slices | Q.1–Q.4 done; Q.5a–Q.5b·1 done; Q.5b·2–Q.20 open |
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | schema exists, behaviour unwritten |
 | **M6** Workflow/proofing, annotations, analytics | not started |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** Q.5b engagement API → Q.5c engagement UI
+**Next up, in order:** Q.5b·2 engagement in search → Q.5c engagement UI
 → Q.6 comments → Q.7 activity feed → Q.8 versions → Q.9 attachments → Q.10 history → Q.11 conversions →
 Q.12 intended use → Q.13 orders → Q.14 portals → Q.15–Q.19 search → Q.20 sundries → M4 → M5 → M6 → M3d →
 Pre-GA → Entries.
@@ -1631,9 +1631,28 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
       Two more were coin-flips: a two-element ordering assertion that a reversed implementation passed half the
       time, and nothing at all covering whether re-favouriting reshuffled the caller's own list.
 
-- [ ] **Q.5b The engagement API, and rating as a facet.** `PUT/DELETE /assets/{id}/rating`, `/favourite`,
-  `/watch`; engagement on the asset payload; `stars:>=4`, `is:favourite` and `is:watched` selectors; favourites
-  ranked first.
+- [x] **Q.5b·1 The engagement endpoints.** `PUT/DELETE /assets/{id}/rating`, `/favourite`, `/watch`, plus
+      `GET /favourites` and `/watches`. `Read`, not Manage: whoever may look at an asset may have an opinion about
+      it, and requiring Manage would mean only administrators could favourite anything. Every response is the
+      asset's engagement *afterwards* rather than a 204 — the average moved because of this request, so returning
+      it means the number on screen came from the write instead of a read that raced it. A hidden asset and an
+      absent one are both 404, because two statuses rebuild the existence oracle the db layer collapses. The range
+      check runs before any database access, which is why an out-of-range rating still refuses correctly on a
+      tenant whose schema is behind — as the live check demonstrated.
+
+      Six of eight mutations caught. The two that survive are the identity check, and the reason is worth
+      recording: `caller::authorize` already refuses a key with no identity for *every* endpoint, so the
+      handler-level check is a fail-closed unwrap behind a guarantee that lives upstream. Mutation testing found a
+      second real gap — both private lists held the same single id, so the watch route could have been wired to
+      the favourites table and the suite would have passed.
+
+- [ ] **Q.5b·2 Engagement in search.** `stars:>=4`, `is:favourite` and `is:watched` selectors, engagement on the
+  asset payload so a grid needs one request, and favourites ranked first.
+- [ ] **Q.5c The engagement UI.** Stars in the detail panel, a favourite toggle on the card, a watch toggle, and
+  the two private lists as places you can go.
+- [ ] **Cleanup: `Caller::identity_id` is `Option` but `authorize` guarantees `Some`.** Three call sites re-check
+  it (`assets.rs`, `tus.rs`, `engagement.rs`), each with a different refusal, and one of them is unreachable code
+  that looks load-bearing. Narrowing the type touches every handler, so it is its own change.
 - [ ] **Q.5c The engagement UI.** Stars in the detail panel, a favourite toggle on the card, a watch toggle, and
   the two private lists as places you can go.
 - [ ] **Q.6 Comments.** Public and private, routed to chosen recipients, with statuses that carry approval.
