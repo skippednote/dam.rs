@@ -19,3 +19,4 @@ pub mod search;
 pub mod shares;
 pub mod tus;
 pub mod upload_profiles;
+pub mod versions;

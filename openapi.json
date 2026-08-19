@@ -462,6 +462,131 @@
         }
       }
     },
+    "/assets/{asset_id}/versions": {
+      "get": {
+        "tags": [
+          "versions"
+        ],
+        "summary": "Every version of an asset, newest first.",
+        "operationId": "history",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/VersionView"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such asset, or not one this caller may see"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "versions"
+        ],
+        "summary": "Supersedes an asset with one already uploaded.",
+        "operationId": "add",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddVersionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/VersionView"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Either asset is unknown, or not one this caller may manage"
+          },
+          "409": {
+            "description": "That asset is not the current version; reload and retry"
+          }
+        }
+      }
+    },
+    "/assets/{asset_id}/versions/current": {
+      "post": {
+        "tags": [
+          "versions"
+        ],
+        "summary": "Makes an earlier version current again.",
+        "operationId": "make_current",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/VersionView"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such asset, or not one this caller may manage"
+          }
+        }
+      }
+    },
     "/assets/{id}/favourite": {
       "put": {
         "tags": [
@@ -2266,6 +2391,20 @@
           "occurred_at": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "AddVersionRequest": {
+        "type": "object",
+        "description": "Which already-uploaded asset becomes the new version.",
+        "required": [
+          "new_asset_id"
+        ],
+        "properties": {
+          "new_asset_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "An asset this caller uploaded through the ordinary route. See the module docs on why it is not a file."
           }
         }
       },
@@ -4169,6 +4308,64 @@
           "key": {
             "type": "string",
             "description": "The payload key, or the field key for a missing required field."
+          }
+        }
+      },
+      "VersionView": {
+        "type": "object",
+        "description": "One version in a history.",
+        "required": [
+          "asset_id",
+          "version_no",
+          "is_current",
+          "filename",
+          "bytes",
+          "content_hash",
+          "created_at"
+        ],
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "content_hash": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "is_current": {
+            "type": "boolean",
+            "description": "Whether this is the version listings and downloads resolve to."
+          },
+          "replaces_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "uploaded_by": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PersonView"
+              }
+            ]
+          },
+          "version_no": {
+            "type": "integer",
+            "format": "int32"
           }
         }
       },

@@ -394,6 +394,7 @@
 						if (selected) selected = { ...selected, values };
 					}}
 					onengagement={(after) => patchRow(after.asset_id, after)}
+					onversions={load}
 					onclose={() => (selected = null)}
 				/>
 			</aside>

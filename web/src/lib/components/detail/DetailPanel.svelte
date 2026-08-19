@@ -22,6 +22,7 @@
 	import CategoryPanel from './CategoryPanel.svelte';
 	import CommentPanel from './CommentPanel.svelte';
 	import EngagementPanel from './EngagementPanel.svelte';
+	import VersionPanel from './VersionPanel.svelte';
 	import MetadataEditor from './MetadataEditor.svelte';
 	import SharePanel from './SharePanel.svelte';
 	import { deliveryUrl } from '$lib/api/client';
@@ -31,6 +32,7 @@
 		fields,
 		onchanged,
 		onengagement,
+		onversions,
 		onclose
 	}: {
 		asset: AssetDetail;
@@ -39,6 +41,8 @@
 		onchanged?: (values: Record<string, unknown>) => void;
 		/** So the grid can redraw one cell's star without refetching the page. */
 		onengagement?: (state: Engagement) => void;
+		/** So the page can reload when a different version becomes current, which changes what the grid shows. */
+		onversions?: () => void;
 		onclose?: () => void;
 	} = $props();
 
@@ -208,6 +212,10 @@
 	<!-- Where it is filed, before sharing: a reader checking an asset asks "what is this and where does it
 	     live" before "who can have it". -->
 	<CategoryPanel assetId={asset.id} />
+
+	<!-- The history before the conversation: which bytes you are looking at is a more basic question than what
+	     people have said about them, and the panel hides itself entirely for a single-version asset. -->
+	<VersionPanel assetId={asset.id} onchanged={onversions} />
 
 	<!-- The conversation after the filing and before sharing: what people have *said* about an asset is part of
 	     understanding it, and it belongs beside the metadata rather than behind a tab. -->

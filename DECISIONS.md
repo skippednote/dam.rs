@@ -1988,3 +1988,24 @@ note in migration 0001, so deleting an identity leaves the comment standing. Tha
 were said, and deleting the person does not unsay them — and the API names the gap ("Someone no longer here")
 rather than rendering a blank author, because an empty name reads as a fault rather than as a fact. Reversible: no.
 
+**Listings show current versions; a named asset is whatever was named.** `is_current` had existed since migration
+0001 with nothing filtering on it, which was invisible because no second version had ever been written. Browse,
+relational search, facet counts and the dashboard's asset count now filter it — those describe *the library*, and a
+library with three versions of one asset contains one of that asset. Reading, previewing or downloading by id does
+*not* filter it: asking for a specific version is a legitimate request, and refusing it would make keeping old
+versions pointless. Reversible: no.
+
+**A version is joined, not uploaded.** `POST /assets/{id}/versions` takes the id of an asset already uploaded
+through the ordinary route, so a version gets the same sniffing, probing, profile defaults and derivatives as
+anything else. A multipart endpoint here would be a second ingest path, and two ingest paths diverge — the first
+divergence being whichever probe or default somebody forgets to wire into the new one. Reversible: yes.
+
+**Promoting an earlier version keeps its number.** Making version 2 current again leaves it as version 2, so a
+history reads 1, 2, 3 with 2 current. Duplicating it as version 4 would claim somebody uploaded something they did
+not, and a version history is the one place that has to stay literal. Reversible: no.
+
+**Superseding a version that is not current is a 409.** Somebody adding a version to what they believe is the
+latest has a stale screen. Quietly re-pointing the group would discard whatever they had not seen, so the refusal
+names the situation and tells them to reload. 409 rather than 422 because the request is well formed and the world
+moved on, which is what a conflict means. Reversible: no.
+

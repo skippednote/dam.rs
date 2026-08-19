@@ -26,14 +26,14 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M0–M3c** Foundation, ingest, metadata/search/rights, delivery/sharing/restore | complete |
 | **F** The UI: browse, detail, upload, filter rail, lightbox, bulk bar, design pass | complete |
 | **F.11b** Share/portal UI, schema administration, metadata types | complete except restore UX |
-| **Q** Acquia parity, 20 slices | Q.1–Q.7 done; Q.8–Q.20 open |
+| **Q** Acquia parity, 20 slices | Q.1–Q.8 done; Q.9–Q.20 open |
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | schema exists, behaviour unwritten |
 | **M6** Workflow/proofing, annotations, analytics | not started |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** Q.8 versions
+**Next up, in order:** Q.9 attached documents
 → Q.6 comments → Q.7 activity feed → Q.8 versions → Q.9 attachments → Q.10 history → Q.11 conversions →
 Q.12 intended use → Q.13 orders → Q.14 portals → Q.15–Q.19 search → Q.20 sundries → M4 → M5 → M6 → M3d →
 Pre-GA → Entries.
@@ -1817,8 +1817,26 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
       page of rows; an *empty* metadata document was untested because every fixture had no row at all). One survives
       and is documented: the feed's id tie-break has no observable effect until an offset exists. axe caught an
       invalid `<dl>` containing an `<a>` directly.
-- [ ] **Q.8 Versions.** Add a version, list them, download an earlier one, and the detail tab.
-  `version_group_id`/`version_no` already exist and nothing uses them.
+- [x] **Q.8 Versions, and a filter nothing was applying.** `version_group_id`, `version_no`, `is_current` and
+      `replaces_id` have been on `assets` since migration 0001, nothing ever wrote a second version — and so
+      **nothing ever filtered `is_current`**. Every asset is current until a version exists, so every listing looked
+      correct and would have shown each asset once per version the moment one appeared. `CURRENT_ONLY` is now
+      applied to the browse page, the relational search page, the facet counts and the dashboard's asset count.
+
+      The rule: **listings show current versions; a named asset is whatever was named.** Reading, previewing or
+      downloading an old version by id works, or keeping versions would be pointless. `dam_db::versions` adds,
+      lists and promotes; `POST /assets/{id}/versions` joins an asset the caller *already uploaded* through the
+      ordinary route, because a multipart endpoint here would be a second ingest path and two ingest paths diverge.
+      Reading a history is Read, superseding is Manage. A stale supersede is **409** — the request is well formed
+      and the world moved on, so reload-and-retry is the honest instruction. Promoting an earlier version keeps its
+      number: a promotion, not a copy, because renumbering would claim an upload that never happened.
+
+      Twenty-six mutations caught across the three layers. Two survivors were removed rather than papered over: an
+      explicit `deleted_at` clause duplicating what the access predicate already decides, and a test locator that
+      matched "current" inside the words "Make current".
+
+      **Open:** engagement and comments attach to the version row they were made on. Whether a rating of March's
+      cut should roll up to the group is a real question and a later one.
 - [ ] **Q.9 Attached documents**, and the has-attachment facet. Rights and release paperwork on the asset.
 - [ ] **Q.10 History tab** over the existing audit log; alternate preview upload.
 - [ ] **Q.11 Asset conversions.** Named, user-selectable download formats per media class, each with a

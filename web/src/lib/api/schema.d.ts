@@ -126,6 +126,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/assets/{asset_id}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every version of an asset, newest first. */
+        get: operations["history"];
+        put?: never;
+        /** Supersedes an asset with one already uploaded. */
+        post: operations["add"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assets/{asset_id}/versions/current": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Makes an earlier version current again. */
+        post: operations["make_current"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/assets/{id}/favourite": {
         parameters: {
             query?: never;
@@ -737,6 +772,14 @@ export interface components {
             kind: string;
             /** Format: date-time */
             occurred_at: string;
+        };
+        /** @description Which already-uploaded asset becomes the new version. */
+        AddVersionRequest: {
+            /**
+             * Format: uuid
+             * @description An asset this caller uploaded through the ordinary route. See the module docs on why it is not a file.
+             */
+            new_asset_id: string;
         };
         /** @description What to change about a comment. One of the two, never both — see the module docs. */
         AmendCommentRequest: {
@@ -1616,6 +1659,24 @@ export interface components {
             /** @description The payload key, or the field key for a missing required field. */
             key: string;
         };
+        /** @description One version in a history. */
+        VersionView: {
+            /** Format: uuid */
+            asset_id: string;
+            /** Format: int64 */
+            bytes: number;
+            content_hash: string;
+            /** Format: date-time */
+            created_at: string;
+            filename: string;
+            /** @description Whether this is the version listings and downloads resolve to. */
+            is_current: boolean;
+            /** Format: uuid */
+            replaces_id?: string | null;
+            uploaded_by?: null | components["schemas"]["PersonView"];
+            /** Format: int32 */
+            version_no: number;
+        };
         /** @description How many assets are in no category, and some of them. */
         Worklist: {
             /** @description The first few, so a client can link straight into them. */
@@ -1975,6 +2036,101 @@ export interface operations {
             };
             /** @description No such type */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    history: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VersionView"][];
+                };
+            };
+            /** @description No such asset, or not one this caller may see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    add: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddVersionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VersionView"][];
+                };
+            };
+            /** @description Either asset is unknown, or not one this caller may manage */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description That asset is not the current version; reload and retry */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    make_current: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VersionView"][];
+                };
+            };
+            /** @description No such asset, or not one this caller may manage */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

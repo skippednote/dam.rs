@@ -297,6 +297,37 @@ export async function removeUploadProfile(id: string): Promise<void> {
 	await request<void>(`/upload-profiles/${id}`, { method: 'DELETE' });
 }
 
+export type AssetVersion = components['schemas']['VersionView'];
+
+/**
+ * Versions of an asset (Q.8).
+ *
+ * A history is reachable from any version, not only the current one — somebody looking at an older cut needs to see
+ * what replaced it.
+ */
+export async function listVersions(assetId: string): Promise<AssetVersion[]> {
+	return request<AssetVersion[]>(`/assets/${assetId}/versions`);
+}
+
+/**
+ * Supersedes `assetId` with an asset already uploaded through the ordinary route.
+ *
+ * Takes an id rather than a file on purpose: a version goes through the same ingest as anything else, so it gets
+ * the same sniffing, probing and derivatives. A second upload path would diverge from the first.
+ */
+export async function addVersion(assetId: string, newAssetId: string): Promise<AssetVersion[]> {
+	return request<AssetVersion[]>(`/assets/${assetId}/versions`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ new_asset_id: newAssetId })
+	});
+}
+
+/** Makes an earlier version current again. A promotion, so its number does not change. */
+export async function makeVersionCurrent(assetId: string): Promise<AssetVersion[]> {
+	return request<AssetVersion[]>(`/assets/${assetId}/versions/current`, { method: 'POST' });
+}
+
 export type Dashboard = components['schemas']['Dashboard'];
 export type ActivityEntry = components['schemas']['ActivityEntry'];
 
