@@ -89,6 +89,9 @@ pub struct Catalogued {
     pub read_only: bool,
     pub ai_writable: bool,
     pub facetable: bool,
+    /// Whether the value joins the index at all. Not cosmetic and not derivable: a schema editor that
+    /// cannot see it cannot explain why a field it just added returns nothing from search.
+    pub searchable: bool,
     pub search_alias: Option<String>,
     /// The taxonomy a term field is bound to, when it is one.
     pub taxonomy_id: Option<Uuid>,
@@ -110,12 +113,13 @@ where
             bool,
             bool,
             bool,
+            bool,
             Option<String>,
             Option<Uuid>,
         ),
     >(
         "SELECT key, label, kind, multivalued, required, read_only, ai_writable, facetable, \
-                search_alias, taxonomy_id \
+                searchable, search_alias, taxonomy_id \
          FROM field_defs ORDER BY display_order, key",
     )
     .fetch_all(executor)
@@ -133,6 +137,7 @@ where
                 read_only,
                 ai_writable,
                 facetable,
+                searchable,
                 search_alias,
                 taxonomy_id,
             )| Catalogued {
@@ -144,6 +149,7 @@ where
                 read_only,
                 ai_writable,
                 facetable,
+                searchable,
                 search_alias,
                 taxonomy_id,
             },
@@ -318,4 +324,550 @@ where
         }
     }
     Ok(rejections)
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Schema administration (F.11b·2)
+// ---------------------------------------------------------------------------------------------------
+//
+// Editing `field_defs` is the one write in the system whose blast radius is *every other subsystem*: the
+// validator refuses payloads against these rows, the search renderer decides textual-ness from them, the
+// facet counter enumerates them, and the metadata form is drawn from them. Which is why the refusals here
+// are the interesting part of the module and the SQL is the boring part.
+//
+// The rule they all serve: **an edit must never leave stored values and the definition describing them out
+// of step**, because nothing downstream can detect that state. Validation happens on write, so a value
+// stored under a definition that has since changed shape is never re-checked — it simply sits there,
+// describing itself with a rule it does not satisfy.
+
+/// Why a schema edit was refused.
+///
+/// Named refusals rather than a driver error, because every one of these reaches an administrator in a
+/// form and each has a different fix. "duplicate key value violates unique constraint
+/// field_defs_alias_idx" is not a sentence anybody can act on.
+#[derive(Debug, thiserror::Error)]
+pub enum SchemaRefusal {
+    #[error("no field is defined with the key `{0}`")]
+    UnknownField(String),
+
+    #[error("a field with the key `{0}` is already defined")]
+    DuplicateKey(String),
+
+    #[error("the search alias `{0}` already belongs to another field")]
+    DuplicateAlias(String),
+
+    #[error("`{key}` is not usable as a field key: {detail}")]
+    BadKey { key: String, detail: &'static str },
+
+    #[error("`{0}` is reserved and cannot be a field key")]
+    ReservedKey(String),
+
+    #[error("`{0}` is not a field kind this build knows")]
+    UnknownKind(String),
+
+    #[error("a taxonomy field needs the taxonomy it is bound to")]
+    TaxonomyRequired,
+
+    #[error("no taxonomy {0} exists")]
+    UnknownTaxonomy(Uuid),
+
+    /// The kind cannot change because assets already carry values validated under the old one.
+    #[error(
+        "`{key}` cannot change kind: {assets} asset(s) already carry a value stored under the current kind"
+    )]
+    KindLockedByValues { key: String, assets: i64 },
+
+    /// A reorder must name every field exactly once.
+    #[error("a reorder must list all {expected} fields exactly once; got {given}")]
+    IncompleteOrder { expected: usize, given: usize },
+
+    #[error(transparent)]
+    Database(#[from] crate::Error),
+}
+
+/// Keys this build uses for something else, so a definition may not claim them.
+///
+/// Two families. `values`, `asset_id` and friends are names the generated SQL and the index schema already
+/// use — a definition with one of these produces an expression or a document field that means two things.
+/// The rest are the shorthand parser's own vocabulary.
+const RESERVED_KEYS: &[&str] = &[
+    "values",
+    "asset_id",
+    "group_ids",
+    "deleted",
+    "text",
+    "metadata",
+    "and",
+    "or",
+    "not",
+];
+
+/// The longest a key may be, so it stays a legible selector and fits an index entry comfortably.
+const MAX_KEY_BYTES: usize = 63;
+
+/// Checks a proposed key against every layer that will have to spell it.
+///
+/// A field key is simultaneously a JSONB member name, a token in the search shorthand, and part of a
+/// generated SQL path expression. Each of those has its own escaping story, and a key needing escaping in
+/// any of them is a bug waiting for the one input that triggers it. So the rule is enforced once, here, and
+/// the permitted shape is the intersection: lower-case ASCII, digits and underscores, starting with a
+/// letter.
+pub fn check_key(key: &str) -> Result<(), SchemaRefusal> {
+    let bad = |detail: &'static str| {
+        Err(SchemaRefusal::BadKey {
+            key: key.to_owned(),
+            detail,
+        })
+    };
+    if key.is_empty() {
+        return bad("a key cannot be empty");
+    }
+    if key.len() > MAX_KEY_BYTES {
+        return bad("a key must be 63 bytes or fewer");
+    }
+    if !key.chars().next().is_some_and(|c| c.is_ascii_lowercase()) {
+        return bad("a key must start with a lower-case ASCII letter");
+    }
+    if !key
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    {
+        return bad("a key may contain only lower-case ASCII letters, digits and underscores");
+    }
+    if RESERVED_KEYS.contains(&key) {
+        return Err(SchemaRefusal::ReservedKey(key.to_owned()));
+    }
+    Ok(())
+}
+
+/// A field to define.
+///
+/// Every flag is explicit rather than defaulted, because the defaults are exactly the decisions an
+/// administrator is making: whether the field is searchable is not something to inherit silently.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewField {
+    pub key: String,
+    pub label: String,
+    /// The database spelling — parsed through [`FieldKind::parse`] so an unknown one is refused here
+    /// rather than taking out `load` for the whole tenant later.
+    pub kind: String,
+    pub taxonomy_id: Option<Uuid>,
+    pub multivalued: bool,
+    pub required: bool,
+    pub read_only: bool,
+    pub searchable: bool,
+    pub facetable: bool,
+    pub ai_writable: bool,
+    pub search_alias: Option<String>,
+    pub validation: Value,
+}
+
+/// What may be amended, with `None` meaning "leave alone".
+///
+/// There is deliberately no `key`. A key is the JSONB member name every stored value already sits under;
+/// renaming the definition in place would orphan all of them at once, invisibly. The supported path is
+/// define-new, backfill, remove-old — three steps, each individually reversible.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Amendment {
+    pub label: Option<String>,
+    pub kind: Option<String>,
+    pub taxonomy_id: Option<Option<Uuid>>,
+    pub multivalued: Option<bool>,
+    pub required: Option<bool>,
+    pub read_only: Option<bool>,
+    pub searchable: Option<bool>,
+    pub facetable: Option<bool>,
+    pub ai_writable: Option<bool>,
+    /// Doubly wrapped: the outer `None` leaves the alias alone, the inner clears it.
+    pub search_alias: Option<Option<String>>,
+    pub validation: Option<Value>,
+}
+
+/// The result of an amendment, with the consequences the caller cannot compute.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Amended {
+    pub field: Catalogued,
+    /// Whether what the index holds has changed, so search is now stale until a rebuild.
+    pub reindex_required: bool,
+    /// How many assets would now fail a metadata write because they lack a newly-required value.
+    ///
+    /// Reported rather than refused: requiredness is a forward-looking rule, and refusing it would make
+    /// the schema unfixable on a library that predates the rule. But an administrator who has just made
+    /// forty thousand assets unsaveable should learn it here, not one 422 at a time.
+    pub assets_now_incomplete: i64,
+}
+
+/// The result of a removal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Removed {
+    pub key: String,
+    /// How many assets still carry a value under this key — kept, not deleted. See [`remove`].
+    pub assets_with_values: i64,
+    pub reindex_required: bool,
+}
+
+/// Defines a new field.
+pub async fn define(pool: &sqlx::PgPool, spec: NewField) -> Result<Catalogued, SchemaRefusal> {
+    let mut conn = pool.acquire().await.map_err(crate::Error::from)?;
+    define_on(&mut conn, spec).await
+}
+
+/// [`define`] on a caller's connection, so it joins a tenant-scoped transaction.
+pub async fn define_on(
+    conn: &mut sqlx::PgConnection,
+    spec: NewField,
+) -> Result<Catalogued, SchemaRefusal> {
+    check_key(&spec.key)?;
+    let kind =
+        FieldKind::parse(&spec.kind).map_err(|_| SchemaRefusal::UnknownKind(spec.kind.clone()))?;
+    check_taxonomy(&mut *conn, kind, spec.taxonomy_id).await?;
+
+    // Checked rather than left to the unique index, so the refusal names which of the two collided: a
+    // driver error on a two-column insert cannot tell an administrator whether to change the key or the
+    // alias.
+    if exists(&mut *conn, &spec.key).await? {
+        return Err(SchemaRefusal::DuplicateKey(spec.key));
+    }
+    if let Some(alias) = &spec.search_alias
+        && alias_taken(&mut *conn, alias, None).await?
+    {
+        return Err(SchemaRefusal::DuplicateAlias(alias.clone()));
+    }
+
+    // Appended, not inserted: a new field lands at the end of the form, where it is visible as new.
+    sqlx::query(
+        "INSERT INTO field_defs \
+             (id, key, label, kind, taxonomy_id, multivalued, required, read_only, searchable, \
+              facetable, ai_writable, search_alias, validation, display_order) \
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, \
+                 coalesce((SELECT max(display_order) + 1 FROM field_defs), 0))",
+    )
+    .bind(&spec.key)
+    .bind(&spec.label)
+    .bind(&spec.kind)
+    .bind(spec.taxonomy_id)
+    .bind(spec.multivalued)
+    .bind(spec.required)
+    .bind(spec.read_only)
+    .bind(spec.searchable)
+    .bind(spec.facetable)
+    .bind(spec.ai_writable)
+    .bind(spec.search_alias.as_deref())
+    .bind(&spec.validation)
+    .execute(&mut *conn)
+    .await
+    .map_err(crate::Error::from)?;
+
+    one(&mut *conn, &spec.key).await
+}
+
+/// Amends an existing field.
+pub async fn amend(
+    pool: &sqlx::PgPool,
+    key: &str,
+    change: Amendment,
+) -> Result<Amended, SchemaRefusal> {
+    let mut conn = pool.acquire().await.map_err(crate::Error::from)?;
+    amend_on(&mut conn, key, change).await
+}
+
+/// [`amend`] on a caller's connection.
+pub async fn amend_on(
+    conn: &mut sqlx::PgConnection,
+    key: &str,
+    change: Amendment,
+) -> Result<Amended, SchemaRefusal> {
+    let before = one(&mut *conn, key).await?;
+
+    let kind = match &change.kind {
+        Some(raw) => {
+            let parsed =
+                FieldKind::parse(raw).map_err(|_| SchemaRefusal::UnknownKind(raw.clone()))?;
+            // The one refusal that exists purely to protect stored data: a kind change re-describes every
+            // value already written under the old kind, and no later read re-validates them.
+            if *raw != before.kind {
+                // `stored_anywhere`, not `usage`: a soft-deleted asset keeps its values, and a restore
+                // would bring them back under a kind they were never validated against. The lock has to
+                // hold for anything recoverable, not just what is currently visible.
+                let assets = stored_anywhere(&mut *conn, key).await?;
+                if assets > 0 {
+                    return Err(SchemaRefusal::KindLockedByValues {
+                        key: key.to_owned(),
+                        assets,
+                    });
+                }
+            }
+            Some(parsed)
+        }
+        None => None,
+    };
+
+    let taxonomy_id = change.taxonomy_id.unwrap_or(before.taxonomy_id);
+    let effective_kind = kind.unwrap_or(
+        FieldKind::parse(&before.kind)
+            .map_err(|_| SchemaRefusal::UnknownKind(before.kind.clone()))?,
+    );
+    check_taxonomy(&mut *conn, effective_kind, taxonomy_id).await?;
+
+    if let Some(Some(alias)) = &change.search_alias
+        && alias_taken(&mut *conn, alias, Some(key)).await?
+    {
+        return Err(SchemaRefusal::DuplicateAlias(alias.clone()));
+    }
+
+    // `coalesce($n, column)` per field: one statement, and an omitted member means "unchanged" without a
+    // read-modify-write that could lose a concurrent edit to a different member.
+    sqlx::query(
+        "UPDATE field_defs SET \
+             label = coalesce($2, label), \
+             kind = coalesce($3, kind), \
+             taxonomy_id = $4, \
+             multivalued = coalesce($5, multivalued), \
+             required = coalesce($6, required), \
+             read_only = coalesce($7, read_only), \
+             searchable = coalesce($8, searchable), \
+             facetable = coalesce($9, facetable), \
+             ai_writable = coalesce($10, ai_writable), \
+             search_alias = CASE WHEN $11 THEN $12 ELSE search_alias END, \
+             validation = coalesce($13, validation), \
+             updated_at = now() \
+         WHERE key = $1",
+    )
+    .bind(key)
+    .bind(change.label.as_deref())
+    .bind(change.kind.as_deref())
+    .bind(taxonomy_id)
+    .bind(change.multivalued)
+    .bind(change.required)
+    .bind(change.read_only)
+    .bind(change.searchable)
+    .bind(change.facetable)
+    .bind(change.ai_writable)
+    .bind(change.search_alias.is_some())
+    .bind(change.search_alias.clone().flatten())
+    .bind(change.validation.as_ref())
+    .execute(&mut *conn)
+    .await
+    .map_err(crate::Error::from)?;
+
+    let field = one(&mut *conn, key).await?;
+
+    // Newly required, and only newly: re-reporting the count on every unrelated edit would make the number
+    // look like a consequence of that edit.
+    let assets_now_incomplete = if field.required && !before.required {
+        missing(&mut *conn, key).await?
+    } else {
+        0
+    };
+
+    Ok(Amended {
+        reindex_required: changes_the_index(&before, &field),
+        assets_now_incomplete,
+        field,
+    })
+}
+
+/// Removes a definition, leaving every stored value exactly where it is.
+///
+/// The values are deliberately kept. Deleting them would make a mis-clicked removal on a large tenant a
+/// data-loss event with no undo, whereas leaving them makes the removal reversible: re-defining the same
+/// key with the same kind brings the data back, unedited. The cost is JSONB members no definition
+/// describes, which every reader already ignores — the validator refuses unknown keys on *write*, and the
+/// catalogue is what forms and facets enumerate.
+///
+/// The count of assets still carrying values is returned so the caller can say what is about to go dark.
+pub async fn remove(pool: &sqlx::PgPool, key: &str) -> Result<Removed, SchemaRefusal> {
+    let mut conn = pool.acquire().await.map_err(crate::Error::from)?;
+    remove_on(&mut conn, key).await
+}
+
+/// [`remove`] on a caller's connection.
+pub async fn remove_on(conn: &mut sqlx::PgConnection, key: &str) -> Result<Removed, SchemaRefusal> {
+    let before = one(&mut *conn, key).await?;
+    let assets_with_values = usage(&mut *conn, key).await?;
+
+    sqlx::query("DELETE FROM field_defs WHERE key = $1")
+        .bind(key)
+        .execute(&mut *conn)
+        .await
+        .map_err(crate::Error::from)?;
+
+    Ok(Removed {
+        key: before.key,
+        assets_with_values,
+        // A field that was in the index is now gone from the schema's view of the tenant, so documents
+        // still carrying it are stale until rebuilt.
+        reindex_required: before.searchable || before.facetable,
+    })
+}
+
+/// Sets the form's field order.
+///
+/// `keys` must name every field exactly once. A partial list is refused rather than applied to the fields
+/// it names: display order is a total order, so a client sending half the schema has a stale copy — and
+/// applying it would reposition fields whose current place that client never showed anybody.
+pub async fn reorder(pool: &sqlx::PgPool, keys: &[String]) -> Result<(), SchemaRefusal> {
+    let mut conn = pool.acquire().await.map_err(crate::Error::from)?;
+    reorder_on(&mut conn, keys).await
+}
+
+/// [`reorder`] on a caller's connection.
+pub async fn reorder_on(
+    conn: &mut sqlx::PgConnection,
+    keys: &[String],
+) -> Result<(), SchemaRefusal> {
+    let existing: Vec<String> = sqlx::query_scalar("SELECT key FROM field_defs")
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(crate::Error::from)?;
+
+    let given: std::collections::BTreeSet<&str> = keys.iter().map(String::as_str).collect();
+    if given.len() != keys.len() || given.len() != existing.len() {
+        return Err(SchemaRefusal::IncompleteOrder {
+            expected: existing.len(),
+            given: keys.len(),
+        });
+    }
+    if let Some(unknown) = existing.iter().find(|key| !given.contains(key.as_str())) {
+        return Err(SchemaRefusal::UnknownField(unknown.clone()));
+    }
+
+    // One statement over the whole list: a loop of UPDATEs would leave the form in an order nobody chose
+    // if it failed halfway, and `display_order` has no uniqueness to protect it from the intermediate
+    // states a loop passes through.
+    sqlx::query(
+        "UPDATE field_defs SET display_order = position.ord - 1, updated_at = now() \
+         FROM unnest($1::text[]) WITH ORDINALITY AS position(key, ord) \
+         WHERE field_defs.key = position.key",
+    )
+    .bind(keys)
+    .execute(&mut *conn)
+    .await
+    .map_err(crate::Error::from)?;
+    Ok(())
+}
+
+/// How many live assets carry a value under `key`.
+///
+/// The number an administrator needs before changing or removing a definition, and the one they cannot
+/// get from the schema itself.
+pub async fn usage<'e, E>(executor: E, key: &str) -> Result<i64, SchemaRefusal>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM asset_metadata m \
+         JOIN assets a ON a.id = m.asset_id AND a.deleted_at IS NULL \
+         WHERE m.values ? $1 AND m.values -> $1 <> 'null'::jsonb",
+    )
+    .bind(key)
+    .fetch_one(executor)
+    .await
+    .map_err(crate::Error::from)?;
+    Ok(count)
+}
+
+/// How many assets carry a value under `key`, soft-deleted ones included.
+///
+/// Separate from [`usage`] because the two answer different questions. `usage` is what an administrator is
+/// shown — the live library. This one guards the kind lock, where a soft-deleted asset counts: its JSONB
+/// values are untouched by the delete, so restoring it after a kind change would produce exactly the
+/// mismatch the lock exists to prevent.
+async fn stored_anywhere(conn: &mut sqlx::PgConnection, key: &str) -> Result<i64, SchemaRefusal> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM asset_metadata \
+         WHERE values ? $1 AND values -> $1 <> 'null'::jsonb",
+    )
+    .bind(key)
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(crate::Error::from)?;
+    Ok(count)
+}
+
+/// How many live assets have no value under `key` — what turning `required` on would break.
+async fn missing(conn: &mut sqlx::PgConnection, key: &str) -> Result<i64, SchemaRefusal> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM assets a \
+         LEFT JOIN asset_metadata m ON m.asset_id = a.id \
+         WHERE a.deleted_at IS NULL \
+           AND (m.values IS NULL OR NOT (m.values ? $1) OR m.values -> $1 = 'null'::jsonb)",
+    )
+    .bind(key)
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(crate::Error::from)?;
+    Ok(count)
+}
+
+/// Whether the difference between two definitions changes what the index holds.
+///
+/// Three properties do. `searchable` and `facetable` decide whether the value is written at all; the kind
+/// decides whether it joins the text blob, because `is_textual` is what the writer consults. A label, a
+/// constraint or a requiredness flag never reaches a document.
+fn changes_the_index(before: &Catalogued, after: &Catalogued) -> bool {
+    before.kind != after.kind
+        || before.facetable != after.facetable
+        || before.searchable != after.searchable
+}
+
+/// One field's catalogue row, or [`SchemaRefusal::UnknownField`].
+async fn one(conn: &mut sqlx::PgConnection, key: &str) -> Result<Catalogued, SchemaRefusal> {
+    catalog(&mut *conn)
+        .await
+        .map_err(SchemaRefusal::Database)?
+        .into_iter()
+        .find(|def| def.key == key)
+        .ok_or_else(|| SchemaRefusal::UnknownField(key.to_owned()))
+}
+
+async fn exists(conn: &mut sqlx::PgConnection, key: &str) -> Result<bool, SchemaRefusal> {
+    let found: Option<i32> = sqlx::query_scalar("SELECT 1 FROM field_defs WHERE key = $1")
+        .bind(key)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(crate::Error::from)?;
+    Ok(found.is_some())
+}
+
+/// Whether `alias` belongs to a field other than `excluding`.
+async fn alias_taken(
+    conn: &mut sqlx::PgConnection,
+    alias: &str,
+    excluding: Option<&str>,
+) -> Result<bool, SchemaRefusal> {
+    let found: Option<i32> = sqlx::query_scalar(
+        "SELECT 1 FROM field_defs WHERE search_alias = $1 AND ($2::text IS NULL OR key <> $2)",
+    )
+    .bind(alias)
+    .bind(excluding)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(crate::Error::from)?;
+    Ok(found.is_some())
+}
+
+/// A taxonomy-bound kind needs a taxonomy, and it has to exist.
+///
+/// Two refusals rather than one, because the fixes differ: supply a taxonomy, versus pick one that exists.
+async fn check_taxonomy(
+    conn: &mut sqlx::PgConnection,
+    kind: FieldKind,
+    taxonomy_id: Option<Uuid>,
+) -> Result<(), SchemaRefusal> {
+    if kind != FieldKind::TaxonomyRef {
+        return Ok(());
+    }
+    let Some(id) = taxonomy_id else {
+        return Err(SchemaRefusal::TaxonomyRequired);
+    };
+    let found: Option<i32> = sqlx::query_scalar("SELECT 1 FROM taxonomies WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(crate::Error::from)?;
+    if found.is_none() {
+        return Err(SchemaRefusal::UnknownTaxonomy(id));
+    }
+    Ok(())
 }

@@ -325,6 +325,189 @@
         }
       }
     },
+    "/schema/fields": {
+      "get": {
+        "tags": [
+          "schema"
+        ],
+        "summary": "Every field definition with its usage counts.",
+        "operationId": "list",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SchemaField"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, and holds no read scope"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "schema"
+        ],
+        "summary": "Defines a new field.",
+        "operationId": "define",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DefineRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaField"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, and holds no manage scope"
+          },
+          "409": {
+            "description": "The key or alias is already taken; `reason` says which"
+          },
+          "422": {
+            "description": "The key or kind is not usable; `reason` says why"
+          }
+        }
+      }
+    },
+    "/schema/fields/order": {
+      "put": {
+        "tags": [
+          "schema"
+        ],
+        "summary": "Sets the complete field order.",
+        "operationId": "reorder",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Reordered"
+          },
+          "403": {
+            "description": "Authenticated, and holds no manage scope"
+          },
+          "422": {
+            "description": "The list does not name every field exactly once"
+          }
+        }
+      }
+    },
+    "/schema/fields/{key}": {
+      "delete": {
+        "tags": [
+          "schema"
+        ],
+        "summary": "Removes a field definition, keeping its stored values.",
+        "operationId": "remove",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemovedField"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, and holds no manage scope"
+          },
+          "404": {
+            "description": "No field with that key"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "schema"
+        ],
+        "summary": "Amends a field.",
+        "operationId": "amend",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AmendRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AmendedField"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, and holds no manage scope"
+          },
+          "404": {
+            "description": "No field with that key"
+          },
+          "409": {
+            "description": "Stored values or a taken alias refuse the change"
+          },
+          "422": {
+            "description": "The kind or taxonomy is not usable"
+          }
+        }
+      }
+    },
     "/search": {
       "get": {
         "tags": [
@@ -670,6 +853,101 @@
   },
   "components": {
     "schemas": {
+      "AmendRequest": {
+        "type": "object",
+        "description": "What to change. An omitted member is left alone; `search_alias: null` clears it.",
+        "properties": {
+          "ai_writable": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "facetable": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "multivalued": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "read_only": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "required": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "search_alias": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Doubly optional: absent leaves the alias alone, `null` removes it. Those are different intents and\na single `Option` cannot express both."
+          },
+          "searchable": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "taxonomy_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "validation": {}
+        }
+      },
+      "AmendedField": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/SchemaField"
+          },
+          {
+            "type": "object",
+            "required": [
+              "reindex_required",
+              "assets_now_incomplete"
+            ],
+            "properties": {
+              "assets_now_incomplete": {
+                "type": "integer",
+                "format": "int64",
+                "description": "How many live assets would now fail a metadata write for want of a newly-required value."
+              },
+              "reindex_required": {
+                "type": "boolean",
+                "description": "Whether the search index is now stale and needs rebuilding."
+              }
+            }
+          }
+        ],
+        "description": "An amended field, with the consequences of the amendment."
+      },
       "AssetDetail": {
         "allOf": [
           {
@@ -1059,6 +1337,59 @@
           }
         }
       },
+      "DefineRequest": {
+        "type": "object",
+        "description": "A field to define. Flags default to the conservative reading when omitted.",
+        "required": [
+          "key",
+          "label",
+          "kind"
+        ],
+        "properties": {
+          "ai_writable": {
+            "type": "boolean"
+          },
+          "facetable": {
+            "type": "boolean"
+          },
+          "key": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "multivalued": {
+            "type": "boolean"
+          },
+          "read_only": {
+            "type": "boolean"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "search_alias": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "searchable": {
+            "type": "boolean",
+            "description": "Defaults to true: a field nobody can search for is the surprising choice, not the safe one."
+          },
+          "taxonomy_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "validation": {}
+        }
+      },
       "Facet": {
         "type": "object",
         "description": "One facetable field and its buckets.",
@@ -1177,6 +1508,21 @@
             "description": "A merge, not a replacement. `null` for a value clears that field; a key that is absent is left\nalone. Two clients editing different fields of one asset must not overwrite each other, and a PUT of\nthe whole document guarantees they do.",
             "additionalProperties": {},
             "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "OrderRequest": {
+        "type": "object",
+        "description": "The complete field order, in the order fields should appear.",
+        "required": [
+          "keys"
+        ],
+        "properties": {
+          "keys": {
+            "type": "array",
+            "items": {
               "type": "string"
             }
           }
@@ -1330,6 +1676,28 @@
           }
         }
       },
+      "RemovedField": {
+        "type": "object",
+        "description": "What a removal did.",
+        "required": [
+          "key",
+          "assets_with_values",
+          "reindex_required"
+        ],
+        "properties": {
+          "assets_with_values": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many assets still carry a value under this key. The values are **kept** — see `dam_db`'s\n`fields::remove` — so this is what has gone invisible, not what was destroyed."
+          },
+          "key": {
+            "type": "string"
+          },
+          "reindex_required": {
+            "type": "boolean"
+          }
+        }
+      },
       "RestoreState": {
         "type": "string",
         "description": "Where a restore has got to, matching `object_placements.restore_state`.",
@@ -1359,6 +1727,69 @@
           "denied",
           "unknown"
         ]
+      },
+      "SchemaField": {
+        "type": "object",
+        "description": "A field definition with the numbers an administrator needs before touching it.",
+        "required": [
+          "key",
+          "label",
+          "kind",
+          "multivalued",
+          "required",
+          "read_only",
+          "ai_writable",
+          "facetable",
+          "searchable",
+          "assets_with_values"
+        ],
+        "properties": {
+          "ai_writable": {
+            "type": "boolean"
+          },
+          "assets_with_values": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many live assets carry a value under this key.\n\nThe number that decides whether an edit is safe, so it is on the row rather than behind another\nrequest: an administrator deciding whether to remove a field should not have to go and ask."
+          },
+          "facetable": {
+            "type": "boolean"
+          },
+          "key": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "multivalued": {
+            "type": "boolean"
+          },
+          "read_only": {
+            "type": "boolean"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "search_alias": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "searchable": {
+            "type": "boolean"
+          },
+          "taxonomy_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          }
+        }
       },
       "ShareRequest": {
         "type": "object",

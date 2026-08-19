@@ -1145,7 +1145,22 @@ the grid against sample data; these wire it to the API and make it a thing a per
   8 e2e cases including axe on both portal states; one real bug caught (`opacity-60` on dead table rows
   pushed muted text below AA contrast — dimmed by ground instead). Validated against the live stack:
   create → licensed preview → download (count 0→1) → revoke → the portal says "revoked" immediately.
-- [ ] **F.11b·2 Schema admin and restore UX.** The remaining surfaces.
+- [x] **F.11b·2a Schema administration.** `field_defs` was readable and not editable; now it is both, with
+  the refusals that keep stored data and the definition describing it in step. `dam_db::fields` grew
+  `define`/`amend`/`remove`/`reorder` (+ `_on` variants) and a `SchemaRefusal` per fixable mistake: a key is
+  checked against the intersection of what JSONB, the search shorthand and the generated SQL can all spell;
+  reserved names are refused; a kind cannot change once **any** asset carries a value — including a
+  soft-deleted one, since a restore would resurrect it under a kind it was never validated against; a
+  removal keeps the values, so re-defining the key adopts them back. `POST/PATCH/DELETE /schema/fields` and
+  `PUT /schema/fields/order` need Manage where `GET /fields` needs only Read, with 409 for "the world
+  refuses this" and 422 for "the request is wrong". 16 db cases + 8 API cases; 16 + 10 mutations all caught,
+  and mutation testing found three blind spots and one live bug (the kind lock ignored soft-deleted assets).
+  The UI is a `/schema` page: usage count per row, four behaviour toggles, keyboard reordering, and a
+  removal confirmation that says how many assets use the field and that the values come back. 7 e2e cases,
+  axe-clean in both states; the run caught a real bug — the shared API client read `message` where the
+  server sends `reason`, so *every* reason-carrying refusal in the app was reaching users as "Request
+  failed (409)". Driven against the live stack end to end.
+- [ ] **F.11b·2b Restore UX.** The remaining surface.
 
 **The gap the UI runs into, stated plainly:** `dam-worker` has no queue consumer, so nothing generates a
 derivative and nothing finalises an upload into an asset. An upload lands in staging and stops there — the

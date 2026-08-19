@@ -1623,3 +1623,50 @@ so two racing downloads cannot both take the last slot. Reversible: no.
 **A share on an EULA-gated asset fails closed on the portal.** `requires_eula` has no portal acceptance flow
 yet, and rendering the file anyway would make the gate decorative. Both view and download refuse until the
 flow exists. Reversible: yes — it becomes a portal acceptance step.
+
+**A field key is immutable; renaming is define-new, backfill, remove-old.** The key is the JSONB member name
+every stored value already sits under, so renaming the definition in place would orphan all of them at once
+and invisibly — the validator only runs on write, so nothing would ever notice. `Amendment` therefore has no
+`key` at all, which makes the rule structural rather than a check somebody can forget. Reversible: yes, a
+renaming path can be added later as a bulk operation.
+
+**A field's kind cannot change once any asset carries a value for it — soft-deleted assets included.** Values
+already written were validated under the old kind and nothing re-validates them, so a text→int change leaves
+rows describing themselves with a rule they do not satisfy. Soft-deleted assets count because a delete does
+not touch `asset_metadata`: restoring one after a kind change produces exactly the mismatch the lock exists to
+prevent. Mutation testing found this — the first implementation used the live count. The refusal carries the
+number, because "you cannot" without "because 40,000 assets" is not a decision anybody can make. Reversible:
+no; a converting backfill would be the way to relax it.
+
+**Removing a field definition keeps its stored values.** The row goes, the JSONB members stay. That makes a
+mis-clicked removal on a large tenant recoverable — re-defining the same key with the same kind brings the
+data back, unedited — where deleting the values would make it a restore-from-backup event. The cost is JSONB
+members no definition describes, which every reader already ignores: the validator refuses unknown keys on
+*write*, and forms and facets enumerate the catalogue. The response reports how many assets are affected, so
+the UI can say what is going dark. Reversible: yes, in both directions.
+
+**Turning `required` on is allowed and reported, not refused.** Refusing it would make a schema unfixable on
+a library that predates the rule. But an administrator who has just made forty thousand assets unsaveable
+should learn it at the moment of the edit rather than one 422 at a time, so the response carries the count of
+assets that now lack a value. The count is computed only when requiredness actually changes: re-reporting it
+on an unrelated label edit would read as a consequence of that edit. Reversible: yes.
+
+**A reorder must name every field exactly once.** Display order is a total order, so a client sending half
+the schema has a stale copy — and applying it would reposition fields whose current place that client never
+showed anybody. Refused as 422 with the expected and given counts. Reversible: yes.
+
+**Schema statuses split "fix the request" from "the world refuses it".** A malformed key or unknown kind is
+422; a duplicate key, a taken alias, or a kind locked by stored values is 409. That is the distinction which
+tells a client whether to show field errors or to show the administrator what is in the way — and both carry
+the refusal's own sentence, because these reach a person in a form and each one names its own fix.
+
+**Reading the schema needs Read; editing it needs Manage.** A schema is not secret and no form can be drawn
+without it, so `GET /fields` stays open to any reader — including the integration key handed to a website
+build. Editing has a different blast radius: a definition is what the validator refuses payloads against,
+what the search renderer decides textual-ness from, and what every form is built from. Reversible: no,
+loosening this would let a read-only key reshape the tenant.
+
+**The API client reads `reason` before falling back to a status sentence.** Found by an e2e case: `describe`
+looked for `message`, the server sends `reason`, so every refusal that had something specific to say — a
+schema key already taken, a share link revoked, a kind locked by 12 assets — reached the user as "Request
+failed (409)". One line in one place, and it fixes the whole app at once. Reversible: no, it is the fix.

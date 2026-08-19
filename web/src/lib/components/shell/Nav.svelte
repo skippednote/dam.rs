@@ -16,6 +16,7 @@
 	const LINKS = [
 		{ href: resolve('/assets'), label: 'Assets' },
 		{ href: resolve('/shares'), label: 'Shares' },
+		{ href: resolve('/schema'), label: 'Schema' },
 		{ href: resolve('/style'), label: 'Style' },
 		{ href: resolve('/settings'), label: 'Settings' }
 	];

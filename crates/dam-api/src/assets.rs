@@ -466,6 +466,13 @@ pub enum Failure {
     /// No such asset, or not one this caller may see. One variant, because they answer the same.
     NotFound,
     Invalid(Vec<ValidationProblem>),
+    /// The request is well-formed but the world refuses it — a key already taken, a change stored values
+    /// will not permit. Distinct from `Invalid` because the fix is different: not "correct the form" but
+    /// "deal with what is in the way", and the sentence saying what that is rides along.
+    Conflict(String),
+    /// The request itself is not usable, with the reason as one sentence. `Invalid` carries per-field
+    /// problems for a form to place; this is for refusals that belong to the request as a whole.
+    Unprocessable(String),
     Internal,
 }
 
@@ -479,6 +486,16 @@ impl IntoResponse for Failure {
             Self::Invalid(problems) => {
                 (StatusCode::UNPROCESSABLE_ENTITY, Json(problems)).into_response()
             }
+            Self::Conflict(reason) => (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({ "reason": reason })),
+            )
+                .into_response(),
+            Self::Unprocessable(reason) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({ "reason": reason })),
+            )
+                .into_response(),
             Self::Internal => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         }
     }

@@ -88,6 +88,9 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
         .merge(crate::bulk::router(crate::bulk::BulkState {
             global: deps.global.clone(),
         }))
+        .merge(crate::schema::router(crate::schema::SchemaState {
+            global: deps.global.clone(),
+        }))
         .merge(crate::shares::router(crate::shares::ShareState {
             global: deps.global.clone(),
             delivery: Arc::clone(&delivery),

@@ -123,6 +123,59 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/schema/fields": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every field definition with its usage counts. */
+        get: operations["list"];
+        put?: never;
+        /** Defines a new field. */
+        post: operations["define"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/schema/fields/order": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Sets the complete field order. */
+        put: operations["reorder"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/schema/fields/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Removes a field definition, keeping its stored values. */
+        delete: operations["remove"];
+        options?: never;
+        head?: never;
+        /** Amends a field. */
+        patch: operations["amend"];
+        trace?: never;
+    };
     "/search": {
         parameters: {
             query?: never;
@@ -233,6 +286,35 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description What to change. An omitted member is left alone; `search_alias: null` clears it. */
+        AmendRequest: {
+            ai_writable?: boolean | null;
+            facetable?: boolean | null;
+            kind?: string | null;
+            label?: string | null;
+            multivalued?: boolean | null;
+            read_only?: boolean | null;
+            required?: boolean | null;
+            /**
+             * @description Doubly optional: absent leaves the alias alone, `null` removes it. Those are different intents and
+             *     a single `Option` cannot express both.
+             */
+            search_alias?: string | null;
+            searchable?: boolean | null;
+            /** Format: uuid */
+            taxonomy_id?: string | null;
+            validation?: unknown;
+        };
+        /** @description An amended field, with the consequences of the amendment. */
+        AmendedField: components["schemas"]["SchemaField"] & {
+            /**
+             * Format: int64
+             * @description How many live assets would now fail a metadata write for want of a newly-required value.
+             */
+            assets_now_incomplete: number;
+            /** @description Whether the search index is now stale and needs rebuilding. */
+            reindex_required: boolean;
+        };
         /** @description One asset in full, as the detail panel draws it. */
         AssetDetail: components["schemas"]["AssetSummary"] & {
             color_space?: string | null;
@@ -441,6 +523,23 @@ export interface components {
              */
             token: string;
         };
+        /** @description A field to define. Flags default to the conservative reading when omitted. */
+        DefineRequest: {
+            ai_writable?: boolean;
+            facetable?: boolean;
+            key: string;
+            kind: string;
+            label: string;
+            multivalued?: boolean;
+            read_only?: boolean;
+            required?: boolean;
+            search_alias?: string | null;
+            /** @description Defaults to true: a field nobody can search for is the surprising choice, not the safe one. */
+            searchable?: boolean;
+            /** Format: uuid */
+            taxonomy_id?: string | null;
+            validation?: unknown;
+        };
         /** @description One facetable field and its buckets. */
         Facet: {
             buckets: components["schemas"]["Bucket"][];
@@ -501,6 +600,10 @@ export interface components {
             values: {
                 [key: string]: unknown;
             };
+        };
+        /** @description The complete field order, in the order fields should appear. */
+        OrderRequest: {
+            keys: string[];
         };
         /**
          * @description Lifecycle state of one `object_placements` row.
@@ -576,6 +679,17 @@ export interface components {
             code?: string | null;
             message: string;
         };
+        /** @description What a removal did. */
+        RemovedField: {
+            /**
+             * Format: int64
+             * @description How many assets still carry a value under this key. The values are **kept** — see `dam_db`'s
+             *     `fields::remove` — so this is what has gone invisible, not what was destroyed.
+             */
+            assets_with_values: number;
+            key: string;
+            reindex_required: boolean;
+        };
         /**
          * @description Where a restore has got to, matching `object_placements.restore_state`.
          * @enum {string}
@@ -591,6 +705,29 @@ export interface components {
          * @enum {string}
          */
         RightsState: "allowed" | "expiring" | "denied" | "unknown";
+        /** @description A field definition with the numbers an administrator needs before touching it. */
+        SchemaField: {
+            ai_writable: boolean;
+            /**
+             * Format: int64
+             * @description How many live assets carry a value under this key.
+             *
+             *     The number that decides whether an edit is safe, so it is on the row rather than behind another
+             *     request: an administrator deciding whether to remove a field should not have to go and ask.
+             */
+            assets_with_values: number;
+            facetable: boolean;
+            key: string;
+            kind: string;
+            label: string;
+            multivalued: boolean;
+            read_only: boolean;
+            required: boolean;
+            search_alias?: string | null;
+            searchable: boolean;
+            /** Format: uuid */
+            taxonomy_id?: string | null;
+        };
         /** @description What a client asks for when sharing an asset. */
         ShareRequest: {
             /** @description Whether the recipient may fetch the original, rather than only the web rendition. */
@@ -958,6 +1095,200 @@ export interface operations {
             };
             /** @description Authenticated, and holds no read scope */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SchemaField"][];
+                };
+            };
+            /** @description Authenticated, and holds no read scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    define: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DefineRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SchemaField"];
+                };
+            };
+            /** @description Authenticated, and holds no manage scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The key or alias is already taken; `reason` says which */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The key or kind is not usable; `reason` says why */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    reorder: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OrderRequest"];
+            };
+        };
+        responses: {
+            /** @description Reordered */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authenticated, and holds no manage scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The list does not name every field exactly once */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    remove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemovedField"];
+                };
+            };
+            /** @description Authenticated, and holds no manage scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No field with that key */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    amend: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AmendRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AmendedField"];
+                };
+            };
+            /** @description Authenticated, and holds no manage scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No field with that key */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Stored values or a taken alias refuse the change */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The kind or taxonomy is not usable */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -9,6 +9,7 @@ pub mod caller;
 pub mod delivery;
 pub mod dto;
 pub mod openapi;
+pub mod schema;
 pub mod search;
 pub mod shares;
 pub mod tus;

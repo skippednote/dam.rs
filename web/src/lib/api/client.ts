@@ -29,6 +29,9 @@ export type CreatedShare = components['schemas']['CreatedShare'];
 export type ShareRow = components['schemas']['ShareRow'];
 export type PortalView = components['schemas']['PortalView'];
 export type PortalDownload = components['schemas']['PortalDownload'];
+export type SchemaField = components['schemas']['SchemaField'];
+export type AmendedField = components['schemas']['AmendedField'];
+export type RemovedField = components['schemas']['RemovedField'];
 
 /** A failed request, with whatever the server said about it. */
 export class ApiError extends Error {
@@ -96,7 +99,13 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 /** A sentence a user can act on, from a status and whatever body came with it. */
 function describe(status: number, body: unknown): string {
-	const problem = body as { message?: string } | null;
+	// `reason` first, and it is the one the API actually sends: every refusal that has something specific
+	// to say — a schema key already taken, a kind locked by stored values, a share link revoked — puts its
+	// sentence there, count included. Falling through to the generic status text discards exactly the part
+	// that made the refusal actionable, which is what an e2e case caught: a 409 that knew "12 assets
+	// already carry a value" was reaching the user as "Request failed (409)".
+	const problem = body as { reason?: string; message?: string } | null;
+	if (problem && typeof problem.reason === 'string' && problem.reason) return problem.reason;
 	if (problem && typeof problem.message === 'string') return problem.message;
 	switch (status) {
 		case 401:
@@ -181,6 +190,63 @@ export async function saveMetadata(
 export function deliveryUrl(url: string): string {
 	if (/^https?:\/\//.test(url)) return url;
 	return `${session.base}${url.startsWith('/') ? '' : '/'}${url}`;
+}
+
+/**
+ * Schema administration.
+ *
+ * Separate from `listFields`, which is the *form's* view: this one carries the usage counts and the
+ * `searchable` flag an administrator needs, and its writes need Manage where reading fields needs only Read.
+ */
+export async function listSchemaFields(): Promise<SchemaField[]> {
+	return request<SchemaField[]>('/schema/fields');
+}
+
+export async function defineField(body: {
+	key: string;
+	label: string;
+	kind: string;
+	multivalued?: boolean;
+	required?: boolean;
+	read_only?: boolean;
+	searchable?: boolean;
+	facetable?: boolean;
+	ai_writable?: boolean;
+	search_alias?: string | null;
+	taxonomy_id?: string | null;
+	validation?: Record<string, unknown>;
+}): Promise<SchemaField> {
+	return request<SchemaField>('/schema/fields', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body)
+	});
+}
+
+/** Amends a field. Omitted members are left alone; `search_alias: null` clears it. */
+export async function amendField(
+	key: string,
+	body: Record<string, unknown>
+): Promise<AmendedField> {
+	return request<AmendedField>(`/schema/fields/${encodeURIComponent(key)}`, {
+		method: 'PATCH',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body)
+	});
+}
+
+/** Removes a definition. The stored values stay, which is what makes this reversible. */
+export async function removeField(key: string): Promise<RemovedField> {
+	return request<RemovedField>(`/schema/fields/${encodeURIComponent(key)}`, { method: 'DELETE' });
+}
+
+/** Sets the whole field order. The server refuses a partial list. */
+export async function reorderFields(keys: string[]): Promise<void> {
+	await request<void>('/schema/fields/order', {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ keys })
+	});
 }
 
 /** Shares an asset. The returned token appears once and is never retrievable again. */
