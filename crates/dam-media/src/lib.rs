@@ -9,6 +9,7 @@
 
 pub mod avprobe;
 pub mod derive;
+pub mod embedded;
 pub mod ingest;
 pub mod probe;
 pub mod profiles;
@@ -16,6 +17,9 @@ pub mod provenance;
 pub mod proxy;
 pub mod sandbox;
 pub mod sniff;
+/// Fixtures for tests in this crate and in the crates that ingest what it produces.
+#[cfg(feature = "testing")]
+pub mod testing;
 pub mod video;
 pub mod vips;
 

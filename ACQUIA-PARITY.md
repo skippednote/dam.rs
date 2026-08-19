@@ -230,7 +230,7 @@ that cheap high-value features are not stuck behind large ones.
 1. Metadata types bound to asset kinds — extends the schema administration just built
 2. Hierarchical asset categories, plus the "without categories" worklist
 3. Upload profiles (defaults, required-field enforcement, per-profile AI switches)
-4. Auto-import mappings from embedded metadata
+4. Auto-import mappings from embedded metadata — **done** (Q.4)
 
 **Engagement, small and independent**
 5. Ratings, favourites, watch — three features, one slice, one new facet each

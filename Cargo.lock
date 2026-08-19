@@ -1971,6 +1971,7 @@ dependencies = [
  "bytes",
  "c2pa",
  "dam-core",
+ "dam-media",
  "dam-store",
  "fast_image_resize",
  "image",

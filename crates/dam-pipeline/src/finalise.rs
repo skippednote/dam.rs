@@ -183,7 +183,13 @@ pub async fn upload(
 
     // From the promoted object rather than from staging: on a re-run staging may already be gone, and the
     // promoted key is the one that will still be there.
-    let probe = probe_header(store, &original, size).await;
+    //
+    // One read, two readers: the probe wants dimensions and `embedded` wants EXIF/XMP, and both live in the
+    // same leading bytes. Fetching the prefix twice would double the egress on every upload for nothing.
+    let header = read_header(store, &original, size).await;
+    let probe = header
+        .as_deref()
+        .and_then(|bytes| dam_media::probe::image(bytes).ok());
 
     let declared_filename = declared
         .filename
@@ -266,20 +272,50 @@ pub async fn upload(
     //
     // `Permanent`, not transient: the profile is misconfigured, and retrying the upload will fail identically
     // until somebody fixes it. A transient error would retry forever and say nothing.
-    let defaults = match profile.as_ref() {
-        Some(profile) => dam_db::upload_profiles::apply_defaults_on(
-            conn.executor(),
-            profile,
-            &serde_json::Map::new(),
-        )
-        .await
-        .map_err(|refusal| {
-            Error::Permanent(format!(
-                "upload profile {} cannot be applied: {refusal}",
-                profile.key
-            ))
-        })?,
+    // Auto-import runs *before* the defaults, and the order is the whole design (Q.4).
+    //
+    // A profile default is a blanket statement about an intake — "everything from the press pickup is credited
+    // to the agency" — while an embedded value is what this particular file says about itself. Applying the
+    // defaults first would make every one of them a held value, and a mapping's `overwrite: false` would then
+    // read it as "a person put this here" and decline: one blanket default would silently defeat the import on
+    // every asset from that source. Running the import first keeps the profile doing exactly what it promises,
+    // which is to fill what is *not* otherwise known.
+    let imported = match header.as_deref() {
+        Some(bytes) => {
+            let embedded = dam_media::embedded::read(bytes);
+            let plan =
+                dam_db::auto_import::plan_on(conn.executor(), &embedded, &serde_json::Map::new())
+                    .await
+                    .map_err(|refusal| dam_db::Error::Migrate(refusal.to_string()))?;
+            // Logged, not fatal: a file whose tag will not fit its field is the tenant's configuration to fix,
+            // and failing the upload over it would strand bytes somebody is waiting on. Silence is the thing to
+            // avoid — a mapping that never produces anything should be findable.
+            for rejection in &plan.rejected {
+                tracing::warn!(
+                    %asset_id,
+                    field = %rejection.key,
+                    code = %rejection.code,
+                    detail = %rejection.detail,
+                    "an auto-imported value did not fit its field",
+                );
+            }
+            plan.values
+        }
         None => serde_json::Map::new(),
+    };
+
+    let defaults = match profile.as_ref() {
+        Some(profile) => {
+            dam_db::upload_profiles::apply_defaults_on(conn.executor(), profile, &imported)
+                .await
+                .map_err(|refusal| {
+                    Error::Permanent(format!(
+                        "upload profile {} cannot be applied: {refusal}",
+                        profile.key
+                    ))
+                })?
+        }
+        None => imported,
     };
 
     sqlx::query(
@@ -434,24 +470,20 @@ impl Promoted {
     }
 }
 
-/// Dimensions from the object's header, or `None`.
+/// The object's leading bytes, or `None` when they cannot be read.
 ///
-/// A probe failure is not a finalisation failure: a DAM stores formats the pure-Rust probe cannot read, and
-/// §18.2 routes those through libvips. Recording an asset with unknown dimensions is right; refusing an upload
-/// because we could not measure it is not.
-async fn probe_header(
-    store: &dyn ResumableStore,
-    key: &Key,
-    size: u64,
-) -> Option<dam_media::probe::Probe> {
+/// A read failure is not a finalisation failure: a DAM stores formats the pure-Rust probe cannot measure and
+/// files that carry no embedded metadata at all, and §18.2 routes the former through libvips. Recording an asset
+/// with unknown dimensions is right; refusing an upload because we could not inspect it is not.
+async fn read_header(store: &dyn ResumableStore, key: &Key, size: u64) -> Option<Vec<u8>> {
     let end = PROBE_PREFIX.min(size).saturating_sub(1);
-    let prefix = store
+    store
         .get(key, Some(ByteRange::new(0, Some(end))))
         .await
         .ok()?
         .into_bytes(key)
-        .ok()?;
-    dam_media::probe::image(&prefix).ok()
+        .ok()
+        .map(Into::into)
 }
 
 fn dimension(value: Option<u32>) -> Option<i32> {

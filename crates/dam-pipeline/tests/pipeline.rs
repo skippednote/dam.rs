@@ -19,6 +19,7 @@
 
 use dam_core::{StorageClass, TenantSlug};
 use dam_db::{migrate, testing::PostgresHarness};
+use dam_media::testing::{Entry, tags};
 use dam_store::testing::SeaweedfsHarness;
 use dam_store::{BlobStore, Key, ResumableStore};
 use image::{ImageFormat, RgbImage};
@@ -294,6 +295,100 @@ async fn a_staged_upload_becomes_an_asset(f: &Fixture) {
             .await
             .expect("placement");
     assert_eq!(placement, ("STANDARD".to_owned(), "present".to_owned()));
+}
+
+async fn embedded_metadata_is_imported_and_beats_a_blanket_default(f: &Fixture) {
+    // Two fields and two ways to fill them, so the precedence is observable rather than assumed:
+    // `photographer` is claimed by both the file and the profile, and `shot_iso` only by the file.
+    for (key, kind) in [("photographer", "text"), ("shot_iso", "int")] {
+        sqlx::query(
+            "INSERT INTO field_defs (id, key, label, kind, display_order) \
+             VALUES (gen_random_uuid(), $1, $1, $2, 9) ON CONFLICT (key) DO NOTHING",
+        )
+        .bind(key)
+        .bind(kind)
+        .execute(&f.tenant)
+        .await
+        .expect("field");
+    }
+    for (source, field) in [("exif.artist", "photographer"), ("exif.iso", "shot_iso")] {
+        dam_db::auto_import::create(
+            &f.tenant,
+            dam_db::auto_import::NewMapping {
+                source: source.to_owned(),
+                field_key: field.to_owned(),
+                priority: 0,
+                overwrite: false,
+                enabled: true,
+            },
+        )
+        .await
+        .expect("mapping");
+    }
+
+    // A profile whose default claims `photographer` too. It is the *blanket* answer for this intake, and the
+    // file's own answer is the specific one — so the import has to win, or one default would silently defeat
+    // every per-asset import from that source.
+    let profile = dam_db::upload_profiles::create(
+        &f.tenant,
+        dam_db::upload_profiles::NewProfile {
+            key: "agency".to_owned(),
+            label: "Agency feed".to_owned(),
+            metadata_type_id: None,
+            defaults: serde_json::json!({ "photographer": "The Agency" }),
+            require_complete: false,
+            ai_tags_enabled: false,
+            is_default: true,
+        },
+    )
+    .await
+    .expect("profile");
+
+    let bytes = dam_media::testing::decodable_jpeg_with_exif(
+        200,
+        150,
+        &[(tags::ARTIST, Entry::Text("Ada Lovelace"))],
+        // In the Exif sub-directory and as a SHORT, which is where and how a camera writes sensitivity. A
+        // fixture that put it in IFD0 as text would be a different tag entirely, and would prove nothing.
+        &[(tags::PHOTOGRAPHIC_SENSITIVITY, Entry::Short(400))],
+    );
+    stage(f, "finalise-exif", "dawn.jpg", &bytes).await;
+    dam_pipeline::finalise::upload(
+        &f.global,
+        f.store.as_ref(),
+        &f.slug,
+        f.tenant_id,
+        "finalise-exif",
+    )
+    .await
+    .expect("finalise");
+
+    let values: serde_json::Value = sqlx::query_scalar(
+        "SELECT m.values FROM asset_metadata m JOIN assets a ON a.id = m.asset_id \
+         WHERE a.filename = 'dawn.jpg'",
+    )
+    .fetch_one(&f.tenant)
+    .await
+    .expect("metadata");
+
+    assert_eq!(
+        values.get("photographer").and_then(|v| v.as_str()),
+        Some("Ada Lovelace"),
+        "the file's own answer beats the profile's blanket one: {values}"
+    );
+    // Coerced on the way in, because EXIF renders sensitivity as text and the field is an int — a mapping into a
+    // numeric field that could never fire would rule out most of what people actually import.
+    assert_eq!(
+        values.get("shot_iso").and_then(|v| v.as_i64()),
+        Some(400),
+        "a numeric field is filled, not refused: {values}"
+    );
+
+    // Cleaned up so the cases after this one see the tenant they expect: this profile is the default, and a
+    // leftover default would silently apply to every later upload.
+    dam_db::upload_profiles::remove(&f.tenant, profile.id)
+        .await
+        .expect("remove profile");
 }
 
 async fn finalising_twice_produces_one_asset(f: &Fixture) {
@@ -810,6 +905,7 @@ async fn indexing_twice_leaves_one_document(f: &Fixture, context: &dam_pipeline:
 async fn finalisation_holds() {
     let f = fixture().await;
     a_staged_upload_becomes_an_asset(&f).await;
+    embedded_metadata_is_imported_and_beats_a_blanket_default(&f).await;
     finalising_twice_produces_one_asset(&f).await;
     two_uploads_of_one_file_share_an_object_and_are_two_assets(&f).await;
     an_incomplete_upload_is_a_permanent_refusal_not_a_retry(&f).await;

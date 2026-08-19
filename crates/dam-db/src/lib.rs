@@ -9,6 +9,7 @@
 pub mod access;
 pub mod assets;
 pub mod auth;
+pub mod auto_import;
 pub mod bulk;
 pub mod categories;
 pub mod collections;

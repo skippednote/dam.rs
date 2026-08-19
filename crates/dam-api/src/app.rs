@@ -93,6 +93,11 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
                 global: deps.global.clone(),
             },
         ))
+        .merge(crate::auto_import::router(
+            crate::auto_import::AutoImportState {
+                global: deps.global.clone(),
+            },
+        ))
         .merge(crate::categories::router(
             crate::categories::CategoryState {
                 global: deps.global.clone(),

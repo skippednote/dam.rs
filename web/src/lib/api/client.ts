@@ -38,6 +38,7 @@ export type CategoryTree = components['schemas']['TreeRow'];
 export type CategoryNode = components['schemas']['NodeRow'];
 export type CategoryWorklist = components['schemas']['Worklist'];
 export type UploadProfile = components['schemas']['ProfileRow'];
+export type AutoImportMapping = components['schemas']['MappingRow'];
 
 /** A failed request, with whatever the server said about it. */
 export class ApiError extends Error {
@@ -294,6 +295,55 @@ export async function amendUploadProfile(
 
 export async function removeUploadProfile(id: string): Promise<void> {
 	await request<void>(`/upload-profiles/${id}`, { method: 'DELETE' });
+}
+
+/**
+ * Auto-import mappings: what a file's own EXIF and XMP become.
+ *
+ * Every call here needs Manage, reading included — nothing a client does depends on knowing the mappings, since
+ * they fire on the server during ingest.
+ */
+export async function listAutoImportMappings(): Promise<AutoImportMapping[]> {
+	return request<AutoImportMapping[]>('/auto-import-mappings');
+}
+
+/**
+ * The embedded names the extractor can actually produce.
+ *
+ * Fetched rather than written out here: a name this app offered that the server does not produce would create a
+ * rule that looks right in the table and silently never fires.
+ */
+export async function listAutoImportSources(): Promise<string[]> {
+	return request<string[]>('/auto-import-mappings/sources');
+}
+
+export async function createAutoImportMapping(body: {
+	source: string;
+	field_key: string;
+	priority?: number;
+	overwrite?: boolean;
+	enabled?: boolean;
+}): Promise<AutoImportMapping> {
+	return request<AutoImportMapping>('/auto-import-mappings', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body)
+	});
+}
+
+export async function amendAutoImportMapping(
+	id: string,
+	body: { overwrite?: boolean; enabled?: boolean }
+): Promise<AutoImportMapping> {
+	return request<AutoImportMapping>(`/auto-import-mappings/${id}`, {
+		method: 'PATCH',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body)
+	});
+}
+
+export async function removeAutoImportMapping(id: string): Promise<void> {
+	await request<void>(`/auto-import-mappings/${id}`, { method: 'DELETE' });
 }
 
 /**

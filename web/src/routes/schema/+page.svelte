@@ -15,6 +15,7 @@
 	 * page could compose from a status code, and it carries the number that makes the refusal actionable.
 	 */
 	import { onMount } from 'svelte';
+	import AutoImport from '$lib/components/schema/AutoImport.svelte';
 	import MetadataTypes from '$lib/components/schema/MetadataTypes.svelte';
 	import UploadProfiles from '$lib/components/schema/UploadProfiles.svelte';
 	import {
@@ -415,8 +416,14 @@
 	<hr class="border-line" />
 	<MetadataTypes {fields} onchanged={load} />
 
-	<!-- Profiles last: a profile's substance is the defaults it applies and the form it chooses, so it can only
+	<!-- Profiles next: a profile's substance is the defaults it applies and the form it chooses, so it can only
 	     be read after both of those exist above it. -->
 	<hr class="border-line" />
 	<UploadProfiles {fields} />
+
+	<!-- Auto-import last, and deliberately after profiles: the two both fill metadata on the way in, and the
+	     order they run in is the thing to understand — the file's own answer first, the profile's blanket one
+	     only for what is left. Reading them in that order on the page is the cheapest way to say so. -->
+	<hr class="border-line" />
+	<AutoImport {fields} />
 </div>

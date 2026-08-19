@@ -26,14 +26,14 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M0–M3c** Foundation, ingest, metadata/search/rights, delivery/sharing/restore | complete |
 | **F** The UI: browse, detail, upload, filter rail, lightbox, bulk bar, design pass | complete |
 | **F.11b** Share/portal UI, schema administration, metadata types | complete except restore UX |
-| **Q** Acquia parity, 20 slices | Q.1 done; Q.2–Q.20 open |
+| **Q** Acquia parity, 20 slices | Q.1–Q.4 done; Q.5–Q.20 open |
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | schema exists, behaviour unwritten |
 | **M6** Workflow/proofing, annotations, analytics | not started |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** Q.2 categories → Q.3 upload profiles → Q.4 auto-import → Q.5 ratings/favourites/watch
+**Next up, in order:** Q.5 ratings/favourites/watch
 → Q.6 comments → Q.7 activity feed → Q.8 versions → Q.9 attachments → Q.10 history → Q.11 conversions →
 Q.12 intended use → Q.13 orders → Q.14 portals → Q.15–Q.19 search → Q.20 sundries → M4 → M5 → M6 → M3d →
 Pre-GA → Entries.
@@ -1594,8 +1594,28 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
   documented path is served by the app router. Mutation-testing *the guard* found its first version useless: it
   probed with OPTIONS, which the CORS layer answers for any path, so it passed with three routers removed. 8 e2e
   cases; 3 mount mutations caught.
-- [ ] **Q.4 Auto-import mappings.** Embedded metadata (XMP/EXIF/IPTC) → field definitions, on ingest.
-- [ ] **Q.4 Auto-import mappings.** Embedded metadata (XMP/EXIF/IPTC) → field definitions, on ingest.
+- [x] **Q.4 Auto-import mappings: the file's own metadata, into the tenant's fields.** `dam_media::embedded`
+      extracts EXIF and XMP as flat named text — a fixed list of names, because a tenant's mapping refers to them
+      and so they are configuration surface. XMP is *scanned*, not XML-parsed: pointing a parser at
+      attacker-controlled bytes buys entity expansion for no gain. Migration `0018` holds the mappings; three
+      rules earn their keep — priority decides between sources, `overwrite` defaults to off, and an imported value
+      goes through the tenant's own validator so a rejection is reported rather than dropped. Coercion lives in
+      the mapping layer, which knows the target's *declared* kind, so `exif.iso` can fill an int field; the
+      extractor still refuses to guess. `GET/POST/PATCH/DELETE /auto-import-mappings` plus `/sources`, all Manage,
+      and an "Auto-import from the file" panel on `/schema`. Ingest reads the header once and hands it to both the
+      probe and the extractor, then imports *before* the profile's defaults — a blanket default applied first
+      would have counted as a held value and silently defeated every per-asset import.
+
+      Three things this turned up. **Six of the twelve EXIF names live in the Exif sub-directory** and none were
+      tested: a tag number in the wrong directory is a different tag, so `exif.iso`, `exif.aperture`,
+      `exif.shutter`, `exif.lens`, `exif.focal_length` and `exif.taken_at` were all unverified. The fixture now
+      writes both directories and lives in `dam_media::testing` so ingest's suite cannot drift from it.
+      **`exif.taken_at` was unmappable**: EXIF spells a timestamp `2026:03:14 09:26:53`, which is a date in no
+      interchange format, so every date field refused it. Transcribed to ISO now — and given a zone only when the
+      camera recorded one, because appending `Z` to a local reading would move a photograph by up to a day and
+      store the guess as fact. **The UI failed both reads together**, so one bad mapping list emptied the source
+      picker and left a `required` select that could never be satisfied.
+- [x] **Q.4 Auto-import mappings.** Embedded metadata (XMP/EXIF) → field definitions, on ingest.
 - [ ] **Q.5 Ratings, favourites, watch.** Three engagement features and their facets; favourites rank first
   in search, watch is what makes notification worth having.
 - [ ] **Q.6 Comments.** Public and private, routed to chosen recipients, with statuses that carry approval.

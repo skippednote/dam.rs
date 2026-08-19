@@ -108,6 +108,63 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auto-import-mappings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every mapping, best-first within each field. */
+        get: operations["list"];
+        put?: never;
+        /** Creates a mapping. */
+        post: operations["create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auto-import-mappings/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The embedded names a mapping can be written against. */
+        get: operations["sources"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auto-import-mappings/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Removes a mapping. Values it already imported stay on their assets. */
+        delete: operations["remove"];
+        options?: never;
+        head?: never;
+        /**
+         * Turns a mapping on or off, or changes whether it may overwrite.
+         * @description Deliberately narrow: the source and the field are what a mapping *is*, and re-pointing one in place would make
+         *     an existing rule mean something else without any record that it changed. Delete and create instead.
+         */
+        patch: operations["amend"];
+        trace?: never;
+    };
     "/bulk": {
         parameters: {
             query?: never;
@@ -481,6 +538,11 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /** @description What to change. An omitted member is left alone. */
+        AmendMappingRequest: {
+            enabled?: boolean | null;
+            overwrite?: boolean | null;
+        };
+        /** @description What to change. An omitted member is left alone. */
         AmendProfileRequest: {
             ai_tags_enabled?: boolean | null;
             defaults?: unknown;
@@ -752,6 +814,17 @@ export interface components {
             /** @description Whether the state is final, so a client polls this instead of re-implementing the state vocabulary. */
             terminal: boolean;
         };
+        /** @description A mapping to create. */
+        CreateMappingRequest: {
+            /** @description Defaults to true: a mapping saved and then not applied would be a surprising thing to have to switch on. */
+            enabled?: boolean;
+            field_key: string;
+            /** @description Defaults to false, which is the safe direction: see the note in `dam_db::auto_import`. */
+            overwrite?: boolean;
+            /** Format: int32 */
+            priority?: number;
+            source: string;
+        };
         /** @description A category to create within a tree. */
         CreateNodeRequest: {
             label: string;
@@ -860,6 +933,22 @@ export interface components {
          * @enum {string}
          */
         LatencyClass: "instant" | "seconds" | "minutes" | "hours" | "days";
+        /** @description A mapping as a client sees it. */
+        MappingRow: {
+            enabled: boolean;
+            field_key: string;
+            /** Format: uuid */
+            id: string;
+            /** @description Whether this mapping may replace a value the asset already has. */
+            overwrite: boolean;
+            /**
+             * Format: int32
+             * @description Lower fires first when several sources feed one field.
+             */
+            priority: number;
+            /** @description The embedded name, as the extractor reports it — `exif.artist`, `xmp.creator`. */
+            source: string;
+        };
         /** @description The outcome of a metadata edit. */
         MetadataAccepted: {
             /**
@@ -1435,6 +1524,147 @@ export interface operations {
             };
             /** @description No such type */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MappingRow"][];
+                };
+            };
+        };
+    };
+    create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateMappingRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MappingRow"];
+                };
+            };
+            /** @description No field is defined with that key */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description That source already maps to that field */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The source is malformed, or the field is read-only */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    sources: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": string[];
+                };
+            };
+        };
+    };
+    remove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such mapping */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    amend: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AmendMappingRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MappingRow"];
+                };
+            };
+            /** @description No such mapping */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

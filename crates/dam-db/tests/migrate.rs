@@ -63,8 +63,8 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             "BASE TABLE count",
             "SELECT count(*) FROM information_schema.tables WHERE table_schema='t_acme' AND table_type='BASE TABLE' AND table_name <> '_sqlx_migrations'",
             // 61 since 0015: `metadata_types` and `metadata_type_fields`.
-            // 62 since 0017: `upload_profiles`.
-            62,
+            // 62 since 0017: `upload_profiles`; 63 since 0018: `auto_import_mappings`.
+            63,
         ),
         (
             "view count",
@@ -84,14 +84,18 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             // 223 since 0017: upload_profiles gains a primary key, a key index and its one-default partial
             // index, and assets a partial index on the profile. (0016 is net zero — it swapped a unique slug
             // index for a non-unique lookup on the same columns.)
-            223,
+            // 226 since 0018: auto_import_mappings gains a primary key, its source/field unique index and the
+            // partial resolution index.
+            226,
         ),
         (
             "check constraints",
             "SELECT count(*) FROM pg_constraint c JOIN pg_namespace n ON n.oid=c.connamespace WHERE n.nspname='t_acme' AND c.contype='c'",
             // 91 since 0014, which added the `upload_sessions.content_hash` shape check. 90 came from 0012:
             // a superseded term must be deprecated, and cannot supersede itself.
-            91,
+            // 92 since 0018: `auto_import_mappings.source` is shape-checked, because a mapping's left-hand side is
+            // free text and a malformed one would silently never match.
+            92,
         ),
         (
             "hnsw indexes",

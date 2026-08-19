@@ -29,6 +29,7 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 dam-db = { path = "../dam-db", features = ["testing"] }
+dam-media = { path = "../dam-media", features = ["testing"] }
 dam-store = { path = "../dam-store", features = ["testing"] }
 image = { workspace = true }
 blake3 = { workspace = true }

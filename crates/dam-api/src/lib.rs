@@ -4,6 +4,7 @@
 
 pub mod app;
 pub mod assets;
+pub mod auto_import;
 pub mod bulk;
 pub mod caller;
 pub mod categories;

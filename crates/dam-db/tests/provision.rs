@@ -65,8 +65,8 @@ async fn provisioning_creates_the_row_the_schema_and_the_migrations() {
     .await
     .expect("count tables");
     // 61 since migration 0015 added `metadata_types` and `metadata_type_fields`; 62 since 0017 added
-    // `upload_profiles`.
-    assert_eq!(tables, 62);
+    // `upload_profiles`; 63 since 0018 added `auto_import_mappings`.
+    assert_eq!(tables, 63);
 }
 
 /// D14. The whole point of the flag is that it starts off.

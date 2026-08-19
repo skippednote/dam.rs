@@ -7,6 +7,11 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+# Fixture builders. A feature rather than `cfg(test)` because dam-pipeline's ingest tests need the same JPEG,
+# and a second hand-written copy of the TIFF layout would drift from this one.
+testing = []
+
 [dependencies]
 dam-core = { path = "../dam-core" }
 dam-store = { path = "../dam-store" }
@@ -29,6 +34,7 @@ bytes = { workspace = true }
 c2pa = { workspace = true }
 
 [dev-dependencies]
+dam-media = { path = ".", features = ["testing"] }
 # The SeaweedFS harness: finalising is validated against a real server, since the ranged
 # reads it relies on are exactly what a fake would get wrong for free.
 dam-store = { path = "../dam-store", features = ["testing"] }

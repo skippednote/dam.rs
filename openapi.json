@@ -378,6 +378,164 @@
         }
       }
     },
+    "/auto-import-mappings": {
+      "get": {
+        "tags": [
+          "schema"
+        ],
+        "summary": "Every mapping, best-first within each field.",
+        "operationId": "list",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MappingRow"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "schema"
+        ],
+        "summary": "Creates a mapping.",
+        "operationId": "create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateMappingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MappingRow"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No field is defined with that key"
+          },
+          "409": {
+            "description": "That source already maps to that field"
+          },
+          "422": {
+            "description": "The source is malformed, or the field is read-only"
+          }
+        }
+      }
+    },
+    "/auto-import-mappings/sources": {
+      "get": {
+        "tags": [
+          "schema"
+        ],
+        "summary": "The embedded names a mapping can be written against.",
+        "operationId": "sources",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auto-import-mappings/{id}": {
+      "delete": {
+        "tags": [
+          "schema"
+        ],
+        "summary": "Removes a mapping. Values it already imported stay on their assets.",
+        "operationId": "remove",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed"
+          },
+          "404": {
+            "description": "No such mapping"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "schema"
+        ],
+        "summary": "Turns a mapping on or off, or changes whether it may overwrite.",
+        "description": "Deliberately narrow: the source and the field are what a mapping *is*, and re-pointing one in place would make\nan existing rule mean something else without any record that it changed. Delete and create instead.",
+        "operationId": "amend",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AmendMappingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MappingRow"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such mapping"
+          }
+        }
+      }
+    },
     "/bulk": {
       "post": {
         "tags": [
@@ -1501,6 +1659,24 @@
   },
   "components": {
     "schemas": {
+      "AmendMappingRequest": {
+        "type": "object",
+        "description": "What to change. An omitted member is left alone.",
+        "properties": {
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "overwrite": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      },
       "AmendProfileRequest": {
         "type": "object",
         "description": "What to change. An omitted member is left alone.",
@@ -2070,6 +2246,34 @@
           }
         }
       },
+      "CreateMappingRequest": {
+        "type": "object",
+        "description": "A mapping to create.",
+        "required": [
+          "source",
+          "field_key"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Defaults to true: a mapping saved and then not applied would be a surprising thing to have to switch on."
+          },
+          "field_key": {
+            "type": "string"
+          },
+          "overwrite": {
+            "type": "boolean",
+            "description": "Defaults to false, which is the safe direction: see the note in `dam_db::auto_import`."
+          },
+          "priority": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "source": {
+            "type": "string"
+          }
+        }
+      },
       "CreateNodeRequest": {
         "type": "object",
         "description": "A category to create within a tree.",
@@ -2344,6 +2548,43 @@
           "hours",
           "days"
         ]
+      },
+      "MappingRow": {
+        "type": "object",
+        "description": "A mapping as a client sees it.",
+        "required": [
+          "id",
+          "source",
+          "field_key",
+          "priority",
+          "overwrite",
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "field_key": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "overwrite": {
+            "type": "boolean",
+            "description": "Whether this mapping may replace a value the asset already has."
+          },
+          "priority": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Lower fires first when several sources feed one field."
+          },
+          "source": {
+            "type": "string",
+            "description": "The embedded name, as the extractor reports it — `exif.artist`, `xmp.creator`."
+          }
+        }
       },
       "MetadataAccepted": {
         "type": "object",
