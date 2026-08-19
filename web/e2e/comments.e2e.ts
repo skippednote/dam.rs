@@ -233,7 +233,9 @@ async function connect(
 			thumbnail_url: null,
 			tag_confidence: null,
 			is_favourite: false,
-			average_stars: null
+			average_stars: null,
+			// Paperwork flag, as every summary now carries it (Q.9).
+			has_attachment: false
 		};
 	}
 

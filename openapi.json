@@ -108,6 +108,133 @@
         }
       }
     },
+    "/assets/{asset_id}/attachments": {
+      "get": {
+        "tags": [
+          "attachments"
+        ],
+        "summary": "Everything attached to an asset.",
+        "operationId": "list",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AttachmentView"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such asset, or not one this caller may see"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "attachments"
+        ],
+        "summary": "Attaches an already-uploaded asset as paperwork.",
+        "operationId": "attach",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AttachRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AttachmentView"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Either asset is unknown, or not one this caller may manage"
+          },
+          "409": {
+            "description": "Already attached elsewhere, a version, or paperwork about paperwork"
+          },
+          "422": {
+            "description": "An unknown kind"
+          }
+        }
+      }
+    },
+    "/assets/{asset_id}/attachments/{document_id}": {
+      "delete": {
+        "tags": [
+          "attachments"
+        ],
+        "summary": "Detaches a document, returning it to the library.",
+        "operationId": "detach",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Detached. The document is an ordinary asset again — nothing was deleted"
+          },
+          "404": {
+            "description": "No such document, or not one this caller may manage"
+          }
+        }
+      }
+    },
     "/assets/{asset_id}/categories": {
       "get": {
         "tags": [
@@ -2763,7 +2890,8 @@
           "tier",
           "rights_state",
           "provenance_state",
-          "is_favourite"
+          "is_favourite",
+          "has_attachment"
         ],
         "properties": {
           "average_stars": {
@@ -2781,6 +2909,10 @@
           "filename": {
             "type": "string",
             "description": "The name the uploader gave it, preserved verbatim. The stored MIME is sniffed, not this."
+          },
+          "has_attachment": {
+            "type": "boolean",
+            "description": "Whether it has paperwork attached (Q.9) — a release, a licence.\n\nA boolean rather than a count, because the question a cell answers is \"is the rights picture documented\",\nand *how many* documents there are is a detail for the panel. Scoped like everything else: paperwork the\ncaller cannot see does not count, or the flag would disclose that something exists."
           },
           "height": {
             "type": [
@@ -2874,6 +3006,74 @@
             "type": [
               "string",
               "null"
+            ]
+          }
+        }
+      },
+      "AttachRequest": {
+        "type": "object",
+        "description": "Which already-uploaded asset to attach, and as what.",
+        "required": [
+          "document_id",
+          "kind"
+        ],
+        "properties": {
+          "document_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string"
+          }
+        }
+      },
+      "AttachmentView": {
+        "type": "object",
+        "description": "One attached document.",
+        "required": [
+          "asset_id",
+          "attached_to",
+          "kind",
+          "filename",
+          "mime",
+          "bytes",
+          "created_at"
+        ],
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "attached_to": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`release`, `licence`, `contract`, `permit` or `other`."
+          },
+          "mime": {
+            "type": "string"
+          },
+          "uploaded_by": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PersonView"
+              }
             ]
           }
         }

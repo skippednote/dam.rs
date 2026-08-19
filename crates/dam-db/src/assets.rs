@@ -127,10 +127,10 @@ where
     builder.push(WARMEST_PLACEMENT);
     builder.push(" WHERE ");
     crate::access::push_asset_filter(&mut builder, predicate)?;
-    // Current versions only. A browse page describes the library, and a library with three versions of one asset
-    // has one of that asset in it — not three. Every asset is current until somebody adds a version, so a listing
-    // without this clause looks correct right up to the moment it silently triples.
-    builder.push(crate::versions::CURRENT_ONLY);
+    // The rows that are the library: current versions, and nothing that is paperwork attached to something else.
+    // A library with three versions of one asset has one of that asset in it — not three — and a model release is
+    // not an asset anybody browses to.
+    builder.push(crate::versions::LIBRARY_ROWS);
     order.push(&mut builder);
     builder.push(" LIMIT ");
     builder.push_bind(limit);
@@ -212,8 +212,8 @@ where
     // fails to resolve the name — which is what a composed query like `in:exterior harbour` did, on a tenant
     // that had text fields. The tenant in the first test of this had none, so nothing emitted the reference.
     crate::query_sql::push_where(&mut builder, planned)?;
-    // Current versions only, as `page` does: a search over the library searches the library.
-    builder.push(crate::versions::CURRENT_ONLY);
+    // The same rows as `page`: a search over the library searches the library.
+    builder.push(crate::versions::LIBRARY_ROWS);
     order.push(&mut builder);
     builder.push(" LIMIT ");
     builder.push_bind(limit);

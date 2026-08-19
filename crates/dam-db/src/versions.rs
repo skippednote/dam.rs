@@ -65,12 +65,16 @@ pub struct Version {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// The SQL fragment that restricts a listing to current versions.
+/// The SQL fragment that restricts a listing to the rows that *are* the library.
 ///
-/// A named constant because it has to be applied in several places and missing one is invisible: every asset is
-/// current until a second version exists, so a listing without this clause looks perfectly correct right up until
-/// somebody adds a version and their library appears to double.
-pub const CURRENT_ONLY: &str = " AND assets.is_current";
+/// Two rules, one clause, deliberately. Superseded versions are not part of the library and neither is attached
+/// paperwork (Q.9) — and both conditions have to be applied in exactly the same four places. Two constants would be
+/// two things to remember at each of them, and each is invisible when forgotten: every asset is current and
+/// unattached until somebody makes a version or attaches a release, at which point a listing without the clause
+/// quietly grows.
+///
+/// Named `LIBRARY_ROWS` rather than `CURRENT_ONLY` because it is no longer only about versions.
+pub const LIBRARY_ROWS: &str = " AND assets.is_current AND assets.attached_to IS NULL";
 
 /// Adds a version to `superseding`'s group, making the new asset current.
 ///

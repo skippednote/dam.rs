@@ -54,6 +54,12 @@ pub struct AssetSummary {
     /// The average rather than the caller's own rating: a grid shows what the library thinks, and `None` is not
     /// zero — "unrated" and "rated badly by everyone" must not draw the same.
     pub average_stars: Option<f64>,
+    /// Whether it has paperwork attached (Q.9) — a release, a licence.
+    ///
+    /// A boolean rather than a count, because the question a cell answers is "is the rights picture documented",
+    /// and *how many* documents there are is a detail for the panel. Scoped like everything else: paperwork the
+    /// caller cannot see does not count, or the flag would disclose that something exists.
+    pub has_attachment: bool,
 }
 
 /// One page of results.

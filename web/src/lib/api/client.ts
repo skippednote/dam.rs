@@ -297,6 +297,35 @@ export async function removeUploadProfile(id: string): Promise<void> {
 	await request<void>(`/upload-profiles/${id}`, { method: 'DELETE' });
 }
 
+export type AssetAttachment = components['schemas']['AttachmentView'];
+
+/**
+ * Attached documents (Q.9): the paperwork that goes with an asset.
+ *
+ * Attaching names an asset already uploaded through the ordinary route — the same shape as adding a version, and for
+ * the same reason.
+ */
+export async function listAttachments(assetId: string): Promise<AssetAttachment[]> {
+	return request<AssetAttachment[]>(`/assets/${assetId}/attachments`);
+}
+
+export async function attachDocument(
+	assetId: string,
+	documentId: string,
+	kind: AssetAttachment['kind']
+): Promise<AssetAttachment[]> {
+	return request<AssetAttachment[]>(`/assets/${assetId}/attachments`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ document_id: documentId, kind })
+	});
+}
+
+/** Detaches a document. Not a delete — it becomes an ordinary asset again. */
+export async function detachDocument(assetId: string, documentId: string): Promise<void> {
+	await request<void>(`/assets/${assetId}/attachments/${documentId}`, { method: 'DELETE' });
+}
+
 export type AssetVersion = components['schemas']['VersionView'];
 
 /**

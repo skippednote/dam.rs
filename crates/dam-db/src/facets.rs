@@ -159,9 +159,9 @@ async fn count_field(
          LEFT JOIN asset_metadata ON asset_metadata.asset_id = assets.id WHERE ",
     );
     crate::query_sql::push_where(&mut builder, planned)?;
-    // Current versions only. A facet count describes the library, and counting three versions of one asset as three
-    // would make the rail's numbers disagree with the grid beside it.
-    builder.push(crate::versions::CURRENT_ONLY);
+    // The library's rows. Counting three versions of one asset as three, or counting release forms, would make
+    // the rail's numbers disagree with the grid beside it.
+    builder.push(crate::versions::LIBRARY_ROWS);
     builder.push(
         "), exploded AS (SELECT DISTINCT visible.id, value FROM visible, LATERAL (\
          SELECT CASE WHEN jsonb_typeof(visible.values -> ",

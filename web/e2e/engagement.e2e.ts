@@ -179,7 +179,9 @@ async function connect(
 			thumbnail_url: null,
 			tag_confidence: null,
 			is_favourite: id === OTHER ? false : initial.is_favourite,
-			average_stars: id === OTHER ? null : initial.average_stars
+			average_stars: id === OTHER ? null : initial.average_stars,
+			// Paperwork flag, as every summary now carries it (Q.9).
+			has_attachment: false
 		};
 	}
 

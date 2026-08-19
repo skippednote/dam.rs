@@ -4,6 +4,7 @@
 
 pub mod app;
 pub mod assets;
+pub mod attachments;
 pub mod auto_import;
 pub mod bulk;
 pub mod caller;

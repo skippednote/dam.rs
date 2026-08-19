@@ -33,7 +33,9 @@ function summary() {
 		tag_confidence: null,
 		// Engagement, as every summary now carries it (Q.5c).
 		is_favourite: false,
-		average_stars: null
+		average_stars: null,
+		// Paperwork flag, as every summary now carries it (Q.9).
+		has_attachment: false
 	};
 }
 

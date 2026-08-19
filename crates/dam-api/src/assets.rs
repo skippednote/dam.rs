@@ -270,13 +270,19 @@ pub async fn list(
     // Engagement for the page in one read, for the same reason (Q.5b·3). A grid drawing sixty filled-or-empty
     // stars would otherwise make sixty requests, which is the shape the endpoint exists to avoid.
     let engagement = page_engagement(&caller, conn.executor(), &ids).await?;
+    // One read for the page, as with thumbnails and engagement. Scoped, so paperwork the caller cannot see does not
+    // set the flag — which would disclose that something exists.
+    let with_attachments =
+        dam_db::attachments::which_have(conn.executor(), &ids, &caller.predicate)
+            .await
+            .map_err(|_| Failure::Internal)?;
     conn.commit().await?;
 
     let items = page
         .items
         .iter()
         .map(|row| {
-            let mut summary = summary_with_engagement(row, &engagement);
+            let mut summary = summary_with_extras(row, &engagement, &with_attachments);
             if with_thumbnails.contains(&row.id) {
                 summary.thumbnail_url = preview_link(&state, &caller, row.id, thumb_profile().name);
             }
@@ -639,11 +645,25 @@ pub fn summary_with_engagement(
     row: &assets::Summary,
     engagement: &[dam_db::engagement::Engagement],
 ) -> AssetSummary {
+    summary_with_extras(row, engagement, &[])
+}
+
+/// [`summary_with_engagement`], plus which assets have paperwork.
+///
+/// A second function rather than a fourth argument everywhere, because two of the three page paths do not read
+/// attachments and threading an empty slice through them reads as an oversight rather than a choice.
+#[must_use]
+pub fn summary_with_extras(
+    row: &assets::Summary,
+    engagement: &[dam_db::engagement::Engagement],
+    with_attachments: &[Uuid],
+) -> AssetSummary {
     let mut summary = summary_of(row);
     if let Some(state) = engagement.iter().find(|e| e.asset_id == row.id) {
         summary.is_favourite = state.is_favourite;
         summary.average_stars = state.average_stars;
     }
+    summary.has_attachment = with_attachments.contains(&row.id);
     summary
 }
 
@@ -669,5 +689,7 @@ pub fn summary_of(row: &assets::Summary) -> AssetSummary {
         // rather than left absent so a client never has to distinguish "not favourited" from "not told".
         is_favourite: false,
         average_stars: None,
+        // Same: filled from one attachment read per page.
+        has_attachment: false,
     }
 }

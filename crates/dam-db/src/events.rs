@@ -272,10 +272,10 @@ pub async fn summary(conn: &mut sqlx::PgConnection, planned: &Planned) -> Result
          LEFT JOIN asset_metadata ON asset_metadata.asset_id = assets.id WHERE ",
     );
     crate::query_sql::push_where(&mut builder, planned)?;
-    // Current versions only, for the same reason the grid uses: the asset count on a dashboard has to agree with
+    // The library's rows, for the same reason the grid uses them: the asset count on a dashboard has to agree with
     // the number of rows the grid shows. The activity feed below deliberately does *not* filter — an event about a
-    // superseded version still happened.
-    builder.push(crate::versions::CURRENT_ONLY);
+    // superseded version, or about attaching a release, still happened.
+    builder.push(crate::versions::LIBRARY_ROWS);
     builder.push(
         ") SELECT \
             (SELECT count(*) FROM visible), \

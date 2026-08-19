@@ -38,6 +38,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/assets/{asset_id}/attachments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Everything attached to an asset. */
+        get: operations["list"];
+        put?: never;
+        /** Attaches an already-uploaded asset as paperwork. */
+        post: operations["attach"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assets/{asset_id}/attachments/{document_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Detaches a document, returning it to the library. */
+        delete: operations["detach"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/assets/{asset_id}/categories": {
         parameters: {
             query?: never;
@@ -944,6 +979,14 @@ export interface components {
             bytes: number;
             /** @description The name the uploader gave it, preserved verbatim. The stored MIME is sniffed, not this. */
             filename: string;
+            /**
+             * @description Whether it has paperwork attached (Q.9) — a release, a licence.
+             *
+             *     A boolean rather than a count, because the question a cell answers is "is the rights picture documented",
+             *     and *how many* documents there are is a detail for the panel. Scoped like everything else: paperwork the
+             *     caller cannot see does not count, or the flag would disclose that something exists.
+             */
+            has_attachment: boolean;
             /** Format: int32 */
             height?: number | null;
             /** Format: uuid */
@@ -1016,6 +1059,28 @@ export interface components {
              */
             metadata_type_id?: string | null;
             metadata_type_key?: string | null;
+        };
+        /** @description Which already-uploaded asset to attach, and as what. */
+        AttachRequest: {
+            /** Format: uuid */
+            document_id: string;
+            kind: string;
+        };
+        /** @description One attached document. */
+        AttachmentView: {
+            /** Format: uuid */
+            asset_id: string;
+            /** Format: uuid */
+            attached_to: string;
+            /** Format: int64 */
+            bytes: number;
+            /** Format: date-time */
+            created_at: string;
+            filename: string;
+            /** @description `release`, `licence`, `contract`, `permit` or `other`. */
+            kind: string;
+            mime: string;
+            uploaded_by?: null | components["schemas"]["PersonView"];
         };
         /** @description One facet bucket. */
         Bucket: {
@@ -1771,6 +1836,108 @@ export interface operations {
                 content?: never;
             };
             /** @description No such asset, or not one this caller may see — deliberately the same answer */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttachmentView"][];
+                };
+            };
+            /** @description No such asset, or not one this caller may see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    attach: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AttachRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttachmentView"][];
+                };
+            };
+            /** @description Either asset is unknown, or not one this caller may manage */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Already attached elsewhere, a version, or paperwork about paperwork */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An unknown kind */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    detach: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                asset_id: string;
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Detached. The document is an ordinary asset again — nothing was deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such document, or not one this caller may manage */
             404: {
                 headers: {
                     [name: string]: unknown;

@@ -93,6 +93,11 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
                 global: deps.global.clone(),
             },
         ))
+        .merge(crate::attachments::router(
+            crate::attachments::AttachmentState {
+                global: deps.global.clone(),
+            },
+        ))
         .merge(crate::versions::router(crate::versions::VersionState {
             global: deps.global.clone(),
         }))

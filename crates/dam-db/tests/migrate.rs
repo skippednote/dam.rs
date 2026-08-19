@@ -94,13 +94,16 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             //
             // 226 since 0018: auto_import_mappings gains a primary key, its source/field unique index and the
             // partial resolution index.
-            244,
+            245,
         ),
         (
             "check constraints",
             "SELECT count(*) FROM pg_constraint c JOIN pg_namespace n ON n.oid=c.connamespace WHERE n.nspname='t_acme' AND c.contype='c'",
             // 91 since 0014, which added the `upload_sessions.content_hash` shape check. 90 came from 0012:
             // a superseded term must be deprecated, and cannot supersede itself.
+            // 100 since 0022: an attachment's kind is constrained, and two constraints keep the pair coherent —
+            // both columns set or neither, and nothing attached to itself.
+            //
             // 97 since 0021: the events default partition inherits its parent's `actor_kind` check, for the same
             // reason it inherits the indexes.
             //
@@ -112,7 +115,7 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             //
             // 92 since 0018: `auto_import_mappings.source` is shape-checked, because a mapping's left-hand side is
             // free text and a malformed one would silently never match.
-            97,
+            100,
         ),
         (
             "hnsw indexes",

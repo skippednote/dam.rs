@@ -26,14 +26,14 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M0–M3c** Foundation, ingest, metadata/search/rights, delivery/sharing/restore | complete |
 | **F** The UI: browse, detail, upload, filter rail, lightbox, bulk bar, design pass | complete |
 | **F.11b** Share/portal UI, schema administration, metadata types | complete except restore UX |
-| **Q** Acquia parity, 20 slices | Q.1–Q.8 done; Q.9–Q.20 open |
+| **Q** Acquia parity, 20 slices | Q.1–Q.9 done; Q.10–Q.20 open |
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | schema exists, behaviour unwritten |
 | **M6** Workflow/proofing, annotations, analytics | not started |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** Q.9 attached documents
+**Next up, in order:** Q.10 the history tab
 → Q.6 comments → Q.7 activity feed → Q.8 versions → Q.9 attachments → Q.10 history → Q.11 conversions →
 Q.12 intended use → Q.13 orders → Q.14 portals → Q.15–Q.19 search → Q.20 sundries → M4 → M5 → M6 → M3d →
 Pre-GA → Entries.
@@ -1837,7 +1837,30 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
 
       **Open:** engagement and comments attach to the version row they were made on. Whether a rating of March's
       cut should roll up to the group is a real question and a later one.
-- [ ] **Q.9 Attached documents**, and the has-attachment facet. Rights and release paperwork on the asset.
+- [x] **Q.9 Attached documents, and one clause for two rules.** A release, a licence, a contract: files *about* an
+      asset. Migration `0022` makes an attachment an ordinary `assets` row marked as belonging to another, so it gets
+      the whole ingest path for free — the alternative was a second place to sniff, probe and place objects, which is
+      a second path to diverge from the first.
+
+      The cost is one rule: a row with `attached_to` set is not part of the library. That is the *same* requirement
+      `is_current` has, so both live in one fragment — `LIBRARY_ROWS`, applied at the four places that describe the
+      library. One rule to miss instead of two, which matters because missing either is invisible: no asset is
+      superseded or attached until somebody makes it so.
+
+      Attaching is Manage (it asserts something about an asset's rights), reading is Read and deliberately no
+      narrower than the asset — paperwork exists to answer "may we use this", and a rights question somebody cannot
+      check is one they will answer by guessing. Detaching is not deleting. `has_attachment` reaches the grid,
+      scoped, so paperwork the caller cannot see does not set the flag. The three state-of-the-world refusals are
+      409: already attached elsewhere, a superseded version, paperwork about paperwork.
+
+      Twenty-two mutations caught. Two survivors were resolved by removing redundancy rather than documenting it: a
+      duplicate `documents = []` that the loading gate already covered, and one earlier in Q.8. And one of my own
+      tests was not testing what it claimed — the delay meant to open a window for a flash of the *previous* asset's
+      paperwork was on a branch the request never reached, so the window was zero wide and the case passed
+      vacuously.
+
+      **Open:** whether paperwork should be readable by a narrower audience than the asset it belongs to. A release
+      form carries a signature and an address, so it is arguably more sensitive than the photograph.
 - [ ] **Q.10 History tab** over the existing audit log; alternate preview upload.
 - [ ] **Q.11 Asset conversions.** Named, user-selectable download formats per media class, each with a
   description written for the person choosing and its own role permissions.

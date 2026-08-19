@@ -45,7 +45,9 @@ function summary(index: number) {
 		tag_confidence: index % 3 === 0 ? null : 0.55 + (index % 40) / 100,
 		// Engagement, as every summary now carries it (Q.5c).
 		is_favourite: false,
-		average_stars: null
+		average_stars: null,
+		// Paperwork flag, as every summary now carries it (Q.9).
+		has_attachment: false
 	};
 }
 

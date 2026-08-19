@@ -22,6 +22,7 @@
 	import CategoryPanel from './CategoryPanel.svelte';
 	import CommentPanel from './CommentPanel.svelte';
 	import EngagementPanel from './EngagementPanel.svelte';
+	import AttachmentPanel from './AttachmentPanel.svelte';
 	import VersionPanel from './VersionPanel.svelte';
 	import MetadataEditor from './MetadataEditor.svelte';
 	import SharePanel from './SharePanel.svelte';
@@ -212,6 +213,10 @@
 	<!-- Where it is filed, before sharing: a reader checking an asset asks "what is this and where does it
 	     live" before "who can have it". -->
 	<CategoryPanel assetId={asset.id} />
+
+	<!-- The paperwork beside the rights badge in spirit: both answer "may we use this", and the badge alone says
+	     what the answer is without saying where it came from. -->
+	<AttachmentPanel assetId={asset.id} />
 
 	<!-- The history before the conversation: which bytes you are looking at is a more basic question than what
 	     people have said about them, and the panel hides itself entirely for a single-version asset. -->
