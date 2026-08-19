@@ -1724,3 +1724,38 @@ pre-types behaviour. Reversible: no, it is the fix.
 **TASKS.md leads with a rollup.** The file is fifteen hundred lines of narrative across nine sections, which
 is the right shape for the reasoning and the wrong shape for "where are we". A table at the top, updated per
 slice, plus the next-up order and the parked questions. Reversible: yes.
+
+**Categories reuse the taxonomy machinery rather than getting their own hierarchy.** `taxonomies.kind` already
+admitted `'category'`, `taxonomy_terms` already had an ltree path with a GiST index and a supersession chain,
+`asset_tags` was already the asset↔term join, and `query_sql::push_term` already filtered by a term including
+its descendants. A parallel `categories` table would have duplicated all of that — four places to keep in step
+instead of one. `kind` is what keeps a vocabulary (a field's value set) out of the browse tree and a category
+out of a field picker. Reversible: yes.
+
+**Category counts never use `taxonomy_terms.asset_count`.** That column is a denormalised global number, and
+§7 says counts disclose: showing it to a scoped caller would tell them how much of the library they cannot see.
+Counts run through the same `Planned` the search does, so they reflect both the caller's scope and any active
+query — a tree that counted the whole library while a query was active would offer branches leading nowhere.
+Reversible: no, the global number is wrong for this purpose.
+
+**A rollup counts distinct assets.** An asset filed under two leaves of one branch counts once for the branch.
+A plain count would show more assets in a branch than the library contains, with nothing on screen to reveal
+it. Same reasoning as the taxonomy facet counter, which had already solved this. Reversible: no.
+
+**Filing an asset writes `confirmed`/`human`, not `suggested`.** Filing something is a decision, and a
+suggested row would sit in the AI review queue waiting for somebody to approve what a person already did.
+`reviewed_by` records who. The write is an upsert, so filing is idempotent (a state, not an event) and a person
+filing what a model had merely suggested *confirms* that row rather than creating a second history. Reversible:
+no.
+
+**Unfiling deletes the placement rather than marking it rejected.** Rejection is model feedback and belongs to
+the tag-review surface; taking an asset out of a category is filing. Conflating them would teach the tagger
+from an action that said nothing about whether its suggestion was any good. Reversible: yes.
+
+**Migration 0016 drops the taxonomy-wide unique slug index.** It forbade an ordinary category tree — "Yellow"
+under both Exterior and Interior, "Overview" under every product line — while adding nothing: uniqueness on
+`(taxonomy_id, path)` already says no two *siblings* share a slug, because a path is the parent's path plus the
+slug. No query in the workspace resolved a term by slug alone. Relaxing a uniqueness constraint is one-way in
+practice, and that is accepted: the alternative is a DAM that cannot express a filing hierarchy. The taxonomy
+suite's case that documented the old limit is inverted, and `move_term`'s `PathTaken` guard — kept by an earlier
+iteration precisely so this relaxation could not half-apply a subtree rewrite — is now reachable and tested.

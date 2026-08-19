@@ -1506,8 +1506,21 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
   a Form picker, and the metadata editor is now filtered to the asset's own field list: it had been offering
   the whole tenant vocabulary, which with types means offering fields the API refuses. 8 API cases, 7
   mutations all caught; 5 e2e cases, axe-clean in both states. Driven against the live stack end to end.
-- [ ] **Q.2 Hierarchical asset categories**, distinct from taxonomies, plus the "assets without categories"
-  worklist that makes them enforceable.
+- [x] **Q.2a Categories: the tree, and how assets get filed in it.** Not a new hierarchy — `taxonomies.kind`
+  already admitted `'category'`, `taxonomy_terms` already carried an ltree path, `asset_tags` was already the
+  asset↔term join, and `query_sql::push_term` already filtered by a term *including descendants*. What was
+  missing was reading the tree as a tree and putting an asset in it. `dam_db::categories` does both, plus the
+  rollup counts and the uncategorised worklist. Counts run through the caller's `Planned`, never
+  `taxonomy_terms.asset_count`: that column is a denormalised global, and §7 says counts disclose — showing it
+  would tell a scoped caller how much of the library they cannot see. A rollup counts *distinct* assets, so an
+  asset filed under two leaves of a branch does not make "Exterior (7)" appear over a library of five. A human
+  placement is written `confirmed`/`human` because filing is a decision, not a hypothesis. Migration 0016 drops
+  the taxonomy-wide unique slug index: a category tree needs "Yellow" under both Exterior and Interior, and
+  `(taxonomy_id, path)` already enforces the rule that matters. That also makes `move_term`'s `PathTaken`
+  guard reachable for the first time — a previous iteration kept it deliberately for this day, and it is now
+  tested. 11 db cases; 13 mutations all caught, three of which found genuine blind spots.
+- [ ] **Q.2b Categories in the UI**, and the admin worklist surfaced: the browse tree in the filter rail with
+  counts, categories on the detail panel, and filing from there.
 - [ ] **Q.3 Upload profiles.** Per-profile metadata defaults, required-field enforcement in the uploader,
   and the per-profile AI switches Acquia's backfill respects.
 - [ ] **Q.4 Auto-import mappings.** Embedded metadata (XMP/EXIF/IPTC) → field definitions, on ingest.

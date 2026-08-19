@@ -367,21 +367,24 @@ async fn moving_a_term_across_taxonomies_is_refused(pool: &PgPool) {
     );
 }
 
-async fn a_path_collision_is_unreachable_because_slugs_are_unique_per_taxonomy(pool: &PgPool) {
-    // Worth recording because it is not obvious and it decides whether the `PathTaken` guard can ever
-    // fire. `taxonomy_terms_slug_idx` is UNIQUE on `(taxonomy_id, slug)` — not on `(parent_id, slug)` —
-    // so two terms in one taxonomy can never share a leaf label. Since a path's last label is the slug,
-    // two paths in a taxonomy can never be equal, and a move cannot collide.
+async fn one_slug_under_two_parents_is_allowed_and_makes_the_move_guard_reachable(pool: &PgPool) {
+    // This case used to assert the opposite, and the inversion is the point.
     //
-    // The consequence is a real modelling limit rather than a bug: a vocabulary cannot have "Other"
-    // under two different parents. Recorded in DECISIONS.md; the guard in `move_term` stays, so relaxing
-    // this index later does not silently produce a half-applied UPDATE.
+    // `taxonomy_terms_slug_idx` was UNIQUE on `(taxonomy_id, slug)`, which made two terms in one taxonomy
+    // unable to share a leaf label — and therefore made a path collision in `move_term` unreachable. That was
+    // recorded as a modelling limit rather than a bug, with the `PathTaken` guard kept deliberately "so
+    // relaxing this index later does not silently produce a half-applied UPDATE".
+    //
+    // Migration 0016 relaxed it, because a category tree needs "Yellow" under both Exterior and Interior.
+    // Uniqueness on `(taxonomy_id, path)` still forbids two *siblings* sharing a slug, which is the rule that
+    // matters. So the guard is now reachable, and this asserts both halves: the same slug under two parents is
+    // accepted, and moving one onto the other is refused by name.
     let vocabulary = taxonomy_named(pool, "v13").await;
     let outdoor = term(pool, vocabulary, "outdoor13", None).await;
     let indoor = term(pool, vocabulary, "indoor13", None).await;
     term(pool, vocabulary, "outdoor13.beach13", Some(outdoor)).await;
 
-    let duplicate = sqlx::query(
+    let sibling = sqlx::query(
         "INSERT INTO taxonomy_terms (id, taxonomy_id, parent_id, path, slug, label) \
          VALUES (gen_random_uuid(), $1, $2, text2ltree('indoor13.beach13'), 'beach13', 'beach13')",
     )
@@ -390,10 +393,34 @@ async fn a_path_collision_is_unreachable_because_slugs_are_unique_per_taxonomy(p
     .execute(pool)
     .await;
     assert!(
-        duplicate.is_err(),
-        "the schema must refuse a second beach13 in this taxonomy, which is what makes a path \
-         collision unreachable"
+        sibling.is_ok(),
+        "the same slug under a different parent is a different path and must be allowed: {sibling:?}"
     );
+
+    // Now the collision the guard exists for: moving `indoor13.beach13` under `outdoor13`, where a
+    // `beach13` already sits. Refused by name, so a rewrite of N rows never half-applies.
+    let moving: Uuid = sqlx::query_scalar(
+        "SELECT id FROM taxonomy_terms WHERE taxonomy_id = $1 AND path = text2ltree('indoor13.beach13')",
+    )
+    .bind(vocabulary)
+    .fetch_one(pool)
+    .await
+    .expect("the term to move");
+    let refused = taxonomy::move_term(pool, moving, Some(outdoor))
+        .await
+        .expect_err("the destination path is taken");
+    assert!(
+        matches!(&refused, TaxonomyError::PathTaken { path } if path == "outdoor13.beach13"),
+        "got {refused:?}"
+    );
+
+    // And nothing moved.
+    let still: String = sqlx::query_scalar("SELECT path::text FROM taxonomy_terms WHERE id = $1")
+        .bind(moving)
+        .fetch_one(pool)
+        .await
+        .expect("path");
+    assert_eq!(still, "indoor13.beach13");
 }
 
 async fn a_refused_move_leaves_the_subtree_exactly_as_it_was(pool: &PgPool) {
@@ -479,7 +506,7 @@ async fn the_taxonomy_lifecycle_invariants_hold() {
     moving_a_term_to_the_root_is_allowed(&pool).await;
     moving_a_term_under_its_own_descendant_is_refused(&pool).await;
     moving_a_term_across_taxonomies_is_refused(&pool).await;
-    a_path_collision_is_unreachable_because_slugs_are_unique_per_taxonomy(&pool).await;
+    one_slug_under_two_parents_is_allowed_and_makes_the_move_guard_reachable(&pool).await;
     a_refused_move_leaves_the_subtree_exactly_as_it_was(&pool).await;
     moving_a_deprecated_term_is_refused(&pool).await;
 

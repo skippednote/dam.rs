@@ -10,6 +10,7 @@ pub mod access;
 pub mod assets;
 pub mod auth;
 pub mod bulk;
+pub mod categories;
 pub mod collections;
 pub mod derivatives;
 pub mod facets;
