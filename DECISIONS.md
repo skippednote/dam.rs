@@ -1702,3 +1702,25 @@ about what the schema means. Reversible: yes.
 fallback, but leaving every asset null would make types something an administrator applies by hand to a library
 that already exists. The class vocabulary (image/video/audio/document/archive) is deliberately coarser than
 mime: it exists so the choice is predictable to the person who set up the types. Reversible: yes.
+
+**A missing metadata type is a 404 when the path named it and a 422 when the body did.** `DELETE
+/schema/types/{id}` on an unknown id is a 404 because the id is what was addressed. `PUT
+/assets/{id}/metadata-type` with an unknown id in the body is a 422: the path addresses the asset, the asset
+exists, and nothing is missing — the request is wrong. The alternative, treating it as a clear, is worse than
+either: the asset would fall back to the default and the caller would believe the type had been applied.
+Reversible: yes.
+
+**A type's field list is replaced wholesale, never merged.** The list is ordered, and "add this one" computed
+against a client's stale copy would silently drop whatever it had not seen — the same reasoning that makes the
+field reorder refuse a partial list. The UI sends the whole list on every toggle, which an e2e case asserts.
+Reversible: yes.
+
+**The metadata editor is filtered to the asset's own field list.** It had been handed the tenant's whole
+vocabulary, which with metadata types means offering fields the API refuses — the error then lands on an input
+the user was invited to fill in. The resolved list comes from the same endpoint the picker reads, so the form
+and the validator cannot disagree. `null` (no types defined) still means "every field", which is the
+pre-types behaviour. Reversible: no, it is the fix.
+
+**TASKS.md leads with a rollup.** The file is fifteen hundred lines of narrative across nine sections, which
+is the right shape for the reasoning and the wrong shape for "where are we". A table at the top, updated per
+slice, plus the next-up order and the parked questions. Reversible: yes.

@@ -91,7 +91,16 @@ pub fn media_class(mime: &str) -> &'static str {
 /// Defines a metadata type with its field list.
 pub async fn define(pool: &sqlx::PgPool, spec: NewType) -> Result<MetadataType, TypeRefusal> {
     let mut tx = pool.begin().await.map_err(Error::from)?;
+    let created = define_on(&mut tx, spec).await?;
+    tx.commit().await.map_err(Error::from)?;
+    Ok(created)
+}
 
+/// [`define`] on a caller's connection, so it joins a tenant-scoped transaction.
+pub async fn define_on(
+    tx: &mut sqlx::PgConnection,
+    spec: NewType,
+) -> Result<MetadataType, TypeRefusal> {
     let clash: Option<i32> = sqlx::query_scalar("SELECT 1 FROM metadata_types WHERE key = $1")
         .bind(&spec.key)
         .fetch_optional(&mut *tx)
@@ -140,19 +149,40 @@ pub async fn define(pool: &sqlx::PgPool, spec: NewType) -> Result<MetadataType, 
     .await
     .map_err(Error::from)?;
 
-    write_members(&mut tx, id, &spec.field_keys).await?;
-    tx.commit().await.map_err(Error::from)?;
-
-    load(pool, id).await
+    write_members(&mut *tx, id, &spec.field_keys).await?;
+    load_on(&mut *tx, id).await
 }
 
-/// Replaces a type's field list, in the given order.
-pub async fn set_fields(
+/// What may be amended about a type.
+///
+/// `field_keys` replaces the list wholesale rather than merging. A type's fields are an ordered list, and
+/// "add this one" computed against a caller's stale copy would silently drop whatever it had not seen — the
+/// same reasoning as the field reorder refusing a partial list.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Amendment {
+    pub label: Option<String>,
+    pub applies_to: Option<Vec<String>>,
+    pub field_keys: Option<Vec<String>>,
+}
+
+/// Amends a type.
+pub async fn amend(
     pool: &sqlx::PgPool,
     id: Uuid,
-    field_keys: &[String],
+    change: Amendment,
 ) -> Result<MetadataType, TypeRefusal> {
     let mut tx = pool.begin().await.map_err(Error::from)?;
+    let amended = amend_on(&mut tx, id, change).await?;
+    tx.commit().await.map_err(Error::from)?;
+    Ok(amended)
+}
+
+/// [`amend`] on a caller's connection.
+pub async fn amend_on(
+    tx: &mut sqlx::PgConnection,
+    id: Uuid,
+    change: Amendment,
+) -> Result<MetadataType, TypeRefusal> {
     let exists: Option<i32> = sqlx::query_scalar("SELECT 1 FROM metadata_types WHERE id = $1")
         .bind(id)
         .fetch_optional(&mut *tx)
@@ -161,29 +191,55 @@ pub async fn set_fields(
     if exists.is_none() {
         return Err(TypeRefusal::UnknownType(id));
     }
-    for key in field_keys {
-        let known: Option<i32> = sqlx::query_scalar("SELECT 1 FROM field_defs WHERE key = $1")
-            .bind(key)
-            .fetch_optional(&mut *tx)
+
+    sqlx::query(
+        "UPDATE metadata_types SET \
+             label = coalesce($2, label), \
+             applies_to = coalesce($3, applies_to), \
+             updated_at = now() \
+         WHERE id = $1",
+    )
+    .bind(id)
+    .bind(change.label.as_deref())
+    .bind(change.applies_to.as_deref())
+    .execute(&mut *tx)
+    .await
+    .map_err(Error::from)?;
+
+    if let Some(field_keys) = &change.field_keys {
+        // Named before the write rather than left to the foreign key: this refusal reaches an administrator
+        // assembling a form, and a constraint-violation string is not something they can act on.
+        for key in field_keys {
+            let known: Option<i32> = sqlx::query_scalar("SELECT 1 FROM field_defs WHERE key = $1")
+                .bind(key)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(Error::from)?;
+            if known.is_none() {
+                return Err(TypeRefusal::UnknownField(key.clone()));
+            }
+        }
+        sqlx::query("DELETE FROM metadata_type_fields WHERE metadata_type_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
             .await
             .map_err(Error::from)?;
-        if known.is_none() {
-            return Err(TypeRefusal::UnknownField(key.clone()));
-        }
+        write_members(&mut *tx, id, field_keys).await?;
     }
-    sqlx::query("DELETE FROM metadata_type_fields WHERE metadata_type_id = $1")
-        .bind(id)
-        .execute(&mut *tx)
-        .await
-        .map_err(Error::from)?;
-    write_members(&mut tx, id, field_keys).await?;
-    tx.commit().await.map_err(Error::from)?;
-    load(pool, id).await
+
+    load_on(&mut *tx, id).await
 }
 
 /// Makes `id` the tenant's fallback type, moving the flag off whatever held it.
 pub async fn set_default(pool: &sqlx::PgPool, id: Uuid) -> Result<(), TypeRefusal> {
     let mut tx = pool.begin().await.map_err(Error::from)?;
+    set_default_on(&mut tx, id).await?;
+    tx.commit().await.map_err(Error::from)?;
+    Ok(())
+}
+
+/// [`set_default`] on a caller's connection.
+pub async fn set_default_on(tx: &mut sqlx::PgConnection, id: Uuid) -> Result<(), TypeRefusal> {
     // Cleared then set, in one transaction: the partial unique index makes the two-statement order the only
     // one that works, and a reader either sees the old default or the new one.
     sqlx::query(
@@ -202,18 +258,23 @@ pub async fn set_default(pool: &sqlx::PgPool, id: Uuid) -> Result<(), TypeRefusa
     if touched.rows_affected() == 0 {
         return Err(TypeRefusal::UnknownType(id));
     }
-    tx.commit().await.map_err(Error::from)?;
     Ok(())
 }
 
 /// Removes a type. Assets referencing it fall back rather than being blocked or orphaned.
 pub async fn remove(pool: &sqlx::PgPool, id: Uuid) -> Result<(), TypeRefusal> {
+    let mut conn = pool.acquire().await.map_err(Error::from)?;
+    remove_on(&mut conn, id).await
+}
+
+/// [`remove`] on a caller's connection.
+pub async fn remove_on(conn: &mut sqlx::PgConnection, id: Uuid) -> Result<(), TypeRefusal> {
     // `ON DELETE SET NULL` on `assets.metadata_type_id` does the clearing. Deliberate: removing a type is an
     // administrative decision about the schema and must not be refused because a hundred thousand assets
     // happen to reference it — they fall back, and the fallback is visible rather than empty.
     let touched = sqlx::query("DELETE FROM metadata_types WHERE id = $1")
         .bind(id)
-        .execute(pool)
+        .execute(&mut *conn)
         .await
         .map_err(Error::from)?;
     if touched.rows_affected() == 0 {
@@ -228,10 +289,20 @@ pub async fn assign(
     asset_id: Uuid,
     metadata_type_id: Option<Uuid>,
 ) -> Result<(), TypeRefusal> {
+    let mut conn = pool.acquire().await.map_err(Error::from)?;
+    assign_on(&mut conn, asset_id, metadata_type_id).await
+}
+
+/// [`assign`] on a caller's connection.
+pub async fn assign_on(
+    conn: &mut sqlx::PgConnection,
+    asset_id: Uuid,
+    metadata_type_id: Option<Uuid>,
+) -> Result<(), TypeRefusal> {
     sqlx::query("UPDATE assets SET metadata_type_id = $2, updated_at = now() WHERE id = $1")
         .bind(asset_id)
         .bind(metadata_type_id)
-        .execute(pool)
+        .execute(&mut *conn)
         .await
         .map_err(Error::from)?;
     Ok(())
@@ -239,14 +310,20 @@ pub async fn assign(
 
 /// Every type, in display order.
 pub async fn list(pool: &sqlx::PgPool) -> Result<Vec<MetadataType>, TypeRefusal> {
+    let mut conn = pool.acquire().await.map_err(Error::from)?;
+    list_on(&mut conn).await
+}
+
+/// [`list`] on a caller's connection.
+pub async fn list_on(conn: &mut sqlx::PgConnection) -> Result<Vec<MetadataType>, TypeRefusal> {
     let ids: Vec<Uuid> =
         sqlx::query_scalar("SELECT id FROM metadata_types ORDER BY display_order, key")
-            .fetch_all(pool)
+            .fetch_all(&mut *conn)
             .await
             .map_err(Error::from)?;
     let mut out = Vec::with_capacity(ids.len());
     for id in ids {
-        out.push(load(pool, id).await?);
+        out.push(load_on(&mut *conn, id).await?);
     }
     Ok(out)
 }
@@ -365,7 +442,8 @@ async fn load(pool: &sqlx::PgPool, id: Uuid) -> Result<MetadataType, TypeRefusal
     load_on(&mut conn, id).await
 }
 
-async fn load_on(conn: &mut sqlx::PgConnection, id: Uuid) -> Result<MetadataType, TypeRefusal> {
+/// One type by id.
+pub async fn load_on(conn: &mut sqlx::PgConnection, id: Uuid) -> Result<MetadataType, TypeRefusal> {
     let row: Option<(Uuid, String, String, Vec<String>, bool, i32)> = sqlx::query_as(
         "SELECT id, key, label, applies_to, is_default, display_order \
          FROM metadata_types WHERE id = $1",

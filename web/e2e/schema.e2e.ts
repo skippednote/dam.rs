@@ -45,11 +45,25 @@ function field(key: string, overrides: Partial<Field> = {}): Field {
 	};
 }
 
+type MetadataType = {
+	id: string;
+	key: string;
+	label: string;
+	applies_to: string[];
+	is_default: boolean;
+	field_keys: string[];
+	assets: number;
+};
+
 type Recorder = {
 	defined: Record<string, unknown>[];
 	amended: { key: string; body: Record<string, unknown> }[];
 	removed: string[];
 	orders: string[][];
+	/** Type edits, so a test can assert the whole field list travelled rather than a delta. */
+	typeEdits: { id: string; body: Record<string, unknown> }[];
+	typesDefined: Record<string, unknown>[];
+	typesRemoved: string[];
 };
 
 /**
@@ -60,12 +74,22 @@ async function connect(
 	page: Page,
 	options: {
 		fields?: Field[];
+		types?: MetadataType[];
 		define?: (body: Record<string, unknown>) => { status: number; json: unknown };
 		amend?: (key: string, body: Record<string, unknown>) => { status: number; json: unknown };
 		remove?: (key: string) => { status: number; json: unknown };
 	} = {}
 ): Promise<Recorder> {
-	const recorder: Recorder = { defined: [], amended: [], removed: [], orders: [] };
+	const recorder: Recorder = {
+		defined: [],
+		amended: [],
+		removed: [],
+		orders: [],
+		typeEdits: [],
+		typesDefined: [],
+		typesRemoved: []
+	};
+	let types: MetadataType[] = options.types ?? [];
 	let fields = options.fields ?? [
 		field('brand', { facetable: true, search_alias: 'bra', assets_with_values: 12 }),
 		field('campaign', { assets_with_values: 0 })
@@ -126,6 +150,44 @@ async function connect(
 					}
 				}
 			);
+		}
+		if (url.pathname === '/schema/types' && method === 'GET') {
+			return route.fulfill({ json: types });
+		}
+		if (url.pathname === '/schema/types' && method === 'POST') {
+			const body = route.request().postDataJSON() as Record<string, unknown>;
+			recorder.typesDefined.push(body);
+			const created: MetadataType = {
+				id: `type-${types.length + 1}`,
+				key: String(body.key),
+				label: String(body.label),
+				applies_to: (body.applies_to as string[]) ?? [],
+				is_default: Boolean(body.is_default),
+				field_keys: (body.field_keys as string[]) ?? [],
+				assets: 0
+			};
+			types = [...types, created];
+			return route.fulfill({ status: 201, json: created });
+		}
+		if (url.pathname.startsWith('/schema/types/') && method === 'PATCH') {
+			const id = url.pathname.split('/').pop() ?? '';
+			const body = route.request().postDataJSON() as Record<string, unknown>;
+			recorder.typeEdits.push({ id, body });
+			types = types.map((type) => {
+				if (type.id !== id) {
+					// The default is exclusive, so claiming it here clears it everywhere else — the server does
+					// the same, and a mock that did not would hide a UI showing two fallbacks.
+					return body.is_default === true ? { ...type, is_default: false } : type;
+				}
+				return { ...type, ...body } as MetadataType;
+			});
+			return route.fulfill({ json: types.find((type) => type.id === id) });
+		}
+		if (url.pathname.startsWith('/schema/types/') && method === 'DELETE') {
+			const id = url.pathname.split('/').pop() ?? '';
+			recorder.typesRemoved.push(id);
+			types = types.filter((type) => type.id !== id);
+			return route.fulfill({ status: 204, body: '' });
 		}
 		if (url.pathname === '/health') {
 			return route.fulfill({ body: 'ok' });
@@ -288,4 +350,151 @@ test('the schema page has no axe violations', async ({ page }) => {
 		.map((violation) => `${violation.id}: ${violation.nodes.map((n) => n.html).join(', ')}`)
 		.join('\n');
 	expect(results.violations, `axe violations with the add form open:\n${detail}`).toEqual([]);
+});
+
+test('with no types defined, the page says every field applies', async ({ page }) => {
+	await connect(page);
+	await page.goto('/schema');
+
+	// The migration state, and the one an administrator most needs explaining: nothing is narrowed yet, and
+	// the copy has to say what adding a type would do rather than showing an empty list.
+	await expect(page.getByText(/No types yet/)).toBeVisible();
+	await expect(page.getByText(/every asset shows every field/)).toBeVisible();
+});
+
+test('a type is created and its fields chosen from the vocabulary above', async ({ page }) => {
+	const recorder = await connect(page);
+	await page.goto('/schema');
+
+	await page.getByRole('button', { name: 'Add a type' }).click();
+	await page.getByLabel('Key').last().fill('video');
+	await page.getByLabel('Label').last().fill('Video');
+	await page.getByRole('checkbox', { name: 'video' }).check();
+	await page.getByRole('button', { name: 'Add', exact: true }).click();
+
+	expect(recorder.typesDefined).toEqual([
+		{ key: 'video', label: 'Video', applies_to: ['video'], field_keys: [] }
+	]);
+	// A new type has no fields, so it opens straight into choosing them — and says why that matters.
+	await expect(page.getByText(/Choose the fields it should show/)).toBeVisible();
+	await expect(page.getByText(/shows no editable metadata at all/)).toBeVisible();
+
+	// Adding a field sends the *whole* list, which is the endpoint's contract: a delta computed against a
+	// stale copy would drop whatever the client had not seen.
+	await page.getByRole('button', { name: '+ Brand' }).click();
+	expect(recorder.typeEdits.at(-1)?.body).toEqual({ field_keys: ['brand'] });
+	await page.getByRole('button', { name: '+ Campaign' }).click();
+	expect(recorder.typeEdits.at(-1)?.body).toEqual({ field_keys: ['brand', 'campaign'] });
+
+	// And reordering sends the whole list too, reordered.
+	await page.getByRole('button', { name: 'Move campaign up in Video' }).click();
+	expect(recorder.typeEdits.at(-1)?.body).toEqual({ field_keys: ['campaign', 'brand'] });
+});
+
+test('the fallback moves rather than being held by two types at once', async ({ page }) => {
+	const recorder = await connect(page, {
+		types: [
+			{
+				id: 'type-image',
+				key: 'image',
+				label: 'Image',
+				applies_to: ['image'],
+				is_default: true,
+				field_keys: ['brand'],
+				assets: 12
+			},
+			{
+				id: 'type-video',
+				key: 'video',
+				label: 'Video',
+				applies_to: ['video'],
+				is_default: false,
+				field_keys: [],
+				assets: 0
+			}
+		]
+	});
+	await page.goto('/schema');
+
+	// Only one row is labelled, and the labelled one has no "make fallback" button — offering it would invite
+	// a click that does nothing.
+	await expect(page.getByText('fallback', { exact: true })).toHaveCount(1);
+
+	await page
+		.getByRole('region', { name: 'Asset types' })
+		.getByRole('button', { name: 'Make fallback' })
+		.click();
+	expect(recorder.typeEdits.at(-1)).toEqual({ id: 'type-video', body: { is_default: true } });
+	await expect(page.getByText('fallback', { exact: true })).toHaveCount(1);
+});
+
+test('removing a type says how many assets re-form and that nothing is deleted', async ({
+	page
+}) => {
+	const recorder = await connect(page, {
+		types: [
+			{
+				id: 'type-image',
+				key: 'image',
+				label: 'Image',
+				applies_to: ['image'],
+				is_default: true,
+				field_keys: ['brand'],
+				assets: 12
+			}
+		]
+	});
+	await page.goto('/schema');
+
+	const section = page.getByRole('region', { name: 'Asset types' });
+	await expect(section.getByText('1 field · 12 assets')).toBeVisible();
+	// Scoped to the section: "Remove" appears on every field row above as well, and an ambiguous locator
+	// would be a test that passes or fails on DOM order.
+	await section.getByRole('button', { name: 'Remove', exact: true }).click();
+
+	// Both halves: how many are affected, and that being affected is not being damaged. A removal that only
+	// said "12 assets use it" reads as a warning about data loss, which this is not.
+	const confirmation = page.getByText(/12 asset\(s\) use it/);
+	await expect(confirmation).toBeVisible();
+	await expect(page.getByText(/fall back to the default form — nothing is deleted/)).toBeVisible();
+	expect(recorder.typesRemoved, 'the first click only asks').toEqual([]);
+
+	await section.getByRole('button', { name: 'Remove image' }).click();
+	expect(recorder.typesRemoved).toEqual(['type-image']);
+	await expect(page.getByRole('status')).toContainText('fall back to the default form');
+});
+
+test('the types section has no axe violations, including while editing', async ({ page }) => {
+	await connect(page, {
+		types: [
+			{
+				id: 'type-image',
+				key: 'image',
+				label: 'Image',
+				applies_to: ['image'],
+				is_default: true,
+				field_keys: ['brand'],
+				assets: 12
+			}
+		]
+	});
+	await page.goto('/schema');
+	await expect(page.getByRole('heading', { name: 'Asset types' })).toBeVisible();
+
+	let results = await new AxeBuilder({ page }).withTags(WCAG_21_AA).analyze();
+	let detail = results.violations
+		.map((violation) => `${violation.id}: ${violation.nodes.map((n) => n.html).join(', ')}`)
+		.join('\n');
+	expect(results.violations, `axe violations on the types list:\n${detail}`).toEqual([]);
+
+	await page
+		.getByRole('region', { name: 'Asset types' })
+		.getByRole('button', { name: 'Edit fields' })
+		.click();
+	await expect(page.getByText('Fields on this form, in the order they appear')).toBeVisible();
+	results = await new AxeBuilder({ page }).withTags(WCAG_21_AA).analyze();
+	detail = results.violations
+		.map((violation) => `${violation.id}: ${violation.nodes.map((n) => n.html).join(', ')}`)
+		.join('\n');
+	expect(results.violations, `axe violations while editing a type:\n${detail}`).toEqual([]);
 });

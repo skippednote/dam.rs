@@ -55,6 +55,24 @@ export interface paths {
         patch: operations["update_metadata"];
         trace?: never;
     };
+    "/assets/{asset_id}/metadata-type": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The type an asset has, and the form that follows from it. */
+        get: operations["read_asset_type"];
+        /** Sets or clears an asset's metadata type. */
+        put: operations["set_asset_type"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/bulk": {
         parameters: {
             query?: never;
@@ -174,6 +192,42 @@ export interface paths {
         head?: never;
         /** Amends a field. */
         patch: operations["amend"];
+        trace?: never;
+    };
+    "/schema/types": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every metadata type, in display order. */
+        get: operations["list_types"];
+        put?: never;
+        /** Creates a metadata type. */
+        post: operations["define_type"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/schema/types/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Removes a metadata type. Assets carrying it fall back rather than being blocked or orphaned. */
+        delete: operations["remove_type"];
+        options?: never;
+        head?: never;
+        /** Amends a metadata type. */
+        patch: operations["amend_type"];
         trace?: never;
     };
     "/search": {
@@ -304,6 +358,18 @@ export interface components {
             /** Format: uuid */
             taxonomy_id?: string | null;
             validation?: unknown;
+        };
+        /**
+         * @description What to change about a type. An omitted member is left alone.
+         *
+         *     `field_keys` replaces the list wholesale rather than merging: a type's fields are an ordered list, and
+         *     "add this one" computed against a client's stale copy would silently drop whatever it had not seen.
+         */
+        AmendTypeRequest: {
+            applies_to?: string[] | null;
+            field_keys?: string[] | null;
+            is_default?: boolean | null;
+            label?: string | null;
         };
         /** @description An amended field, with the consequences of the amendment. */
         AmendedField: components["schemas"]["SchemaField"] & {
@@ -441,6 +507,21 @@ export interface components {
          * @enum {string}
          */
         AssetTier: "hot" | "cool" | "archive" | "restoring" | "restored";
+        /** @description Which type an asset has, and the form that follows from it. */
+        AssetTypeView: {
+            /**
+             * @description The fields that apply *now*, in order — the resolved answer rather than the stored pointer, because
+             *     this is what the client has to draw.
+             */
+            field_keys: string[];
+            /**
+             * Format: uuid
+             * @description `None` means the asset falls back — to the tenant's default type, or to the whole vocabulary when
+             *     there is no default. Either way it still has a form; see `dam_db::metadata_types`.
+             */
+            metadata_type_id?: string | null;
+            metadata_type_key?: string | null;
+        };
         /** @description One facet bucket. */
         Bucket: {
             /** Format: int64 */
@@ -540,6 +621,14 @@ export interface components {
             taxonomy_id?: string | null;
             validation?: unknown;
         };
+        /** @description A metadata type to create. */
+        DefineTypeRequest: {
+            applies_to?: string[];
+            field_keys?: string[];
+            is_default?: boolean;
+            key: string;
+            label: string;
+        };
         /** @description One facetable field and its buckets. */
         Facet: {
             buckets: components["schemas"]["Bucket"][];
@@ -600,6 +689,26 @@ export interface components {
             values: {
                 [key: string]: unknown;
             };
+        };
+        /** @description A metadata type, with the count that decides whether editing it is safe. */
+        MetadataTypeRow: {
+            /** @description The media classes this type is the natural choice for at ingest. */
+            applies_to: string[];
+            /**
+             * Format: int64
+             * @description How many live assets currently carry this type.
+             *
+             *     On the row for the same reason a field's usage count is: removing a type re-forms every asset that
+             *     referenced it, and an administrator should not have to go and ask how many that is.
+             */
+            assets: number;
+            /** @description Its fields, in its own order. */
+            field_keys: string[];
+            /** Format: uuid */
+            id: string;
+            is_default: boolean;
+            key: string;
+            label: string;
         };
         /** @description The complete field order, in the order fields should appear. */
         OrderRequest: {
@@ -727,6 +836,11 @@ export interface components {
             searchable: boolean;
             /** Format: uuid */
             taxonomy_id?: string | null;
+        };
+        /** @description What to set an asset's type to. `null` clears it, which is different from omitting the member. */
+        SetAssetTypeRequest: {
+            /** Format: uuid */
+            metadata_type_id?: string | null;
         };
         /** @description What a client asks for when sharing an asset. */
         ShareRequest: {
@@ -932,6 +1046,59 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ValidationProblem"][];
                 };
+            };
+        };
+    };
+    read_asset_type: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssetTypeView"];
+                };
+            };
+        };
+    };
+    set_asset_type: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetAssetTypeRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssetTypeView"];
+                };
+            };
+            /** @description No such type */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -1288,6 +1455,128 @@ export interface operations {
                 content?: never;
             };
             /** @description The kind or taxonomy is not usable */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_types: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetadataTypeRow"][];
+                };
+            };
+        };
+    };
+    define_type: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DefineTypeRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetadataTypeRow"];
+                };
+            };
+            /** @description The key is already taken */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A named field does not exist */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    remove_type: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such type */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    amend_type: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AmendTypeRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetadataTypeRow"];
+                };
+            };
+            /** @description No such type */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A named field does not exist */
             422: {
                 headers: {
                     [name: string]: unknown;

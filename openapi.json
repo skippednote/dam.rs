@@ -173,6 +173,81 @@
         }
       }
     },
+    "/assets/{asset_id}/metadata-type": {
+      "get": {
+        "tags": [
+          "schema"
+        ],
+        "summary": "The type an asset has, and the form that follows from it.",
+        "operationId": "read_asset_type",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetTypeView"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "schema"
+        ],
+        "summary": "Sets or clears an asset's metadata type.",
+        "operationId": "set_asset_type",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetAssetTypeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetTypeView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "No such type"
+          }
+        }
+      }
+    },
     "/bulk": {
       "post": {
         "tags": [
@@ -504,6 +579,139 @@
           },
           "422": {
             "description": "The kind or taxonomy is not usable"
+          }
+        }
+      }
+    },
+    "/schema/types": {
+      "get": {
+        "tags": [
+          "schema"
+        ],
+        "summary": "Every metadata type, in display order.",
+        "operationId": "list_types",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MetadataTypeRow"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "schema"
+        ],
+        "summary": "Creates a metadata type.",
+        "operationId": "define_type",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DefineTypeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetadataTypeRow"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The key is already taken"
+          },
+          "422": {
+            "description": "A named field does not exist"
+          }
+        }
+      }
+    },
+    "/schema/types/{id}": {
+      "delete": {
+        "tags": [
+          "schema"
+        ],
+        "summary": "Removes a metadata type. Assets carrying it fall back rather than being blocked or orphaned.",
+        "operationId": "remove_type",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed"
+          },
+          "404": {
+            "description": "No such type"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "schema"
+        ],
+        "summary": "Amends a metadata type.",
+        "operationId": "amend_type",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AmendTypeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetadataTypeRow"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such type"
+          },
+          "422": {
+            "description": "A named field does not exist"
           }
         }
       }
@@ -922,6 +1130,42 @@
           "validation": {}
         }
       },
+      "AmendTypeRequest": {
+        "type": "object",
+        "description": "What to change about a type. An omitted member is left alone.\n\n`field_keys` replaces the list wholesale rather than merging: a type's fields are an ordered list, and\n\"add this one\" computed against a client's stale copy would silently drop whatever it had not seen.",
+        "properties": {
+          "applies_to": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "field_keys": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "is_default": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "AmendedField": {
         "allOf": [
           {
@@ -1161,6 +1405,36 @@
           "restored"
         ]
       },
+      "AssetTypeView": {
+        "type": "object",
+        "description": "Which type an asset has, and the form that follows from it.",
+        "required": [
+          "field_keys"
+        ],
+        "properties": {
+          "field_keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The fields that apply *now*, in order — the resolved answer rather than the stored pointer, because\nthis is what the client has to draw."
+          },
+          "metadata_type_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "`None` means the asset falls back — to the tenant's default type, or to the whole vocabulary when\nthere is no default. Either way it still has a form; see `dam_db::metadata_types`."
+          },
+          "metadata_type_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "Bucket": {
         "type": "object",
         "description": "One facet bucket.",
@@ -1390,6 +1664,37 @@
           "validation": {}
         }
       },
+      "DefineTypeRequest": {
+        "type": "object",
+        "description": "A metadata type to create.",
+        "required": [
+          "key",
+          "label"
+        ],
+        "properties": {
+          "applies_to": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "field_keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "is_default": {
+            "type": "boolean"
+          },
+          "key": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          }
+        }
+      },
       "Facet": {
         "type": "object",
         "description": "One facetable field and its buckets.",
@@ -1510,6 +1815,53 @@
             "propertyNames": {
               "type": "string"
             }
+          }
+        }
+      },
+      "MetadataTypeRow": {
+        "type": "object",
+        "description": "A metadata type, with the count that decides whether editing it is safe.",
+        "required": [
+          "id",
+          "key",
+          "label",
+          "applies_to",
+          "is_default",
+          "field_keys",
+          "assets"
+        ],
+        "properties": {
+          "applies_to": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The media classes this type is the natural choice for at ingest."
+          },
+          "assets": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many live assets currently carry this type.\n\nOn the row for the same reason a field's usage count is: removing a type re-forms every asset that\nreferenced it, and an administrator should not have to go and ask how many that is."
+          },
+          "field_keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Its fields, in its own order."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "is_default": {
+            "type": "boolean"
+          },
+          "key": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
           }
         }
       },
@@ -1783,6 +2135,19 @@
             "type": "boolean"
           },
           "taxonomy_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          }
+        }
+      },
+      "SetAssetTypeRequest": {
+        "type": "object",
+        "description": "What to set an asset's type to. `null` clears it, which is different from omitting the member.",
+        "properties": {
+          "metadata_type_id": {
             "type": [
               "string",
               "null"

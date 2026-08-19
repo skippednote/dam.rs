@@ -18,6 +18,7 @@
 	import TierBadge from '$lib/components/state/TierBadge.svelte';
 	import RightsBadge from '$lib/components/state/RightsBadge.svelte';
 	import ProvenanceBadge from '$lib/components/state/ProvenanceBadge.svelte';
+	import AssetTypePicker from './AssetTypePicker.svelte';
 	import MetadataEditor from './MetadataEditor.svelte';
 	import SharePanel from './SharePanel.svelte';
 	import { deliveryUrl } from '$lib/api/client';
@@ -61,6 +62,24 @@
 		// value, which is what makes a screen reader and a copy-paste both correct.
 		return new Date(iso).toLocaleString();
 	}
+
+	/**
+	 * The field keys this asset's metadata type includes, or `null` when the tenant has no types.
+	 *
+	 * Kept here rather than inside the picker because the *editor* is what has to respect it: offering a
+	 * field the asset's type excludes produces a save the API refuses, and the refusal lands on an input the
+	 * user was invited to fill in.
+	 */
+	let formKeys = $state<string[] | null>(null);
+
+	const formFields = $derived(
+		formKeys === null
+			? fields
+			: // Ordered by the type, not by the tenant's field order — the whole point of a per-type list.
+				formKeys
+					.map((key) => fields.find((field) => field.key === key))
+					.filter((field): field is FieldDefinition => field !== undefined)
+	);
 </script>
 
 <!--
@@ -168,9 +187,12 @@
 		<dd class="font-mono text-[10px] break-all">{asset.content_hash}</dd>
 	</dl>
 
-	<div>
+	<div class="space-y-2">
+		<!-- Which form, before the form itself: a field somebody expects and cannot find is almost always
+		     the type, and the editor alone gives them nothing to act on. -->
+		<AssetTypePicker assetId={asset.id} onresolved={(keys) => (formKeys = keys)} />
 		<h3 class="mb-2 text-xs font-semibold tracking-wide text-muted uppercase">Metadata</h3>
-		<MetadataEditor assetId={asset.id} {values} {fields} onsaved={onchanged} />
+		<MetadataEditor assetId={asset.id} {values} fields={formFields} onsaved={onchanged} />
 	</div>
 
 	<SharePanel assetId={asset.id} />

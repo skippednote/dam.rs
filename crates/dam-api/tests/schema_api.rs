@@ -173,6 +173,312 @@ async fn the_schema_admin_contract_holds() {
     a_reorder_takes_the_whole_list(&f).await;
 }
 
+#[tokio::test]
+async fn the_metadata_type_contract_holds() {
+    let f = fixture().await;
+
+    // A vocabulary to draw types from.
+    for key in ["description", "print_dpi", "duration_note"] {
+        let (status, body) = call(
+            &f,
+            "POST",
+            "/schema/fields",
+            &f.key,
+            Some(json!({ "key": key, "label": key, "kind": "text" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+
+    types_need_manage_to_edit_and_read_to_list(&f).await;
+    a_type_is_created_with_its_fields(&f).await;
+    a_type_reports_how_many_assets_use_it(&f).await;
+    a_type_naming_an_unknown_field_is_refused(&f).await;
+    the_default_moves_rather_than_duplicating(&f).await;
+    an_assets_type_can_be_set_and_cleared(&f).await;
+    removing_a_type_does_not_strand_its_assets(&f).await;
+}
+
+async fn types_need_manage_to_edit_and_read_to_list(f: &Fixture) {
+    // Same split as the field routes, for the same reason: a type decides which form an asset gets, so a
+    // read-only integration key must be able to render one and never reshape it.
+    let (status, body) = call(f, "GET", "/schema/types", &f.read_only_key, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    for (method, path, payload) in [
+        (
+            "POST",
+            "/schema/types",
+            Some(json!({ "key": "sneak", "label": "Sneak" })),
+        ),
+        (
+            "PATCH",
+            "/schema/types/00000000-0000-4000-8000-000000000000",
+            Some(json!({ "label": "x" })),
+        ),
+        (
+            "DELETE",
+            "/schema/types/00000000-0000-4000-8000-000000000000",
+            None,
+        ),
+    ] {
+        let (status, _) = call(f, method, path, &f.read_only_key, payload).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {path}");
+    }
+}
+
+async fn a_type_is_created_with_its_fields(f: &Fixture) {
+    let (status, body) = call(
+        f,
+        "POST",
+        "/schema/types",
+        &f.key,
+        Some(json!({
+            "key": "image",
+            "label": "Image",
+            "applies_to": ["image"],
+            "is_default": true,
+            // Order is the type's own, and it is not the tenant's field order — which is the point of
+            // having a per-type list at all.
+            "field_keys": ["print_dpi", "description"]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["key"], "image");
+    assert_eq!(body["is_default"], true);
+    assert_eq!(body["field_keys"][0], "print_dpi");
+    assert_eq!(body["field_keys"][1], "description");
+
+    // Amending the field list replaces it wholesale, in the order given: a type's fields are a list, and
+    // "add one" against a stale copy would silently drop whatever the client had not seen.
+    let (status, body) = call(
+        f,
+        "PATCH",
+        &format!("/schema/types/{}", body["id"].as_str().expect("id")),
+        &f.key,
+        Some(json!({ "field_keys": ["description", "print_dpi", "duration_note"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["field_keys"].as_array().expect("array").len(), 3);
+    assert_eq!(body["field_keys"][0], "description");
+}
+
+async fn a_type_reports_how_many_assets_use_it(f: &Fixture) {
+    // The number that decides whether removing a type is safe, on the row — same posture as a field's
+    // usage count, and for the same reason: an administrator should not have to go and ask.
+    let (_, listed) = call(f, "GET", "/schema/types", &f.key, None).await;
+    let image = listed
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|row| row["key"] == "image")
+        .expect("image type");
+    assert_eq!(image["assets"], 0, "nothing uses it yet");
+}
+
+async fn a_type_naming_an_unknown_field_is_refused(f: &Fixture) {
+    let (status, body) = call(
+        f,
+        "POST",
+        "/schema/types",
+        &f.key,
+        Some(json!({ "key": "bogus", "label": "Bogus", "field_keys": ["nonesuch"] })),
+    )
+    .await;
+    // 422: the request names something that does not exist, which is the request's fault.
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(
+        body["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("nonesuch"),
+        "{body}"
+    );
+
+    // A duplicate key is a conflict on an existing thing, not a malformed request.
+    let (status, body) = call(
+        f,
+        "POST",
+        "/schema/types",
+        &f.key,
+        Some(json!({ "key": "image", "label": "Image again" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+}
+
+async fn the_default_moves_rather_than_duplicating(f: &Fixture) {
+    let (status, video) = call(
+        f,
+        "POST",
+        "/schema/types",
+        &f.key,
+        Some(json!({
+            "key": "video",
+            "label": "Video",
+            "applies_to": ["video"],
+            "field_keys": ["duration_note"]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{video}");
+
+    let (status, _) = call(
+        f,
+        "PATCH",
+        &format!("/schema/types/{}", video["id"].as_str().expect("id")),
+        &f.key,
+        Some(json!({ "is_default": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Exactly one default, and it moved — two rows claiming the fallback would make an asset's field list
+    // depend on row order.
+    let (_, listed) = call(f, "GET", "/schema/types", &f.key, None).await;
+    let defaults: Vec<&str> = listed
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter(|row| row["is_default"] == true)
+        .filter_map(|row| row["key"].as_str())
+        .collect();
+    assert_eq!(defaults, ["video"]);
+}
+
+async fn an_assets_type_can_be_set_and_cleared(f: &Fixture) {
+    let asset_id = asset_with(&f.acme, "typed", json!({})).await;
+    let (_, listed) = call(f, "GET", "/schema/types", &f.key, None).await;
+    let image_id = listed
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|row| row["key"] == "image")
+        .and_then(|row| row["id"].as_str())
+        .expect("image id")
+        .to_owned();
+
+    let (status, body) = call(
+        f,
+        "PUT",
+        &format!("/assets/{asset_id}/metadata-type"),
+        &f.key,
+        Some(json!({ "metadata_type_id": image_id })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["metadata_type_id"], image_id);
+    // The response carries the form the asset now has, because that is what the client has to redraw — a
+    // bare 204 would make the caller guess or re-fetch.
+    assert_eq!(body["field_keys"].as_array().expect("array").len(), 3);
+
+    // Cleared with an explicit null, which is different from omitting the member: one says "fall back to
+    // the default", the other would say nothing at all.
+    let (status, body) = call(
+        f,
+        "PUT",
+        &format!("/assets/{asset_id}/metadata-type"),
+        &f.key,
+        Some(json!({ "metadata_type_id": null })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["metadata_type_id"].is_null());
+    // And the fallback is the tenant's default, not an empty form.
+    assert_eq!(
+        body["field_keys"][0], "duration_note",
+        "the video default's list"
+    );
+
+    // A type that does not exist is a 422 rather than a silent clear: "set this to a type I invented" is a
+    // mistake, and treating it as a clear would hide the mistake behind a plausible outcome.
+    let (status, _) = call(
+        f,
+        "PUT",
+        &format!("/assets/{asset_id}/metadata-type"),
+        &f.key,
+        Some(json!({ "metadata_type_id": "00000000-0000-4000-8000-00000000dead" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Read-only cannot set it.
+    let (status, _) = call(
+        f,
+        "PUT",
+        &format!("/assets/{asset_id}/metadata-type"),
+        &f.read_only_key,
+        Some(json!({ "metadata_type_id": image_id })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+async fn removing_a_type_does_not_strand_its_assets(f: &Fixture) {
+    let (_, listed) = call(f, "GET", "/schema/types", &f.key, None).await;
+    let image_id = listed
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|row| row["key"] == "image")
+        .and_then(|row| row["id"].as_str())
+        .expect("image id")
+        .to_owned();
+
+    let asset_id = asset_with(&f.acme, "about-to-be-orphaned", json!({})).await;
+    let (status, _) = call(
+        f,
+        "PUT",
+        &format!("/assets/{asset_id}/metadata-type"),
+        &f.key,
+        Some(json!({ "metadata_type_id": image_id })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // The removal is not blocked by the assets referencing it: that is an administrative decision about the
+    // schema, and blocking it would make a type unremovable once anything used it.
+    let (status, _) = call(
+        f,
+        "DELETE",
+        &format!("/schema/types/{image_id}"),
+        &f.key,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, body) = call(
+        f,
+        "GET",
+        &format!("/assets/{asset_id}/metadata-type"),
+        &f.key,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body["metadata_type_id"].is_null(),
+        "the dangling reference was cleared"
+    );
+    assert!(
+        !body["field_keys"].as_array().expect("array").is_empty(),
+        "and the asset still has a form, via the fallback: {body}"
+    );
+
+    let (status, _) = call(
+        f,
+        "DELETE",
+        &format!("/schema/types/{image_id}"),
+        &f.key,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "removing it twice is a 404");
+}
+
 async fn reading_the_schema_needs_only_read(f: &Fixture) {
     let (status, body) = call(f, "GET", "/schema/fields", &f.read_only_key, None).await;
     assert_eq!(status, StatusCode::OK);

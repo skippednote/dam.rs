@@ -748,12 +748,18 @@ test('the bulk bar appears with a selection and runs a delete to its honest end 
 
 	// Confirming creates the operation with the same selection the preview saw.
 	await bar.getByRole('button', { name: 'Delete 1 asset' }).click();
-	const createCall = recorder.bulk.find((c) => c.url.endsWith('/bulk'));
-	expect(createCall?.body.asset_ids).toEqual(previewCall?.body.asset_ids);
 
 	// The end state is `partial`, rendered as exactly that — the named failure and no green tick.
+	//
+	// Asserted *before* the recorder, and that ordering is the fix for a real flake: clicking starts an async
+	// create-then-poll, and reading `recorder` on the next line raced it — the POST had not landed yet, so
+	// `find` returned undefined about two runs in three. Waiting on something the user can see is also the
+	// honest synchronisation point; a bare timeout would only make the race rarer.
 	await expect(bar).toContainText('partial: 1 applied, 1 failed');
 	await expect(bar).toContainText('legal hold blocks deletion');
+
+	const createCall = recorder.bulk.find((c) => c.url.endsWith('/bulk'));
+	expect(createCall?.body.asset_ids).toEqual(previewCall?.body.asset_ids);
 
 	// Dismissing clears the selection, so the next operation starts from nothing.
 	await bar.getByRole('button', { name: 'Dismiss' }).click();
@@ -776,6 +782,10 @@ test('the bulk metadata flow sends one field as a patch', async ({ page }) => {
 	await bar.getByRole('button', { name: 'Preview' }).click();
 	await expect(bar).toContainText('Update 1 asset?');
 	await bar.getByRole('button', { name: 'Update 1 asset' }).click();
+
+	// Waits for the operation to reach a terminal state before reading what was sent — see the note in the
+	// delete case above for why reading the recorder straight after the click is a race.
+	await expect(bar).toContainText(/partial|Done/);
 
 	const createCall = recorder.bulk.find((c) => c.url.endsWith('/bulk'));
 	expect(createCall?.body.kind).toBe('metadata_set');

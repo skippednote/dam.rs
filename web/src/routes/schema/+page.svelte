@@ -15,6 +15,7 @@
 	 * page could compose from a status code, and it carries the number that makes the refusal actionable.
 	 */
 	import { onMount } from 'svelte';
+	import MetadataTypes from '$lib/components/schema/MetadataTypes.svelte';
 	import {
 		ApiError,
 		amendField,
@@ -399,4 +400,10 @@
 			against the old kind and nothing re-checks them. Add a new field and move the data instead.
 		</p>
 	{/if}
+
+	<!-- Types come after the fields because a type is a selection *over* them; the page reads in the order
+	     the two depend on each other. `onchanged` reloads the field list, since a type edit can change a
+	     field's usage picture. -->
+	<hr class="border-line" />
+	<MetadataTypes {fields} onchanged={load} />
 </div>

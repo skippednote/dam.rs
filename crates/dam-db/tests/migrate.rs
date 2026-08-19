@@ -62,7 +62,8 @@ async fn tenant_migrations_apply_to_a_named_schema() {
         (
             "BASE TABLE count",
             "SELECT count(*) FROM information_schema.tables WHERE table_schema='t_acme' AND table_type='BASE TABLE' AND table_name <> '_sqlx_migrations'",
-            59,
+            // 61 since 0015: `metadata_types` and `metadata_type_fields`.
+            61,
         ),
         (
             "view count",
@@ -76,7 +77,10 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             "index count",
             "SELECT count(*) FROM pg_indexes WHERE schemaname='t_acme' AND tablename <> '_sqlx_migrations'",
             // 213 since 0012: taxonomy_terms gains a live-terms index and a supersession index.
-            213,
+            // 219 since 0015: metadata_types gains a primary key, a key index and the one-default partial
+            // index; metadata_type_fields a composite primary key and a field lookup; assets a partial index
+            // on its type.
+            219,
         ),
         (
             "check constraints",

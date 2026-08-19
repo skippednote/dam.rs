@@ -16,6 +16,35 @@ Rules for autonomous runs:
 
 ---
 
+
+## Where we are
+
+Updated with every slice. The detail is in the sections below; this is the part you can read in ten seconds.
+
+| Track | State |
+|---|---|
+| **M0–M3c** Foundation, ingest, metadata/search/rights, delivery/sharing/restore | complete |
+| **F** The UI: browse, detail, upload, filter rail, lightbox, bulk bar, design pass | complete |
+| **F.11b** Share/portal UI, schema administration, metadata types | complete except restore UX |
+| **Q** Acquia parity, 20 slices | Q.1 done; Q.2–Q.20 open |
+| **M3d** Drupal 11 connector | not started |
+| **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
+| **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | schema exists, behaviour unwritten |
+| **M6** Workflow/proofing, annotations, analytics | not started |
+| **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
+
+**Next up, in order:** Q.2 categories → Q.3 upload profiles → Q.4 auto-import → Q.5 ratings/favourites/watch
+→ Q.6 comments → Q.7 activity feed → Q.8 versions → Q.9 attachments → Q.10 history → Q.11 conversions →
+Q.12 intended use → Q.13 orders → Q.14 portals → Q.15–Q.19 search → Q.20 sundries → M4 → M5 → M6 → M3d →
+Pre-GA → Entries.
+
+**Open questions parked for a human:** `NEEDS-REVIEW.md` item 2.4 (rule-based asset groups) and task 3.x
+(which AWS-native features to rely on rather than build).
+
+**The bar every slice clears:** `cargo fmt --check`, `cargo clippy --all-targets --all-features -D warnings`,
+the Rust suites, then prettier + eslint + svelte-check + vitest + playwright with axe in both themes. Each
+slice is also mutation-tested, and driven against the running stack before it is called done.
+
 ## M0 — Foundation
 
 - [x] **0.1 Workspace skeleton.** Done. 12 members build clean; `clippy -D warnings` clean.
@@ -1467,12 +1496,16 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
   agree about what the schema means. 12 db cases + one pure class test; 13 mutations all caught. Mutation
   testing found two tests passing for the wrong reason — an SVG "verified" by a fallback, and a refusal that
   only worked because the field was undefined rather than out-of-type.
-- [ ] **Q.1b Metadata type administration.** The API and the `/schema` UI for creating types, assigning their
-  fields, nominating the default, and setting an asset's type from its detail panel.
-- [ ] **Q.1 (original scope note) Metadata types bound to asset kinds.** Acquia groups fields into types (Image: 12 fields,
-  Video: 0, Archives: 1, plus custom) and an asset's detail page names its type. damrs has one flat
-  `field_defs` per tenant, so a video carries the print-resolution fields and an archive carries alt text.
-  Extends the schema administration in F.11b·2a.
+- [x] **Q.1b Metadata type administration.** `GET/POST /schema/types`, `PATCH/DELETE /schema/types/{id}` and
+  `GET/PUT /assets/{id}/metadata-type` — Manage to edit, Read to list, and a missing type is a 404 when the
+  *path* named it but a 422 when the *body* did, because in the second case nothing is missing: the request is
+  wrong. `field_keys` replaces the list wholesale, so a delta against a stale copy cannot silently drop what
+  the client had not seen. The `/schema` page grows a named "Asset types" landmark under the field list — the
+  order the two depend on each other — with per-type field selection, ordering, media classes, an exclusive
+  fallback and a removal that says how many assets re-form and that nothing is deleted. The detail panel gains
+  a Form picker, and the metadata editor is now filtered to the asset's own field list: it had been offering
+  the whole tenant vocabulary, which with types means offering fields the API refuses. 8 API cases, 7
+  mutations all caught; 5 e2e cases, axe-clean in both states. Driven against the live stack end to end.
 - [ ] **Q.2 Hierarchical asset categories**, distinct from taxonomies, plus the "assets without categories"
   worklist that makes them enforceable.
 - [ ] **Q.3 Upload profiles.** Per-profile metadata defaults, required-field enforcement in the uploader,

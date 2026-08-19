@@ -31,6 +31,7 @@ use axum::{Json, Router};
 use dam_core::policy::Action;
 use dam_db::TenantConn;
 use dam_db::fields::{self, Amendment, Catalogued, NewField, SchemaRefusal};
+use dam_db::metadata_types;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -58,6 +59,17 @@ pub fn router(state: SchemaState) -> Router {
         .route(
             "/schema/fields/{key}",
             axum::routing::patch(amend).delete(remove),
+        )
+        .route("/schema/types", get(list_types).post(define_type))
+        .route(
+            "/schema/types/{id}",
+            axum::routing::patch(amend_type).delete(remove_type),
+        )
+        // On the asset rather than under `/schema`, because it is a property of the asset: which form it
+        // gets, not what forms exist.
+        .route(
+            "/assets/{asset_id}/metadata-type",
+            get(read_asset_type).put(set_asset_type),
         )
         .with_state(Arc::new(state))
 }
@@ -409,6 +421,353 @@ impl From<Refusal> for Failure {
             | SchemaRefusal::UnknownTaxonomy(_)
             | SchemaRefusal::IncompleteOrder { .. } => Self::Unprocessable(refusal.to_string()),
             SchemaRefusal::Database(error) => error.into(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Metadata types (Q.1b)
+// ---------------------------------------------------------------------------------------------------
+
+/// A metadata type, with the count that decides whether editing it is safe.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MetadataTypeRow {
+    pub id: Uuid,
+    pub key: String,
+    pub label: String,
+    /// The media classes this type is the natural choice for at ingest.
+    pub applies_to: Vec<String>,
+    pub is_default: bool,
+    /// Its fields, in its own order.
+    pub field_keys: Vec<String>,
+    /// How many live assets currently carry this type.
+    ///
+    /// On the row for the same reason a field's usage count is: removing a type re-forms every asset that
+    /// referenced it, and an administrator should not have to go and ask how many that is.
+    pub assets: i64,
+}
+
+/// A metadata type to create.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct DefineTypeRequest {
+    pub key: String,
+    pub label: String,
+    #[serde(default)]
+    pub applies_to: Vec<String>,
+    #[serde(default)]
+    pub is_default: bool,
+    #[serde(default)]
+    pub field_keys: Vec<String>,
+}
+
+/// What to change about a type. An omitted member is left alone.
+///
+/// `field_keys` replaces the list wholesale rather than merging: a type's fields are an ordered list, and
+/// "add this one" computed against a client's stale copy would silently drop whatever it had not seen.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct AmendTypeRequest {
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub applies_to: Option<Vec<String>>,
+    #[serde(default)]
+    pub is_default: Option<bool>,
+    #[serde(default)]
+    pub field_keys: Option<Vec<String>>,
+}
+
+/// Which type an asset has, and the form that follows from it.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AssetTypeView {
+    /// `None` means the asset falls back — to the tenant's default type, or to the whole vocabulary when
+    /// there is no default. Either way it still has a form; see `dam_db::metadata_types`.
+    pub metadata_type_id: Option<Uuid>,
+    pub metadata_type_key: Option<String>,
+    /// The fields that apply *now*, in order — the resolved answer rather than the stored pointer, because
+    /// this is what the client has to draw.
+    pub field_keys: Vec<String>,
+}
+
+/// What to set an asset's type to. `null` clears it, which is different from omitting the member.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct SetAssetTypeRequest {
+    pub metadata_type_id: Option<Uuid>,
+}
+
+/// Every metadata type, in display order.
+#[utoipa::path(
+    get,
+    path = "/schema/types",
+    responses((status = 200, body = Vec<MetadataTypeRow>)),
+    tag = "schema",
+)]
+pub async fn list_types(
+    State(state): State<Arc<SchemaState>>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<MetadataTypeRow>>, Failure> {
+    let caller = caller::authorize(&state.global, &headers, Action::Read).await?;
+    let mut conn = TenantConn::begin(&state.global, &caller.tenant_slug).await?;
+    let types = metadata_types::list_on(conn.executor())
+        .await
+        .map_err(TypeFailure)?;
+
+    let mut out = Vec::with_capacity(types.len());
+    for kind in types {
+        let assets: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM assets WHERE metadata_type_id = $1 AND deleted_at IS NULL",
+        )
+        .bind(kind.id)
+        .fetch_one(conn.executor())
+        .await
+        .map_err(dam_db::Error::from)?;
+        out.push(present_type(kind, assets));
+    }
+    conn.commit().await?;
+    Ok(Json(out))
+}
+
+/// Creates a metadata type.
+#[utoipa::path(
+    post,
+    path = "/schema/types",
+    request_body = DefineTypeRequest,
+    responses(
+        (status = 201, body = MetadataTypeRow),
+        (status = 409, description = "The key is already taken"),
+        (status = 422, description = "A named field does not exist"),
+    ),
+    tag = "schema",
+)]
+pub async fn define_type(
+    State(state): State<Arc<SchemaState>>,
+    headers: HeaderMap,
+    Json(request): Json<DefineTypeRequest>,
+) -> Result<(StatusCode, Json<MetadataTypeRow>), Failure> {
+    let caller = caller::authorize(&state.global, &headers, Action::Manage).await?;
+    let mut conn = TenantConn::begin(&state.global, &caller.tenant_slug).await?;
+    let created = metadata_types::define_on(
+        conn.executor(),
+        metadata_types::NewType {
+            key: request.key,
+            label: request.label,
+            applies_to: request.applies_to,
+            is_default: request.is_default,
+            field_keys: request.field_keys,
+        },
+    )
+    .await
+    .map_err(TypeFailure)?;
+    conn.commit().await?;
+    // Freshly created, so nothing can carry it yet.
+    Ok((StatusCode::CREATED, Json(present_type(created, 0))))
+}
+
+/// Amends a metadata type.
+#[utoipa::path(
+    patch,
+    path = "/schema/types/{id}",
+    request_body = AmendTypeRequest,
+    responses(
+        (status = 200, body = MetadataTypeRow),
+        (status = 404, description = "No such type"),
+        (status = 422, description = "A named field does not exist"),
+    ),
+    tag = "schema",
+)]
+pub async fn amend_type(
+    State(state): State<Arc<SchemaState>>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(request): Json<AmendTypeRequest>,
+) -> Result<Json<MetadataTypeRow>, Failure> {
+    let caller = caller::authorize(&state.global, &headers, Action::Manage).await?;
+    let mut conn = TenantConn::begin(&state.global, &caller.tenant_slug).await?;
+
+    metadata_types::amend_on(
+        conn.executor(),
+        id,
+        metadata_types::Amendment {
+            label: request.label,
+            applies_to: request.applies_to,
+            field_keys: request.field_keys,
+        },
+    )
+    .await
+    .map_err(TypeFailure)?;
+    // Separate from the amendment because it is a different kind of change: the default is a property of the
+    // *set* of types, and setting it moves the flag off whoever held it.
+    if request.is_default == Some(true) {
+        metadata_types::set_default_on(conn.executor(), id)
+            .await
+            .map_err(TypeFailure)?;
+    }
+
+    let updated = metadata_types::load_on(conn.executor(), id)
+        .await
+        .map_err(TypeFailure)?;
+    let assets: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM assets WHERE metadata_type_id = $1 AND deleted_at IS NULL",
+    )
+    .bind(id)
+    .fetch_one(conn.executor())
+    .await
+    .map_err(dam_db::Error::from)?;
+    conn.commit().await?;
+    Ok(Json(present_type(updated, assets)))
+}
+
+/// Removes a metadata type. Assets carrying it fall back rather than being blocked or orphaned.
+#[utoipa::path(
+    delete,
+    path = "/schema/types/{id}",
+    responses(
+        (status = 204, description = "Removed"),
+        (status = 404, description = "No such type"),
+    ),
+    tag = "schema",
+)]
+pub async fn remove_type(
+    State(state): State<Arc<SchemaState>>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, Failure> {
+    let caller = caller::authorize(&state.global, &headers, Action::Manage).await?;
+    let mut conn = TenantConn::begin(&state.global, &caller.tenant_slug).await?;
+    metadata_types::remove_on(conn.executor(), id)
+        .await
+        .map_err(TypeFailure)?;
+    conn.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// The type an asset has, and the form that follows from it.
+#[utoipa::path(
+    get,
+    path = "/assets/{asset_id}/metadata-type",
+    responses((status = 200, body = AssetTypeView)),
+    tag = "schema",
+)]
+pub async fn read_asset_type(
+    State(state): State<Arc<SchemaState>>,
+    headers: HeaderMap,
+    Path(asset_id): Path<Uuid>,
+) -> Result<Json<AssetTypeView>, Failure> {
+    let caller = caller::authorize(&state.global, &headers, Action::Read).await?;
+    let mut conn = TenantConn::begin(&state.global, &caller.tenant_slug).await?;
+    let view = resolve_asset_type(conn.executor(), asset_id).await?;
+    conn.commit().await?;
+    Ok(Json(view))
+}
+
+/// Sets or clears an asset's metadata type.
+#[utoipa::path(
+    put,
+    path = "/assets/{asset_id}/metadata-type",
+    request_body = SetAssetTypeRequest,
+    responses(
+        (status = 200, body = AssetTypeView),
+        (status = 422, description = "No such type"),
+    ),
+    tag = "schema",
+)]
+pub async fn set_asset_type(
+    State(state): State<Arc<SchemaState>>,
+    headers: HeaderMap,
+    Path(asset_id): Path<Uuid>,
+    Json(request): Json<SetAssetTypeRequest>,
+) -> Result<Json<AssetTypeView>, Failure> {
+    let caller = caller::authorize(&state.global, &headers, Action::Manage).await?;
+    let mut conn = TenantConn::begin(&state.global, &caller.tenant_slug).await?;
+
+    // Checked before the write rather than left to the foreign key, so "set this to a type I invented" is a
+    // named refusal. Letting it through as a clear would hide the mistake behind a plausible outcome: the
+    // asset would silently fall back and the caller would believe the type had been applied.
+    if let Some(id) = request.metadata_type_id {
+        // 422, not the 404 the shared mapping would give: the *path* addresses the asset and the asset
+        // exists, so nothing here is missing — the body names a type that is not real, which is the request
+        // being wrong. `DELETE /schema/types/{id}` on the same refusal is a 404 precisely because there the
+        // id is what was addressed. Letting it through as a clear would be worse than either: the asset would
+        // fall back and the caller would believe the type had been applied.
+        metadata_types::load_on(conn.executor(), id)
+            .await
+            .map_err(|refusal| match refusal {
+                metadata_types::TypeRefusal::UnknownType(id) => {
+                    Failure::Unprocessable(format!("no metadata type {id} exists"))
+                }
+                other => TypeFailure(other).into(),
+            })?;
+    }
+    metadata_types::assign_on(conn.executor(), asset_id, request.metadata_type_id)
+        .await
+        .map_err(TypeFailure)?;
+
+    // The resolved form comes back, because that is what the client has to redraw. A 204 would make the
+    // caller either guess or re-fetch, and guessing is how a form drifts from the schema.
+    let view = resolve_asset_type(conn.executor(), asset_id).await?;
+    conn.commit().await?;
+    Ok(Json(view))
+}
+
+async fn resolve_asset_type(
+    conn: &mut sqlx::PgConnection,
+    asset_id: Uuid,
+) -> Result<AssetTypeView, Failure> {
+    let stored: Option<Option<Uuid>> =
+        sqlx::query_scalar("SELECT metadata_type_id FROM assets WHERE id = $1")
+            .bind(asset_id)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(dam_db::Error::from)?;
+    let Some(stored) = stored else {
+        return Err(Failure::NotFound);
+    };
+
+    let key = match stored {
+        Some(id) => Some(
+            metadata_types::load_on(&mut *conn, id)
+                .await
+                .map_err(TypeFailure)?
+                .key,
+        ),
+        None => None,
+    };
+    let field_keys = metadata_types::fields_for_on(&mut *conn, asset_id)
+        .await
+        .map_err(TypeFailure)?
+        .into_iter()
+        .map(|def| def.key)
+        .collect();
+
+    Ok(AssetTypeView {
+        metadata_type_id: stored,
+        metadata_type_key: key,
+        field_keys,
+    })
+}
+
+fn present_type(kind: metadata_types::MetadataType, assets: i64) -> MetadataTypeRow {
+    MetadataTypeRow {
+        id: kind.id,
+        key: kind.key,
+        label: kind.label,
+        applies_to: kind.applies_to,
+        is_default: kind.is_default,
+        field_keys: kind.field_keys,
+        assets,
+    }
+}
+
+/// Maps a [`metadata_types::TypeRefusal`] onto a status, same split as the field refusals.
+struct TypeFailure(metadata_types::TypeRefusal);
+
+impl From<TypeFailure> for Failure {
+    fn from(TypeFailure(refusal): TypeFailure) -> Self {
+        use metadata_types::TypeRefusal as R;
+        match refusal {
+            R::UnknownType(_) => Self::NotFound,
+            R::DuplicateKey(_) => Self::Conflict(refusal.to_string()),
+            R::UnknownField(_) => Self::Unprocessable(refusal.to_string()),
+            R::Database(error) => error.into(),
         }
     }
 }

@@ -32,6 +32,8 @@ export type PortalDownload = components['schemas']['PortalDownload'];
 export type SchemaField = components['schemas']['SchemaField'];
 export type AmendedField = components['schemas']['AmendedField'];
 export type RemovedField = components['schemas']['RemovedField'];
+export type MetadataTypeRow = components['schemas']['MetadataTypeRow'];
+export type AssetTypeView = components['schemas']['AssetTypeView'];
 
 /** A failed request, with whatever the server said about it. */
 export class ApiError extends Error {
@@ -246,6 +248,62 @@ export async function reorderFields(keys: string[]): Promise<void> {
 		method: 'PUT',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ keys })
+	});
+}
+
+/**
+ * Metadata types: which of the tenant's fields apply to which kind of asset.
+ *
+ * A type is a *selection* over the field vocabulary, not a second vocabulary — so these calls move keys
+ * around rather than defining fields, and a field still belongs to `/schema/fields`.
+ */
+export async function listMetadataTypes(): Promise<MetadataTypeRow[]> {
+	return request<MetadataTypeRow[]>('/schema/types');
+}
+
+export async function defineMetadataType(body: {
+	key: string;
+	label: string;
+	applies_to?: string[];
+	is_default?: boolean;
+	field_keys?: string[];
+}): Promise<MetadataTypeRow> {
+	return request<MetadataTypeRow>('/schema/types', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body)
+	});
+}
+
+/** Amends a type. `field_keys` replaces the whole list, in order. */
+export async function amendMetadataType(
+	id: string,
+	body: { label?: string; applies_to?: string[]; is_default?: boolean; field_keys?: string[] }
+): Promise<MetadataTypeRow> {
+	return request<MetadataTypeRow>(`/schema/types/${id}`, {
+		method: 'PATCH',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body)
+	});
+}
+
+export async function removeMetadataType(id: string): Promise<void> {
+	await request<void>(`/schema/types/${id}`, { method: 'DELETE' });
+}
+
+export async function readAssetType(assetId: string): Promise<AssetTypeView> {
+	return request<AssetTypeView>(`/assets/${assetId}/metadata-type`);
+}
+
+/** Sets or clears an asset's type. `null` clears it, which falls back to the tenant default. */
+export async function setAssetType(
+	assetId: string,
+	metadataTypeId: string | null
+): Promise<AssetTypeView> {
+	return request<AssetTypeView>(`/assets/${assetId}/metadata-type`, {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ metadata_type_id: metadataTypeId })
 	});
 }
 
