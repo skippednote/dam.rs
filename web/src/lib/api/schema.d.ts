@@ -157,6 +157,78 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/share/{token}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resolves a share for viewing. Does not consume a download. */
+        post: operations["portal"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/share/{token}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Consumes one download and mints the URL for it. */
+        post: operations["download"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/shares": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The tenant's share links, newest first. */
+        get: operations["list"];
+        put?: never;
+        /** Shares an asset. */
+        post: operations["create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/shares/{share_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Revokes a share. Takes effect on URLs the share already minted, because the share id is in their
+         *     signatures and delivery re-checks it on every request.
+         */
+        delete: operations["revoke"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -357,6 +429,18 @@ export interface components {
             /** @description Whether the state is final, so a client polls this instead of re-implementing the state vocabulary. */
             terminal: boolean;
         };
+        /** @description A created share. The token appears here and nowhere else, exactly like an issued API key. */
+        CreatedShare: {
+            /** Format: uuid */
+            id: string;
+            /** @description The path a recipient opens, for the client to compose onto its own origin. */
+            portal_path: string;
+            /**
+             * @description The one-time token. The table holds a digest, so a lost link cannot be recovered — revoke and
+             *     re-create, which is the same posture as an API key and for the same reason.
+             */
+            token: string;
+        };
         /** @description One facetable field and its buckets. */
         Facet: {
             buckets: components["schemas"]["Bucket"][];
@@ -431,6 +515,43 @@ export interface components {
          * @enum {string}
          */
         PlacementState: "uploading" | "present" | "transitioning" | "missing" | "corrupt" | "deleting";
+        /** @description The download response. */
+        PortalDownload: {
+            /** Format: int32 */
+            downloads_remaining?: number | null;
+            /** @description A short-lived delivery URL. Fetch it promptly; the token, not this URL, is what the recipient keeps. */
+            url: string;
+        };
+        /**
+         * @description What a recipient sends. POST rather than GET even for the first look, so the passcode travels in a body —
+         *     a passcode in a query string is a passcode in every proxy log on the path.
+         */
+        PortalRequest: {
+            passcode?: string | null;
+        };
+        /** @description What the portal shows. */
+        PortalView: {
+            /** Format: int64 */
+            bytes: number;
+            download_allowed: boolean;
+            /** Format: int32 */
+            downloads_remaining?: number | null;
+            /** Format: date-time */
+            expires_at?: string | null;
+            filename: string;
+            /** Format: int32 */
+            height?: number | null;
+            mime: string;
+            /** @description Why there is no preview, when there is a stateable reason. */
+            preview_unavailable?: string | null;
+            /**
+             * @description A short-lived delivery URL for the web rendition — a full rights-checked distribution, `None` when
+             *     rights refuse or no rendition exists yet. The share existing does not entitle anyone to pixels.
+             */
+            preview_url?: string | null;
+            /** Format: int32 */
+            width?: number | null;
+        };
         /**
          * @description Content-credential verification outcome. Mirrors the `assets.provenance_state` CHECK.
          *
@@ -470,6 +591,41 @@ export interface components {
          * @enum {string}
          */
         RightsState: "allowed" | "expiring" | "denied" | "unknown";
+        /** @description What a client asks for when sharing an asset. */
+        ShareRequest: {
+            /** @description Whether the recipient may fetch the original, rather than only the web rendition. */
+            allow_original?: boolean;
+            /** Format: uuid */
+            asset_id: string;
+            /**
+             * Format: int64
+             * @description Hours until the link stops working. Absent means no expiry — revocation is then the only way it ends.
+             */
+            expires_in_hours?: number | null;
+            /** Format: int32 */
+            max_downloads?: number | null;
+            /** @description Plaintext; hashed with argon2id server-side and never stored or returned. */
+            passcode?: string | null;
+        };
+        /** @description One row in the management list. */
+        ShareRow: {
+            allow_original: boolean;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: int32 */
+            download_count: number;
+            /** Format: date-time */
+            expires_at?: string | null;
+            filename?: string | null;
+            has_passcode: boolean;
+            /** Format: uuid */
+            id: string;
+            /** @description Whether the link still works, so the list does not make a reader re-derive it from four columns. */
+            live: boolean;
+            /** Format: int32 */
+            max_downloads?: number | null;
+            revoked: boolean;
+        };
         /**
          * @description The orders a client may ask for.
          *
@@ -906,6 +1062,204 @@ export interface operations {
                 content?: never;
             };
             /** @description Authenticated, and holds no read scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    portal: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PortalRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PortalView"];
+                };
+            };
+            /** @description A passcode is required or wrong; the body's `reason` says which */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such share — or revoked, expired, exhausted; the body's `reason` says which */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    download: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PortalRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PortalDownload"];
+                };
+            };
+            /** @description A passcode is required or wrong */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Rights refuse distribution of this asset */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such share — or revoked, expired, exhausted */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareRow"][];
+                };
+            };
+            /** @description No usable credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authenticated, and holds no manage scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ShareRequest"];
+            };
+        };
+        responses: {
+            /** @description Created; the token appears here and nowhere else */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreatedShare"];
+                };
+            };
+            /** @description No usable credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authenticated, and holds no manage scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such asset, or not one this caller may manage */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    revoke: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The share */
+                share_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revoked, or already was — revocation is idempotent */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No usable credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authenticated, and holds no manage scope */
             403: {
                 headers: {
                     [name: string]: unknown;

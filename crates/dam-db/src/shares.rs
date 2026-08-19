@@ -125,6 +125,15 @@ pub struct ShareSpec<'a> {
 
 /// Creates a share link and returns its one-time token.
 pub async fn create(pool: &sqlx::PgPool, spec: &ShareSpec<'_>) -> Result<NewShare, Error> {
+    let mut conn = pool.acquire().await?;
+    create_on(&mut conn, spec).await
+}
+
+/// The same creation, on a connection the caller has already scoped — see `bulk::create_on` for why.
+pub async fn create_on(
+    conn: &mut sqlx::PgConnection,
+    spec: &ShareSpec<'_>,
+) -> Result<NewShare, Error> {
     let bytes: [u8; TOKEN_BYTES] = rand::random();
     let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
     let id = Uuid::new_v4();
@@ -151,7 +160,7 @@ pub async fn create(pool: &sqlx::PgPool, spec: &ShareSpec<'_>) -> Result<NewShar
     .bind(spec.allow_original)
     .bind(spec.requires_eula)
     .bind(spec.created_by)
-    .execute(pool)
+    .execute(conn)
     .await?;
 
     Ok(NewShare { token, id })
@@ -256,17 +265,106 @@ pub async fn revoke(
     share_id: Uuid,
     now: DateTime<Utc>,
 ) -> Result<bool, Error> {
+    let mut conn = pool.acquire().await?;
+    revoke_on(&mut conn, share_id, now).await
+}
+
+/// The same revocation, on a scoped connection.
+pub async fn revoke_on(
+    conn: &mut sqlx::PgConnection,
+    share_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<bool, Error> {
     let updated =
         sqlx::query("UPDATE share_links SET revoked_at = $2 WHERE id = $1 AND revoked_at IS NULL")
             .bind(share_id)
             .bind(now)
-            .execute(pool)
+            .execute(conn)
             .await?
             .rows_affected();
     Ok(updated > 0)
 }
 
-/// Whether a share link is still usable, by id.
+/// One share in a management listing, with what the list draws.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listed {
+    pub share: Share,
+    /// The target asset's filename, so a list row says *what* is shared without a join per row in the UI.
+    pub filename: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// The tenant's share links, newest first.
+///
+/// Tokens are digests in the table and never come back out — a share whose link was lost is revoked and
+/// re-created, exactly like an API key. The list is what makes revocation *findable*: a share you cannot see
+/// is a share you cannot revoke.
+pub async fn list_on(conn: &mut sqlx::PgConnection, limit: i64) -> Result<Vec<Listed>, Error> {
+    let rows = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            String,
+            Option<Uuid>,
+            Option<DateTime<Utc>>,
+            Option<i32>,
+            i32,
+            bool,
+            bool,
+            bool,
+            Option<DateTime<Utc>>,
+            Option<String>,
+            DateTime<Utc>,
+        ),
+    >(
+        "SELECT s.id, s.kind, s.target_id, s.expires_at, s.max_downloads, s.download_count, \
+                s.allow_original, s.requires_eula, s.passcode_hash IS NOT NULL, s.revoked_at, \
+                a.filename, s.created_at \
+         FROM share_links s \
+         LEFT JOIN assets a ON a.id = s.target_id \
+         ORDER BY s.created_at DESC LIMIT $1",
+    )
+    .bind(limit)
+    .fetch_all(conn)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(
+                id,
+                kind,
+                target_id,
+                expires_at,
+                max_downloads,
+                download_count,
+                allow_original,
+                requires_eula,
+                has_passcode,
+                revoked_at,
+                filename,
+                created_at,
+            )| Listed {
+                share: Share {
+                    id,
+                    kind,
+                    target_id,
+                    expires_at,
+                    max_downloads,
+                    download_count,
+                    allow_original,
+                    requires_eula,
+                    has_passcode,
+                    revoked_at,
+                },
+                filename,
+                created_at,
+            },
+        )
+        .collect())
+}
+
+/// Whether a share link is still usable, by id./// Whether a share link is still usable, by id.
 ///
 /// What the delivery path calls on every request for a share-issued URL. Cheap on purpose: one indexed
 /// lookup, because it runs before every download and the alternative is revocation that takes effect

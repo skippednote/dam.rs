@@ -15,6 +15,7 @@
 	// clicks until after release.
 	const LINKS = [
 		{ href: resolve('/assets'), label: 'Assets' },
+		{ href: resolve('/shares'), label: 'Shares' },
 		{ href: resolve('/style'), label: 'Style' },
 		{ href: resolve('/settings'), label: 'Settings' }
 	];
@@ -22,29 +23,38 @@
 	function current(href: string): boolean {
 		return page.url.pathname === href || page.url.pathname.startsWith(`${href}/`);
 	}
+	/**
+	 * The portal has no nav: its visitor is an external recipient with no account, and an app chrome saying
+	 * "Not connected" invites them to try to connect to something that was never theirs.
+	 */
+	const portal = $derived(page.url.pathname.startsWith('/share/'));
 </script>
 
-<nav aria-label="Main" class="flex h-12 items-center gap-1 border-b border-line px-4">
-	<a href={resolve('/')} class="mr-3 text-sm font-semibold tracking-tight">damrs</a>
+{#if !portal}
+	<nav aria-label="Main" class="flex h-12 items-center gap-1 border-b border-line px-4">
+		<a href={resolve('/')} class="mr-3 text-sm font-semibold tracking-tight">damrs</a>
 
-	{#each LINKS as link (link.href)}
-		<a
-			href={link.href}
-			aria-current={current(link.href) ? 'page' : undefined}
-			class="rounded-md px-2.5 py-1 text-sm {current(link.href)
-				? 'bg-surface font-medium'
-				: 'text-muted hover:text-fg'}"
-		>
-			{link.label}
-		</a>
-	{/each}
+		{#each LINKS as link (link.href)}
+			<a
+				href={link.href}
+				aria-current={current(link.href) ? 'page' : undefined}
+				class="rounded-md px-2.5 py-1 text-sm {current(link.href)
+					? 'bg-surface font-medium'
+					: 'text-muted hover:text-fg'}"
+			>
+				{link.label}
+			</a>
+		{/each}
 
-	<span class="ml-auto text-xs">
-		{#if session.connected}
-			<!-- The prefix only. It is what an audit log shows, so displaying it discloses nothing new. -->
-			<span class="font-mono text-muted">{session.visible}</span>
-		{:else}
-			<a href={resolve('/settings')} class="text-state-rights-denied-fg underline">Not connected</a>
-		{/if}
-	</span>
-</nav>
+		<span class="ml-auto text-xs">
+			{#if session.connected}
+				<!-- The prefix only. It is what an audit log shows, so displaying it discloses nothing new. -->
+				<span class="font-mono text-muted">{session.visible}</span>
+			{:else}
+				<a href={resolve('/settings')} class="text-state-rights-denied-fg underline"
+					>Not connected</a
+				>
+			{/if}
+		</span>
+	</nav>
+{/if}

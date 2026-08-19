@@ -88,6 +88,10 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
         .merge(crate::bulk::router(crate::bulk::BulkState {
             global: deps.global.clone(),
         }))
+        .merge(crate::shares::router(crate::shares::ShareState {
+            global: deps.global.clone(),
+            delivery: Arc::clone(&delivery),
+        }))
         .layer(DefaultBodyLimit::max(MAX_JSON_BODY));
 
     Router::new()

@@ -1133,7 +1133,19 @@ the grid against sample data; these wire it to the API and make it a thing a per
   the real worker — 25 → 23 live, operation `completed 2/2`, index jobs run.
   *`_on` variants* landed across `dam_db::bulk` so the executor and the API run on tenant-scoped
   connections; the pool versions are now thin wrappers, and the existing suite passed unchanged.
-- [ ] **F.11b Share/portal UI, schema admin, restore UX.** The remaining surfaces.
+- [x] **F.11b·1 Share links, end to end.** The API grew a share surface (`POST/GET /shares`,
+  `DELETE /shares/{id}` under Manage, with the selection filtered through the caller's own scope) and an
+  unauthenticated portal (`POST /share/{token}`, `POST /share/{token}/download`) where the token is the
+  credential: 256 random bits shown once, a BLAKE3 digest stored, passcodes argon2id and carried in the
+  POST body. The portal's preview and download both go through `issue_for_share` — a full Distribution
+  rights check — and the download limit is consumed only after rights pass, atomically. 10 API cases in
+  one driver; 4 portal mutations all caught. The UI: a SharePanel in the detail panel (link shown once,
+  like an API key), a `/shares` management table with revoke, and a public portal page with no app chrome
+  (passcode form on 401, the server's refusal text verbatim, download gated on `download_allowed`).
+  8 e2e cases including axe on both portal states; one real bug caught (`opacity-60` on dead table rows
+  pushed muted text below AA contrast — dimmed by ground instead). Validated against the live stack:
+  create → licensed preview → download (count 0→1) → revoke → the portal says "revoked" immediately.
+- [ ] **F.11b·2 Schema admin and restore UX.** The remaining surfaces.
 
 **The gap the UI runs into, stated plainly:** `dam-worker` has no queue consumer, so nothing generates a
 derivative and nothing finalises an upload into an asset. An upload lands in staging and stops there — the

@@ -10,4 +10,5 @@ pub mod delivery;
 pub mod dto;
 pub mod openapi;
 pub mod search;
+pub mod shares;
 pub mod tus;

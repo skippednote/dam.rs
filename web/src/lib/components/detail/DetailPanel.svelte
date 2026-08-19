@@ -19,6 +19,7 @@
 	import RightsBadge from '$lib/components/state/RightsBadge.svelte';
 	import ProvenanceBadge from '$lib/components/state/ProvenanceBadge.svelte';
 	import MetadataEditor from './MetadataEditor.svelte';
+	import SharePanel from './SharePanel.svelte';
 	import { deliveryUrl } from '$lib/api/client';
 
 	let {
@@ -171,6 +172,8 @@
 		<h3 class="mb-2 text-xs font-semibold tracking-wide text-muted uppercase">Metadata</h3>
 		<MetadataEditor assetId={asset.id} {values} {fields} onsaved={onchanged} />
 	</div>
+
+	<SharePanel assetId={asset.id} />
 
 	{#if Object.keys(technical).length > 0}
 		<details>

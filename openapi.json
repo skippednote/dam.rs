@@ -469,6 +469,203 @@
           }
         }
       }
+    },
+    "/share/{token}": {
+      "post": {
+        "tags": [
+          "shares"
+        ],
+        "summary": "Resolves a share for viewing. Does not consume a download.",
+        "operationId": "portal",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PortalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A passcode is required or wrong; the body's `reason` says which"
+          },
+          "404": {
+            "description": "No such share — or revoked, expired, exhausted; the body's `reason` says which"
+          }
+        }
+      }
+    },
+    "/share/{token}/download": {
+      "post": {
+        "tags": [
+          "shares"
+        ],
+        "summary": "Consumes one download and mints the URL for it.",
+        "operationId": "download",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PortalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalDownload"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A passcode is required or wrong"
+          },
+          "403": {
+            "description": "Rights refuse distribution of this asset"
+          },
+          "404": {
+            "description": "No such share — or revoked, expired, exhausted"
+          }
+        }
+      }
+    },
+    "/shares": {
+      "get": {
+        "tags": [
+          "shares"
+        ],
+        "summary": "The tenant's share links, newest first.",
+        "operationId": "list",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ShareRow"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential"
+          },
+          "403": {
+            "description": "Authenticated, and holds no manage scope"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "shares"
+        ],
+        "summary": "Shares an asset.",
+        "operationId": "create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShareRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created; the token appears here and nowhere else",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedShare"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential"
+          },
+          "403": {
+            "description": "Authenticated, and holds no manage scope"
+          },
+          "404": {
+            "description": "No such asset, or not one this caller may manage"
+          }
+        }
+      }
+    },
+    "/shares/{share_id}": {
+      "delete": {
+        "tags": [
+          "shares"
+        ],
+        "summary": "Revokes a share. Takes effect on URLs the share already minted, because the share id is in their\nsignatures and delivery re-checks it on every request.",
+        "operationId": "revoke",
+        "parameters": [
+          {
+            "name": "share_id",
+            "in": "path",
+            "description": "The share",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Revoked, or already was — revocation is idempotent"
+          },
+          "401": {
+            "description": "No usable credential"
+          },
+          "403": {
+            "description": "Authenticated, and holds no manage scope"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -839,6 +1036,29 @@
           }
         }
       },
+      "CreatedShare": {
+        "type": "object",
+        "description": "A created share. The token appears here and nowhere else, exactly like an issued API key.",
+        "required": [
+          "id",
+          "token",
+          "portal_path"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "portal_path": {
+            "type": "string",
+            "description": "The path a recipient opens, for the client to compose onto its own origin."
+          },
+          "token": {
+            "type": "string",
+            "description": "The one-time token. The table holds a digest, so a lost link cannot be recovered — revoke and\nre-create, which is the same posture as an API key and for the same reason."
+          }
+        }
+      },
       "Facet": {
         "type": "object",
         "description": "One facetable field and its buckets.",
@@ -974,6 +1194,105 @@
           "deleting"
         ]
       },
+      "PortalDownload": {
+        "type": "object",
+        "description": "The download response.",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "downloads_remaining": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "url": {
+            "type": "string",
+            "description": "A short-lived delivery URL. Fetch it promptly; the token, not this URL, is what the recipient keeps."
+          }
+        }
+      },
+      "PortalRequest": {
+        "type": "object",
+        "description": "What a recipient sends. POST rather than GET even for the first look, so the passcode travels in a body —\na passcode in a query string is a passcode in every proxy log on the path.",
+        "properties": {
+          "passcode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "PortalView": {
+        "type": "object",
+        "description": "What the portal shows.",
+        "required": [
+          "filename",
+          "mime",
+          "bytes",
+          "download_allowed"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "download_allowed": {
+            "type": "boolean"
+          },
+          "downloads_remaining": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "height": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "mime": {
+            "type": "string"
+          },
+          "preview_unavailable": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why there is no preview, when there is a stateable reason."
+          },
+          "preview_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A short-lived delivery URL for the web rendition — a full rights-checked distribution, `None` when\nrights refuse or no rendition exists yet. The share existing does not entitle anyone to pixels."
+          },
+          "width": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          }
+        }
+      },
       "ProvenanceState": {
         "type": "string",
         "description": "Content-credential verification outcome. Mirrors the `assets.provenance_state` CHECK.\n\nFour states rather than a boolean because they call for different responses: `None` is a file that\nnever had a credential, `Invalid` is one whose credential no longer matches its bytes, and\n`Untrusted` is an intact credential from a signer outside any trust list. Collapsing them loses\nthe distinction between \"no claim was made\" and \"a claim was made and broken\".",
@@ -1040,6 +1359,105 @@
           "denied",
           "unknown"
         ]
+      },
+      "ShareRequest": {
+        "type": "object",
+        "description": "What a client asks for when sharing an asset.",
+        "required": [
+          "asset_id"
+        ],
+        "properties": {
+          "allow_original": {
+            "type": "boolean",
+            "description": "Whether the recipient may fetch the original, rather than only the web rendition."
+          },
+          "asset_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expires_in_hours": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Hours until the link stops working. Absent means no expiry — revocation is then the only way it ends."
+          },
+          "max_downloads": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "passcode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Plaintext; hashed with argon2id server-side and never stored or returned."
+          }
+        }
+      },
+      "ShareRow": {
+        "type": "object",
+        "description": "One row in the management list.",
+        "required": [
+          "id",
+          "created_at",
+          "download_count",
+          "allow_original",
+          "has_passcode",
+          "revoked",
+          "live"
+        ],
+        "properties": {
+          "allow_original": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "download_count": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "filename": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "has_passcode": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "live": {
+            "type": "boolean",
+            "description": "Whether the link still works, so the list does not make a reader re-derive it from four columns."
+          },
+          "max_downloads": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "revoked": {
+            "type": "boolean"
+          }
+        }
       },
       "SortOrder": {
         "type": "string",

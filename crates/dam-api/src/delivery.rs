@@ -200,6 +200,14 @@ impl DeliveryState {
         self
     }
 
+    /// The pool this state reads through — pinned to the delivery tenant's schema.
+    ///
+    /// Exposed for the share portal, which serves the same single tenant for the same reason delivery does:
+    /// a share token arrives with no tenant attached. Goes away with 3.x, alongside `tenant_id`.
+    pub fn pool(&self) -> &PgPool {
+        &self.global
+    }
+
     /// The current instant, from this state's clock.
     ///
     /// Used by the asset endpoints too, so a preview token is minted against the *same* clock this handler

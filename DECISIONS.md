@@ -1597,3 +1597,29 @@ abandon-on-selection-change effect also read `flow`, making `flow` a dependency 
 re-ran the effect, which saw `confirm` and reset it to `idle` in the same tick. The dialog closed itself, and
 only the e2e caught it. An effect's dependency set is whatever it reads; the comment at the site now says which
 read is the trigger and why the rest are untracked. Reversible: no, it is the fix.
+
+**The share token is shown once and stored as a digest.** The same posture as an API key, for the same reason:
+a table of recoverable tokens is a table of live credentials, and a share list that can re-show links makes
+every reader of that page a holder of every link. A lost link is revoked and re-created. Reversible: no —
+storing recoverable tokens is a one-way weakening.
+
+**The portal discloses why a link is dead.** "Revoked", "expired", "download limit reached" go to the
+recipient verbatim, where the delivery endpoint stays flat. The difference: a delivery URL is an ambient
+string, but a share token was *sent to* the person holding it — they are the intended audience, and "ask the
+sender for a fresh link" is only actionable when the page says which of those it is. Passcode refusals still
+distinguish required from wrong (401 both ways), never whether the token exists with some other flaw.
+Reversible: yes — flatten the reasons any time.
+
+**Portal passcodes travel in the POST body, never the query string.** A passcode in a URL lands in server
+logs, browser history, and Referer headers; the portal's view and download are POSTs so the credential rides
+in the body. The token itself is in the path by necessity — it is the capability being exercised — which is
+why it is high-entropy and revocable rather than secret-plus-identifier. Reversible: no.
+
+**The share's download limit is consumed only after the rights check passes.** A recipient whose download was
+refused for rights has not downloaded anything; a decrement-then-check would spend the limit on refusals and
+exhaust a link that never delivered a byte. The consume is a single atomic UPDATE with the limit in its WHERE,
+so two racing downloads cannot both take the last slot. Reversible: no.
+
+**A share on an EULA-gated asset fails closed on the portal.** `requires_eula` has no portal acceptance flow
+yet, and rendering the file anyway would make the gate decorative. Both view and download refuse until the
+flow exists. Reversible: yes — it becomes a portal acceptance step.

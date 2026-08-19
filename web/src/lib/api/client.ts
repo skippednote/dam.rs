@@ -25,6 +25,10 @@ export type SortOrder = components['schemas']['SortOrder'];
 export type FieldDefinition = components['schemas']['FieldDefinition'];
 export type BulkPreview = components['schemas']['BulkPreview'];
 export type BulkStatus = components['schemas']['BulkStatus'];
+export type CreatedShare = components['schemas']['CreatedShare'];
+export type ShareRow = components['schemas']['ShareRow'];
+export type PortalView = components['schemas']['PortalView'];
+export type PortalDownload = components['schemas']['PortalDownload'];
 
 /** A failed request, with whatever the server said about it. */
 export class ApiError extends Error {
@@ -177,6 +181,62 @@ export async function saveMetadata(
 export function deliveryUrl(url: string): string {
 	if (/^https?:\/\//.test(url)) return url;
 	return `${session.base}${url.startsWith('/') ? '' : '/'}${url}`;
+}
+
+/** Shares an asset. The returned token appears once and is never retrievable again. */
+export async function createShare(body: {
+	asset_id: string;
+	expires_in_hours?: number;
+	max_downloads?: number;
+	passcode?: string;
+	allow_original?: boolean;
+}): Promise<CreatedShare> {
+	return request<CreatedShare>('/shares', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body)
+	});
+}
+
+export async function listShares(): Promise<ShareRow[]> {
+	return request<ShareRow[]>('/shares');
+}
+
+export async function revokeShare(id: string): Promise<void> {
+	await request<void>(`/shares/${id}`, { method: 'DELETE' });
+}
+
+/**
+ * The portal calls, used by the public share page.
+ *
+ * Unauthenticated by design — the token is the credential — so these bypass the session check that
+ * `request` applies: a recipient has no key and must not be told to get one.
+ */
+export async function portalView(token: string, passcode?: string): Promise<PortalView> {
+	return portalCall<PortalView>(`/share/${token}`, passcode);
+}
+
+export async function portalDownload(token: string, passcode?: string): Promise<PortalDownload> {
+	return portalCall<PortalDownload>(`/share/${token}/download`, passcode);
+}
+
+async function portalCall<T>(path: string, passcode?: string): Promise<T> {
+	const response = await fetch(`${session.base}${path}`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(passcode ? { passcode } : {})
+	});
+	if (!response.ok) {
+		let body: unknown;
+		try {
+			body = await response.json();
+		} catch {
+			body = null;
+		}
+		const reason = (body as { reason?: string } | null)?.reason;
+		throw new ApiError(response.status, reason ?? `Request failed (${response.status}).`, body);
+	}
+	return (await response.json()) as T;
 }
 
 /**
