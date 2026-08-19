@@ -110,6 +110,13 @@ async function connect(
 				json: { items: [summary(), summary(OTHER)], total: 2, offset: 0 }
 			});
 		}
+		if (path === '/favourites' || path === '/watches') {
+			// Two rows, with the *second* asset first: the private lists are ordered by when the caller added
+			// each one, and a page that re-sorted would show them the other way round.
+			return route.fulfill({
+				json: { items: [summary(OTHER), summary()], total: 2, offset: 0 }
+			});
+		}
 		if (path === '/fields') {
 			return route.fulfill({ json: [] });
 		}
@@ -353,4 +360,144 @@ test('selecting another asset forgets the first one', async ({ page }) => {
 		'aria-pressed',
 		'false'
 	);
+});
+
+test("the grid star toggles without stealing the grid's single tab stop", async ({ page }) => {
+	const recorder = await connect(page, { initial: engagement() });
+	await page.goto('/assets');
+
+	const star = page.getByRole('button', { name: 'Add harbour.jpg to favourites' });
+	await expect(star).toHaveAttribute('aria-pressed', 'false');
+	// Not in the tab order. The WAI-ARIA grid pattern is one tab stop on the container, and a focusable control
+	// per cell would make tabbing through a page of sixty assets sixty presses.
+	await expect(star).toHaveAttribute('tabindex', '-1');
+
+	await star.click();
+	await expect(
+		page.getByRole('button', { name: 'Remove harbour.jpg from favourites' })
+	).toBeVisible();
+	expect(recorder.writes).toEqual([
+		{ method: 'PUT', path: `/assets/${ASSET}/favourite`, body: null }
+	]);
+});
+
+test('clicking the star does not also select the asset', async ({ page }) => {
+	await connect(page, { initial: engagement() });
+	await page.goto('/assets');
+
+	await page.getByRole('button', { name: 'Add harbour.jpg to favourites' }).click();
+	// Without `stopPropagation` the click reaches the cell, which selects it and opens the panel — so a star
+	// press would silently do two things.
+	await expect(page.getByRole('region', { name: 'Ratings and favourites' })).toHaveCount(0);
+});
+
+test('f on the focused cell favourites it, and says so', async ({ page }) => {
+	const recorder = await connect(page, { initial: engagement() });
+	await page.goto('/assets');
+
+	// `focus()` rather than `click()`, as the grid's other keyboard cases do: a click also selects the asset and
+	// opens the detail panel, which moves focus out of the cell before the key arrives.
+	await page.getByRole('gridcell').first().focus();
+	await page.keyboard.press('f');
+
+	// The visible end state *first*, then the recorder. Reading the recorder on the line after a keypress races
+	// the fetch it triggers — the same flake this suite's bulk cases had, and it fails about as often as it
+	// passes depending on machine load.
+	//
+	// Announced because focus stays on the cell: nothing the user is focused on changed state, so a silent
+	// toggle would be indistinguishable from one that did nothing.
+	await expect(
+		page.getByRole('status').filter({ hasText: 'added to your favourites' })
+	).toBeAttached();
+	expect(recorder.writes).toEqual([
+		{ method: 'PUT', path: `/assets/${ASSET}/favourite`, body: null }
+	]);
+});
+
+test('ctrl+f is left to the browser', async ({ page }) => {
+	const recorder = await connect(page, { initial: engagement() });
+	await page.goto('/assets');
+
+	await page.getByRole('gridcell').first().focus();
+	await page.keyboard.press('Control+f');
+
+	// Then a plain `f`, and wait for *that* to land. Asserting an empty recorder straight after ctrl+f would
+	// pass whether the modifier was respected or the request was merely slow — so the plain press is what proves
+	// the absence was about the modifier and not about timing.
+	await page.keyboard.press('f');
+	await expect(
+		page.getByRole('status').filter({ hasText: 'added to your favourites' })
+	).toBeAttached();
+
+	// Find-in-page is a far more important key than this one, and stealing it would be a worse bug than not
+	// having the shortcut at all.
+	expect(recorder.writes).toHaveLength(1);
+});
+
+test('the favourites page shows the list in the order it was built', async ({ page }) => {
+	await connect(page, { initial: engagement() });
+	await page.goto('/favourites');
+
+	await expect(page.getByRole('heading', { name: 'Favourites', level: 1 })).toBeVisible();
+	// The count line, not the explanation above it — both say "most recently added first", because the page
+	// explains the order and then labels it.
+	await expect(page.getByText(/2\s+assets · most recently added first/)).toBeVisible();
+
+	// The server's order, not re-sorted: `quay.jpg` is second in the library and first here.
+	// By testid, not by class: `span.font-medium` also matched the rights badge, so the assertion was reading
+	// ['quay.jpg', '✓ Cleared'] and passing for the wrong reason would have been a matter of luck.
+	const names = await page.getByTestId('cell-filename').allTextContents();
+	expect(names.map((name) => name.trim())).toEqual(['quay.jpg', 'harbour.jpg']);
+});
+
+test('removing from the favourites page takes the row away', async ({ page }) => {
+	const recorder = await connect(page, { initial: engagement({ is_favourite: true }) });
+	await page.goto('/favourites');
+
+	await page
+		.getByRole('button', { name: /from favourites/ })
+		.first()
+		.click();
+	// The row *is* its membership here, unlike on the browse page where a star just toggles.
+	await expect(page.getByTestId('cell-filename')).toHaveCount(1);
+	expect(recorder.writes.map((w) => w.method)).toEqual(['DELETE']);
+	await expect(
+		page.getByRole('status').filter({ hasText: 'removed from your favourites' })
+	).toBeAttached();
+});
+
+test('the watching page is honest that nothing is sent yet', async ({ page }) => {
+	await connect(page, { initial: engagement() });
+	await page.goto('/watches');
+
+	await expect(page.getByRole('heading', { name: 'Watching', level: 1 })).toBeVisible();
+	// A list of things you are "watching" with nothing ever arriving is worse than saying so.
+	await expect(page.getByText('Notifications are not switched on yet')).toBeVisible();
+	await expect(page.getByText('Nobody is told how many people watch an asset')).toBeVisible();
+});
+
+test('both private lists are reachable from the nav', async ({ page }) => {
+	await connect(page, { initial: engagement() });
+	await page.goto('/assets');
+
+	const nav = page.getByRole('navigation', { name: 'Main' });
+	await nav.getByRole('link', { name: 'Favourites' }).click();
+	await expect(page.getByRole('heading', { name: 'Favourites', level: 1 })).toBeVisible();
+	// `aria-current`, so a screen-reader user is told where they are and not only shown it.
+	await expect(nav.getByRole('link', { name: 'Favourites' })).toHaveAttribute(
+		'aria-current',
+		'page'
+	);
+
+	await nav.getByRole('link', { name: 'Watching' }).click();
+	await expect(page.getByRole('heading', { name: 'Watching', level: 1 })).toBeVisible();
+});
+
+test('the private lists have no accessibility violations', async ({ page }) => {
+	await connect(page, { initial: engagement({ is_favourite: true, average_stars: 4.5 }) });
+	await page.goto('/favourites');
+	await expect(page.getByRole('gridcell').first()).toBeVisible();
+
+	const results = await new AxeBuilder({ page }).withTags(WCAG_21_AA).analyze();
+	expect(results.violations).toEqual([]);
 });

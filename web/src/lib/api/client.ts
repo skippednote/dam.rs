@@ -329,7 +329,12 @@ export async function setWatch(assetId: string, on: boolean): Promise<Engagement
 	return request<Engagement>(`/assets/${assetId}/watch`, { method: on ? 'PUT' : 'DELETE' });
 }
 
-/** The caller's own favourites, newest first. Ids only — the grid fetches the assets it draws. */
+/**
+ * The caller's own favourites, in the order they added them.
+ *
+ * Whole assets rather than ids: there is no endpoint that fetches assets by id set, so ids would have meant one
+ * request per row. The page shape matches browse and search, so the same grid renders it.
+ */
 export async function listFavourites(limit = 50, offset = 0): Promise<EngagementList> {
 	return request<EngagementList>(`/favourites?limit=${limit}&offset=${offset}`);
 }

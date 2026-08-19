@@ -15,6 +15,10 @@
 	// clicks until after release.
 	const LINKS = [
 		{ href: resolve('/assets'), label: 'Assets' },
+		// The two private lists sit next to Assets because that is what they are — the library, filtered to what
+		// this person marked. Further from Assets they would read as separate features rather than as views of it.
+		{ href: resolve('/favourites'), label: 'Favourites' },
+		{ href: resolve('/watches'), label: 'Watching' },
 		{ href: resolve('/shares'), label: 'Shares' },
 		{ href: resolve('/schema'), label: 'Schema' },
 		{ href: resolve('/style'), label: 'Style' },

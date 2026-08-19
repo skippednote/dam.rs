@@ -26,14 +26,14 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M0–M3c** Foundation, ingest, metadata/search/rights, delivery/sharing/restore | complete |
 | **F** The UI: browse, detail, upload, filter rail, lightbox, bulk bar, design pass | complete |
 | **F.11b** Share/portal UI, schema administration, metadata types | complete except restore UX |
-| **Q** Acquia parity, 20 slices | Q.1–Q.4 done; Q.5a–Q.5c·1 done; Q.5c·2–Q.20 open |
+| **Q** Acquia parity, 20 slices | Q.1–Q.5 done; Q.6–Q.20 open |
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | schema exists, behaviour unwritten |
 | **M6** Workflow/proofing, annotations, analytics | not started |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** Q.5c·2 grid star and private lists
+**Next up, in order:** Q.6 comments
 → Q.6 comments → Q.7 activity feed → Q.8 versions → Q.9 attachments → Q.10 history → Q.11 conversions →
 Q.12 intended use → Q.13 orders → Q.14 portals → Q.15–Q.19 search → Q.20 sundries → M4 → M5 → M6 → M3d →
 Pre-GA → Entries.
@@ -1703,8 +1703,27 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
       sharing with it. The mocks are updated and the panel now hides itself rather than crashing, because absent
       and "nobody has rated this" are different facts.
 
-- [ ] **Q.5c·2 The grid star and the two private lists.** A favourite toggle on the card that keeps the ARIA grid's
-  single tab stop, `/favourites` and `/watches` as places you can navigate to, and nav links to them.
+- [x] **Q.5c·2 The grid star and the two private lists.** A star on each cell with `tabindex="-1"`, so the grid
+      keeps exactly one tab stop — the WAI-ARIA grid pattern allows a widget in a cell and reaches it through the
+      container's key handling, which is what `f` on the focused cell is for. Without that key the star would be
+      mouse-only, the same asymmetry the uploader's drop target once had; and because focus stays on the cell, the
+      change is announced or it would be silent. `ctrl+f` is left to the browser. `/favourites` and `/watches` are
+      real routes with nav links, sharing one component because they differ only in copy and endpoint.
+
+      **The `ListPage` shape from Q.5b·1 was wrong and is corrected here.** It returned ids, reasoning that a grid
+      already knows how to render a set of assets — but no endpoint fetches assets *by id set*, so a client holding
+      fifty ids had fifty requests to make. It now returns the same `AssetPage` browse and search return, hydrated
+      in the order the caller added each one, which is the order no other endpoint can produce and the reason these
+      routes exist rather than `?q=is:favourite`.
+
+      Four real problems surfaced. A `$effect` reading a prop **re-ran when the object was replaced even though the
+      id was identical**, so patching the open asset after a grid toggle threw away the server's answer and the
+      sentence describing it — fixed by comparing the id rather than merely reading it. An e2e assertion read the
+      request recorder on the line after a keypress, **the same race this suite already had once**; the fix is the
+      same, await the visible end state first. A `span.font-medium` selector matched the rights badge as well as
+      the filename, so an order assertion was comparing against `'✓ Cleared'`. And the star's `aria-label` carries
+      its filename, which collided with an existing loose `getByLabel('Campaign')` — the locator was always
+      imprecise and the label made it ambiguous.
 - [ ] **Cleanup: `Caller::identity_id` is `Option` but `authorize` guarantees `Some`.** Three call sites re-check
   it (`assets.rs`, `tus.rs`, `engagement.rs`), each with a different refusal, and one of them is unreachable code
   that looks load-bearing. Narrowing the type touches every handler, so it is its own change.

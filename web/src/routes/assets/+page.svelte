@@ -34,8 +34,11 @@
 		loadFacets,
 		loadFields,
 		searchAssets,
+		setFavourite,
 		type AssetDetail,
 		type AssetPage,
+		type AssetSummary,
+		type Engagement,
 		type Facet,
 		type FieldDefinition,
 		type SortOrder
@@ -61,6 +64,14 @@
 	/** The grid's selection, as it reports it. Lives in the grid; this is the read model. */
 	let selection = $state<string[]>([]);
 	let grid = $state<{ clearSelection: () => void } | null>(null);
+	/**
+	 * What the last favourite toggle did, announced.
+	 *
+	 * The grid's star is not a tab stop, so a keyboard user reaches it with `f` while focus stays on the cell —
+	 * which means nothing they are focused on changes state visibly to a screen reader. Without an announcement
+	 * the key would be silent, and a silent toggle is indistinguishable from one that did nothing.
+	 */
+	let engagementNotice = $state('');
 
 	/** Discards a stale response, so a fast second search cannot be overwritten by a slow first one. */
 	let generation = 0;
@@ -116,6 +127,55 @@
 			selected = await getAsset(id);
 		} catch (caught) {
 			error = caught instanceof Error ? caught.message : 'Could not open that asset.';
+		}
+	}
+
+	/**
+	 * Toggles a favourite from the grid, and updates the one row it changed.
+	 *
+	 * The row is patched in place rather than reloading the page: a reload would lose the scroll position of a
+	 * virtualised grid and re-run the search, both to redraw one star. The server's answer is what is written,
+	 * so the star cannot disagree with what was stored.
+	 */
+	async function favourite(asset: AssetSummary) {
+		const wanted = !asset.is_favourite;
+		try {
+			const after = await setFavourite(asset.id, wanted);
+			patchRow(asset.id, after);
+			engagementNotice = after.is_favourite
+				? `${asset.filename} added to your favourites.`
+				: `${asset.filename} removed from your favourites.`;
+		} catch (caught) {
+			// Into the same region a success uses: a failure that only appeared in the page-level error banner
+			// would be announced somewhere the user's focus is not.
+			engagementNotice =
+				caught instanceof Error
+					? `Could not change ${asset.filename}: ${caught.message}`
+					: `Could not change ${asset.filename}.`;
+		}
+	}
+
+	/** Writes one asset's engagement into the loaded page and, if it is open, into the detail panel. */
+	function patchRow(id: string, after: Engagement) {
+		if (result) {
+			result = {
+				...result,
+				items: result.items.map((item) =>
+					item.id === id
+						? { ...item, is_favourite: after.is_favourite, average_stars: after.average_stars }
+						: item
+				)
+			};
+		}
+		// The panel too, when it is showing the same asset — otherwise the grid's star and the panel's toggle
+		// would disagree until something else reloaded one of them.
+		if (selected?.id === id) {
+			selected = {
+				...selected,
+				engagement: after,
+				is_favourite: after.is_favourite,
+				average_stars: after.average_stars
+			};
 		}
 	}
 
@@ -263,6 +323,12 @@
 
 		<div class="min-w-0 flex-1 overflow-hidden p-4">
 			{#if result}
+				<!--
+					The star's own announcement, separate from the result count above: they change for unrelated
+					reasons, and one region holding both would re-announce the count every time somebody
+					favourited something.
+				-->
+				<p role="status" aria-live="polite" class="sr-only">{engagementNotice}</p>
 				<p class="mb-2 text-xs text-muted" aria-live="polite">
 					{result.total}
 					{result.total === 1 ? 'asset' : 'assets'}
@@ -292,6 +358,7 @@
 					onactivate={(asset) => {
 						void open(asset.id).then(() => (lightbox = true));
 					}}
+					onfavourite={favourite}
 				/>
 				<BulkBar
 					assetIds={selection}
@@ -326,6 +393,7 @@
 					onchanged={(values) => {
 						if (selected) selected = { ...selected, values };
 					}}
+					onengagement={(after) => patchRow(after.asset_id, after)}
 					onclose={() => (selected = null)}
 				/>
 			</aside>

@@ -31,6 +31,7 @@
 		rowHeight = 160,
 		onactivate,
 		onselect,
+		onfavourite,
 		thumbnail: thumbnailProp
 	}: {
 		items: AssetSummary[];
@@ -50,6 +51,14 @@
 		 * shift-range over 40,000 assets makes O(n).
 		 */
 		onselect?: (asset: AssetSummary, ids: string[]) => void;
+		/**
+		 * A request to toggle the asset's favourite state — from the star, or from `f` on the focused cell.
+		 *
+		 * Reported rather than performed: the grid is also the Drupal picker, and a component that called the
+		 * engagement API would carry a dependency the picker has no use for. The page owns the write, and the
+		 * page is what announces the outcome.
+		 */
+		onfavourite?: (asset: AssetSummary) => void;
 		/**
 		 * Resolves a thumbnail URL the server may have sent root-relative.
 		 *
@@ -138,6 +147,18 @@
 				event.preventDefault();
 				select(focused, { toggle: event.key === ' ', range: event.shiftKey });
 				if (event.key === 'Enter') onactivate?.(items[focused]);
+				return;
+			case 'f':
+			case 'F':
+				// Handled here rather than on the star itself, because the WAI-ARIA grid pattern puts key
+				// handling on the container and the grid keeps exactly one tab stop. Without this the star
+				// would be mouse-only — the same keyboard/mouse asymmetry the uploader's drop target had.
+				//
+				// Modifier-free only: ctrl+F and cmd+F are the browser's find, and stealing those would break a
+				// far more important key than this one.
+				if (event.ctrlKey || event.metaKey || event.altKey) return;
+				event.preventDefault();
+				if (items[focused]) onfavourite?.(items[focused]);
 				return;
 			default:
 				return;
@@ -302,10 +323,52 @@
 										{asset.tier === 'archive' ? 'archived' : 'processing'}
 									</div>
 								{/if}
-								<span class="truncate font-medium">{asset.filename}</span>
-								<span class="flex flex-wrap gap-1">
+								<span class="flex min-w-0 items-center gap-1">
+									<span data-testid="cell-filename" class="min-w-0 flex-1 truncate font-medium">
+										{asset.filename}
+									</span>
+									<!--
+										`tabindex="-1"`, so the grid keeps exactly one tab stop — the WAI-ARIA grid pattern
+										allows a widget inside a cell and reaches it through the container's key handling,
+										which is what `f` above is. It stays in the accessibility tree, so a screen reader
+										browsing the cell finds and can operate it; it is simply not in the tab order.
+
+										`stopPropagation`, because a click here is not a click on the cell: without it,
+										favouriting would also change the selection and open the detail panel.
+									-->
+									<button
+										type="button"
+										tabindex="-1"
+										aria-pressed={asset.is_favourite}
+										aria-label={asset.is_favourite
+											? `Remove ${asset.filename} from favourites`
+											: `Add ${asset.filename} to favourites`}
+										onclick={(event) => {
+											event.stopPropagation();
+											onfavourite?.(asset);
+										}}
+										class="shrink-0 rounded px-1 text-sm leading-none
+										       {asset.is_favourite ? 'text-accent' : 'text-muted hover:text-fg'}"
+									>
+										{asset.is_favourite ? '★' : '☆'}
+									</button>
+								</span>
+								<span class="flex flex-wrap items-center gap-1">
 									<TierBadge tier={asset.tier} />
 									<RightsBadge state={asset.rights_state} />
+									{#if asset.average_stars !== null && asset.average_stars !== undefined}
+										<!--
+											The library's average, as a number rather than five glyphs: a cell has no room for
+											a star widget, and "4.2" is both smaller and more precise than four-and-a-bit
+											stars drawn at this size.
+										-->
+										<span
+											class="rounded bg-raised px-1 text-[10px] text-muted tabular-nums"
+											title="Average rating"
+										>
+											★ {asset.average_stars.toFixed(1)}
+										</span>
+									{/if}
 								</span>
 							</div>
 						{:else}

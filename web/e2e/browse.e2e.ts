@@ -386,7 +386,12 @@ test('a rejected field shows its error next to that field', async ({ page }) => 
 	await page.goto('/assets');
 	await page.getByRole('gridcell').first().click();
 
-	const campaign = page.getByLabel('Campaign');
+	// Scoped to the panel: `getByLabel` matches substrings, and the grid's favourite stars are labelled with
+	// their filename — `campaign-0000.jpg` — so an unscoped 'Campaign' now matches sixty buttons as well as the
+	// field. The locator was always loose; the star made it ambiguous.
+	const campaign = page
+		.getByRole('complementary', { name: 'Selected asset' })
+		.getByLabel('Campaign');
 	await campaign.fill('');
 	await page.getByRole('button', { name: 'Save' }).click();
 

@@ -298,6 +298,67 @@ async fn the_engagement_http_contract_holds() {
     engagement_reaches_the_grid_and_the_panel_in_one_request(&f, visible).await;
     favourites_first_puts_them_first_and_leaves_the_rest_alone(&f).await;
     a_ranked_search_result_carries_engagement_too(&f, visible).await;
+    a_private_list_is_ordered_by_when_the_caller_added_each_one(&f).await;
+}
+
+async fn a_private_list_is_ordered_by_when_the_caller_added_each_one(f: &Fixture) {
+    // The reason this endpoint exists rather than `/search?q=is:favourite`: search orders by upload recency, and
+    // a private list is legible in the order the person built it. Favourited *oldest asset first*, so the two
+    // orders disagree and only one of them can be right.
+    let older = asset(f, "list-order-older", true).await;
+    let newer = asset(f, "list-order-newer", true).await;
+
+    // Grace, so the fixtures the other cases left behind do not crowd the assertion.
+    call(
+        f,
+        "PUT",
+        &format!("/assets/{newer}/favourite"),
+        &f.other_key,
+        None,
+    )
+    .await;
+    call(
+        f,
+        "PUT",
+        &format!("/assets/{older}/favourite"),
+        &f.other_key,
+        None,
+    )
+    .await;
+
+    let (status, body) = call(f, "GET", "/favourites", &f.other_key, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let ids: Vec<String> = body["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .map(|item| item["id"].as_str().expect("id").to_owned())
+        .collect();
+    assert_eq!(
+        ids,
+        vec![older.to_string(), newer.to_string()],
+        "the list is not in the order they were added: {body}"
+    );
+
+    // And search really does disagree, which is what makes the ordering a decision rather than a coincidence.
+    let (_, searched) = call(
+        f,
+        "GET",
+        &format!("/search?q={}", encode("is:favourite")),
+        &f.other_key,
+        None,
+    )
+    .await;
+    let search_ids: Vec<String> = searched["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .map(|item| item["id"].as_str().expect("id").to_owned())
+        .collect();
+    assert_ne!(
+        search_ids, ids,
+        "search happens to agree, so this case proves nothing: {searched}"
+    );
 }
 
 async fn a_ranked_search_result_carries_engagement_too(f: &Fixture, visible: Uuid) {
@@ -723,17 +784,18 @@ async fn the_private_lists_are_the_callers_own(f: &Fixture, visible: Uuid) {
     let (status, body) = call(f, "GET", "/favourites", &f.key, None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["total"], json!(1), "{body}");
-    assert_eq!(
-        body["asset_ids"],
-        json!([visible.to_string()]),
-        "ids, not whole assets — the grid already knows how to render those: {body}"
-    );
+    // Whole assets, not ids: there is no endpoint that fetches assets by id set, so ids would have meant one
+    // request per row. And in the order the caller added them, which no other endpoint can produce.
+    assert_eq!(body["items"].as_array().map(Vec::len), Some(1), "{body}");
+    assert_eq!(body["items"][0]["id"], json!(visible.to_string()), "{body}");
+    // Engagement is folded in, so the page renders with the same component the grid uses.
+    assert_eq!(body["items"][0]["is_favourite"], json!(true), "{body}");
 
     // Grace favourited nothing, so her list is empty even though Ada's is not.
     let (status, body) = call(f, "GET", "/favourites", &f.other_key, None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["total"], json!(0), "{body}");
-    assert_eq!(body["asset_ids"], json!([]), "{body}");
+    assert_eq!(body["items"], json!([]), "{body}");
 
     // Watches are a different list, and made *observably* different: a second asset is watched but not
     // favourited, so the two lists cannot be confused for one another. With both holding the same single id, the
@@ -750,7 +812,12 @@ async fn the_private_lists_are_the_callers_own(f: &Fixture, visible: Uuid) {
     assert_eq!(status, StatusCode::OK, "{body}");
 
     let (_, body) = call(f, "GET", "/watches", &f.key, None).await;
-    let watches = body["asset_ids"].as_array().expect("array").clone();
+    let watches: Vec<Value> = body["items"]
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|item| item["id"].clone())
+        .collect();
     assert!(
         watches.contains(&json!(watched_only.to_string())),
         "the watch list is missing the watched asset: {body}"
@@ -758,7 +825,12 @@ async fn the_private_lists_are_the_callers_own(f: &Fixture, visible: Uuid) {
     assert_eq!(body["total"], json!(2), "{body}");
 
     let (_, body) = call(f, "GET", "/favourites", &f.key, None).await;
-    let favourites = body["asset_ids"].as_array().expect("array").clone();
+    let favourites: Vec<Value> = body["items"]
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|item| item["id"].clone())
+        .collect();
     assert!(
         !favourites.contains(&json!(watched_only.to_string())),
         "watching something added it to the favourites list: {body}"
@@ -789,16 +861,16 @@ async fn a_scoped_caller_sees_only_what_they_may(f: &Fixture, visible: Uuid, hid
     );
 
     let (_, body) = call(f, "GET", "/favourites", &f.scoped_key, None).await;
+    let ids: Vec<Value> = body["items"]
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|item| item["id"].clone())
+        .collect();
     assert_eq!(
-        body["asset_ids"],
-        json!([visible.to_string()]),
+        ids,
+        vec![json!(visible.to_string())],
         "only the reachable one: {body}"
     );
-    assert!(
-        !body["asset_ids"]
-            .as_array()
-            .expect("array")
-            .contains(&json!(hidden.to_string())),
-        "{body}"
-    );
+    assert!(!ids.contains(&json!(hidden.to_string())), "{body}");
 }

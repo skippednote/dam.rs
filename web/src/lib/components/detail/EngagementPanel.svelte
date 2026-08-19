@@ -72,13 +72,35 @@
 	const STARS = [1, 2, 3, 4, 5];
 
 	/**
-	 * Forgets this panel's own state when the selected asset changes.
+	 * The asset this panel's own state belongs to, once the effect below has seen one.
 	 *
-	 * `assetId` is the only tracked read. Everything else the body writes it also reads, and tracking those would
-	 * make each write re-run the effect — the trap the category panel and the bulk bar both hit.
+	 * A plain variable rather than `$state`, deliberately: it is bookkeeping for that effect and nothing renders
+	 * from it, so making it reactive would only give the effect a second reason to run. `null` until the first run
+	 * rather than seeded from the prop, because reading a prop in an initialiser captures only its first value —
+	 * true here and harmless, but the compiler cannot tell the difference and the warning would be noise forever.
+	 */
+	let shownFor: string | null = null;
+
+	/**
+	 * Forgets this panel's own state when the selected asset changes — and *only* then.
+	 *
+	 * The id is compared rather than merely read. A prop read is a signal subscription, so replacing the asset
+	 * object at all re-ran this effect even though the id was identical — and the page does replace it, because a
+	 * favourite from the grid patches the open asset. The result was that the server's answer and the sentence
+	 * describing it were both thrown away immediately after arriving.
+	 *
+	 * Everything else the body writes it also reads, hence `untrack` — the trap the category panel and the bulk
+	 * bar both hit.
 	 */
 	$effect(() => {
-		void assetId;
+		const id = assetId;
+		// The first run has nothing to forget: the panel is drawing the asset it was created for.
+		if (shownFor === null) {
+			shownFor = id;
+			return;
+		}
+		if (id === shownFor) return;
+		shownFor = id;
 		untrack(() => {
 			override = null;
 			error = '';

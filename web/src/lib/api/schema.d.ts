@@ -1074,13 +1074,25 @@ export interface components {
          * @enum {string}
          */
         LatencyClass: "instant" | "seconds" | "minutes" | "hours" | "days";
-        /** @description A page of the caller's own favourites or watches. */
+        /**
+         * @description A page of the caller's own favourites or watches.
+         *
+         *     Whole assets, not ids. Ids were the first shape here, on the reasoning that a grid already knows how to render
+         *     a set of assets — but there is no endpoint that fetches assets *by id set*, so a client holding fifty ids had
+         *     fifty requests to make. Returning the same `AssetPage` the browse and search endpoints return means one
+         *     request and one renderer, which is what the ids were supposed to achieve.
+         */
         ListPage: {
             /**
-             * @description Asset ids, newest first. Ids rather than whole assets: the grid already knows how to fetch and render a
-             *     set of assets, and duplicating that shape here would be a second asset serialiser to keep in step.
+             * @description Ordered by when *this caller* added each one, newest first — which is the order that makes a private list
+             *     legible, and is not the order any other endpoint can produce.
              */
-            asset_ids: string[];
+            items: components["schemas"]["AssetSummary"][];
+            /**
+             * Format: int64
+             * @description Zero-based index of the first item within the full list.
+             */
+            offset: number;
             /**
              * Format: int64
              * @description How many the caller has *and can still see* — the same predicate the page came from.

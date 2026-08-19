@@ -2939,19 +2939,24 @@
       },
       "ListPage": {
         "type": "object",
-        "description": "A page of the caller's own favourites or watches.",
+        "description": "A page of the caller's own favourites or watches.\n\nWhole assets, not ids. Ids were the first shape here, on the reasoning that a grid already knows how to render\na set of assets — but there is no endpoint that fetches assets *by id set*, so a client holding fifty ids had\nfifty requests to make. Returning the same `AssetPage` the browse and search endpoints return means one\nrequest and one renderer, which is what the ids were supposed to achieve.",
         "required": [
-          "asset_ids",
-          "total"
+          "items",
+          "total",
+          "offset"
         ],
         "properties": {
-          "asset_ids": {
+          "items": {
             "type": "array",
             "items": {
-              "type": "string",
-              "format": "uuid"
+              "$ref": "#/components/schemas/AssetSummary"
             },
-            "description": "Asset ids, newest first. Ids rather than whole assets: the grid already knows how to fetch and render a\nset of assets, and duplicating that shape here would be a second asset serialiser to keep in step."
+            "description": "Ordered by when *this caller* added each one, newest first — which is the order that makes a private list\nlegible, and is not the order any other endpoint can produce."
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Zero-based index of the first item within the full list."
           },
           "total": {
             "type": "integer",

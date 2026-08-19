@@ -1958,3 +1958,19 @@ every star click would have to reindex the asset, and a rating that silently mad
 query that goes to SQL and reports `ranked: false`. Revisit if rating-sorted search becomes a real requirement.
 Reversible: yes.
 
+**The private lists return whole assets, not ids.** The first shape was ids plus a total, on the reasoning that a
+grid already knows how to render a set of assets and a second asset serialiser would be a thing to keep in step.
+That was wrong: there is no endpoint that fetches assets *by id set*, so a client holding fifty ids had fifty
+requests to make. They now return the same `AssetPage` shape browse and search return, hydrated per id in the
+order `engagement::mine` gave — because that order, when the caller added each one, is the whole reason the
+routes exist rather than `?q=is:favourite`, which orders by upload recency. Reversible: no.
+
+**The grid's favourite star is not a tab stop, and `f` is why that is acceptable.** The WAI-ARIA grid pattern puts
+key handling on the container and keeps one tab stop; a focusable control per cell would make tabbing a page of
+sixty assets sixty presses. So the star carries `tabindex="-1"` — still in the accessibility tree, so a screen
+reader browsing the cell finds and operates it — and `f` on the focused cell is the keyboard route. Without the
+key the control would be mouse-only, which is the same keyboard/mouse asymmetry the uploader's drop target had.
+Because focus stays on the cell, the outcome goes to a live region: nothing the user is focused on changes state,
+so a silent toggle is indistinguishable from one that did nothing. `ctrl+f` and `cmd+f` are explicitly excluded —
+find-in-page is a more important key than this one. Reversible: yes.
+

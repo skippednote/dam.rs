@@ -104,13 +104,20 @@ fn default_limit() -> i64 {
 }
 
 /// A page of the caller's own favourites or watches.
+///
+/// Whole assets, not ids. Ids were the first shape here, on the reasoning that a grid already knows how to render
+/// a set of assets — but there is no endpoint that fetches assets *by id set*, so a client holding fifty ids had
+/// fifty requests to make. Returning the same `AssetPage` the browse and search endpoints return means one
+/// request and one renderer, which is what the ids were supposed to achieve.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ListPage {
-    /// Asset ids, newest first. Ids rather than whole assets: the grid already knows how to fetch and render a
-    /// set of assets, and duplicating that shape here would be a second asset serialiser to keep in step.
-    pub asset_ids: Vec<Uuid>,
+    /// Ordered by when *this caller* added each one, newest first — which is the order that makes a private list
+    /// legible, and is not the order any other endpoint can produce.
+    pub items: Vec<crate::dto::AssetSummary>,
     /// How many the caller has *and can still see* — the same predicate the page came from.
     pub total: i64,
+    /// Zero-based index of the first item within the full list.
+    pub offset: i64,
 }
 
 /// Sets the caller's rating.
@@ -351,8 +358,28 @@ async fn read_list(
     )
     .await
     .map_err(Refused)?;
+
+    // Hydrated in the order the list gave, which is the order the caller added them — so a per-id read rather
+    // than one set query, exactly as the ranked search path does and for the same reason: a set query returns
+    // rows in whatever order it likes, and the order *is* the answer here.
+    let engaged = crate::assets::page_engagement(&caller, conn.executor(), &asset_ids).await?;
+    let mut items = Vec::with_capacity(asset_ids.len());
+    for asset_id in &asset_ids {
+        if let Some(found) =
+            dam_db::assets::detail(conn.executor(), &caller.predicate, *asset_id).await?
+        {
+            items.push(crate::assets::summary_with_engagement(
+                &found.summary,
+                &engaged,
+            ));
+        }
+    }
     conn.commit().await?;
-    Ok(Json(ListPage { asset_ids, total }))
+    Ok(Json(ListPage {
+        items,
+        total,
+        offset: page.offset.max(0),
+    }))
 }
 
 /// The person behind the key.
