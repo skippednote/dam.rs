@@ -160,6 +160,43 @@ async fn a_staged_upload_becomes_an_asset(f: &Fixture) {
     .await
     .expect("define image type");
 
+    // A field for the profile to default, and a *second* metadata type the profile names — so "the profile's
+    // choice wins over the mime's class" is observable rather than coincidental. Without the second type both
+    // paths would pick `image` and the precedence would be untested.
+    sqlx::query(
+        "INSERT INTO field_defs (id, key, label, kind, display_order) \
+         VALUES (gen_random_uuid(), 'credit', 'Credit', 'text', 1) ON CONFLICT (key) DO NOTHING",
+    )
+    .execute(&f.tenant)
+    .await
+    .expect("field");
+    let press_type = dam_db::metadata_types::define(
+        &f.tenant,
+        dam_db::metadata_types::NewType {
+            key: "press".to_owned(),
+            label: "Press".to_owned(),
+            applies_to: vec![],
+            is_default: false,
+            field_keys: vec!["credit".to_owned()],
+        },
+    )
+    .await
+    .expect("define press type");
+    let profile = dam_db::upload_profiles::create(
+        &f.tenant,
+        dam_db::upload_profiles::NewProfile {
+            key: "press".to_owned(),
+            label: "Press delivery".to_owned(),
+            metadata_type_id: Some(press_type.id),
+            defaults: serde_json::json!({ "credit": "Acme Press Office" }),
+            require_complete: false,
+            ai_tags_enabled: false,
+            is_default: true,
+        },
+    )
+    .await
+    .expect("profile");
+
     let bytes = jpeg(640, 480);
     stage(f, "finalise001", "harbour.jpg", &bytes).await;
 
@@ -200,6 +237,23 @@ async fn a_staged_upload_becomes_an_asset(f: &Fixture) {
     );
     assert_eq!(row.4, "active");
 
+    // The profile's own answers reached the asset (Q.3): its metadata type won over the mime's class, its
+    // defaults are real validated metadata on the row, and the profile id is recorded so enrichment can still
+    // ask "was machine tagging permitted" after the session row is reaped.
+    let (profile_on_asset, values): (Option<uuid::Uuid>, serde_json::Value) = sqlx::query_as(
+        "SELECT a.upload_profile_id, coalesce(m.values, '{}'::jsonb) \
+         FROM assets a LEFT JOIN asset_metadata m ON m.asset_id = a.id WHERE a.id = $1",
+    )
+    .bind(finalised.asset_id)
+    .fetch_one(&f.tenant)
+    .await
+    .expect("asset and metadata");
+    assert_eq!(profile_on_asset, Some(profile.id));
+    assert_eq!(
+        values["credit"], "Acme Press Office",
+        "the profile's default is metadata, not a note: {values}"
+    );
+
     let assigned: Option<uuid::Uuid> =
         sqlx::query_scalar("SELECT metadata_type_id FROM assets WHERE id = $1")
             .bind(finalised.asset_id)
@@ -208,8 +262,13 @@ async fn a_staged_upload_becomes_an_asset(f: &Fixture) {
             .expect("metadata type");
     assert_eq!(
         assigned,
+        Some(press_type.id),
+        "the profile's type wins over the mime's class: a profile is a statement, a class is a guess"
+    );
+    assert_ne!(
+        assigned,
         Some(image_type.id),
-        "ingest picks the type claiming the sniffed mime's media class, so nobody has to set it by hand"
+        "and the class would have chosen differently, which is what makes the precedence observable"
     );
 
     // The bytes are at the content-addressed key, and the staging object is gone.

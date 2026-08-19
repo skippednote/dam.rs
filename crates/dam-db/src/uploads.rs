@@ -98,6 +98,11 @@ pub struct Declared {
     pub mime: Option<String>,
     /// The asset this session became, when it has been finalised.
     pub asset_id: Option<uuid::Uuid>,
+    /// The upload profile this session named, if any (Q.3).
+    ///
+    /// Read here rather than passed to finalise, because finalise can run from a queue long after the request
+    /// that created the session — the profile has to be recoverable from the row.
+    pub upload_profile_id: Option<uuid::Uuid>,
     /// BLAKE3 of the promoted object, when the promotion has happened.
     ///
     /// Its presence means the bytes are already at their content-addressed key — which is what makes
@@ -116,23 +121,33 @@ pub async fn declared<'e, E>(
 where
     E: sqlx::PgExecutor<'e>,
 {
-    let row = sqlx::query_as::<_, (Option<String>, Option<String>, Option<Uuid>, Option<String>)>(
-        "SELECT declared_filename, declared_mime, asset_id, content_hash FROM upload_sessions \
-         WHERE tenant_id = $1 AND upload_id = $2",
+    let row = sqlx::query_as::<
+        _,
+        (
+            Option<String>,
+            Option<String>,
+            Option<Uuid>,
+            Option<String>,
+            Option<Uuid>,
+        ),
+    >(
+        "SELECT declared_filename, declared_mime, asset_id, content_hash, upload_profile_id \
+         FROM upload_sessions WHERE tenant_id = $1 AND upload_id = $2",
     )
     .bind(tenant)
     .bind(upload_id)
     .fetch_optional(executor)
     .await?;
 
-    Ok(
-        row.map(|(filename, mime, asset_id, content_hash)| Declared {
+    Ok(row.map(
+        |(filename, mime, asset_id, content_hash, upload_profile_id)| Declared {
             filename,
             mime,
             asset_id,
             content_hash,
-        }),
-    )
+            upload_profile_id,
+        },
+    ))
 }
 
 /// Records the digest of a promoted upload.

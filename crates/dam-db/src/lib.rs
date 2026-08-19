@@ -29,6 +29,7 @@ pub mod saved_searches;
 pub mod shares;
 pub mod taxonomy;
 pub mod tenant_conn;
+pub mod upload_profiles;
 pub mod uploads;
 
 #[cfg(feature = "testing")]

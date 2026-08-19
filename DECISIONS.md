@@ -1832,3 +1832,34 @@ colour-comparison assertion for the selected state rather than reliance on the s
 The intent was right and the implementation was not: `grid` requires `row` children, so an empty one fails
 `aria-required-children`, and a screen reader announced "grid, 0 rows" and then read a sentence sitting in no
 cell. Found by the first fixture that returned zero assets. Reversible: no.
+
+**An upload profile is a row because three readers need it at three different times.** The uploader needs the
+form and the required-field rule before any bytes move; finalise needs the defaults and the metadata type when
+it writes the asset; enrichment needs to know whether machine tagging was permitted, in a worker running long
+after the reaper has taken the session row. Only the last can be answered from the asset and only the first from
+the request, so the profile id is recorded on *both* the session and the asset. Reversible: yes.
+
+**A profile's defaults are metadata, so the metadata validator checks them.** `Writer::Human`, because a profile
+is an administrator's intent rather than a model's guess — so it is bound by `read_only` and not by
+`ai_writable`; and `Mode::Patch`, because defaults fill fields rather than claiming to be a complete record.
+Checked at save time so a default that can never apply never becomes a stored setting, and *again* at apply time
+because a field definition can change in between — a default that has quietly become invalid must fail where
+somebody can see it rather than be dropped from every upload from then on. At ingest that failure is
+`Permanent`: the profile is misconfigured, so retrying would fail identically while saying nothing. Reversible:
+no.
+
+**A default fills only absent keys.** A profile that overwrote what the uploader supplied would silently discard
+their work, which is the opposite of what a default is for. Reversible: no.
+
+**The profile's metadata type wins over the mime's media class.** A profile is an explicit statement about an
+intake; a class is a guess from the bytes. A profile naming no type falls through to the guess, which is the
+Q.1 behaviour. Reversible: yes.
+
+**`require_complete` is a client-facing rule, not enforced at finalise.** By the time finalise runs the bytes
+are staged, and refusing there would strand an upload over metadata a person could have supplied. The library's
+answer to "which assets are incomplete" is the worklist query, asked where an incomplete asset can actually be
+fixed. Reversible: yes — enforcing it at the API boundary is additive.
+
+**An upload naming a profile that no longer exists falls back rather than failing.** A session can outlive an
+administrator's tidy-up, and refusing the upload at that point would strand staged bytes over a configuration
+change nobody told the uploader about. Reversible: yes.

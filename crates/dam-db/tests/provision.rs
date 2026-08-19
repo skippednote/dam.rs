@@ -64,8 +64,9 @@ async fn provisioning_creates_the_row_the_schema_and_the_migrations() {
     .fetch_one(&pool)
     .await
     .expect("count tables");
-    // 61 since migration 0015 added `metadata_types` and `metadata_type_fields`.
-    assert_eq!(tables, 61);
+    // 61 since migration 0015 added `metadata_types` and `metadata_type_fields`; 62 since 0017 added
+    // `upload_profiles`.
+    assert_eq!(tables, 62);
 }
 
 /// D14. The whole point of the flag is that it starts off.

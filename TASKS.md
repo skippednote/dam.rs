@@ -1557,8 +1557,21 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
   `text-accent-fg` — the foreground *for* the accent surface — so it rendered exactly the background colour and
   vanished, which axe did not flag. 5 new API cases, 9 e2e cases, 4 unit cases; 6 routing mutations all caught.
 - [ ] **Q.2c·3 The uncategorised worklist surfaced** in the UI, with the other admin worklists (Q.20).
-- [ ] **Q.3 Upload profiles.** Per-profile metadata defaults, required-field enforcement in the uploader,
-  and the per-profile AI switches Acquia's backfill respects.
+- [x] **Q.3a Upload profiles: the model, and the ingest that honours them.** A profile answers three questions
+  asked at three different times by three different pieces — the uploader needs the form and whether to insist
+  on required fields, finalise needs the defaults and the metadata type, and enrichment needs to know whether
+  machine tagging was permitted *long after the session row is reaped*. Only a row can serve all three, which is
+  why it is one. Migration 0017; `assets.upload_profile_id` already existed, reserved by 0001 with no table and
+  no constraint, so this added the reference rather than the column. Defaults are **metadata**, validated by the
+  tenant's own validator as `Writer::Human`/`Mode::Patch` — so a profile cannot write a read-only field or a
+  value of the wrong kind — and validated *twice*, at save and at apply, because a definition can change in
+  between and a default that has quietly become invalid must fail visibly rather than be dropped from every
+  upload. A default fills only absent keys: overwriting what somebody typed would discard their work. Ingest
+  takes the profile's metadata type over the mime's class (a profile is a statement, a class is a guess), applies
+  the defaults as real validated metadata, and records the profile on the asset. 9 db cases + the ingest case;
+  11 mutations all caught.
+- [ ] **Q.3b Upload profile administration and the uploader.** The API and UI for managing profiles, and the
+  uploader honouring `require_complete` — the client-side rule that is the point of the flag.
 - [ ] **Q.4 Auto-import mappings.** Embedded metadata (XMP/EXIF/IPTC) → field definitions, on ingest.
 - [ ] **Q.5 Ratings, favourites, watch.** Three engagement features and their facets; favourites rank first
   in search, watch is what makes notification worth having.

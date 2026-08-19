@@ -63,7 +63,8 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             "BASE TABLE count",
             "SELECT count(*) FROM information_schema.tables WHERE table_schema='t_acme' AND table_type='BASE TABLE' AND table_name <> '_sqlx_migrations'",
             // 61 since 0015: `metadata_types` and `metadata_type_fields`.
-            61,
+            // 62 since 0017: `upload_profiles`.
+            62,
         ),
         (
             "view count",
@@ -80,7 +81,10 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             // 219 since 0015: metadata_types gains a primary key, a key index and the one-default partial
             // index; metadata_type_fields a composite primary key and a field lookup; assets a partial index
             // on its type.
-            219,
+            // 223 since 0017: upload_profiles gains a primary key, a key index and its one-default partial
+            // index, and assets a partial index on the profile. (0016 is net zero — it swapped a unique slug
+            // index for a non-unique lookup on the same columns.)
+            223,
         ),
         (
             "check constraints",

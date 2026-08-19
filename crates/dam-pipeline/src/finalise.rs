@@ -193,12 +193,26 @@ pub async fn upload(
     let mut conn = TenantConn::begin(global, slug).await?;
     let asset_id = Uuid::new_v4();
 
+    // The profile this upload was made under, if the tenant has any (Q.3). It carries the answers the intake
+    // already knows: which form, what metadata is true of everything from this source, and whether machine
+    // tagging is permitted at all.
+    let profile =
+        dam_db::upload_profiles::for_upload_on(conn.executor(), declared.upload_profile_id)
+            .await
+            .map_err(|refusal| dam_db::Error::Migrate(refusal.to_string()))?;
+
     // Resolved on this connection, inside the same transaction as the insert: a type created or
     // re-pointed between the two would otherwise put the asset on a form that no longer matches its class.
-    let metadata_type_id = dam_db::metadata_types::for_mime_on(conn.executor(), &promoted.mime)
-        .await
-        .map_err(|refusal| dam_db::Error::Migrate(refusal.to_string()))?
-        .map(|chosen| chosen.id);
+    //
+    // The profile's choice wins over the mime's class, because a profile is an explicit statement about an
+    // intake and the class is a guess. A profile that names no type falls through to the guess.
+    let metadata_type_id = match profile.as_ref().and_then(|p| p.metadata_type_id) {
+        Some(from_profile) => Some(from_profile),
+        None => dam_db::metadata_types::for_mime_on(conn.executor(), &promoted.mime)
+            .await
+            .map_err(|refusal| dam_db::Error::Migrate(refusal.to_string()))?
+            .map(|chosen| chosen.id),
+    };
 
     sqlx::query(
         // `metadata_type_id` comes from the mime's media class (Q.1), chosen here rather than left null so
@@ -207,8 +221,8 @@ pub async fn upload(
         // an administrator has to apply by hand to a library that already exists.
         "INSERT INTO assets \
          (id, content_hash, filename, ext, mime, bytes, width, height, orientation, color_space, \
-          has_alpha, status, version_group_id, source, metadata_type_id) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'active', $1, 'ui', $12)",
+          has_alpha, status, version_group_id, source, metadata_type_id, upload_profile_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'active', $1, 'ui', $12, $13)",
     )
     .bind(asset_id)
     .bind(&content_hash)
@@ -227,6 +241,9 @@ pub async fn upload(
     .bind(probe.as_ref().and_then(|p| p.color_space.clone()))
     .bind(probe.as_ref().and_then(|p| p.has_alpha))
     .bind(metadata_type_id)
+    // On the asset as well as the session, because enrichment runs long after the reaper takes the session
+    // row and "was this allowed to be machine-tagged" has to still be answerable then.
+    .bind(profile.as_ref().map(|p| p.id))
     .execute(conn.executor())
     .await
     .map_err(dam_db::Error::from)?;
@@ -242,12 +259,36 @@ pub async fn upload(
         "stored_width": probe.as_ref().and_then(|p| p.stored_width),
         "stored_height": probe.as_ref().and_then(|p| p.stored_height),
     });
+    // The profile's defaults become the asset's starting metadata (Q.3), validated on the way in — the same
+    // validator a human's edit goes through, so a default cannot write a read-only field or a value of the
+    // wrong kind. Re-validated here rather than trusted from save time because a field definition can have
+    // changed since, and a default that has quietly become invalid must fail visibly.
+    //
+    // `Permanent`, not transient: the profile is misconfigured, and retrying the upload will fail identically
+    // until somebody fixes it. A transient error would retry forever and say nothing.
+    let defaults = match profile.as_ref() {
+        Some(profile) => dam_db::upload_profiles::apply_defaults_on(
+            conn.executor(),
+            profile,
+            &serde_json::Map::new(),
+        )
+        .await
+        .map_err(|refusal| {
+            Error::Permanent(format!(
+                "upload profile {} cannot be applied: {refusal}",
+                profile.key
+            ))
+        })?,
+        None => serde_json::Map::new(),
+    };
+
     sqlx::query(
-        "INSERT INTO asset_metadata (asset_id, values, technical) VALUES ($1, '{}'::jsonb, $2) \
+        "INSERT INTO asset_metadata (asset_id, values, technical) VALUES ($1, $3, $2) \
          ON CONFLICT (asset_id) DO UPDATE SET technical = excluded.technical",
     )
     .bind(asset_id)
     .bind(&technical)
+    .bind(serde_json::Value::Object(defaults))
     .execute(conn.executor())
     .await
     .map_err(dam_db::Error::from)?;
