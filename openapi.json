@@ -108,6 +108,136 @@
         }
       }
     },
+    "/assets/{asset_id}/categories": {
+      "get": {
+        "tags": [
+          "categories"
+        ],
+        "summary": "The categories an asset is filed in.",
+        "operationId": "of_asset",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/NodeRow"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assets/{asset_id}/categories/{category_id}": {
+      "put": {
+        "tags": [
+          "categories"
+        ],
+        "summary": "Files an asset in a category.",
+        "operationId": "file",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "category_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The asset's categories after filing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/NodeRow"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, and holds no manage scope"
+          },
+          "422": {
+            "description": "That category does not exist, or is retired"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "categories"
+        ],
+        "summary": "Takes an asset out of a category.",
+        "operationId": "unfile",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "category_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The asset's categories after unfiling",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/NodeRow"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, and holds no manage scope"
+          }
+        }
+      }
+    },
     "/assets/{asset_id}/metadata": {
       "patch": {
         "tags": [
@@ -366,6 +496,183 @@
           },
           "404": {
             "description": "No such operation"
+          }
+        }
+      }
+    },
+    "/categories": {
+      "get": {
+        "tags": [
+          "categories"
+        ],
+        "summary": "Every category tree.",
+        "operationId": "list_trees",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TreeRow"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "categories"
+        ],
+        "summary": "Creates a category tree.",
+        "operationId": "create_tree",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTreeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TreeRow"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, and holds no manage scope"
+          }
+        }
+      }
+    },
+    "/categories/{tree_id}": {
+      "get": {
+        "tags": [
+          "categories"
+        ],
+        "summary": "One tree, with the caller's own counts.",
+        "operationId": "read_tree",
+        "parameters": [
+          {
+            "name": "tree_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/NodeRow"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such category tree"
+          }
+        }
+      }
+    },
+    "/categories/{tree_id}/nodes": {
+      "post": {
+        "tags": [
+          "categories"
+        ],
+        "summary": "Creates a category within a tree.",
+        "operationId": "create_node",
+        "parameters": [
+          {
+            "name": "tree_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateNodeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NodeRow"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such category tree"
+          },
+          "409": {
+            "description": "A sibling already uses that slug"
+          }
+        }
+      }
+    },
+    "/categories/{tree_id}/uncategorised": {
+      "get": {
+        "tags": [
+          "categories"
+        ],
+        "summary": "How many of the caller's assets are in no category of this tree.",
+        "operationId": "uncategorised",
+        "parameters": [
+          {
+            "name": "tree_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Worklist"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such category tree"
           }
         }
       }
@@ -1588,6 +1895,46 @@
           }
         }
       },
+      "CreateNodeRequest": {
+        "type": "object",
+        "description": "A category to create within a tree.",
+        "required": [
+          "slug",
+          "label"
+        ],
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "parent_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "`None` makes it a root."
+          },
+          "slug": {
+            "type": "string"
+          }
+        }
+      },
+      "CreateTreeRequest": {
+        "type": "object",
+        "description": "A tree to create.",
+        "required": [
+          "key",
+          "label"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          }
+        }
+      },
       "CreatedShare": {
         "type": "object",
         "description": "A created share. The token appears here and nowhere else, exactly like an issued API key.",
@@ -1861,6 +2208,55 @@
             "type": "string"
           },
           "label": {
+            "type": "string"
+          }
+        }
+      },
+      "NodeRow": {
+        "type": "object",
+        "description": "One node, with the count of assets the caller can see at or beneath it.",
+        "required": [
+          "id",
+          "path",
+          "slug",
+          "label",
+          "depth",
+          "retired",
+          "assets"
+        ],
+        "properties": {
+          "assets": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Distinct assets **this caller** can see in this category or any beneath it."
+          },
+          "depth": {
+            "type": "integer",
+            "description": "Depth, so a client indents without parsing `path`.",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "label": {
+            "type": "string"
+          },
+          "parent_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "path": {
+            "type": "string",
+            "description": "The ltree path. Exposed because the descendant filter uses it, and a client linking to a subtree\nshould not need another round trip to learn it."
+          },
+          "retired": {
+            "type": "boolean"
+          },
+          "slug": {
             "type": "string"
           }
         }
@@ -2279,6 +2675,27 @@
           "DEEP_ARCHIVE"
         ]
       },
+      "TreeRow": {
+        "type": "object",
+        "description": "A category tree.",
+        "required": [
+          "id",
+          "key",
+          "label"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "key": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          }
+        }
+      },
       "ValidationProblem": {
         "type": "object",
         "description": "Why an edit was refused, field by field.",
@@ -2298,6 +2715,29 @@
           "key": {
             "type": "string",
             "description": "The payload key, or the field key for a missing required field."
+          }
+        }
+      },
+      "Worklist": {
+        "type": "object",
+        "description": "How many assets are in no category, and some of them.",
+        "required": [
+          "total",
+          "sample"
+        ],
+        "properties": {
+          "sample": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "The first few, so a client can link straight into them."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Every uncategorised asset this caller can see."
           }
         }
       }

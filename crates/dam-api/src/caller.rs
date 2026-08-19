@@ -37,7 +37,7 @@ pub struct Caller {
 }
 
 /// Why a request was refused before it reached a handler.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
     /// No credential, or one that does not work. Every reason collapses here — unknown, revoked, expired,
     /// or belonging to a deleted tenant — because telling a prober which of their guesses had the right
@@ -45,26 +45,54 @@ pub enum Refusal {
     Unauthorized,
     /// Authenticated, and holds nothing for this action.
     Forbidden,
+    /// The caller's *configuration* names something this build cannot honour — today, an asset group whose
+    /// membership is a rule the query IR cannot yet render (task 2.4).
+    ///
+    /// Its own variant because the alternative collapsed it into `Internal`, and that defeated the point of
+    /// refusing: the refusal exists so a half-supported configuration is *loud*, and a 500 with no body is
+    /// indistinguishable from a crash. An administrator reading logs saw an incident where the honest answer
+    /// was "this group needs a feature that does not exist yet".
+    Unsupported(String),
     Internal,
 }
 
 impl IntoResponse for Refusal {
     fn into_response(self) -> Response {
+        // 501 carries a body, and it is the one refusal here that should: it describes the *deployment's*
+        // limitation rather than the tenant's data, and the person who can fix it is the one reading it.
+        if let Self::Unsupported(reason) = self {
+            return (
+                StatusCode::NOT_IMPLEMENTED,
+                axum::Json(serde_json::json!({ "reason": reason })),
+            )
+                .into_response();
+        }
         let status = match self {
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::Forbidden => StatusCode::FORBIDDEN,
+            Self::Unsupported(_) => StatusCode::NOT_IMPLEMENTED,
             Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         };
-        // No body. An error body here could only ever describe the tenant's state to a caller who has
-        // already been refused.
+        // No body for the rest. An error body there could only ever describe the tenant's state to a caller
+        // who has already been refused.
         status.into_response()
     }
 }
 
 impl From<dam_db::Error> for Refusal {
     fn from(error: dam_db::Error) -> Self {
-        tracing::error!(%error, "authenticating a request");
-        Self::Internal
+        match error {
+            // Not an incident: a configuration this build cannot honour, deliberately refused. Logged at
+            // `warn` because somebody should fix it, not paged because nothing is broken.
+            dam_db::Error::Unsupported(reason) => {
+                tracing::warn!(%reason, "refusing a caller whose configuration this build cannot render");
+                Self::Unsupported(reason)
+            }
+            other => {
+                tracing::error!(error = %other, "authenticating a request");
+                Self::Internal
+            }
+        }
     }
 }
 
@@ -100,10 +128,10 @@ pub async fn authorize(
         &scopes,
     )
     .await?;
-    conn.commit().await?;
 
     let predicate = policy::compile(&grants, action, chrono::Utc::now());
     if predicate.matches_nothing() {
+        conn.commit().await?;
         return Err(Refusal::Forbidden);
     }
 
@@ -111,7 +139,12 @@ pub async fn authorize(
     // its predicate is written in has no renderer yet. Ignoring the rule would grant *less* than the
     // administrator configured — fail-closed, but silently, so the first anyone would know is an asset that
     // should have been visible and was not.
-    dam_db::access::check_groups_are_renderable(global, &predicate).await?;
+    //
+    // Inside the tenant transaction, because `asset_groups` is a tenant table. It used to run on the global
+    // pool after this commit, where the unqualified name resolved against `dam_global` — so every
+    // group-scoped caller got a 500 from the check meant to protect them.
+    dam_db::access::check_groups_are_renderable(conn.executor(), &predicate).await?;
+    conn.commit().await?;
 
     Ok(Caller {
         tenant_id: authenticated.tenant_id,

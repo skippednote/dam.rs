@@ -1519,8 +1519,21 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
   `(taxonomy_id, path)` already enforces the rule that matters. That also makes `move_term`'s `PathTaken`
   guard reachable for the first time — a previous iteration kept it deliberately for this day, and it is now
   tested. 11 db cases; 13 mutations all caught, three of which found genuine blind spots.
-- [ ] **Q.2b Categories in the UI**, and the admin worklist surfaced: the browse tree in the filter rail with
-  counts, categories on the detail panel, and filing from there.
+- [x] **Q.2b The category API, and two access-control bugs it uncovered.** `GET/POST /categories`,
+  `GET /categories/{id}`, `POST /categories/{id}/nodes`, `GET /categories/{id}/uncategorised`, and
+  `GET/PUT/DELETE /assets/{id}/categories[/{category_id}]`. Reading is Read (nobody navigates a library without
+  the tree); anything that changes where an asset lives is Manage. Counts and the worklist run through the
+  caller's own predicate, so two people legitimately see different numbers on one branch.
+  **Two real bugs, both found by building the first group-scoped caller any API test has had:**
+  `check_groups_are_renderable` queried `asset_groups` — a *tenant* table — on the **global** pool, so every
+  group-scoped caller got a 500 on every request; it hid because the dam-db unit tests passed a tenant pool and
+  no API test was group-scoped. And the deliberate refusal of a rule-based group (decision 4: refuse rather
+  than approximate) surfaced as a bare 500, indistinguishable from a crash — it is now 501 with a body naming
+  the group, since it describes the deployment's limitation rather than the tenant's data. 8 API cases; 8
+  mutations all caught, one of which proved nothing checked that `authorize` still *called* the renderability
+  check.
+- [ ] **Q.2c Categories in the UI**: the browse tree in the filter rail with counts, categories on the detail
+  panel, filing from there, and the uncategorised worklist surfaced.
 - [ ] **Q.3 Upload profiles.** Per-profile metadata defaults, required-field enforcement in the uploader,
   and the per-profile AI switches Acquia's backfill respects.
 - [ ] **Q.4 Auto-import mappings.** Embedded metadata (XMP/EXIF/IPTC) → field definitions, on ingest.

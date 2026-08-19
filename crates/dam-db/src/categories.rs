@@ -113,7 +113,7 @@ pub struct NewCategory {
 
 /// Creates a category tree.
 pub async fn create_tree(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     key: &str,
     label: &str,
 ) -> Result<Uuid, CategoryRefusal> {
@@ -123,18 +123,18 @@ pub async fn create_tree(
     )
     .bind(key)
     .bind(label)
-    .fetch_one(pool)
+    .fetch_one(&mut *conn)
     .await
     .map_err(Error::from)?;
     Ok(id)
 }
 
 /// Every category tree, by key.
-pub async fn trees(pool: &sqlx::PgPool) -> Result<Vec<CategoryTree>, CategoryRefusal> {
+pub async fn trees(conn: &mut sqlx::PgConnection) -> Result<Vec<CategoryTree>, CategoryRefusal> {
     let rows: Vec<(Uuid, String, String)> = sqlx::query_as(
         "SELECT id, key, label FROM taxonomies WHERE kind = 'category' ORDER BY label, key",
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await
     .map_err(Error::from)?;
     Ok(rows
@@ -144,8 +144,11 @@ pub async fn trees(pool: &sqlx::PgPool) -> Result<Vec<CategoryTree>, CategoryRef
 }
 
 /// Creates a category under `parent_id`, or at the root.
-pub async fn create(pool: &sqlx::PgPool, spec: NewCategory) -> Result<Uuid, CategoryRefusal> {
-    require_tree(pool, spec.taxonomy_id).await?;
+pub async fn create(
+    conn: &mut sqlx::PgConnection,
+    spec: NewCategory,
+) -> Result<Uuid, CategoryRefusal> {
+    require_tree(&mut *conn, spec.taxonomy_id).await?;
 
     // The path is the parent's path plus this slug, which is what makes the descendant filter and the rollup
     // work. Built here rather than by a trigger so the failure is a named refusal instead of a constraint.
@@ -154,7 +157,7 @@ pub async fn create(pool: &sqlx::PgPool, spec: NewCategory) -> Result<Uuid, Cate
             let row: Option<(String, Uuid)> =
                 sqlx::query_as("SELECT path::text, taxonomy_id FROM taxonomy_terms WHERE id = $1")
                     .bind(parent)
-                    .fetch_optional(pool)
+                    .fetch_optional(&mut *conn)
                     .await
                     .map_err(Error::from)?;
             let Some((path, taxonomy_id)) = row else {
@@ -182,7 +185,7 @@ pub async fn create(pool: &sqlx::PgPool, spec: NewCategory) -> Result<Uuid, Cate
     )
     .bind(spec.taxonomy_id)
     .bind(&path)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *conn)
     .await
     .map_err(Error::from)?;
     if clash.is_some() {
@@ -198,7 +201,7 @@ pub async fn create(pool: &sqlx::PgPool, spec: NewCategory) -> Result<Uuid, Cate
     .bind(&path)
     .bind(&spec.slug)
     .bind(&spec.label)
-    .fetch_one(pool)
+    .fetch_one(&mut *conn)
     .await
     .map_err(Error::from)?;
     Ok(id)
@@ -209,16 +212,16 @@ pub async fn create(pool: &sqlx::PgPool, spec: NewCategory) -> Result<Uuid, Cate
 /// Ordering by `path` gives depth-first for free — that is what an ltree path is — and it means a client can
 /// render the tree by walking the list once, using `depth` to indent.
 pub async fn tree(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     taxonomy_id: Uuid,
 ) -> Result<Vec<CategoryNode>, CategoryRefusal> {
-    require_tree(pool, taxonomy_id).await?;
+    require_tree(&mut *conn, taxonomy_id).await?;
     let rows: Vec<CategoryRow> = sqlx::query_as(
         "SELECT id, parent_id, path::text, slug, label, deprecated_at \
              FROM taxonomy_terms WHERE taxonomy_id = $1 ORDER BY path",
     )
     .bind(taxonomy_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await
     .map_err(Error::from)?;
     Ok(rows
@@ -242,11 +245,11 @@ pub async fn tree(
 /// One query rather than one per node: a tree of two hundred categories would otherwise be two hundred
 /// round trips, each running the access predicate again.
 pub async fn tree_with_counts(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     taxonomy_id: Uuid,
     planned: &Planned,
 ) -> Result<Vec<CountedCategory>, CategoryRefusal> {
-    let nodes = tree(pool, taxonomy_id).await?;
+    let nodes = tree(&mut *conn, taxonomy_id).await?;
 
     let mut builder: QueryBuilder<Postgres> = QueryBuilder::new(
         "WITH visible AS (SELECT assets.id FROM assets \
@@ -270,7 +273,7 @@ pub async fn tree_with_counts(
 
     let counts: Vec<(Uuid, i64)> = builder
         .build_query_as()
-        .fetch_all(pool)
+        .fetch_all(&mut *conn)
         .await
         .map_err(Error::from)?;
 
@@ -298,7 +301,7 @@ pub async fn tree_with_counts(
 
 /// One category by its ltree path within a tree.
 pub async fn by_path(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     taxonomy_id: Uuid,
     path: &str,
 ) -> Result<Option<CategoryNode>, CategoryRefusal> {
@@ -308,20 +311,26 @@ pub async fn by_path(
     )
     .bind(taxonomy_id)
     .bind(path)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *conn)
     .await
     .map_err(Error::from)?;
-    Ok(row.map(
-        |(id, parent_id, path, slug, label, deprecated_at)| CategoryNode {
-            id,
-            parent_id,
-            depth: depth_of(&path),
-            path,
-            slug,
-            label,
-            retired: deprecated_at.is_some(),
-        },
-    ))
+    Ok(row.map(node))
+}
+
+/// One category by id.
+pub async fn by_id(
+    conn: &mut sqlx::PgConnection,
+    id: Uuid,
+) -> Result<Option<CategoryNode>, CategoryRefusal> {
+    let row: Option<CategoryRow> = sqlx::query_as(
+        "SELECT id, parent_id, path::text, slug, label, deprecated_at FROM taxonomy_terms \
+         WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(Error::from)?;
+    Ok(row.map(node))
 }
 
 /// Files an asset in a category.
@@ -334,7 +343,7 @@ pub async fn by_path(
 /// placement rather than a unique violation surfacing as a 500. An upsert also means a person filing something
 /// a model had merely suggested *confirms* that row, keeping one history instead of two.
 pub async fn file(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     asset_id: Uuid,
     category_id: Uuid,
     by: Option<Uuid>,
@@ -342,7 +351,7 @@ pub async fn file(
     let row: Option<Option<chrono::DateTime<chrono::Utc>>> =
         sqlx::query_scalar("SELECT deprecated_at FROM taxonomy_terms WHERE id = $1")
             .bind(category_id)
-            .fetch_optional(pool)
+            .fetch_optional(&mut *conn)
             .await
             .map_err(Error::from)?;
     let Some(deprecated_at) = row else {
@@ -363,7 +372,7 @@ pub async fn file(
     .bind(asset_id)
     .bind(category_id)
     .bind(by)
-    .execute(pool)
+    .execute(&mut *conn)
     .await
     .map_err(Error::from)?;
     Ok(())
@@ -378,14 +387,14 @@ pub async fn file(
 /// Unfiling something that was never filed succeeds: the caller's intent is "not in this category", and that
 /// already holds.
 pub async fn unfile(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     asset_id: Uuid,
     category_id: Uuid,
 ) -> Result<(), CategoryRefusal> {
     sqlx::query("DELETE FROM asset_tags WHERE asset_id = $1 AND term_id = $2")
         .bind(asset_id)
         .bind(category_id)
-        .execute(pool)
+        .execute(&mut *conn)
         .await
         .map_err(Error::from)?;
     Ok(())
@@ -395,7 +404,7 @@ pub async fn unfile(
 ///
 /// Deepest first so a breadcrumb or a chip list renders in the order a reader expects without sorting.
 pub async fn of_asset(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     asset_id: Uuid,
 ) -> Result<Vec<CategoryNode>, CategoryRefusal> {
     let rows: Vec<CategoryRow> = sqlx::query_as(
@@ -407,7 +416,7 @@ pub async fn of_asset(
              ORDER BY nlevel(t.path) DESC, t.path",
     )
     .bind(asset_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await
     .map_err(Error::from)?;
     Ok(rows
@@ -428,7 +437,7 @@ pub async fn of_asset(
 
 /// The assets filed directly in one category.
 pub async fn assets_in(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     category_id: Uuid,
 ) -> Result<Vec<Uuid>, CategoryRefusal> {
     let ids: Vec<Uuid> = sqlx::query_scalar(
@@ -437,7 +446,7 @@ pub async fn assets_in(
          WHERE at.term_id = $1 AND at.state = 'confirmed' ORDER BY a.created_at",
     )
     .bind(category_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await
     .map_err(Error::from)?;
     Ok(ids)
@@ -450,12 +459,12 @@ pub async fn assets_in(
 /// filing quietly stops happening. Scoped through the caller's plan for the same reason the counts are —
 /// telling somebody "61 uncategorised" when they can see nine of them is a disclosure, not a worklist.
 pub async fn uncategorised(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     taxonomy_id: Uuid,
     planned: &Planned,
     sample: i64,
 ) -> Result<(i64, Vec<Uuid>), CategoryRefusal> {
-    require_tree(pool, taxonomy_id).await?;
+    require_tree(&mut *conn, taxonomy_id).await?;
 
     let mut builder: QueryBuilder<Postgres> = QueryBuilder::new(
         "WITH visible AS (SELECT assets.id FROM assets \
@@ -479,7 +488,7 @@ pub async fn uncategorised(
     // could disagree if something is filed between them — reporting "61" beside a sample drawn from 60.
     let ids: Vec<Uuid> = builder
         .build_query_scalar()
-        .fetch_all(pool)
+        .fetch_all(&mut *conn)
         .await
         .map_err(Error::from)?;
     let total = i64::try_from(ids.len()).unwrap_or(i64::MAX);
@@ -488,10 +497,13 @@ pub async fn uncategorised(
 }
 
 /// Refuses a taxonomy that is not a category tree.
-async fn require_tree(pool: &sqlx::PgPool, taxonomy_id: Uuid) -> Result<(), CategoryRefusal> {
+async fn require_tree(
+    conn: &mut sqlx::PgConnection,
+    taxonomy_id: Uuid,
+) -> Result<(), CategoryRefusal> {
     let kind: Option<String> = sqlx::query_scalar("SELECT kind FROM taxonomies WHERE id = $1")
         .bind(taxonomy_id)
-        .fetch_optional(pool)
+        .fetch_optional(&mut *conn)
         .await
         .map_err(Error::from)?;
     match kind.as_deref() {
@@ -499,6 +511,23 @@ async fn require_tree(pool: &sqlx::PgPool, taxonomy_id: Uuid) -> Result<(), Cate
         // Both "no such taxonomy" and "a vocabulary" answer the same way, because from the caller's side the
         // request is the same mistake: this id is not a category tree.
         _ => Err(CategoryRefusal::NotACategoryTree(taxonomy_id)),
+    }
+}
+
+/// One selected row as a node.
+///
+/// Shared by every reader so the depth and the retired flag are derived in exactly one place; three copies of
+/// this mapping is three chances for them to drift.
+fn node(row: CategoryRow) -> CategoryNode {
+    let (id, parent_id, path, slug, label, deprecated_at) = row;
+    CategoryNode {
+        id,
+        parent_id,
+        depth: depth_of(&path),
+        path,
+        slug,
+        label,
+        retired: deprecated_at.is_some(),
     }
 }
 

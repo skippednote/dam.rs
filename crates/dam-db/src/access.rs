@@ -19,7 +19,7 @@
 
 use crate::Error;
 use dam_core::policy::AccessPredicate;
-use sqlx::{PgPool, Postgres, QueryBuilder};
+use sqlx::{Postgres, QueryBuilder};
 
 /// Pushes the visibility condition for `predicate` onto a builder.
 ///
@@ -72,18 +72,22 @@ pub fn push_asset_filter(
 /// Separate from [`push_asset_filter`] because it needs a round trip to the database, and the renderer
 /// must stay a pure function over the predicate.
 pub async fn check_groups_are_renderable(
-    pool: &PgPool,
+    conn: &mut sqlx::PgConnection,
     predicate: &AccessPredicate,
 ) -> Result<(), Error> {
     if predicate.all_groups() || predicate.allowed_groups().is_empty() {
         return Ok(());
     }
 
+    // A **tenant** connection, not the global pool. `asset_groups` lives in the tenant schema, so on a
+    // global-pool connection this unqualified name resolved against `dam_global` and the query failed —
+    // turning every request by a group-scoped caller into a 500. It went unnoticed because no API test built
+    // a group-scoped caller: the check short-circuits for `all_groups`, which is what an administrator has.
     let rule_based: Vec<String> = sqlx::query_scalar(
         "SELECT key FROM asset_groups WHERE id = ANY($1) AND predicate IS NOT NULL ORDER BY key",
     )
     .bind(predicate.allowed_groups().to_vec())
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
 
     if rule_based.is_empty() {

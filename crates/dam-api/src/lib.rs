@@ -6,6 +6,7 @@ pub mod app;
 pub mod assets;
 pub mod bulk;
 pub mod caller;
+pub mod categories;
 pub mod delivery;
 pub mod dto;
 pub mod openapi;

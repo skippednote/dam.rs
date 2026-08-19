@@ -48,6 +48,23 @@ fn everything() -> Planned {
     Planned::new(Query::All, access, &[]).expect("valid plan")
 }
 
+/// A connection from the pool.
+///
+/// `categories` takes a connection rather than a pool, because every real caller holds one — the API works
+/// inside a `TenantConn` whose `search_path` is transaction-scoped, and handing it a pool would mean a second,
+/// differently-scoped connection. The test pays one line per call for the same guarantee.
+async fn conn(pool: &PgPool) -> sqlx::pool::PoolConnection<sqlx::Postgres> {
+    pool.acquire().await.expect("connection")
+}
+
+/// `&mut *c(pool).await` at each call site would be noisier than this; a `PoolConnection` derefs to the
+/// `PgConnection` the API takes, and the deref has to be written somewhere.
+macro_rules! c {
+    ($pool:expr) => {
+        &mut *conn($pool).await
+    };
+}
+
 async fn db() -> (PostgresHarness, PgPool) {
     let pg = PostgresHarness::start().await.expect("start postgres");
     let url = pg.url();
@@ -89,13 +106,13 @@ async fn the_category_contract_holds() {
 }
 
 async fn a_tree_is_created_with_nested_categories(pool: &PgPool) -> Uuid {
-    let tree = categories::create_tree(pool, "shades", "Designs & Shades")
+    let tree = categories::create_tree(c!(pool), "shades", "Designs & Shades")
         .await
         .expect("tree");
 
     // Two levels, because one level is a list and the whole point of a category is that it nests.
     let exterior = categories::create(
-        pool,
+        c!(pool),
         NewCategory {
             taxonomy_id: tree,
             parent_id: None,
@@ -106,7 +123,7 @@ async fn a_tree_is_created_with_nested_categories(pool: &PgPool) -> Uuid {
     .await
     .expect("exterior");
     let yellow = categories::create(
-        pool,
+        c!(pool),
         NewCategory {
             taxonomy_id: tree,
             parent_id: Some(exterior),
@@ -117,7 +134,7 @@ async fn a_tree_is_created_with_nested_categories(pool: &PgPool) -> Uuid {
     .await
     .expect("yellow");
     categories::create(
-        pool,
+        c!(pool),
         NewCategory {
             taxonomy_id: tree,
             parent_id: Some(exterior),
@@ -128,7 +145,7 @@ async fn a_tree_is_created_with_nested_categories(pool: &PgPool) -> Uuid {
     .await
     .expect("green");
     categories::create(
-        pool,
+        c!(pool),
         NewCategory {
             taxonomy_id: tree,
             parent_id: None,
@@ -141,7 +158,7 @@ async fn a_tree_is_created_with_nested_categories(pool: &PgPool) -> Uuid {
 
     // The tree comes back as a tree, with depth, so a client renders it without re-deriving structure from
     // ltree paths it should not have to parse.
-    let listed = categories::tree(pool, tree).await.expect("tree read");
+    let listed = categories::tree(c!(pool), tree).await.expect("tree read");
     let shape: Vec<(&str, usize)> = listed
         .iter()
         .map(|node| (node.slug.as_str(), node.depth))
@@ -170,14 +187,14 @@ async fn a_tree_is_created_with_nested_categories(pool: &PgPool) -> Uuid {
 }
 
 async fn an_asset_is_filed_and_the_placement_is_confirmed(pool: &PgPool, tree: Uuid) {
-    let yellow = categories::by_path(pool, tree, "exterior.yellow")
+    let yellow = categories::by_path(c!(pool), tree, "exterior.yellow")
         .await
         .expect("by path")
         .expect("yellow");
     let id = asset(pool, "yellow-house").await;
 
     let filer = Uuid::new_v4();
-    categories::file(pool, id, yellow.id, Some(filer))
+    categories::file(c!(pool), id, yellow.id, Some(filer))
         .await
         .expect("file");
 
@@ -197,7 +214,7 @@ async fn an_asset_is_filed_and_the_placement_is_confirmed(pool: &PgPool, tree: U
     assert_eq!(reviewed_by, Some(filer), "who filed it is on the row");
 
     // And it reads back on the asset, deepest-first so a breadcrumb renders without sorting.
-    let on_asset = categories::of_asset(pool, id).await.expect("of asset");
+    let on_asset = categories::of_asset(c!(pool), id).await.expect("of asset");
     assert_eq!(on_asset.len(), 1);
     assert_eq!(on_asset[0].path, "exterior.yellow");
     assert_eq!(on_asset[0].label, "Yellow");
@@ -206,15 +223,15 @@ async fn an_asset_is_filed_and_the_placement_is_confirmed(pool: &PgPool, tree: U
 async fn filing_twice_is_idempotent(pool: &PgPool, tree: Uuid) {
     // Filing is a state, not an event: the same asset in the same category twice is one placement. A second
     // insert must not be a unique violation reaching the caller as a 500.
-    let yellow = categories::by_path(pool, tree, "exterior.yellow")
+    let yellow = categories::by_path(c!(pool), tree, "exterior.yellow")
         .await
         .expect("by path")
         .expect("yellow");
     let id = asset(pool, "filed-twice").await;
-    categories::file(pool, id, yellow.id, None)
+    categories::file(c!(pool), id, yellow.id, None)
         .await
         .expect("first");
-    categories::file(pool, id, yellow.id, None)
+    categories::file(c!(pool), id, yellow.id, None)
         .await
         .expect("second");
 
@@ -231,23 +248,23 @@ async fn filing_twice_is_idempotent(pool: &PgPool, tree: Uuid) {
 async fn a_rollup_counts_an_asset_once_per_branch(pool: &PgPool, tree: Uuid) {
     // One asset in two leaves of the same branch. `Exterior` must say 1, not 2 — a rollup that double-counts
     // shows more assets in a branch than the library contains, and there is no way for a reader to tell.
-    let yellow = categories::by_path(pool, tree, "exterior.yellow")
+    let yellow = categories::by_path(c!(pool), tree, "exterior.yellow")
         .await
         .expect("path")
         .expect("yellow");
-    let green = categories::by_path(pool, tree, "exterior.green")
+    let green = categories::by_path(c!(pool), tree, "exterior.green")
         .await
         .expect("path")
         .expect("green");
     let both = asset(pool, "yellow-and-green").await;
-    categories::file(pool, both, yellow.id, None)
+    categories::file(c!(pool), both, yellow.id, None)
         .await
         .expect("file");
-    categories::file(pool, both, green.id, None)
+    categories::file(c!(pool), both, green.id, None)
         .await
         .expect("file");
 
-    let counted = categories::tree_with_counts(pool, tree, &everything())
+    let counted = categories::tree_with_counts(c!(pool), tree, &everything())
         .await
         .expect("counts");
     let of = |slug: &str| {
@@ -273,26 +290,26 @@ async fn a_rollup_counts_an_asset_once_per_branch(pool: &PgPool, tree: Uuid) {
 }
 
 async fn unfiling_removes_only_that_placement(pool: &PgPool, tree: Uuid) {
-    let yellow = categories::by_path(pool, tree, "exterior.yellow")
+    let yellow = categories::by_path(c!(pool), tree, "exterior.yellow")
         .await
         .expect("path")
         .expect("yellow");
-    let green = categories::by_path(pool, tree, "exterior.green")
+    let green = categories::by_path(c!(pool), tree, "exterior.green")
         .await
         .expect("path")
         .expect("green");
-    let both = categories::assets_in(pool, green.id)
+    let both = categories::assets_in(c!(pool), green.id)
         .await
         .expect("assets in green")
         .first()
         .copied()
         .expect("the two-leaf asset");
 
-    categories::unfile(pool, both, green.id)
+    categories::unfile(c!(pool), both, green.id)
         .await
         .expect("unfile");
 
-    let left: Vec<String> = categories::of_asset(pool, both)
+    let left: Vec<String> = categories::of_asset(c!(pool), both)
         .await
         .expect("of asset")
         .into_iter()
@@ -306,7 +323,7 @@ async fn unfiling_removes_only_that_placement(pool: &PgPool, tree: Uuid) {
 
     // Unfiling something that was never filed is not an error: the caller's intent is "not in this
     // category", and it already holds.
-    categories::unfile(pool, both, green.id)
+    categories::unfile(c!(pool), both, green.id)
         .await
         .expect("unfiling twice is fine");
 
@@ -319,21 +336,21 @@ async fn the_uncategorised_worklist_finds_what_nobody_filed(pool: &PgPool, tree:
     // library where it stops happening.
     let orphan = asset(pool, "nobody-filed-me").await;
 
-    let (count, sample) = categories::uncategorised(pool, tree, &everything(), 10)
+    let (count, sample) = categories::uncategorised(c!(pool), tree, &everything(), 10)
         .await
         .expect("uncategorised");
     assert!(count >= 1, "at least the orphan");
     assert!(sample.contains(&orphan), "and it is named: {sample:?}");
 
     // Filing it takes it off the list, which is the only behaviour that makes the number worth showing.
-    let interior = categories::by_path(pool, tree, "interior")
+    let interior = categories::by_path(c!(pool), tree, "interior")
         .await
         .expect("path")
         .expect("interior");
-    categories::file(pool, orphan, interior.id, None)
+    categories::file(c!(pool), orphan, interior.id, None)
         .await
         .expect("file");
-    let (after, sample) = categories::uncategorised(pool, tree, &everything(), 10)
+    let (after, sample) = categories::uncategorised(c!(pool), tree, &everything(), 10)
         .await
         .expect("uncategorised");
     assert_eq!(after, count - 1);
@@ -352,7 +369,7 @@ async fn a_vocabulary_is_not_a_category_tree(pool: &PgPool) {
     .await
     .expect("vocabulary");
 
-    let trees = categories::trees(pool).await.expect("trees");
+    let trees = categories::trees(c!(pool)).await.expect("trees");
     assert!(
         trees.iter().all(|t| t.id != vocabulary),
         "a vocabulary must not appear as a category tree"
@@ -363,7 +380,7 @@ async fn a_vocabulary_is_not_a_category_tree(pool: &PgPool) {
     );
 
     // And reading a vocabulary as a tree is refused by name rather than returning its terms as categories.
-    let refusal = categories::tree(pool, vocabulary)
+    let refusal = categories::tree(c!(pool), vocabulary)
         .await
         .expect_err("not a tree");
     assert!(
@@ -377,31 +394,31 @@ async fn only_confirmed_categories_count_and_they_read_deepest_first(pool: &PgPo
     // `state = 'confirmed'` filter, the `kind = 'category'` join and the deepest-first order are all
     // unobservable — the other cases only ever put a single confirmed category on an asset, so every one of
     // those clauses could be deleted and the suite would still pass. Mutation testing said exactly that.
-    let exterior = categories::by_path(pool, tree, "exterior")
+    let exterior = categories::by_path(c!(pool), tree, "exterior")
         .await
         .expect("path")
         .expect("exterior");
-    let yellow = categories::by_path(pool, tree, "exterior.yellow")
+    let yellow = categories::by_path(c!(pool), tree, "exterior.yellow")
         .await
         .expect("path")
         .expect("yellow");
 
     let id = asset(pool, "mixed-tags").await;
-    categories::file(pool, id, exterior.id, None)
+    categories::file(c!(pool), id, exterior.id, None)
         .await
         .expect("shallow");
-    categories::file(pool, id, yellow.id, None)
+    categories::file(c!(pool), id, yellow.id, None)
         .await
         .expect("deep");
 
     // A model's suggestion under a *third* category. It is a real row in `asset_tags`, and it must not read as
     // a placement or count toward the rail: nobody filed it, and a count that included suggestions would move
     // when the tagger ran rather than when a person did something.
-    let interior = categories::by_path(pool, tree, "interior")
+    let interior = categories::by_path(c!(pool), tree, "interior")
         .await
         .expect("path")
         .expect("interior");
-    let before = categories::tree_with_counts(pool, tree, &everything())
+    let before = categories::tree_with_counts(c!(pool), tree, &everything())
         .await
         .expect("counts")
         .into_iter()
@@ -447,7 +464,7 @@ async fn only_confirmed_categories_count_and_they_read_deepest_first(pool: &PgPo
 
     // Exactly the two confirmed categories, deepest first — so a breadcrumb or chip list renders in the order
     // a reader expects without sorting.
-    let filed: Vec<String> = categories::of_asset(pool, id)
+    let filed: Vec<String> = categories::of_asset(c!(pool), id)
         .await
         .expect("of asset")
         .into_iter()
@@ -460,7 +477,7 @@ async fn only_confirmed_categories_count_and_they_read_deepest_first(pool: &PgPo
     );
 
     // And the suggestion did not move the count.
-    let after = categories::tree_with_counts(pool, tree, &everything())
+    let after = categories::tree_with_counts(c!(pool), tree, &everything())
         .await
         .expect("counts")
         .into_iter()
@@ -475,7 +492,7 @@ async fn only_confirmed_categories_count_and_they_read_deepest_first(pool: &PgPo
 
 async fn filing_under_a_retired_category_is_refused(pool: &PgPool, tree: Uuid) {
     // Deprecating a term is how a tree gets tidied; if filing still worked, the tidy-up would never finish.
-    let green = categories::by_path(pool, tree, "exterior.green")
+    let green = categories::by_path(c!(pool), tree, "exterior.green")
         .await
         .expect("path")
         .expect("green");
@@ -484,7 +501,7 @@ async fn filing_under_a_retired_category_is_refused(pool: &PgPool, tree: Uuid) {
         .expect("deprecate");
 
     let id = asset(pool, "too-late").await;
-    let refusal = categories::file(pool, id, green.id, None)
+    let refusal = categories::file(c!(pool), id, green.id, None)
         .await
         .expect_err("retired");
     assert!(
@@ -506,11 +523,11 @@ async fn filing_under_a_retired_category_is_refused(pool: &PgPool, tree: Uuid) {
 }
 
 async fn a_slug_is_unique_among_siblings_and_free_across_branches(pool: &PgPool, tree: Uuid) {
-    let exterior = categories::by_path(pool, tree, "exterior")
+    let exterior = categories::by_path(c!(pool), tree, "exterior")
         .await
         .expect("path")
         .expect("exterior");
-    let interior = categories::by_path(pool, tree, "interior")
+    let interior = categories::by_path(c!(pool), tree, "interior")
         .await
         .expect("path")
         .expect("interior");
@@ -518,7 +535,7 @@ async fn a_slug_is_unique_among_siblings_and_free_across_branches(pool: &PgPool,
     // Two children of one parent cannot share a slug: their paths would collide, and a tree with two
     // identical branches is one nobody can navigate or link to.
     let refusal = categories::create(
-        pool,
+        c!(pool),
         NewCategory {
             taxonomy_id: tree,
             parent_id: Some(exterior.id),
@@ -537,7 +554,7 @@ async fn a_slug_is_unique_among_siblings_and_free_across_branches(pool: &PgPool,
     // the taxonomy-wide slug index: "Yellow" belongs under both Exterior and Interior, and a filing hierarchy
     // that cannot express that is not a filing hierarchy.
     let interior_yellow = categories::create(
-        pool,
+        c!(pool),
         NewCategory {
             taxonomy_id: tree,
             parent_id: Some(interior.id),
@@ -548,7 +565,7 @@ async fn a_slug_is_unique_among_siblings_and_free_across_branches(pool: &PgPool,
     .await
     .expect("the same slug in another branch");
 
-    let node = categories::by_path(pool, tree, "interior.yellow")
+    let node = categories::by_path(c!(pool), tree, "interior.yellow")
         .await
         .expect("path")
         .expect("interior.yellow");
@@ -556,10 +573,10 @@ async fn a_slug_is_unique_among_siblings_and_free_across_branches(pool: &PgPool,
 
     // And the two are genuinely distinct: filing under one does not file under the other.
     let id = asset(pool, "interior-yellow-room").await;
-    categories::file(pool, id, interior_yellow, None)
+    categories::file(c!(pool), id, interior_yellow, None)
         .await
         .expect("file");
-    let filed: Vec<String> = categories::of_asset(pool, id)
+    let filed: Vec<String> = categories::of_asset(c!(pool), id)
         .await
         .expect("of asset")
         .into_iter()

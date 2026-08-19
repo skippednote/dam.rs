@@ -385,7 +385,12 @@ async fn a_rule_based_group_is_refused_rather_than_silently_ignored() {
         Action::Read,
         now(),
     );
-    let err = access::check_groups_are_renderable(&pool, &predicate)
+    // A *connection*, and `pool` here is tenant-scoped — which is the detail that let a real bug hide for
+    // months. `asset_groups` is a tenant table, so this check passed in these tests (tenant pool) and 500'd
+    // in `caller::authorize` (global pool, where the unqualified name resolved against `dam_global`). Every
+    // group-scoped caller got a 500 from the check meant to protect them, and no API test built one.
+    let mut conn = pool.acquire().await.expect("connection");
+    let err = access::check_groups_are_renderable(&mut conn, &predicate)
         .await
         .expect_err("a rule-based group must be refused until the IR exists");
     assert!(
@@ -403,7 +408,8 @@ async fn explicit_membership_groups_pass_the_renderability_check() {
         Action::Read,
         now(),
     );
-    access::check_groups_are_renderable(&pool, &predicate)
+    let mut conn = pool.acquire().await.expect("connection");
+    access::check_groups_are_renderable(&mut conn, &predicate)
         .await
         .expect("an explicit-membership group renders");
 }

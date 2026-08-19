@@ -38,6 +38,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/assets/{asset_id}/categories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The categories an asset is filed in. */
+        get: operations["of_asset"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assets/{asset_id}/categories/{category_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Files an asset in a category. */
+        put: operations["file"];
+        post?: never;
+        /** Takes an asset out of a category. */
+        delete: operations["unfile"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/assets/{asset_id}/metadata": {
         parameters: {
             query?: never;
@@ -116,6 +151,75 @@ export interface paths {
         };
         /** The progress of one operation. */
         get: operations["status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/categories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every category tree. */
+        get: operations["list_trees"];
+        put?: never;
+        /** Creates a category tree. */
+        post: operations["create_tree"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/categories/{tree_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One tree, with the caller's own counts. */
+        get: operations["read_tree"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/categories/{tree_id}/nodes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Creates a category within a tree. */
+        post: operations["create_node"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/categories/{tree_id}/uncategorised": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** How many of the caller's assets are in no category of this tree. */
+        get: operations["uncategorised"];
         put?: never;
         post?: never;
         delete?: never;
@@ -592,6 +696,21 @@ export interface components {
             /** @description Whether the state is final, so a client polls this instead of re-implementing the state vocabulary. */
             terminal: boolean;
         };
+        /** @description A category to create within a tree. */
+        CreateNodeRequest: {
+            label: string;
+            /**
+             * Format: uuid
+             * @description `None` makes it a root.
+             */
+            parent_id?: string | null;
+            slug: string;
+        };
+        /** @description A tree to create. */
+        CreateTreeRequest: {
+            key: string;
+            label: string;
+        };
         /** @description A created share. The token appears here and nowhere else, exactly like an issued API key. */
         CreatedShare: {
             /** Format: uuid */
@@ -709,6 +828,28 @@ export interface components {
             is_default: boolean;
             key: string;
             label: string;
+        };
+        /** @description One node, with the count of assets the caller can see at or beneath it. */
+        NodeRow: {
+            /**
+             * Format: int64
+             * @description Distinct assets **this caller** can see in this category or any beneath it.
+             */
+            assets: number;
+            /** @description Depth, so a client indents without parsing `path`. */
+            depth: number;
+            /** Format: uuid */
+            id: string;
+            label: string;
+            /** Format: uuid */
+            parent_id?: string | null;
+            /**
+             * @description The ltree path. Exposed because the descendant filter uses it, and a client linking to a subtree
+             *     should not need another round trip to learn it.
+             */
+            path: string;
+            retired: boolean;
+            slug: string;
         };
         /** @description The complete field order, in the order fields should appear. */
         OrderRequest: {
@@ -890,6 +1031,13 @@ export interface components {
          * @enum {string}
          */
         StorageClass: "STANDARD" | "STANDARD_IA" | "ONEZONE_IA" | "INTELLIGENT_TIERING" | "GLACIER_IR" | "GLACIER" | "DEEP_ARCHIVE";
+        /** @description A category tree. */
+        TreeRow: {
+            /** Format: uuid */
+            id: string;
+            key: string;
+            label: string;
+        };
         /** @description Why an edit was refused, field by field. */
         ValidationProblem: {
             /**
@@ -900,6 +1048,16 @@ export interface components {
             detail: string;
             /** @description The payload key, or the field key for a missing required field. */
             key: string;
+        };
+        /** @description How many assets are in no category, and some of them. */
+        Worklist: {
+            /** @description The first few, so a client can link straight into them. */
+            sample: string[];
+            /**
+             * Format: int64
+             * @description Every uncategorised asset this caller can see.
+             */
+            total: number;
         };
     };
     responses: never;
@@ -986,6 +1144,94 @@ export interface operations {
             };
             /** @description No such asset, or not one this caller may see — deliberately the same answer */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    of_asset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NodeRow"][];
+                };
+            };
+        };
+    };
+    file: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                asset_id: string;
+                category_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The asset's categories after filing */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NodeRow"][];
+                };
+            };
+            /** @description Authenticated, and holds no manage scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description That category does not exist, or is retired */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    unfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                asset_id: string;
+                category_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The asset's categories after unfiling */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NodeRow"][];
+                };
+            };
+            /** @description Authenticated, and holds no manage scope */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1227,6 +1473,150 @@ export interface operations {
                 content?: never;
             };
             /** @description No such operation */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_trees: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TreeRow"][];
+                };
+            };
+        };
+    };
+    create_tree: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateTreeRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TreeRow"];
+                };
+            };
+            /** @description Authenticated, and holds no manage scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    read_tree: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tree_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NodeRow"][];
+                };
+            };
+            /** @description No such category tree */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create_node: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tree_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateNodeRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NodeRow"];
+                };
+            };
+            /** @description No such category tree */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A sibling already uses that slug */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    uncategorised: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tree_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Worklist"];
+                };
+            };
+            /** @description No such category tree */
             404: {
                 headers: {
                     [name: string]: unknown;

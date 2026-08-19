@@ -1759,3 +1759,25 @@ slug. No query in the workspace resolved a term by slug alone. Relaxing a unique
 practice, and that is accepted: the alternative is a DAM that cannot express a filing hierarchy. The taxonomy
 suite's case that documented the old limit is inverted, and `move_term`'s `PathTaken` guard — kept by an earlier
 iteration precisely so this relaxation could not half-apply a subtree rewrite — is now reachable and tested.
+
+**`check_groups_are_renderable` runs on a tenant connection, not the global pool.** It queries `asset_groups`,
+which lives in the tenant schema, so on a global-pool connection the unqualified name resolved against
+`dam_global` and the query failed — turning every request by a group-scoped caller into a 500. The check exists
+to protect exactly those callers. It hid for two reasons worth recording: the `dam_db` unit tests call it with a
+*tenant*-scoped pool, where it works, and no API test had ever built a group-scoped caller — an administrator
+has `all_asset_groups`, which short-circuits the check before the query. Reversible: no, it is the fix.
+
+**A configuration this build cannot honour is 501 with a body, not 500.** Refusing a caller scoped to a
+rule-based asset group is deliberate (decision 4: refuse rather than approximate, because ignoring the rule
+would silently grant less access than configured). But collapsing it into `Refusal::Internal` defeated the
+purpose — the refusal exists so a half-supported configuration is *loud*, and a bare 500 is indistinguishable
+from a crash: an operator saw an incident where the honest answer was "this group needs a feature that does not
+exist yet". `Refusal::Unsupported` now answers 501 and names the group, and it is logged at `warn` rather than
+`error` because somebody should fix it and nothing is broken. This is the only refusal in `caller` that carries
+a body, justified because it describes the deployment rather than the tenant's data. Reversible: yes.
+
+**Category reads and the uncategorised worklist are scoped to the caller, and browse counts ignore the active
+query.** The first is §7: a rollup reporting the true total would tell a group-scoped caller how large the part
+of the library they cannot reach is. The second is a deliberate split — the tree is browse chrome and counts
+everything the caller may see, while narrowing counts to the current search is what the search endpoint's facets
+already do. Reversible: yes.
