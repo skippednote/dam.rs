@@ -176,9 +176,39 @@ pub enum Query {
     },
     /// Collection membership.
     InCollection(Uuid),
+    /// The asset's *average* rating, compared. Caller-independent: it is the library's shared judgement.
+    Rating(Comparison),
+    /// Something only the caller can answer about themselves.
+    ///
+    /// Deliberately holds no identity. A saved search stores the query IR, so an identity baked in here would
+    /// make a search shared with a colleague return *the author's* favourites — the permanent leak wearing the
+    /// shape of a bookmark that `dam_db::saved_searches` exists to avoid. Who "mine" refers to is caller context
+    /// and travels with the access predicate, in [`Planned::viewed_by`].
+    Mine(Personal),
     And(Vec<Query>),
     Or(Vec<Query>),
     Not(Box<Query>),
+}
+
+/// A per-caller engagement state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Personal {
+    Favourite,
+    Watched,
+    /// Rated by this caller, at any number of stars. Distinct from [`Query::Rating`], which is about the asset.
+    Rated,
+}
+
+impl Personal {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Favourite => "favourite",
+            Self::Watched => "watched",
+            Self::Rated => "rated",
+        }
+    }
 }
 
 impl Query {
@@ -189,7 +219,9 @@ impl Query {
             | Self::Text(_)
             | Self::Field { .. }
             | Self::Term { .. }
-            | Self::InCollection(_) => 1,
+            | Self::InCollection(_)
+            | Self::Rating(_)
+            | Self::Mine(_) => 1,
             Self::And(children) | Self::Or(children) => {
                 1 + children.iter().map(Self::node_count).sum::<usize>()
             }
@@ -268,6 +300,9 @@ impl Query {
     fn check_fields(&self, defs: &[FieldDef], rejections: &mut Vec<Rejection>) {
         match self {
             Self::All | Self::Text(_) | Self::Term { .. } | Self::InCollection(_) => {}
+            // Nothing to check against the schema: who "mine" refers to is caller context, not a field.
+            Self::Mine(_) => {}
+            Self::Rating(op) => check_rating(op, rejections),
             Self::And(children) | Self::Or(children) => {
                 for child in children {
                     child.check_fields(defs, rejections);
@@ -292,6 +327,62 @@ impl Query {
                 check_comparison(def, op, rejections);
             }
         }
+    }
+}
+
+/// Validates a rating comparison.
+///
+/// A rating is a number from 1 to 5, so a substring operator is meaningless and a bound outside the range is a
+/// filter that can only match everything or nothing. Both are refused rather than clamped: `stars:>=9` is a
+/// mistake, and quietly turning it into `stars:>=5` would answer a question nobody asked.
+///
+/// `Missing` and `Exists` are allowed and mean "unrated" and "rated by anyone" — the two facts a rail needs
+/// beside the star buckets, and neither is expressible any other way.
+fn check_rating(op: &Comparison, rejections: &mut Vec<Rejection>) {
+    let refuse = |code: &'static str, detail: String, rejections: &mut Vec<Rejection>| {
+        rejections.push(Rejection {
+            key: "stars".to_owned(),
+            code,
+            detail,
+        });
+    };
+    let in_range = |literal: &Literal, rejections: &mut Vec<Rejection>| match literal {
+        Literal::Int(stars) if (1..=5).contains(stars) => {}
+        Literal::Int(stars) => refuse(
+            "stars_range",
+            format!("a rating is 1 to 5; {stars} can only match everything or nothing"),
+            rejections,
+        ),
+        other => refuse(
+            "stars_type",
+            format!(
+                "a rating is a whole number of stars, not {}",
+                other.describe()
+            ),
+            rejections,
+        ),
+    };
+
+    match op {
+        Comparison::Equals(literal) | Comparison::NotEquals(literal) => {
+            in_range(literal, rejections);
+        }
+        Comparison::Range { lower, upper } => {
+            for endpoint in [lower, upper] {
+                if let Endpoint::Inclusive(literal) | Endpoint::Exclusive(literal) = endpoint {
+                    in_range(literal, rejections);
+                }
+            }
+        }
+        Comparison::Exists | Comparison::Missing => {}
+        Comparison::Contains(_) | Comparison::StartsWith(_) => refuse(
+            "stars_operator",
+            format!(
+                "a rating is a number, so {} does not apply to it",
+                op.name()
+            ),
+            rejections,
+        ),
     }
 }
 
@@ -388,6 +479,13 @@ pub struct Planned {
     /// definitions could disagree with the one validation used, and the disagreement would show up as a
     /// range comparing text instead of numbers — silently wrong rather than an error.
     kinds: Vec<(String, FieldKind)>,
+    /// Who "mine" means, for [`Query::Mine`].
+    ///
+    /// Beside the access predicate rather than inside the query, for the reason on `Query::Mine`: the tree is
+    /// what the user asked for and is shareable, while this is who is asking and is not. `None` until a caller
+    /// says; a renderer meeting a personal clause without it fails loudly rather than returning an empty page,
+    /// because "nothing matched" and "nobody told me who you are" look identical on a screen.
+    viewer: Option<Uuid>,
 }
 
 impl Planned {
@@ -414,7 +512,25 @@ impl Planned {
             query,
             text_fields,
             kinds,
+            viewer: None,
         })
+    }
+
+    /// Names the caller, so `Query::Mine` clauses can be rendered.
+    ///
+    /// A builder rather than a fourth argument to [`Planned::new`]: most queries have no personal clause and
+    /// would carry the parameter for nothing. The renderer's refusal is what keeps this from being silently
+    /// forgettable.
+    #[must_use]
+    pub fn viewed_by(mut self, identity: Uuid) -> Self {
+        self.viewer = Some(identity);
+        self
+    }
+
+    /// Who "mine" refers to, if anyone has said.
+    #[must_use]
+    pub fn viewer(&self) -> Option<Uuid> {
+        self.viewer
     }
 
     pub fn access(&self) -> &AccessPredicate {

@@ -30,7 +30,7 @@
 //! — a typo silently becoming free text returns nothing and explains nothing.
 
 use crate::fields::{FieldDef, FieldKind};
-use crate::query::{Comparison, Endpoint, Literal, Query};
+use crate::query::{Comparison, Endpoint, Literal, Personal, Query};
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -44,6 +44,18 @@ pub const MAX_INPUT_CHARS: usize = 4096;
 ///
 /// Reserved, so a field of this name cannot shadow the browse tree.
 pub const CATEGORY_SELECTOR: &str = "in";
+
+/// The selector that filters by the caller's own engagement: `is:favourite`, `is:watched`, `is:rated`.
+///
+/// Reserved for the same reason as `in:`: a tenant field called `is` would shadow it, and the rail's own links
+/// would stop working for reasons nobody could see.
+pub const PERSONAL_SELECTOR: &str = "is";
+
+/// The selector that filters by the asset's average rating: `stars:>=4`.
+///
+/// Reserved. Unlike `is:`, this one is about the asset rather than the caller — the library's shared judgement,
+/// which is what makes it a facet worth having.
+pub const RATING_SELECTOR: &str = "stars";
 
 /// Deepest parenthesis nesting.
 ///
@@ -446,6 +458,54 @@ impl<'a> Parser<'a> {
             return Ok(Query::Text(text.to_owned()));
         }
 
+        // `is:` is the caller's own engagement. Before field resolution, for the same reason as `in:` below.
+        if name.eq_ignore_ascii_case(PERSONAL_SELECTOR) {
+            let what = rest.trim();
+            let state = match what.to_ascii_lowercase().as_str() {
+                "favourite" | "favorite" => Some(Personal::Favourite),
+                "watched" | "watching" => Some(Personal::Watched),
+                "rated" => Some(Personal::Rated),
+                _ => None,
+            };
+            // Both spellings of "favourite", because the tenant is in Pune and the vendor is in Boston, and a
+            // search box that accepts only one of them is a search box that is wrong for somebody every day.
+            // "watching" likewise: the button says Watch, so both the state and the act read naturally.
+            let Some(state) = state else {
+                return Err(ParseError::new(
+                    "unknown_personal",
+                    column + name.chars().count() + 1,
+                    format!(
+                        "{PERSONAL_SELECTOR}: takes favourite, watched or rated — {what:?} is none of them"
+                    ),
+                ));
+            };
+            return Ok(Query::Mine(state));
+        }
+
+        // `stars:` is the asset's average rating.
+        if name.eq_ignore_ascii_case(RATING_SELECTOR) {
+            let spec = rest.trim();
+            if spec.is_empty() {
+                return Err(ParseError::new(
+                    "empty_rating",
+                    column,
+                    format!(
+                        "{RATING_SELECTOR}: needs a number or a comparison, like {RATING_SELECTOR}:>=4"
+                    ),
+                ));
+            }
+            // Through the same comparison parser a field uses, so `>=4`, `2..4` and `none` behave identically
+            // here and there. A second parser for the same syntax is a second set of edge cases.
+            let op = self.operator(
+                FieldKind::Int,
+                RATING_SELECTOR,
+                spec,
+                false,
+                column + name.chars().count() + 1,
+            )?;
+            return Ok(Query::Rating(op));
+        }
+
         // `in:` is the category selector, not a field. Checked before field resolution because `in` is a
         // reserved name here: a tenant that defined a field called `in` would shadow the browse tree, and the
         // rail's own links would stop working for reasons nobody could see.
@@ -530,50 +590,75 @@ impl<'a> Parser<'a> {
         quoted: bool,
         column: usize,
     ) -> Result<Query, ParseError> {
+        let op = self.operator(def.kind, &def.key, value, quoted, column)?;
+        Ok(Query::Field {
+            key: def.key.clone(),
+            op,
+        })
+    }
+
+    /// The comparison a value text expresses, for a value of `kind`.
+    ///
+    /// Split out from [`Self::comparison`] so `stars:>=4` parses through exactly the same syntax as an int
+    /// field does. `label` names the thing being compared and only ever appears in an error message. A second
+    /// parser for `>=`, `..` and `-` would be a second set of edge cases to keep in step, and the first one
+    /// somebody found would be the one where the two disagreed.
+    fn operator(
+        &self,
+        kind: FieldKind,
+        label: &str,
+        value: &str,
+        quoted: bool,
+        column: usize,
+    ) -> Result<Comparison, ParseError> {
         let op = if quoted {
             // A quoted value is always an equality against the literal text — `brand:">2020"` asks for
             // the string, not a range.
-            Comparison::Equals(parse_literal(def.kind, value, column)?)
+            Comparison::Equals(parse_literal(kind, value, column)?)
         } else if value == "*" {
             Comparison::Exists
         } else if value == "-" {
             Comparison::Missing
         } else if let Some(rest) = value.strip_prefix(">=") {
             range(
-                def,
-                Endpoint::Inclusive(parse_literal(def.kind, rest, column)?),
+                kind,
+                label,
+                Endpoint::Inclusive(parse_literal(kind, rest, column)?),
                 Endpoint::Unbounded,
                 column,
             )?
         } else if let Some(rest) = value.strip_prefix("<=") {
             range(
-                def,
+                kind,
+                label,
                 Endpoint::Unbounded,
-                Endpoint::Inclusive(parse_literal(def.kind, rest, column)?),
+                Endpoint::Inclusive(parse_literal(kind, rest, column)?),
                 column,
             )?
         } else if let Some(rest) = value.strip_prefix('>') {
             range(
-                def,
-                Endpoint::Exclusive(parse_literal(def.kind, rest, column)?),
+                kind,
+                label,
+                Endpoint::Exclusive(parse_literal(kind, rest, column)?),
                 Endpoint::Unbounded,
                 column,
             )?
         } else if let Some(rest) = value.strip_prefix('<') {
             range(
-                def,
+                kind,
+                label,
                 Endpoint::Unbounded,
-                Endpoint::Exclusive(parse_literal(def.kind, rest, column)?),
+                Endpoint::Exclusive(parse_literal(kind, rest, column)?),
                 column,
             )?
         } else if let Some((lower, upper)) = split_range(value) {
             let lower = match lower {
                 "" => Endpoint::Unbounded,
-                text => Endpoint::Inclusive(parse_literal(def.kind, text, column)?),
+                text => Endpoint::Inclusive(parse_literal(kind, text, column)?),
             };
             let upper = match upper {
                 "" => Endpoint::Unbounded,
-                text => Endpoint::Inclusive(parse_literal(def.kind, text, column)?),
+                text => Endpoint::Inclusive(parse_literal(kind, text, column)?),
             };
             if matches!(lower, Endpoint::Unbounded) && matches!(upper, Endpoint::Unbounded) {
                 return Err(ParseError::new(
@@ -582,15 +667,12 @@ impl<'a> Parser<'a> {
                     "a range needs at least one bound",
                 ));
             }
-            range(def, lower, upper, column)?
+            range(kind, label, lower, upper, column)?
         } else {
-            Comparison::Equals(parse_literal(def.kind, value, column)?)
+            Comparison::Equals(parse_literal(kind, value, column)?)
         };
 
-        Ok(Query::Field {
-            key: def.key.clone(),
-            op,
-        })
+        Ok(op)
     }
 }
 
@@ -599,22 +681,22 @@ impl<'a> Parser<'a> {
 /// Refused here as well as in the IR's validation, so the message can carry a column. Both refuse it;
 /// this one refuses it usefully.
 fn range(
-    def: &FieldDef,
+    kind: FieldKind,
+    label: &str,
     lower: Endpoint,
     upper: Endpoint,
     column: usize,
 ) -> Result<Comparison, ParseError> {
     if !matches!(
-        def.kind,
+        kind,
         FieldKind::Int | FieldKind::Decimal | FieldKind::Date | FieldKind::DateTime
     ) {
         return Err(ParseError::new(
             "not_orderable",
             column,
             format!(
-                "{} is a {} field, which has no ordering to range over",
-                def.key,
-                def.kind.as_str()
+                "{label} is a {} field, which has no ordering to range over",
+                kind.as_str()
             ),
         ));
     }

@@ -1938,3 +1938,23 @@ storing a stale answer to the only question that matters. Reversible: no.
 representation, or an average silently counts absences — wrong in a way nobody notices until the numbers are on
 a screen. Same for favourites and watches: no `false` column, just absence. Reversible: no.
 
+**`Query::Mine` carries no identity, and the viewer travels with the access predicate.** A saved search stores the
+query IR, so an identity inside the tree would be stored with it — and a search shared with a colleague would
+return the author's favourites rather than theirs. That is precisely the "permanent leak wearing the shape of a
+bookmark" `dam_db::saved_searches` was designed to avoid, arriving through a new door. So the tree says *what* was
+asked (`is:favourite`) and `Planned::viewed_by` says *who* is asking, exactly as the access predicate does. A
+renderer that meets a personal clause with no viewer returns an error rather than an empty result: "you have no
+favourites" and "the code forgot to name you" are indistinguishable on screen, and only one is a bug. Reversible:
+no.
+
+**A rating clause reads the average through a correlated subquery, not a join.** Joining `asset_ratings` would
+multiply each asset row by its ratings, and every count downstream — pagination totals, facet buckets — would be
+wrong in a way that looks like a data problem rather than a query problem. `!= n` also excludes unrated assets
+explicitly: their average is null, so a bare `<> n` would drop them from both sides and make the complement of a
+bucket smaller than the library minus the bucket. Reversible: no.
+
+**Ratings are not indexed as a Tantivy fast field.** They could be, and then `stars:>=4` would be rankable. But
+every star click would have to reindex the asset, and a rating that silently made search stale is worse than a
+query that goes to SQL and reports `ranked: false`. Revisit if rating-sorted search becomes a real requirement.
+Reversible: yes.
+

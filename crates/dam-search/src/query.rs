@@ -144,6 +144,22 @@ fn render_query(query: &Query, schema: &IndexSchema) -> Result<Box<dyn TantivyQu
                 "collection membership is relational and is not in the index".to_owned(),
             ));
         }
+        Query::Rating(_) => {
+            // An average over a table the index does not hold. It *could* be indexed as a fast field, but then
+            // every rating would have to reindex the asset — and a star click that silently made search stale
+            // is worse than a query that goes to SQL and says it is unranked.
+            return Err(Error::Unsupported(
+                "a rating is an aggregate over `asset_ratings` and is not in the index".to_owned(),
+            ));
+        }
+        Query::Mine(state) => {
+            // Per-caller by nature, so it could never be a shared index field: the index holds one document per
+            // asset, and "is this a favourite" has a different answer for every person reading it.
+            return Err(Error::Unsupported(format!(
+                "`is:{}` is per-caller and cannot be an index field",
+                state.as_str()
+            )));
+        }
         Query::And(children) => {
             if children.is_empty() {
                 // The identity, matching SQL's `(true)`.

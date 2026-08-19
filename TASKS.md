@@ -26,14 +26,14 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M0–M3c** Foundation, ingest, metadata/search/rights, delivery/sharing/restore | complete |
 | **F** The UI: browse, detail, upload, filter rail, lightbox, bulk bar, design pass | complete |
 | **F.11b** Share/portal UI, schema administration, metadata types | complete except restore UX |
-| **Q** Acquia parity, 20 slices | Q.1–Q.4 done; Q.5a–Q.5b·1 done; Q.5b·2–Q.20 open |
+| **Q** Acquia parity, 20 slices | Q.1–Q.4 done; Q.5a–Q.5b·2 done; Q.5b·3–Q.20 open |
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | schema exists, behaviour unwritten |
 | **M6** Workflow/proofing, annotations, analytics | not started |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** Q.5b·2 engagement in search → Q.5c engagement UI
+**Next up, in order:** Q.5b·3 engagement on the payload → Q.5c engagement UI
 → Q.6 comments → Q.7 activity feed → Q.8 versions → Q.9 attachments → Q.10 history → Q.11 conversions →
 Q.12 intended use → Q.13 orders → Q.14 portals → Q.15–Q.19 search → Q.20 sundries → M4 → M5 → M6 → M3d →
 Pre-GA → Entries.
@@ -1646,8 +1646,28 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
       second real gap — both private lists held the same single id, so the watch route could have been wired to
       the favourites table and the suite would have passed.
 
-- [ ] **Q.5b·2 Engagement in search.** `stars:>=4`, `is:favourite` and `is:watched` selectors, engagement on the
-  asset payload so a grid needs one request, and favourites ranked first.
+- [x] **Q.5b·2 The engagement selectors.** `stars:>=4` for the asset's average and `is:favourite` / `is:watched` /
+      `is:rated` for the caller's own state. Two new IR variants, and the shape of them is the decision:
+      `Query::Mine` carries **no identity**, because a saved search stores the query IR — so an identity in the
+      tree would make a search shared with a colleague return the author's favourites, the leak wearing the shape
+      of a bookmark. Who is asking travels beside the access predicate instead, in `Planned::viewed_by`, and a
+      renderer meeting a personal clause without one *fails* rather than returning an empty page, because
+      "nothing matched" and "nobody said who you are" look identical on a screen.
+
+      Both clause kinds are relational and route through SQL: a rating is an aggregate over a table, and a
+      personal state has a different answer for every reader, so neither can be an index field. The rating
+      renderer uses a correlated subquery rather than a join, because a join would multiply each asset by its
+      ratings and every count downstream would be wrong; and `!= 4` excludes the unrated explicitly, or the
+      complement of a bucket would come out smaller than the library minus the bucket. `stars:*` and `stars:-`
+      mean "rated by anyone" and "unrated" — the two buckets a rail needs beside the stars.
+
+      Fifteen mutations caught, and two more could not be written at all because `is_relational` has no wildcard
+      arm — the exhaustive match makes that class of mistake a compile error. One found a real gap: the operator
+      refusal was asserted only in dam-db's renderer suite, so dam-core's own validation could be deleted and
+      only the other crate noticed.
+
+- [ ] **Q.5b·3 Engagement on the asset payload, and favourites first.** One request for a grid rather than fifty,
+  and a sort that puts the caller's favourites at the top.
 - [ ] **Q.5c The engagement UI.** Stars in the detail panel, a favourite toggle on the card, a watch toggle, and
   the two private lists as places you can go.
 - [ ] **Cleanup: `Caller::identity_id` is `Option` but `authorize` guarantees `Some`.** Three call sites re-check

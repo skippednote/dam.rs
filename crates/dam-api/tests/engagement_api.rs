@@ -19,6 +19,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use dam_api::engagement::{EngagementState, router};
 use dam_db::{auth, migrate, testing::PostgresHarness};
+use dam_search::{IndexPool, PoolConfig};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use tower::ServiceExt;
@@ -26,6 +27,8 @@ use uuid::Uuid;
 
 struct Fixture {
     _pg: PostgresHarness,
+    /// Held so the index directory outlives the fixture.
+    _indexes: tempfile::TempDir,
     app: axum::Router,
     acme: PgPool,
     /// A tenant admin, with a person behind it.
@@ -77,12 +80,21 @@ async fn fixture() -> Fixture {
     )
     .await;
 
+    // The search router is mounted alongside, because the question this slice raises is whether `/search`
+    // *answers* `is:favourite` rather than refusing it — the parser and the renderer are proven elsewhere, and
+    // routing between them is what was untested.
+    let index_dir = tempfile::tempdir().expect("index dir");
     let app = router(EngagementState {
         global: global.clone(),
-    });
+    })
+    .merge(dam_api::search::router(dam_api::search::SearchState {
+        global: global.clone(),
+        indexes: std::sync::Arc::new(IndexPool::new(PoolConfig::new(index_dir.path()))),
+    }));
 
     Fixture {
         _pg: pg,
+        _indexes: index_dir,
         app,
         acme,
         key,
@@ -213,6 +225,23 @@ async fn asset(f: &Fixture, label: &str, in_group: bool) -> Uuid {
     id
 }
 
+/// Percent-encodes a query string value.
+///
+/// `stars:>=4` contains characters a URI will not carry raw, and a real client encodes them. Doing it here rather
+/// than writing the encoded form into each case keeps the queries readable as the things a user types.
+fn encode(q: &str) -> String {
+    q.chars()
+        .map(|c| match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' | ':' => c.to_string(),
+            other => other
+                .to_string()
+                .bytes()
+                .map(|b| format!("%{b:02X}"))
+                .collect(),
+        })
+        .collect()
+}
+
 async fn call(
     f: &Fixture,
     method: &str,
@@ -255,6 +284,65 @@ async fn the_engagement_http_contract_holds() {
     a_hidden_asset_is_404_exactly_like_an_absent_one(&f, hidden).await;
     the_private_lists_are_the_callers_own(&f, visible).await;
     a_scoped_caller_sees_only_what_they_may(&f, visible, hidden).await;
+    search_answers_the_engagement_selectors_through_sql(&f, visible).await;
+}
+
+async fn search_answers_the_engagement_selectors_through_sql(f: &Fixture, visible: Uuid) {
+    // `is:` is per-caller and `stars:` is an aggregate, so neither can be an index field. Both therefore route
+    // through SQL — and the thing that matters is that `/search` *answers* them. Refusing with 501 is what
+    // happened to `in:` before it was routed, and the failure looked like a missing feature rather than a
+    // missing branch.
+    for q in ["is:favourite", "is:watched", "stars:>=1", "stars:-"] {
+        let (status, body) =
+            call(f, "GET", &format!("/search?q={}", encode(q)), &f.key, None).await;
+        assert_eq!(status, StatusCode::OK, "{q}: {body}");
+        assert_eq!(
+            body["ranked"],
+            json!(false),
+            "{q} went through SQL, so it is honest about not being ranked: {body}"
+        );
+    }
+
+    // And the answers are the caller's own. Ada favourited `visible` earlier; Grace favourited nothing.
+    let (_, mine) = call(f, "GET", "/search?q=is:favourite", &f.key, None).await;
+    let ids: Vec<&str> = mine["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .map(|item| item["id"].as_str().expect("id"))
+        .collect();
+    assert!(ids.contains(&visible.to_string().as_str()), "{mine}");
+
+    let (_, theirs) = call(f, "GET", "/search?q=is:favourite", &f.other_key, None).await;
+    assert_eq!(
+        theirs["items"].as_array().map(Vec::len),
+        Some(0),
+        "one person's favourites are not another's: {theirs}"
+    );
+
+    // A rating filter is *not* per-caller: Ada cleared her rating but Grace's 2 stars stand, so both see it.
+    for (who, key) in [("ada", &f.key), ("grace", &f.other_key)] {
+        let (_, body) = call(f, "GET", "/search?q=stars:2", key, None).await;
+        assert_eq!(
+            body["items"].as_array().map(Vec::len),
+            Some(1),
+            "{who} should see the asset the library rated: {body}"
+        );
+    }
+
+    // An out-of-range rating is a 400 naming the problem, not an empty result set: `stars:>=9` is a mistake, and
+    // an empty page would look like an answer.
+    let (status, body) = call(
+        f,
+        "GET",
+        &format!("/search?q={}", encode("stars:>=9")),
+        &f.key,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, body) = call(f, "GET", "/search?q=is:starred", &f.key, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 }
 
 async fn a_rating_comes_back_with_the_average_it_produced(f: &Fixture, visible: Uuid) {

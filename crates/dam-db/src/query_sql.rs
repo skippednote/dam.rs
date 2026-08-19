@@ -26,7 +26,7 @@
 
 use crate::Error;
 use dam_core::fields::FieldKind;
-use dam_core::query::{Comparison, Endpoint, Literal, Planned, Query};
+use dam_core::query::{Comparison, Endpoint, Literal, Personal, Planned, Query};
 use sqlx::{Postgres, QueryBuilder};
 
 /// Pushes the complete `WHERE` condition for `planned`.
@@ -64,6 +64,8 @@ fn push_query(
             term_id,
             include_descendants,
         } => push_term(builder, *term_id, *include_descendants),
+        Query::Rating(op) => push_rating(builder, op)?,
+        Query::Mine(state) => push_personal(builder, *state, planned)?,
         Query::InCollection(collection_id) => {
             builder
                 .push("assets.id IN (SELECT asset_id FROM collection_items WHERE collection_id = ");
@@ -380,6 +382,113 @@ fn push_term(builder: &mut QueryBuilder<Postgres>, term_id: uuid::Uuid, descenda
         builder.push_bind(term_id);
         builder.push(")");
     }
+}
+
+/// The asset's average rating, compared.
+///
+/// `avg` over `asset_ratings`, in a correlated subquery rather than a join: a join would multiply the asset rows
+/// by their ratings and every count downstream would be wrong. Unrated assets have a null average, so they fall
+/// out of every comparison — which is what "3 stars and up" means and is not what `Missing` means, hence the two
+/// being separate branches.
+fn push_rating(builder: &mut QueryBuilder<Postgres>, op: &Comparison) -> Result<(), Error> {
+    const AVERAGE: &str = "(SELECT avg(stars) FROM asset_ratings r WHERE r.asset_id = assets.id)";
+    const RATED: &str = "EXISTS (SELECT 1 FROM asset_ratings r WHERE r.asset_id = assets.id)";
+
+    match op {
+        // `Exists` and `Missing` are about *whether* anybody rated it, and are the two buckets a rail needs
+        // beside the stars. Expressed with EXISTS rather than a null test on the average, because they are
+        // questions about rows and not about a number.
+        Comparison::Exists => builder.push(RATED),
+        Comparison::Missing => builder.push(format!("NOT {RATED}")),
+        Comparison::Equals(literal) => {
+            // Rounded, because an average of 3.5 is what a person calls "4 stars" on a screen showing whole
+            // stars — and `stars:4` clicked from a bucket labelled 4 has to return what that bucket counted.
+            builder.push(format!("round({AVERAGE}) = "));
+            push_stars(builder, literal)?;
+            builder
+        }
+        Comparison::NotEquals(literal) => {
+            // Unrated assets are *not* "not 4 stars": they have no rating, and sweeping them in would make the
+            // complement of a bucket bigger than the library minus the bucket.
+            builder.push(format!("({RATED} AND round({AVERAGE}) <> "));
+            push_stars(builder, literal)?;
+            builder.push(")")
+        }
+        Comparison::Range { lower, upper } => {
+            builder.push("(");
+            let mut first = true;
+            for (endpoint, operator) in [(lower, (">=", ">")), (upper, ("<=", "<"))] {
+                let (symbol, literal) = match endpoint {
+                    Endpoint::Inclusive(literal) => (operator.0, literal),
+                    Endpoint::Exclusive(literal) => (operator.1, literal),
+                    Endpoint::Unbounded => continue,
+                };
+                if !first {
+                    builder.push(" AND ");
+                }
+                first = false;
+                builder.push(format!("{AVERAGE} {symbol} "));
+                push_stars(builder, literal)?;
+            }
+            if first {
+                // Validation refuses a range with no bounds, so this is unreachable — and `(true)` rather than
+                // an empty parenthesis, because a malformed fragment would be a syntax error at the database
+                // instead of a wrong answer here.
+                builder.push("true");
+            }
+            builder.push(")")
+        }
+        // Refused by validation before a renderer sees it. Rendered as false rather than ignored: a filter that
+        // silently disappears widens the result set, which is the wrong direction to be wrong in.
+        Comparison::Contains(_) | Comparison::StartsWith(_) => builder.push("(false)"),
+    };
+    Ok(())
+}
+
+/// A star count as a bound.
+fn push_stars(builder: &mut QueryBuilder<Postgres>, literal: &Literal) -> Result<(), Error> {
+    match literal {
+        Literal::Int(stars) => {
+            // Bound, not interpolated, and typed as numeric so the comparison against `avg` does not depend on
+            // Postgres inferring a type for a bare parameter.
+            builder.push_bind(*stars);
+            builder.push("::numeric");
+            Ok(())
+        }
+        // Validation refuses anything else. An error rather than a guess, because a rating compared against
+        // text is a question with no answer.
+        other => Err(Error::Migrate(format!(
+            "a rating cannot be compared with {other:?}"
+        ))),
+    }
+}
+
+/// One of the caller's own engagement states.
+///
+/// Fails when nobody has said who the caller is. Not an empty result: "you have no favourites" and "the code
+/// forgot to name you" look identical on a screen, and only one of them is a bug worth finding.
+fn push_personal(
+    builder: &mut QueryBuilder<Postgres>,
+    state: Personal,
+    planned: &Planned,
+) -> Result<(), Error> {
+    let Some(viewer) = planned.viewer() else {
+        return Err(Error::Migrate(format!(
+            "`is:{}` needs a viewer; the plan was built without one",
+            state.as_str()
+        )));
+    };
+    let table = match state {
+        Personal::Favourite => "asset_favourites",
+        Personal::Watched => "asset_watches",
+        Personal::Rated => "asset_ratings",
+    };
+    builder.push(format!(
+        "EXISTS (SELECT 1 FROM {table} e WHERE e.asset_id = assets.id AND e.identity_id = "
+    ));
+    builder.push_bind(viewer);
+    builder.push(")");
+    Ok(())
 }
 
 /// Escapes the `LIKE` metacharacters, using `\` as the escape character.

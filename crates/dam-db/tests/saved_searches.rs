@@ -295,6 +295,23 @@ async fn every_query_shape_survives_being_saved_and_loaded(pool: &PgPool) {
         ),
         ("collection", Query::InCollection(Uuid::from_u128(7))),
         (
+            "rating range",
+            Query::Rating(Comparison::Range {
+                lower: Endpoint::Inclusive(Literal::Int(4)),
+                upper: Endpoint::Unbounded,
+            }),
+        ),
+        ("unrated", Query::Rating(Comparison::Missing)),
+        (
+            "mine favourite",
+            Query::Mine(dam_core::query::Personal::Favourite),
+        ),
+        (
+            "mine watched",
+            Query::Mine(dam_core::query::Personal::Watched),
+        ),
+        ("mine rated", Query::Mine(dam_core::query::Personal::Rated)),
+        (
             "nested boolean",
             Query::And(vec![
                 Query::Or(vec![
@@ -676,6 +693,7 @@ async fn the_saved_search_invariants_hold() {
 
     every_query_shape_survives_being_saved_and_loaded(&pool).await;
     a_literals_type_is_tagged_not_guessed(&pool).await;
+    a_saved_personal_search_stores_no_identity(&pool).await;
     a_search_referring_to_a_deleted_field_is_refused_not_silently_dropped(&pool).await;
     an_unreadable_stored_query_is_refused_rather_than_matching_everything(&pool).await;
 
@@ -689,4 +707,51 @@ async fn the_saved_search_invariants_hold() {
     last_used_is_written_at_most_hourly(&pool).await;
     a_smart_collection_appears_in_the_collections_list(&pool).await;
     deleting_removes_it(&pool).await;
+}
+
+async fn a_saved_personal_search_stores_no_identity(pool: &PgPool) {
+    // The property that decides whether `is:favourite` is safe to save at all. The stored JSON must name the
+    // *state* and nobody in particular, so that a colleague opening a shared search sees their own favourites
+    // rather than the author's — the leak wearing the shape of a bookmark this module opens with.
+    let query = Query::Mine(dam_core::query::Personal::Favourite);
+    let saved = saved_searches::save(pool, &spec("my favourites", &query, None))
+        .await
+        .expect("save");
+
+    let stored: serde_json::Value =
+        sqlx::query_scalar("SELECT query FROM saved_searches WHERE id = $1")
+            .bind(saved.id)
+            .fetch_one(pool)
+            .await
+            .expect("stored query");
+    assert_eq!(stored["kind"], serde_json::json!("mine"), "{stored}");
+    assert_eq!(stored["state"], serde_json::json!("favourite"), "{stored}");
+
+    // No uuid anywhere in the stored form. Asserted over the whole serialised text rather than a named key,
+    // because the failure this guards against is an identity appearing under *some* key nobody thought of.
+    let text = stored.to_string();
+    assert!(
+        !text.contains("identity") && !text.contains("viewer"),
+        "the stored query names a person: {text}"
+    );
+    let uuid_shaped = text
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+        .any(|word| word.len() == 36 && word.matches('-').count() == 4);
+    assert!(!uuid_shaped, "the stored query contains a uuid: {text}");
+
+    // And two different viewers planning the same saved search get plans that differ only in who is asking.
+    let ada = Uuid::new_v4();
+    let grace = Uuid::new_v4();
+    let for_ada = saved_searches::plan(&saved, access(None), &defs())
+        .expect("plan")
+        .viewed_by(ada);
+    let for_grace = saved_searches::plan(&saved, access(None), &defs())
+        .expect("plan")
+        .viewed_by(grace);
+    assert_eq!(for_ada.query(), for_grace.query(), "the same question");
+    assert_ne!(
+        for_ada.viewer(),
+        for_grace.viewer(),
+        "asked by different people"
+    );
 }

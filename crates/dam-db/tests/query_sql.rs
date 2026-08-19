@@ -719,3 +719,144 @@ async fn the_sql_renderer_invariants_hold() {
     a_taxonomy_query_includes_descendants_and_only_confirmed_tags(&pool).await;
     a_free_text_search_reaches_array_values(&pool).await;
 }
+
+// ─── engagement clauses (Q.5b·2) ────────────────────────────────────────────
+
+/// Renders with a named viewer, which `is:` needs.
+fn render_as(query: Query, access: policy::AccessPredicate, viewer: Uuid) -> String {
+    let planned = Planned::new(query, access, &defs())
+        .expect("valid query")
+        .viewed_by(viewer);
+    let mut builder: QueryBuilder<Postgres> = QueryBuilder::new("SELECT 1 WHERE ");
+    query_sql::push_where(&mut builder, &planned).expect("render");
+    builder.into_sql().as_str().to_owned()
+}
+
+#[test]
+fn a_personal_clause_without_a_viewer_fails_loudly() {
+    // Not an empty result. "You have no favourites" and "the code forgot to say who you are" look identical on
+    // a screen, and only one of them is a bug somebody can find.
+    let planned = Planned::new(
+        Query::Mine(dam_core::query::Personal::Favourite),
+        admin_access(),
+        &defs(),
+    )
+    .expect("valid query");
+    let mut builder: QueryBuilder<Postgres> = QueryBuilder::new("SELECT 1 WHERE ");
+    let outcome = query_sql::push_where(&mut builder, &planned);
+    assert!(
+        outcome.is_err(),
+        "rendered without a viewer: {}",
+        builder.into_sql().as_str()
+    );
+}
+
+#[test]
+fn a_personal_clause_binds_the_viewer_and_never_interpolates_it() {
+    let viewer = Uuid::new_v4();
+    for (state, table) in [
+        (dam_core::query::Personal::Favourite, "asset_favourites"),
+        (dam_core::query::Personal::Watched, "asset_watches"),
+        (dam_core::query::Personal::Rated, "asset_ratings"),
+    ] {
+        let sql = render_as(Query::Mine(state), admin_access(), viewer);
+        assert!(sql.contains(table), "{state:?}: {sql}");
+        // The identity is a bound parameter. Interpolated, it would be the one value in the query that comes
+        // from the session rather than the request — and the habit is what matters, not this uuid.
+        assert!(
+            !sql.contains(&viewer.to_string()),
+            "{state:?} interpolated the viewer: {sql}"
+        );
+        // Correlated existence, not a join: a join against a per-person table would multiply asset rows.
+        assert!(sql.contains("EXISTS"), "{state:?}: {sql}");
+        // And the access filter is still the outer conjunct.
+        assert!(sql.contains("deleted_at IS NULL"), "{state:?}: {sql}");
+    }
+
+    // Each state reads its own table and no other, so a wire-crossed match arm shows up here.
+    let favourites = render_as(
+        Query::Mine(dam_core::query::Personal::Favourite),
+        admin_access(),
+        viewer,
+    );
+    assert!(!favourites.contains("asset_watches"), "{favourites}");
+    assert!(!favourites.contains("asset_ratings"), "{favourites}");
+}
+
+#[test]
+fn a_rating_comparison_averages_rather_than_joining() {
+    let sql = render(
+        Query::Rating(Comparison::Range {
+            lower: Endpoint::Inclusive(Literal::Int(4)),
+            upper: Endpoint::Unbounded,
+        }),
+        admin_access(),
+    );
+    assert!(sql.contains("avg(stars)"), "{sql}");
+    // A correlated subquery, not a join: joining `asset_ratings` would multiply each asset by its ratings and
+    // every count downstream would be wrong.
+    assert!(
+        sql.contains("SELECT avg(stars) FROM asset_ratings"),
+        "{sql}"
+    );
+    assert!(sql.contains(">="), "{sql}");
+    // No viewer needed: an average is the library's shared judgement, not the caller's.
+    assert!(sql.contains("deleted_at IS NULL"), "{sql}");
+}
+
+#[test]
+fn unrated_is_not_the_same_as_rated_low() {
+    let missing = render(Query::Rating(Comparison::Missing), admin_access());
+    let exists = render(Query::Rating(Comparison::Exists), admin_access());
+    assert!(missing.contains("NOT EXISTS"), "{missing}");
+    assert!(
+        exists.contains("EXISTS") && !exists.contains("NOT EXISTS"),
+        "{exists}"
+    );
+
+    // `!= 4` must not sweep in the unrated. Their average is null, so a bare `<> 4` would exclude them from
+    // *both* sides of the comparison — and the complement of a bucket would be smaller than the library minus
+    // the bucket, which is the kind of arithmetic a user notices and cannot explain.
+    let not_four = render(
+        Query::Rating(Comparison::NotEquals(Literal::Int(4))),
+        admin_access(),
+    );
+    assert!(
+        not_four.contains("EXISTS"),
+        "unrated assets are not 'not four': {not_four}"
+    );
+    assert!(not_four.contains("<>"), "{not_four}");
+}
+
+#[test]
+fn a_rating_outside_one_to_five_is_refused_before_rendering() {
+    // Refused rather than clamped: `stars:>=9` is a mistake, and quietly answering `stars:>=5` would answer a
+    // question nobody asked.
+    for literal in [
+        Literal::Int(0),
+        Literal::Int(6),
+        Literal::Text("four".to_owned()),
+    ] {
+        let rejections = Planned::new(
+            Query::Rating(Comparison::Equals(literal.clone())),
+            admin_access(),
+            &defs(),
+        )
+        .expect_err("out of range");
+        assert!(
+            rejections.iter().any(|r| r.key == "stars"),
+            "{literal:?}: {rejections:?}"
+        );
+    }
+    // And a substring operator on a number is refused too.
+    let rejections = Planned::new(
+        Query::Rating(Comparison::Contains("4".to_owned())),
+        admin_access(),
+        &defs(),
+    )
+    .expect_err("not a number comparison");
+    assert!(
+        rejections.iter().any(|r| r.code == "stars_operator"),
+        "{rejections:?}"
+    );
+}

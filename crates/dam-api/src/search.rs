@@ -218,7 +218,9 @@ fn is_relational(query: &dam_core::query::Query) -> bool {
     // `collection:` selector, and saved searches already render through SQL — so it is listed as a statement
     // about the type rather than a branch this file's tests can reach.
     match query {
-        Q::Term { .. } | Q::InCollection(_) => true,
+        // `Rating` is an aggregate over a table and `Mine` is per-caller: neither can be an index field, so both
+        // route through SQL for the same reason taxonomy membership does.
+        Q::Term { .. } | Q::InCollection(_) | Q::Rating(_) | Q::Mine(_) => true,
         Q::And(children) | Q::Or(children) => children.iter().any(is_relational),
         Q::Not(inner) => is_relational(inner),
         Q::All | Q::Text(_) | Q::Field { .. } => false,
@@ -347,6 +349,10 @@ async fn plan(
 
     // `Planned::new` is the only constructor and it takes the predicate, which is §7/§12 expressed in the
     // type system: there is no value of this type without an access filter, so no renderer can omit one.
+    //
+    // The viewer is named here too, because `is:favourite` is about whoever is asking. It goes beside the
+    // predicate rather than into the parsed tree deliberately: a saved search stores the tree, so an identity
+    // baked into it would make a shared search return the author's favourites.
     let planned = Planned::new(parsed, caller.predicate.clone(), &defs).map_err(|rejections| {
         Failure::BadQuery(QueryProblem {
             message: rejections
@@ -358,6 +364,12 @@ async fn plan(
             at: None,
         })
     })?;
+    let planned = match caller.identity_id {
+        Some(identity) => planned.viewed_by(identity),
+        // Unreachable through `authorize`, which refuses a key with no identity. Left unnamed rather than
+        // defaulted, so a personal clause fails loudly instead of quietly matching nothing.
+        None => planned,
+    };
     Ok((planned, defs))
 }
 

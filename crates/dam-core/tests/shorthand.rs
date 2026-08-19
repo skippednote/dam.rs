@@ -636,3 +636,137 @@ fn a_quoted_in_is_text_like_every_other_quoted_selector() {
         Query::Text("in:exterior".to_owned())
     );
 }
+
+// ─── engagement selectors (Q.5b·2) ──────────────────────────────────────────
+
+#[test]
+fn is_filters_by_the_callers_own_engagement() {
+    use dam_core::query::Personal;
+
+    assert_eq!(parse("is:favourite"), Query::Mine(Personal::Favourite));
+    assert_eq!(parse("is:watched"), Query::Mine(Personal::Watched));
+    assert_eq!(parse("is:rated"), Query::Mine(Personal::Rated));
+
+    // Both spellings, because the tenant is in Pune and the vendor is in Boston, and a search box that takes
+    // only one of them is wrong for somebody every single day.
+    assert_eq!(parse("is:favorite"), Query::Mine(Personal::Favourite));
+    // And "watching" as well as "watched": the button says Watch, so both the state and the act read naturally.
+    assert_eq!(parse("is:watching"), Query::Mine(Personal::Watched));
+
+    // The *value* is case-insensitive; the selector name is not, and neither is a field key. `is_field_shaped`
+    // gates on lowercase before any selector is considered, so `IS:` is free text — the same rule that makes
+    // `Brand:Acme` a text search and `IN:exterior` one too. Asserted rather than assumed, because a reader
+    // seeing `eq_ignore_ascii_case` on the selector name would otherwise expect the opposite.
+    assert_eq!(parse("is:FAVOURITE"), Query::Mine(Personal::Favourite));
+    assert_eq!(
+        parse("IS:Favourite"),
+        Query::Text("IS:Favourite".to_owned())
+    );
+    assert_eq!(parse("IN:exterior"), Query::Text("IN:exterior".to_owned()));
+
+    // The query tree carries no identity at all. This is the property that makes a saved search shareable: with
+    // an identity in the tree, a colleague opening the search would get the author's favourites.
+    let tree = parse("is:favourite");
+    let json = format!("{tree:?}");
+    assert!(
+        !json.contains('-'),
+        "a personal clause must not carry a uuid: {json}"
+    );
+}
+
+#[test]
+fn an_unknown_personal_state_is_refused_with_its_column() {
+    let error = parse_err("is:starred");
+    assert_eq!(error.code, "unknown_personal");
+    // Points at the value, because that is the part to fix.
+    assert_eq!(error.column, 4, "{error:?}");
+    assert!(error.detail.contains("favourite"), "{error:?}");
+}
+
+#[test]
+fn stars_filters_by_the_assets_average_rating() {
+    assert_eq!(
+        parse("stars:>=4"),
+        Query::Rating(Comparison::Range {
+            lower: Endpoint::Inclusive(Literal::Int(4)),
+            upper: Endpoint::Unbounded,
+        })
+    );
+    assert_eq!(
+        parse("stars:5"),
+        Query::Rating(Comparison::Equals(Literal::Int(5)))
+    );
+    assert_eq!(
+        parse("stars:2..4"),
+        Query::Rating(Comparison::Range {
+            lower: Endpoint::Inclusive(Literal::Int(2)),
+            upper: Endpoint::Inclusive(Literal::Int(4)),
+        })
+    );
+    // The same syntax a field uses, all the way down: `*` is "rated by anyone" and `-` is "unrated", which are
+    // the two buckets a rail needs beside the stars and are not expressible any other way.
+    assert_eq!(parse("stars:*"), Query::Rating(Comparison::Exists));
+    assert_eq!(parse("stars:-"), Query::Rating(Comparison::Missing));
+}
+
+#[test]
+fn a_field_cannot_shadow_the_engagement_selectors() {
+    // Same reservation as `in:`, for the same reason: a tenant field called `is` or `stars` would take over the
+    // selector and the rail's own links would stop working.
+    let shadowing = shorthand::Schema::new(
+        vec![
+            def("is", FieldKind::Text, None),
+            def("stars", FieldKind::Text, None),
+        ],
+        HashMap::new(),
+    );
+    assert_eq!(
+        shorthand::parse("is:favourite", &shadowing).expect("parses"),
+        Query::Mine(dam_core::query::Personal::Favourite),
+    );
+    assert_eq!(
+        shorthand::parse("stars:3", &shadowing).expect("parses"),
+        Query::Rating(Comparison::Equals(Literal::Int(3))),
+    );
+}
+
+#[test]
+fn a_quoted_selector_is_text_and_an_empty_one_is_an_error() {
+    assert_eq!(
+        parse("\"is:favourite\""),
+        Query::Text("is:favourite".to_owned())
+    );
+    assert_eq!(parse("\"stars:4\""), Query::Text("stars:4".to_owned()));
+    assert_eq!(parse_err("stars:").code, "empty_rating");
+    assert_eq!(parse_err("is:").code, "unknown_personal");
+}
+
+#[test]
+fn a_rating_outside_the_scale_is_refused_by_the_ir() {
+    // The parser accepts the number and the IR refuses the value, which is the same split every field uses:
+    // syntax here, meaning there.
+    let parsed = parse("stars:>=9");
+    let rejections = parsed.validate(&fields()).expect_err("out of range");
+    assert!(
+        rejections.iter().any(|r| r.code == "stars_range"),
+        "{rejections:?}"
+    );
+
+    // And an operator that makes no sense for a number. Checked here, in the crate that owns the validation:
+    // the same assertion in dam-db's renderer suite proved nothing about dam-core, and mutation testing found
+    // exactly that gap — the refusal could be deleted and only the *other* crate's tests noticed.
+    let rejections = Query::Rating(Comparison::Contains("4".to_owned()))
+        .validate(&fields())
+        .expect_err("a substring of a number");
+    assert!(
+        rejections.iter().any(|r| r.code == "stars_operator"),
+        "{rejections:?}"
+    );
+    let rejections = Query::Rating(Comparison::StartsWith("4".to_owned()))
+        .validate(&fields())
+        .expect_err("a prefix of a number");
+    assert!(
+        rejections.iter().any(|r| r.code == "stars_operator"),
+        "{rejections:?}"
+    );
+}

@@ -268,6 +268,11 @@ fn serialise(query: &Query) -> Result<serde_json::Value, Error> {
             "descendants": include_descendants,
         }),
         Query::InCollection(id) => serde_json::json!({"kind": "collection", "id": id}),
+        Query::Rating(op) => serde_json::json!({"kind": "rating", "op": serialise_op(op)?}),
+        // No identity, and that is the whole point. A saved search is shareable, so storing *who* "mine" meant
+        // would make a colleague opening it see the author's favourites — the leak wearing the shape of a
+        // bookmark this module's docs open with. Who is asking is resolved at evaluation time, from the caller.
+        Query::Mine(state) => serde_json::json!({"kind": "mine", "state": state.as_str()}),
         Query::And(children) => serde_json::json!({
             "kind": "and",
             "children": children.iter().map(serialise).collect::<Result<Vec<_>, _>>()?,
@@ -362,6 +367,18 @@ fn deserialise(value: &serde_json::Value) -> Result<Query, Error> {
         "collection" => Query::InCollection(
             serde_json::from_value(value["id"].clone())
                 .map_err(|_| bad("collection without a uuid"))?,
+        ),
+        "rating" => Query::Rating(deserialise_op(&value["op"])?),
+        "mine" => Query::Mine(
+            match value["state"]
+                .as_str()
+                .ok_or_else(|| bad("mine without a state"))?
+            {
+                "favourite" => dam_core::query::Personal::Favourite,
+                "watched" => dam_core::query::Personal::Watched,
+                "rated" => dam_core::query::Personal::Rated,
+                other => return Err(bad(&format!("unknown personal state {other:?}"))),
+            },
         ),
         "and" | "or" => {
             let children = value["children"]
