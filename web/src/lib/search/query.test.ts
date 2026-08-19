@@ -6,7 +6,16 @@
  * hand-typed clause this module does not own and must not rewrite.
  */
 import { describe, expect, it } from 'vitest';
-import { hasTerm, parse, renderTerm, toggleTerm, withTerm, withoutTerm } from './query';
+import {
+	hasTerm,
+	parse,
+	renderTerm,
+	selectedValue,
+	toggleTerm,
+	withOnlyTerm,
+	withTerm,
+	withoutTerm
+} from './query';
 
 describe('rendering a term', () => {
 	it('leaves a simple value alone', () => {
@@ -96,5 +105,36 @@ describe('toggling', () => {
 
 	it('puts terms before free text so the box reads as filters plus a search', () => {
 		expect(withTerm('harbour', { key: 'colours', value: 'blue' })).toBe('colours:blue harbour');
+	});
+});
+
+describe('browsing a hierarchy, as against ticking facets', () => {
+	it('replaces the previous category rather than adding a second one', () => {
+		// `in:a in:b` is legal and means "filed in both", which is almost never what somebody clicking through
+		// a tree wants — it usually returns nothing while looking like the tree is broken. Navigating replaces.
+		const first = withOnlyTerm('', 'in', 'exterior');
+		expect(first).toBe('in:exterior');
+
+		const second = withOnlyTerm(first, 'in', 'interior');
+		expect(second).toBe('in:interior');
+		expect(parse(second).terms).toHaveLength(1);
+	});
+
+	it('leaves other terms and hand-typed text alone', () => {
+		const query = withOnlyTerm('brand:acme year:>2020 harbour', 'in', 'exterior');
+		// The range clause this module does not own survives verbatim, and so does the free text.
+		expect(query).toContain('year:>2020');
+		expect(query).toContain('harbour');
+		expect(query).toContain('brand:acme');
+		expect(query).toContain('in:exterior');
+	});
+
+	it('clears the selection with null', () => {
+		expect(withOnlyTerm('in:exterior brand:acme', 'in', null)).toBe('brand:acme');
+	});
+
+	it('reports which branch is selected, so the tree can highlight it', () => {
+		expect(selectedValue('brand:acme in:exterior.yellow', 'in')).toBe('exterior.yellow');
+		expect(selectedValue('brand:acme', 'in')).toBeNull();
 	});
 });

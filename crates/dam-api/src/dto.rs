@@ -57,4 +57,19 @@ pub struct AssetPage {
     pub total: i64,
     /// Zero-based index of the first item in `items` within the full result set.
     pub offset: i64,
+    /// Whether `items` are in relevance order.
+    ///
+    /// False when the query contained a clause the index cannot answer — category or collection membership,
+    /// which are joins — so it was answered in SQL and ordered by recency instead. Reported rather than left
+    /// implicit because a grid that says "ranked by relevance" over a `created_at` ordering is lying about the
+    /// one thing a reader might act on; and because the *count* means something different too, being exact
+    /// rather than capped by the ranking overfetch.
+    #[serde(default = "ranked_by_default")]
+    pub ranked: bool,
+}
+
+/// Ranked unless a response says otherwise: every path but the relational one ranks, and a client reading an
+/// older response should assume the behaviour that has always held.
+fn ranked_by_default() -> bool {
+    true
 }

@@ -245,8 +245,20 @@ describe('an empty grid', () => {
 		await expect.element(screen.getByText(/no assets/i)).toBeInTheDocument();
 	});
 
-	it('is still a grid with zero rows, so assistive technology is not confused', async () => {
+	it('is not a grid, because a grid with no rows is invalid ARIA', async () => {
+		// This case used to assert the opposite — `role="grid"` with `aria-rowcount="0"`, on the reasoning that
+		// keeping the role stable stops assistive technology being confused by a region that changes identity.
+		// The intent was right and the implementation was not: `grid` *requires* `row` children, so an empty one
+		// fails `aria-required-children`, and a screen reader announces "grid, 0 rows" and then reads a sentence
+		// that sits in no cell. An axe scan of a zero-result fixture proved it; every other fixture has results,
+		// which is why it went unseen.
+		//
+		// An empty result is the answer to a search, so it is a `status`. That is both valid and more useful:
+		// the message is announced as the live answer rather than as furniture inside an empty table.
 		const screen = grid([], 0, 4);
-		await expect.element(screen.getByRole('grid')).toHaveAttribute('aria-rowcount', '0');
+		await expect.element(screen.getByRole('grid')).not.toBeInTheDocument();
+		await expect
+			.element(screen.getByRole('status').filter({ hasText: /no assets/i }))
+			.toBeInTheDocument();
 	});
 });

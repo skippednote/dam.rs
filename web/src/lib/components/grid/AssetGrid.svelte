@@ -211,15 +211,17 @@
 <div role="status" aria-live="polite" class="sr-only">{selectionMessage}</div>
 
 {#if total === 0}
-	<div
-		role="grid"
-		aria-label="Assets"
-		aria-rowcount="0"
-		aria-colcount={columns}
-		class="rounded-md border border-line p-8 text-center text-muted"
-	>
+	<!--
+		Not a grid. An empty result is a sentence, and `role="grid"` over prose is wrong twice: it fails
+		`aria-required-children` (a grid must contain rows), and a screen reader announces "grid, 0 rows" and
+		then reads text that is in no cell. `role="status"` is what this actually is — the answer to a search.
+
+		Found by an e2e fixture that returned zero assets: every other fixture has results, so this state had
+		never been axe-scanned.
+	-->
+	<p role="status" class="rounded-md border border-line p-8 text-center text-muted">
 		No assets match this search.
-	</div>
+	</p>
 {:else}
 	<div
 		bind:this={viewport}

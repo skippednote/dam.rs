@@ -545,6 +545,16 @@ export interface components {
              */
             offset: number;
             /**
+             * @description Whether `items` are in relevance order.
+             *
+             *     False when the query contained a clause the index cannot answer — category or collection membership,
+             *     which are joins — so it was answered in SQL and ordered by recency instead. Reported rather than left
+             *     implicit because a grid that says "ranked by relevance" over a `created_at` ordering is lying about the
+             *     one thing a reader might act on; and because the *count* means something different too, being exact
+             *     rather than capped by the ranking overfetch.
+             */
+            ranked?: boolean;
+            /**
              * Format: int64
              * @description Total matching assets, not the number returned.
              */

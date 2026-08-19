@@ -1543,8 +1543,20 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
   whole chain — database paths → parser schema → resolution → SQL that returns descendants — because each link
   is individually plausible and the failure mode is a join between them. 9 mutations all caught; two found real
   blind spots (mixed-case ltree paths, and a vocabulary term becoming filterable as a category).
-- [ ] **Q.2c·2 Categories in the UI**: the browse tree in the filter rail with counts, categories on the detail
-  panel, filing from there, and the uncategorised worklist surfaced.
+- [x] **Q.2c·2 Categories in the UI, and the four bugs it took to get there.** A browse tree in the rail
+  (navigating, not ticking: selecting a branch replaces the previous one, because `in:a in:b` means "filed in
+  both" and returns nothing while looking broken), disclosure derived from the selection so a shared link
+  arrives expanded, empty branches kept visible so the tree's shape does not change with the reader's scope, and
+  a `CategoryPanel` on the detail side that files and unfiles from a picker over what exists.
+  **Four real bugs, each found a different way.** Driving the real thing found two: `/search` refused every
+  relational clause with a 501 saying it was "routed through SQL" — aspirationally, so the whole feature was
+  unreachable from the UI; and once routing existed, a composed query like `in:exterior harbour` 500'd because
+  `page_matching` had copied `page`'s `FROM assets` while the SQL text renderer references `asset_metadata`.
+  Opening the page found the third: a category tree was *also* emitted as a facet, rendering twice, the second
+  time under a heading that was the taxonomy's UUID. And looking at it found the fourth: the selected label used
+  `text-accent-fg` — the foreground *for* the accent surface — so it rendered exactly the background colour and
+  vanished, which axe did not flag. 5 new API cases, 9 e2e cases, 4 unit cases; 6 routing mutations all caught.
+- [ ] **Q.2c·3 The uncategorised worklist surfaced** in the UI, with the other admin worklists (Q.20).
 - [ ] **Q.3 Upload profiles.** Per-profile metadata defaults, required-field enforcement in the uploader,
   and the per-profile AI switches Acquia's backfill respects.
 - [ ] **Q.4 Auto-import mappings.** Embedded metadata (XMP/EXIF/IPTC) → field definitions, on ingest.

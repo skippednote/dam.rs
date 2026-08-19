@@ -266,6 +266,9 @@ pub async fn list(
         items,
         total: page.total,
         offset: page.offset,
+        // Browsing is not ranking: this endpoint orders by the caller's chosen `order`, so a grid must not
+        // claim relevance over it.
+        ranked: false,
     }))
 }
 

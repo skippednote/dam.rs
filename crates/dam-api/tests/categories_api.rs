@@ -14,6 +14,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use dam_api::categories::{CategoryState, router};
 use dam_db::{auth, migrate, testing::PostgresHarness};
+use dam_search::{IndexPool, PoolConfig};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use tower::ServiceExt;
@@ -21,6 +22,8 @@ use uuid::Uuid;
 
 struct Fixture {
     _pg: PostgresHarness,
+    /// Held so the index directory outlives the fixture.
+    _indexes: tempfile::TempDir,
     app: axum::Router,
     global: PgPool,
     acme: PgPool,
@@ -66,12 +69,21 @@ async fn fixture() -> Fixture {
     .expect("role");
     let scoped = role_key(&global, "acme", "scoped@example.com", &["visible_only"]).await;
 
+    // The search router is mounted alongside, because the interesting question about a category *query* is
+    // whether `/search` answers it — the parser and the SQL renderer are proven elsewhere, and what was broken
+    // was the routing between them.
+    let index_dir = tempfile::tempdir().expect("index dir");
     let app = router(CategoryState {
         global: global.clone(),
-    });
+    })
+    .merge(dam_api::search::router(dam_api::search::SearchState {
+        global: global.clone(),
+        indexes: std::sync::Arc::new(IndexPool::new(PoolConfig::new(index_dir.path()))),
+    }));
 
     Fixture {
         _pg: pg,
+        _indexes: index_dir,
         app,
         global: global.clone(),
         acme,
@@ -241,6 +253,8 @@ async fn the_category_http_contract_holds() {
     a_vocabulary_is_refused_as_a_tree(&f).await;
     filing_something_that_is_not_a_category_is_refused(&f).await;
     a_caller_scoped_to_a_rule_based_group_is_refused_loudly(&f).await;
+    a_category_query_is_answered_rather_than_refused(&f, tree, exterior, yellow).await;
+    a_category_tree_is_not_also_a_flat_facet(&f, tree).await;
 }
 
 async fn a_tree_is_built_over_http(f: &Fixture) -> (Uuid, Uuid, Uuid) {
@@ -558,5 +572,146 @@ async fn a_caller_scoped_to_a_rule_based_group_is_refused_loudly(f: &Fixture) {
             .unwrap_or_default()
             .contains("recent"),
         "the refusal names the group an administrator has to change: {body}"
+    );
+}
+
+async fn a_category_query_is_answered_rather_than_refused(
+    f: &Fixture,
+    tree: Uuid,
+    exterior: Uuid,
+    yellow: Uuid,
+) {
+    // The gap this closes: `in:` parsed and rendered SQL correctly, and the *search endpoint* still refused it
+    // with a 501 saying the clause was "routed through SQL" — aspirationally. The rail wrote a query the server
+    // would not answer, so the whole feature was unreachable from the UI.
+    //
+    // Category membership is a join, not an index term, and `dam_search` refuses it by name rather than
+    // dropping it — dropping a filter returns *more* than the caller asked for. So the query goes to SQL.
+    // A searchable text field, and a value on the asset. Without this the tenant has no text fields, so a
+    // composed query emits no reference to `asset_metadata` — and the missing join that broke
+    // `in:exterior harbour` on the dev stack stays invisible. Driving the real thing found it; this keeps it
+    // found.
+    sqlx::query(
+        "INSERT INTO field_defs (id, key, label, kind, searchable, display_order) \
+         VALUES (gen_random_uuid(), 'caption', 'Caption', 'text', true, 1) \
+         ON CONFLICT (key) DO NOTHING",
+    )
+    .execute(&f.acme)
+    .await
+    .expect("field");
+
+    let filed = asset(f, "answers-a-category-query", false).await;
+    sqlx::query("INSERT INTO asset_metadata (asset_id, values) VALUES ($1, $2)")
+        .bind(filed)
+        .bind(serde_json::json!({ "caption": "a harbour at dawn" }))
+        .execute(&f.acme)
+        .await
+        .expect("metadata");
+    let elsewhere = asset(f, "not-in-this-branch", false).await;
+    let (status, _) = call(
+        f,
+        "PUT",
+        &format!("/assets/{filed}/categories/{yellow}"),
+        &f.key,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    for query in ["in:exterior", "in:exterior.yellow"] {
+        let (status, body) = call(f, "GET", &format!("/search?q={query}"), &f.key, None).await;
+        assert_eq!(status, StatusCode::OK, "{query} must be answered: {body}");
+        let ids: Vec<&str> = body["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .filter_map(|item| item["id"].as_str())
+            .collect();
+        assert!(
+            ids.contains(&filed.to_string().as_str()),
+            "{query} should return the filed asset: {body}"
+        );
+        assert!(
+            !ids.contains(&elsewhere.to_string().as_str()),
+            "{query} should not return an unfiled asset: {body}"
+        );
+        // And the response says it is not relevance-ordered, because SQL has no score. A grid claiming
+        // "ranked by relevance" over a recency ordering lies about the one thing a reader might act on.
+        assert_eq!(body["ranked"], false, "{query}");
+    }
+
+    // A relational clause nested under a conjunction still routes to SQL. Without the recursive check this
+    // went to the index, where the category clause was refused rather than answered — so the *composition*
+    // was broken while each half worked.
+    //
+    // The free-text half is a real metadata match, not a filename one: that is what forces the SQL renderer to
+    // reference `asset_metadata`, and therefore what proves the join is there.
+    let (status, body) = call(f, "GET", "/search?q=in:exterior%20harbour", &f.key, None).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a composed relational query must be answered: {body}"
+    );
+    assert_eq!(body["ranked"], false);
+    let ids: Vec<&str> = body["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter_map(|item| item["id"].as_str())
+        .collect();
+    assert!(
+        ids.contains(&filed.to_string().as_str()),
+        "the caption matched in SQL, so the asset is returned: {body}"
+    );
+
+    // And the text half really is filtering: a word in neither the filename nor the metadata returns nothing.
+    let (status, body) = call(f, "GET", "/search?q=in:exterior%20zeppelin", &f.key, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["total"], 0,
+        "the text clause must narrow, not be ignored: {body}"
+    );
+
+    // A query with no relational clause still goes to the index and still claims its ranking.
+    let (status, body) = call(f, "GET", "/search?q=answers", &f.key, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["ranked"], true,
+        "an ordinary text search is still ranked"
+    );
+
+    let _ = (tree, exterior);
+}
+
+async fn a_category_tree_is_not_also_a_flat_facet(f: &Fixture, tree: Uuid) {
+    // A category tree has its own surface — a hierarchy, with rollup counts and disclosure. Emitting it as a
+    // facet as well rendered it twice in the rail, the second time as a flat list of leaves under a heading
+    // that was the taxonomy's UUID, because a facet key is an id and no label can be derived from one.
+    //
+    // Found by opening the page once a real tree existed. Vocabularies are still facets: that is what a facet
+    // is *for*, and it is the difference `taxonomies.kind` records.
+    let vocabulary: Uuid = sqlx::query_scalar(
+        "INSERT INTO taxonomies (id, key, label, kind) \
+         VALUES (gen_random_uuid(), 'materials', 'Materials', 'vocabulary') RETURNING id",
+    )
+    .fetch_one(&f.acme)
+    .await
+    .expect("vocabulary");
+
+    let (status, body) = call(f, "GET", "/search/facets", &f.key, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let keys: Vec<&str> = body
+        .as_array()
+        .expect("facets")
+        .iter()
+        .filter_map(|facet| facet["key"].as_str())
+        .collect();
+    assert!(
+        !keys.contains(&tree.to_string().as_str()),
+        "the category tree must not appear as a facet: {keys:?}"
+    );
+    assert!(
+        keys.contains(&vocabulary.to_string().as_str()),
+        "a vocabulary still is one: {keys:?}"
     );
 }

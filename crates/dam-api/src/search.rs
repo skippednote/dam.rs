@@ -131,6 +131,29 @@ pub async fn search(
     let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
     let (planned, defs) = plan(conn.executor(), &caller, &params.q).await?;
 
+    // Some clauses are joins, not index terms: category and collection membership. `dam_search` refuses them
+    // by name rather than dropping them, because a dropped filter returns *more* than the caller asked for —
+    // the wrong direction to be wrong in over a governed library. So they are answered in SQL instead, which
+    // can express the whole query language; the cost is that SQL has no relevance score, so the page comes
+    // back in browse order and says so.
+    if is_relational(planned.query()) {
+        let page = assets::page_matching(
+            conn.executor(),
+            &planned,
+            dam_db::assets::Order::Newest,
+            offset,
+            limit,
+        )
+        .await?;
+        conn.commit().await?;
+        return Ok(Json(AssetPage {
+            items: page.items.iter().map(crate::assets::summary_of).collect(),
+            total: page.total,
+            offset,
+            ranked: false,
+        }));
+    }
+
     let index_schema = IndexSchema::new(defs);
     let open = state
         .indexes
@@ -178,7 +201,28 @@ pub async fn search(
         // rather than pretending to be exhaustive.
         total,
         offset,
+        ranked: true,
     }))
+}
+
+/// Whether a query contains a clause the index cannot answer.
+///
+/// Category and collection membership are joins. Recursive because a relational clause nested inside an `and`,
+/// an `or` or a `not` is still relational — and a check that only looked at the top level would send
+/// `in:exterior harbour` to the index, where the category clause would be refused rather than answered.
+fn is_relational(query: &dam_core::query::Query) -> bool {
+    use dam_core::query::Query as Q;
+    // No wildcard arm, deliberately: a new `Query` variant should not silently default to "the index can
+    // answer this", because the consequence of being wrong in that direction is a refused clause rather than a
+    // filtered one. `InCollection` is unreachable *through this endpoint* today — the shorthand has no
+    // `collection:` selector, and saved searches already render through SQL — so it is listed as a statement
+    // about the type rather than a branch this file's tests can reach.
+    match query {
+        Q::Term { .. } | Q::InCollection(_) => true,
+        Q::And(children) | Q::Or(children) => children.iter().any(is_relational),
+        Q::Not(inner) => is_relational(inner),
+        Q::All | Q::Text(_) | Q::Field { .. } => false,
+    }
 }
 
 /// One facet bucket.
@@ -229,8 +273,12 @@ pub async fn facets(
             limit: FACET_BUCKETS,
         })
         .collect();
+    // Vocabularies only. A *category* tree has its own surface — a hierarchy with rollup counts — and
+    // emitting it here as well rendered it twice in the rail, the second time as a flat list of leaves under a
+    // heading that was the taxonomy's UUID, because a facet key is an id and no label can be derived from one.
+    // Found by opening the page after the first real category tree existed.
     let taxonomies: Vec<uuid::Uuid> =
-        sqlx::query_scalar("SELECT id FROM taxonomies ORDER BY label")
+        sqlx::query_scalar("SELECT id FROM taxonomies WHERE kind <> 'category' ORDER BY label")
             .fetch_all(conn.executor())
             .await
             .map_err(dam_db::Error::from)?;

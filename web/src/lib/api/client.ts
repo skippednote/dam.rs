@@ -34,6 +34,9 @@ export type AmendedField = components['schemas']['AmendedField'];
 export type RemovedField = components['schemas']['RemovedField'];
 export type MetadataTypeRow = components['schemas']['MetadataTypeRow'];
 export type AssetTypeView = components['schemas']['AssetTypeView'];
+export type CategoryTree = components['schemas']['TreeRow'];
+export type CategoryNode = components['schemas']['NodeRow'];
+export type CategoryWorklist = components['schemas']['Worklist'];
 
 /** A failed request, with whatever the server said about it. */
 export class ApiError extends Error {
@@ -249,6 +252,65 @@ export async function reorderFields(keys: string[]): Promise<void> {
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ keys })
 	});
+}
+
+/**
+ * Categories: the tree assets are filed in.
+ *
+ * The counts on each node are *this caller's* — a group-scoped reader legitimately sees smaller numbers than
+ * an administrator, because a count that reported the true total would disclose the size of what they cannot
+ * reach.
+ */
+export async function listCategoryTrees(): Promise<CategoryTree[]> {
+	return request<CategoryTree[]>('/categories');
+}
+
+export async function readCategoryTree(treeId: string): Promise<CategoryNode[]> {
+	return request<CategoryNode[]>(`/categories/${treeId}`);
+}
+
+export async function createCategoryTree(body: {
+	key: string;
+	label: string;
+}): Promise<CategoryTree> {
+	return request<CategoryTree>('/categories', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body)
+	});
+}
+
+export async function createCategory(
+	treeId: string,
+	body: { slug: string; label: string; parent_id?: string | null }
+): Promise<CategoryNode> {
+	return request<CategoryNode>(`/categories/${treeId}/nodes`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body)
+	});
+}
+
+export async function readAssetCategories(assetId: string): Promise<CategoryNode[]> {
+	return request<CategoryNode[]>(`/assets/${assetId}/categories`);
+}
+
+/** Files an asset in a category. Returns the asset's categories afterwards, so chips redraw without a refetch. */
+export async function fileInCategory(assetId: string, categoryId: string): Promise<CategoryNode[]> {
+	return request<CategoryNode[]>(`/assets/${assetId}/categories/${categoryId}`, { method: 'PUT' });
+}
+
+export async function unfileFromCategory(
+	assetId: string,
+	categoryId: string
+): Promise<CategoryNode[]> {
+	return request<CategoryNode[]>(`/assets/${assetId}/categories/${categoryId}`, {
+		method: 'DELETE'
+	});
+}
+
+export async function readUncategorised(treeId: string): Promise<CategoryWorklist> {
+	return request<CategoryWorklist>(`/categories/${treeId}/uncategorised`);
 }
 
 /**

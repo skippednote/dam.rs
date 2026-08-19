@@ -101,6 +101,25 @@ export function toggleTerm(query: string, term: Term): string {
 	return present ? withoutTerm(query, term) : withTerm(query, term);
 }
 
+/**
+ * The query with exactly one term for `key` — `value` — or none when `value` is null.
+ *
+ * What a *browse tree* does, as against a facet checkbox. `in:a in:b` is a legal query and means "filed in
+ * both", which is almost never what somebody clicking through a hierarchy wants: they are navigating, and two
+ * branches selected at once usually returns nothing while looking like a bug in the tree. So selecting a
+ * category replaces the previous one, and selecting the current one again clears it.
+ */
+export function withOnlyTerm(query: string, key: string, value: string | null): string {
+	const { terms, text } = parse(query);
+	const others = terms.filter((existing) => existing.key !== key);
+	return compose(value === null ? others : [...others, { key, value }], text);
+}
+
+/** The value currently selected for `key`, if any. What decides which branch of a tree is highlighted. */
+export function selectedValue(query: string, key: string): string | null {
+	return parse(query).terms.find((term) => term.key === key)?.value ?? null;
+}
+
 /** Whether `term` is currently in `query`. What decides a checkbox's state. */
 export function hasTerm(query: string, term: Term): boolean {
 	return parse(query).terms.some(

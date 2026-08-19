@@ -1804,3 +1804,31 @@ other selector value: a user typing the label they see is not wrong, and an ltre
 capitals. Retired categories are excluded because a retired category cannot take new assets, so offering it as a
 filter would keep it alive in the one place somebody would notice — the opposite of retiring it. Vocabulary
 terms are excluded too, or `in:` would silently start filtering by an AI tag vocabulary. Reversible: yes.
+
+**A relational query is answered in SQL, and the response says it is not ranked.** Category and collection
+membership are joins, not index terms, and `dam_search` refuses them by name rather than dropping them — a
+dropped filter returns *more* than the caller asked for, which over a governed library is the wrong direction to
+be wrong in. So `/search` routes those queries to `assets::page_matching` instead. SQL has no relevance score,
+so the page comes back in recency order, and `AssetPage.ranked` reports that: a grid claiming "ranked by
+relevance" over a `created_at` ordering lies about the one thing a reader might act on. The check is recursive,
+because a relational clause nested under a conjunction is still relational — without that, `in:exterior harbour`
+went to the index where the category half was refused, so the *composition* broke while each half worked.
+Reversible: yes.
+
+**A category tree is not also a facet.** Once a real tree existed the rail rendered it twice: once as the
+hierarchy with rollup counts, and once as a flat list of leaves under a heading that was the taxonomy's UUID,
+because a facet key is an id and no label can be derived from one. `taxonomies.kind` already records the
+difference, and the facet query now excludes categories. Vocabularies are still facets — that is what a facet is
+for. Reversible: yes.
+
+**`text-accent` for text on the page, `text-accent-fg` only on an accent surface.** The selected category's
+label used the latter and rendered *exactly* the background colour — invisible, and it was the one thing the
+highlight existed to emphasise. Worth recording because the token name invites the mistake, and because the axe
+scan did not catch it: a 1:1 contrast ratio on a styled button slipped through, so there is now a direct
+colour-comparison assertion for the selected state rather than reliance on the scan. Reversible: no.
+
+**An empty result is a `status`, not a grid with zero rows.** A previous iteration deliberately kept
+`role="grid"` on the empty state so assistive technology would not be confused by a region changing identity.
+The intent was right and the implementation was not: `grid` requires `row` children, so an empty one fails
+`aria-required-children`, and a screen reader announced "grid, 0 rows" and then read a sentence sitting in no
+cell. Found by the first fixture that returned zero assets. Reversible: no.

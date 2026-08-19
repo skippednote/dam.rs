@@ -20,6 +20,7 @@
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import AssetGrid from '$lib/components/grid/AssetGrid.svelte';
+	import CategoryTree from '$lib/components/filter/CategoryTree.svelte';
 	import FilterRail from '$lib/components/filter/FilterRail.svelte';
 	import DetailPanel from '$lib/components/detail/DetailPanel.svelte';
 	import Lightbox from '$lib/components/detail/Lightbox.svelte';
@@ -74,9 +75,9 @@
 		error = '';
 		try {
 			const trimmed = query.trim();
-			ranked = trimmed.length > 0;
+			const searching = trimmed.length > 0;
 			const [assets, counted, defined] = await Promise.all([
-				ranked ? searchAssets({ q: trimmed, limit: PAGE }) : listAssets({ limit: PAGE, order }),
+				searching ? searchAssets({ q: trimmed, limit: PAGE }) : listAssets({ limit: PAGE, order }),
 				// Facets share the query, so the counts describe the same set as the results. A failure here
 				// must not empty the grid: a rail is an affordance and the results are the page.
 				loadFacets(trimmed).catch(() => [] as Facet[]),
@@ -85,6 +86,13 @@
 				// comma-joined string to a field that takes an array.
 				loadFields().catch(() => [] as FieldDefinition[])
 			]);
+			// Whether the results are relevance-ordered is the server's answer, not a guess from "did we search".
+			// A category filter routes through SQL — the index cannot answer a membership join — and comes back
+			// in recency order, so inferring `ranked` from the presence of a query would put "ranked by
+			// relevance" over a list that is not.
+			// `?? searching` because the field is optional on the wire: a server predating it omits it, and the
+			// old inference — "we searched, so it is ranked" — is the best answer available in that case.
+			ranked = assets.ranked ?? searching;
 			if (mine !== generation) return;
 			result = assets;
 			facets = counted;
@@ -245,7 +253,12 @@
 			aria-label="Filters"
 			class="hidden w-56 shrink-0 overflow-y-auto border-r border-line p-4 lg:block"
 		>
-			<FilterRail {facets} {query} onquery={railChanged} />
+			<!-- The tree first: where an asset *lives* is the coarser question, and the facets narrow within
+			     whatever it selects. Both write the same query string. -->
+			<div class="space-y-6">
+				<CategoryTree {query} onquery={railChanged} />
+				<FilterRail {facets} {query} onquery={railChanged} />
+			</div>
 		</aside>
 
 		<div class="min-w-0 flex-1 overflow-hidden p-4">

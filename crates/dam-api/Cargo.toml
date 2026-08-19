@@ -42,6 +42,8 @@ blake3 = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 dam-db = { path = "../dam-db", features = ["testing"] }
 dam-store = { path = "../dam-store" }
+# The search router needs an index directory, and a category query is only interesting if `/search` answers it.
+tempfile = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"

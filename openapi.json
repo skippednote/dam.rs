@@ -1622,6 +1622,10 @@
             "format": "int64",
             "description": "Zero-based index of the first item in `items` within the full result set."
           },
+          "ranked": {
+            "type": "boolean",
+            "description": "Whether `items` are in relevance order.\n\nFalse when the query contained a clause the index cannot answer — category or collection membership,\nwhich are joins — so it was answered in SQL and ordered by recency instead. Reported rather than left\nimplicit because a grid that says \"ranked by relevance\" over a `created_at` ordering is lying about the\none thing a reader might act on; and because the *count* means something different too, being exact\nrather than capped by the ranking overfetch."
+          },
           "total": {
             "type": "integer",
             "format": "int64",

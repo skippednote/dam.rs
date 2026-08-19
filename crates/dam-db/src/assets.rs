@@ -149,6 +149,87 @@ where
     })
 }
 
+/// A page of the assets a *planned query* matches, ordered and counted in SQL.
+///
+/// The relational twin of [`page`]. Some clauses the shorthand can express are not in the search index at all —
+/// category membership and collection membership are joins, not terms — and `dam_search` refuses them by name
+/// rather than dropping them, because a dropped filter returns **more** than the caller asked for. This is
+/// where those queries get answered instead.
+///
+/// The trade is ordering: SQL has no relevance score, so rows come back in `order` rather than by rank. The
+/// caller is expected to say so — a grid claiming "ranked by relevance" over a `created_at` ordering lies about
+/// the one thing a reader might act on.
+pub async fn page_matching<'e, E>(
+    executor: E,
+    planned: &dam_core::query::Planned,
+    order: Order,
+    offset: i64,
+    limit: i64,
+) -> Result<Page, Error>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    let offset = offset.max(0);
+    let limit = limit.clamp(1, MAX_LIMIT);
+
+    let mut builder: QueryBuilder<Postgres> = QueryBuilder::new(
+        "SELECT assets.id, assets.filename, assets.mime, assets.bytes, assets.width, assets.height, \
+                assets.rights_state, assets.provenance_state, \
+                placement.storage_class, placement.restore_state, \
+                count(*) OVER () AS total \
+         FROM assets \
+         LEFT JOIN asset_metadata ON asset_metadata.asset_id = assets.id ",
+    );
+    builder.push(WARMEST_PLACEMENT);
+    builder.push(" WHERE ");
+    // The metadata join is not optional here, unlike in `page`: a planned query can contain a text or field
+    // clause, and `query_sql` renders those against `asset_metadata.values`. Without the join the SQL simply
+    // fails to resolve the name — which is what a composed query like `in:exterior harbour` did, on a tenant
+    // that had text fields. The tenant in the first test of this had none, so nothing emitted the reference.
+    crate::query_sql::push_where(&mut builder, planned)?;
+    builder.push(order.fragment());
+    builder.push(" LIMIT ");
+    builder.push_bind(limit);
+    builder.push(" OFFSET ");
+    builder.push_bind(offset);
+
+    let rows = builder.build().fetch_all(executor).await?;
+
+    // From the window function, so it is the count of what the predicate matched rather than of what this
+    // page returned — and from the *same* statement as the rows, because two statements are two snapshots
+    // and a concurrent upload between them makes the total disagree with the page it describes.
+    let total = rows
+        .first()
+        .map(|row| row.get::<i64, _>("total"))
+        .unwrap_or(0);
+
+    let items = rows
+        .iter()
+        .map(|row| {
+            Ok(Summary {
+                id: row.get("id"),
+                filename: row.get("filename"),
+                mime: row.get("mime"),
+                bytes: row.get("bytes"),
+                width: row.get("width"),
+                height: row.get("height"),
+                tier: tier_of(row)?,
+                rights_state: parse_rights(&row.get::<String, _>("rights_state"))?,
+                provenance_state: parse_provenance(&row.get::<String, _>("provenance_state"))?,
+                // Not selected: it comes from the enrichment tables, and a join per row on a grid page is
+                // the kind of cost that only shows up at a hundred thousand assets. Populated by 4.x.
+                tag_confidence: None,
+            })
+        })
+        .collect::<Result<Vec<Summary>, Error>>()?;
+
+    Ok(Page {
+        items,
+        total,
+        offset,
+    })
+}
+
 /// The one placement a tier is derived from: the **warmest** present copy.
 ///
 /// A lateral rather than a plain `LEFT JOIN`, and that is a correctness matter rather than a style one. An

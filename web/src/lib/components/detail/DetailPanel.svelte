@@ -19,6 +19,7 @@
 	import RightsBadge from '$lib/components/state/RightsBadge.svelte';
 	import ProvenanceBadge from '$lib/components/state/ProvenanceBadge.svelte';
 	import AssetTypePicker from './AssetTypePicker.svelte';
+	import CategoryPanel from './CategoryPanel.svelte';
 	import MetadataEditor from './MetadataEditor.svelte';
 	import SharePanel from './SharePanel.svelte';
 	import { deliveryUrl } from '$lib/api/client';
@@ -194,6 +195,10 @@
 		<h3 class="mb-2 text-xs font-semibold tracking-wide text-muted uppercase">Metadata</h3>
 		<MetadataEditor assetId={asset.id} {values} fields={formFields} onsaved={onchanged} />
 	</div>
+
+	<!-- Where it is filed, before sharing: a reader checking an asset asks "what is this and where does it
+	     live" before "who can have it". -->
+	<CategoryPanel assetId={asset.id} />
 
 	<SharePanel assetId={asset.id} />
 
