@@ -64,7 +64,10 @@ pub fn router(state: EngagementState) -> Router {
 }
 
 /// An asset's engagement, as the caller may see it.
-#[derive(Debug, Serialize, ToSchema)]
+///
+/// `Deserialize` as well as `Serialize` because `AssetDetail` embeds it and that type round-trips in the tests
+/// and in the generated client; `PartialEq` for the same reason.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct EngagementView {
     pub asset_id: Uuid,
     /// The mean of every rating, or null when nobody has rated it.
@@ -365,6 +368,26 @@ fn person(caller: &caller::Caller) -> Result<Uuid, Failure> {
     caller
         .identity_id
         .ok_or(Failure::Refused(caller::Refusal::Forbidden))
+}
+
+/// An [`EngagementView`] for an asset, from an engagement row that may not be there.
+///
+/// The absent case is a caller with no identity, for whom "nothing is favourited" is simply true. Zeroes rather
+/// than a null object, so a panel never has to decide what a missing engagement means.
+#[must_use]
+pub fn view_of(state: Option<Engagement>, asset_id: Uuid) -> EngagementView {
+    state.map_or(
+        EngagementView {
+            asset_id,
+            average_stars: None,
+            rating_count: 0,
+            favourite_count: 0,
+            my_stars: None,
+            is_favourite: false,
+            is_watched: false,
+        },
+        present,
+    )
 }
 
 fn present(state: Engagement) -> EngagementView {

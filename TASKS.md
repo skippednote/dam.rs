@@ -26,14 +26,14 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M0–M3c** Foundation, ingest, metadata/search/rights, delivery/sharing/restore | complete |
 | **F** The UI: browse, detail, upload, filter rail, lightbox, bulk bar, design pass | complete |
 | **F.11b** Share/portal UI, schema administration, metadata types | complete except restore UX |
-| **Q** Acquia parity, 20 slices | Q.1–Q.4 done; Q.5a–Q.5b·2 done; Q.5b·3–Q.20 open |
+| **Q** Acquia parity, 20 slices | Q.1–Q.4 done; Q.5a–Q.5b done; Q.5c–Q.20 open |
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | schema exists, behaviour unwritten |
 | **M6** Workflow/proofing, annotations, analytics | not started |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** Q.5b·3 engagement on the payload → Q.5c engagement UI
+**Next up, in order:** Q.5c engagement UI
 → Q.6 comments → Q.7 activity feed → Q.8 versions → Q.9 attachments → Q.10 history → Q.11 conversions →
 Q.12 intended use → Q.13 orders → Q.14 portals → Q.15–Q.19 search → Q.20 sundries → M4 → M5 → M6 → M3d →
 Pre-GA → Entries.
@@ -1666,8 +1666,23 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
       refusal was asserted only in dam-db's renderer suite, so dam-core's own validation could be deleted and
       only the other crate noticed.
 
-- [ ] **Q.5b·3 Engagement on the asset payload, and favourites first.** One request for a grid rather than fifty,
-  and a sort that puts the caller's favourites at the top.
+- [x] **Q.5b·3 Engagement on the asset payload, and favourites first.** The summary carries only what a cell
+      draws — `is_favourite` and the library's `average_stars` — because every field on a summary is multiplied by
+      the page size; the counts, the caller's own stars and the watch state are on the detail, which draws them.
+      One engagement read per page rather than per row, on all *three* page paths: browse, relational search and
+      ranked search. The third is a separate code path because the ranking is the order, so it walks its window a
+      row at a time — and folding engagement into the other two proved nothing about it. Exercised by building a
+      real index in the test, which is what it took to reach that path at all.
+
+      `order=favourites` puts the caller's favourites first and leaves the tail in the default order, so the sort
+      changes which assets are at the top and nothing else. The identity lives *in* the `Order::FavouritesFirst`
+      variant: this is the one order that is not a property of the library, so asking for it without saying whose
+      favourites is a question with no answer, and the type makes it unaskable. It is bound, not formatted into
+      the SQL — a uuid happening to be injection-safe is luck, not a design.
+
+      Ten mutations, nine caught. The survivor is documented rather than papered over: `page_engagement` applies
+      the caller's predicate a second time, and no current call site can observe it because the ids always come
+      from a read that already filtered them.
 - [ ] **Q.5c The engagement UI.** Stars in the detail panel, a favourite toggle on the card, a watch toggle, and
   the two private lists as places you can go.
 - [ ] **Cleanup: `Caller::identity_id` is `Option` but `authorize` guarantees `Some`.** Three call sites re-check

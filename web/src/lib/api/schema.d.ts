@@ -690,6 +690,14 @@ export interface components {
             created_at: string;
             /** Format: int64 */
             duration_ms?: number | null;
+            /**
+             * @description Ratings, favourites and the watch state, in full (Q.5b·3).
+             *
+             *     The whole picture here, unlike the two fields the summary carries: the panel draws the star widget, the
+             *     counts and the watch toggle, and fetching them separately would make opening a panel two requests where
+             *     one will do.
+             */
+            engagement: components["schemas"]["EngagementView"];
             enrichment_state: string;
             /** Format: date-time */
             expires_at?: string | null;
@@ -763,6 +771,14 @@ export interface components {
          *     the page size — and anything a cell does not draw belongs on the detail endpoint instead.
          */
         AssetSummary: {
+            /**
+             * Format: double
+             * @description The asset's average rating, or `None` when nobody has rated it.
+             *
+             *     The average rather than the caller's own rating: a grid shows what the library thinks, and `None` is not
+             *     zero — "unrated" and "rated badly by everyone" must not draw the same.
+             */
+            average_stars?: number | null;
             /** Format: int64 */
             bytes: number;
             /** @description The name the uploader gave it, preserved verbatim. The stored MIME is sniffed, not this. */
@@ -771,6 +787,14 @@ export interface components {
             height?: number | null;
             /** Format: uuid */
             id: string;
+            /**
+             * @description Whether *this caller* has favourited it, so a cell can draw a filled star (Q.5b·3).
+             *
+             *     Only the two engagement facts a cell actually draws are here — see the note on this struct about every
+             *     field being multiplied by the page size. The counts, the caller's own stars and the watch state are on the
+             *     detail endpoint, because no grid cell shows them.
+             */
+            is_favourite: boolean;
             /** @description Sniffed on ingest, never taken from the client (`assets.mime`). */
             mime: string;
             provenance_state: components["schemas"]["ProvenanceState"];
@@ -980,7 +1004,12 @@ export interface components {
             key: string;
             label: string;
         };
-        /** @description An asset's engagement, as the caller may see it. */
+        /**
+         * @description An asset's engagement, as the caller may see it.
+         *
+         *     `Deserialize` as well as `Serialize` because `AssetDetail` embeds it and that type round-trips in the tests
+         *     and in the generated client; `PartialEq` for the same reason.
+         */
         EngagementView: {
             /** Format: uuid */
             asset_id: string;
@@ -1341,7 +1370,7 @@ export interface components {
          *     caller-supplied, and validating one against a list is the same list written twice.
          * @enum {string}
          */
-        SortOrder: "newest" | "oldest" | "filename_asc" | "filename_desc" | "largest_first";
+        SortOrder: "newest" | "oldest" | "filename_asc" | "filename_desc" | "largest_first" | "favourites";
         /**
          * @description S3 storage classes, matching `object_placements.storage_class`.
          * @enum {string}

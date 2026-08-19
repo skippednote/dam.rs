@@ -2185,7 +2185,8 @@
               "legal_hold",
               "version_no",
               "created_at",
-              "updated_at"
+              "updated_at",
+              "engagement"
             ],
             "properties": {
               "color_space": {
@@ -2208,6 +2209,10 @@
                   "null"
                 ],
                 "format": "int64"
+              },
+              "engagement": {
+                "$ref": "#/components/schemas/EngagementView",
+                "description": "Ratings, favourites and the watch state, in full (Q.5b·3).\n\nThe whole picture here, unlike the two fields the summary carries: the panel draws the star widget, the\ncounts and the watch toggle, and fetching them separately would make opening a panel two requests where\none will do."
               },
               "enrichment_state": {
                 "type": "string"
@@ -2313,9 +2318,18 @@
           "bytes",
           "tier",
           "rights_state",
-          "provenance_state"
+          "provenance_state",
+          "is_favourite"
         ],
         "properties": {
+          "average_stars": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The asset's average rating, or `None` when nobody has rated it.\n\nThe average rather than the caller's own rating: a grid shows what the library thinks, and `None` is not\nzero — \"unrated\" and \"rated badly by everyone\" must not draw the same."
+          },
           "bytes": {
             "type": "integer",
             "format": "int64"
@@ -2334,6 +2348,10 @@
           "id": {
             "type": "string",
             "format": "uuid"
+          },
+          "is_favourite": {
+            "type": "boolean",
+            "description": "Whether *this caller* has favourited it, so a cell can draw a filled star (Q.5b·3).\n\nOnly the two engagement facts a cell actually draws are here — see the note on this struct about every\nfield being multiplied by the page size. The counts, the caller's own stars and the watch state are on the\ndetail endpoint, because no grid cell shows them."
           },
           "mime": {
             "type": "string",
@@ -2780,7 +2798,7 @@
       },
       "EngagementView": {
         "type": "object",
-        "description": "An asset's engagement, as the caller may see it.",
+        "description": "An asset's engagement, as the caller may see it.\n\n`Deserialize` as well as `Serialize` because `AssetDetail` embeds it and that type round-trips in the tests\nand in the generated client; `PartialEq` for the same reason.",
         "required": [
           "asset_id",
           "rating_count",
@@ -3562,7 +3580,8 @@
           "oldest",
           "filename_asc",
           "filename_desc",
-          "largest_first"
+          "largest_first",
+          "favourites"
         ]
       },
       "StorageClass": {

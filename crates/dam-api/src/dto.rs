@@ -43,6 +43,17 @@ pub struct AssetSummary {
     /// Model confidence in the asset's automatic tags, 0..1. `None` means nothing scored it — which
     /// is not the same as zero, and the UI renders it differently.
     pub tag_confidence: Option<f32>,
+    /// Whether *this caller* has favourited it, so a cell can draw a filled star (Q.5b·3).
+    ///
+    /// Only the two engagement facts a cell actually draws are here — see the note on this struct about every
+    /// field being multiplied by the page size. The counts, the caller's own stars and the watch state are on the
+    /// detail endpoint, because no grid cell shows them.
+    pub is_favourite: bool,
+    /// The asset's average rating, or `None` when nobody has rated it.
+    ///
+    /// The average rather than the caller's own rating: a grid shows what the library thinks, and `None` is not
+    /// zero — "unrated" and "rated badly by everyone" must not draw the same.
+    pub average_stars: Option<f64>,
 }
 
 /// One page of results.

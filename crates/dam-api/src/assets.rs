@@ -162,16 +162,28 @@ pub enum SortOrder {
     FilenameAsc,
     FilenameDesc,
     LargestFirst,
+    /// The caller's favourites first, then newest within each group (Q.5b·3).
+    Favourites,
 }
 
-impl From<SortOrder> for Order {
-    fn from(order: SortOrder) -> Self {
-        match order {
-            SortOrder::Newest => Self::Newest,
-            SortOrder::Oldest => Self::Oldest,
-            SortOrder::FilenameAsc => Self::FilenameAsc,
-            SortOrder::FilenameDesc => Self::FilenameDesc,
-            SortOrder::LargestFirst => Self::LargestFirst,
+impl SortOrder {
+    /// The database order, given who is asking.
+    ///
+    /// Not a `From` impl, because one of these orders needs the caller: "favourites first" without saying whose
+    /// is a question with no answer, and `dam_db::assets::Order` puts the identity in the variant so it cannot
+    /// be asked. A conversion that could not see the caller would have had to invent one or drop the order.
+    fn resolve(self, viewer: Option<Uuid>) -> Order {
+        match (self, viewer) {
+            (Self::Newest, _) => Order::Newest,
+            (Self::Oldest, _) => Order::Oldest,
+            (Self::FilenameAsc, _) => Order::FilenameAsc,
+            (Self::FilenameDesc, _) => Order::FilenameDesc,
+            (Self::LargestFirst, _) => Order::LargestFirst,
+            (Self::Favourites, Some(viewer)) => Order::FavouritesFirst(viewer),
+            // Unreachable through `authorize`, which refuses a key with no identity. Newest rather than an
+            // error: a machine key that asked for favourites-first has no favourites, so "newest" is the
+            // honest answer to what remains of the question.
+            (Self::Favourites, None) => Order::Newest,
         }
     }
 }
@@ -202,6 +214,12 @@ pub struct AssetDetail {
     pub version_no: i32,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    /// Ratings, favourites and the watch state, in full (Q.5b·3).
+    ///
+    /// The whole picture here, unlike the two fields the summary carries: the panel draws the star widget, the
+    /// counts and the watch toggle, and fetching them separately would make opening a panel two requests where
+    /// one will do.
+    pub engagement: crate::engagement::EngagementView,
     /// A signed internal-preview URL for the `preview-1024` rendition, when one has been rendered.
     ///
     /// On the detail endpoint only. A list of sixty of these would mint sixty tokens for images no grid draws —
@@ -237,7 +255,7 @@ pub async fn list(
     let page = assets::page(
         conn.executor(),
         &caller.predicate,
-        params.order.into(),
+        params.order.resolve(caller.identity_id),
         params.offset,
         params.limit,
     )
@@ -248,13 +266,17 @@ pub async fn list(
     let ids: Vec<Uuid> = page.items.iter().map(|item| item.id).collect();
     let with_thumbnails =
         dam_db::derivatives::which_have(conn.executor(), &ids, &thumb_profile().op_hash()).await?;
+
+    // Engagement for the page in one read, for the same reason (Q.5b·3). A grid drawing sixty filled-or-empty
+    // stars would otherwise make sixty requests, which is the shape the endpoint exists to avoid.
+    let engagement = page_engagement(&caller, conn.executor(), &ids).await?;
     conn.commit().await?;
 
     let items = page
         .items
         .iter()
         .map(|row| {
-            let mut summary = summary_of(row);
+            let mut summary = summary_with_engagement(row, &engagement);
             if with_thumbnails.contains(&row.id) {
                 summary.thumbnail_url = preview_link(&state, &caller, row.id, thumb_profile().name);
             }
@@ -300,10 +322,13 @@ pub async fn detail(
         &[&thumb_profile().op_hash(), &preview_profile().op_hash()],
     )
     .await?;
+    // In the same transaction as the row it describes: a rating arriving between two transactions would make
+    // the panel show an average that does not match the asset it is drawn beside.
+    let engagement = page_engagement(&caller, conn.executor(), &[asset_id]).await?;
     conn.commit().await?;
     let found = found.ok_or(Failure::NotFound)?;
 
-    let mut summary = summary_of(&found.summary);
+    let mut summary = summary_with_engagement(&found.summary, &engagement);
     if rendered.contains(&thumb_profile().op_hash()) {
         summary.thumbnail_url = preview_link(&state, &caller, asset_id, thumb_profile().name);
     }
@@ -330,6 +355,9 @@ pub async fn detail(
         version_no: found.version_no,
         created_at: found.created_at,
         updated_at: found.updated_at,
+        // The engagement read is scoped to the asset the caller asked for, so the single element is it — and a
+        // caller with no identity gets the untouched state rather than a failure, because a panel still renders.
+        engagement: crate::engagement::view_of(engagement.into_iter().next(), asset_id),
         preview_url,
     }))
 }
@@ -575,6 +603,50 @@ fn preview_link(
         .ok()
 }
 
+/// Engagement for a page of assets, or nothing when there is no person to ask about.
+///
+/// Returns an empty vector rather than failing for a key with no identity: a grid still renders, just with no
+/// stars filled in, which is the truth for a caller who cannot have favourites. Unreachable through `authorize`
+/// in any case.
+pub async fn page_engagement(
+    caller: &caller::Caller,
+    conn: &mut sqlx::PgConnection,
+    ids: &[Uuid],
+) -> Result<Vec<dam_db::engagement::Engagement>, Failure> {
+    let Some(identity) = caller.identity_id else {
+        return Ok(Vec::new());
+    };
+    // The caller's predicate again, even though every current call site passes ids that came from a read which
+    // already applied it. That makes this filter unobservable — mutating it to an all-groups predicate changes
+    // no test outcome, and the reason is that there is no path here carrying unfiltered ids. Kept because it is
+    // the only correct predicate to use and the next call site may not be as careful, and documented because
+    // undocumented unobservable code reads as tested when it is not.
+    let planned =
+        dam_core::query::Planned::new(dam_core::query::Query::All, caller.predicate.clone(), &[])
+            .map_err(|_| Failure::Internal)?;
+    dam_db::engagement::many(conn, ids, identity, &planned)
+        .await
+        .map_err(|_| Failure::Internal)
+}
+
+/// The wire summary for a read row, with this caller's engagement folded in.
+///
+/// Separate from [`summary_of`] rather than an argument to it, because three call sites build a page and one of
+/// them (the ranked search path) walks its rows one at a time. A caller that forgot the engagement would produce
+/// a grid where every star is empty — visibly wrong but easy to ship, since nothing else about the page changes.
+#[must_use]
+pub fn summary_with_engagement(
+    row: &assets::Summary,
+    engagement: &[dam_db::engagement::Engagement],
+) -> AssetSummary {
+    let mut summary = summary_of(row);
+    if let Some(state) = engagement.iter().find(|e| e.asset_id == row.id) {
+        summary.is_favourite = state.is_favourite;
+        summary.average_stars = state.average_stars;
+    }
+    summary
+}
+
 /// The wire summary for a read row.
 ///
 /// Public because the search handler builds the same page shape, and two mappings of one row is how a field
@@ -593,5 +665,9 @@ pub fn summary_of(row: &assets::Summary) -> AssetSummary {
         // See the module docs: pending the rights decision in NEEDS-REVIEW.md.
         thumbnail_url: None,
         tag_confidence: row.tag_confidence,
+        // Filled by the caller from one engagement read per page, not per row. Defaulted to "no engagement"
+        // rather than left absent so a client never has to distinguish "not favourited" from "not told".
+        is_favourite: false,
+        average_stars: None,
     }
 }

@@ -28,7 +28,9 @@ use uuid::Uuid;
 struct Fixture {
     _pg: PostgresHarness,
     /// Held so the index directory outlives the fixture.
-    _indexes: tempfile::TempDir,
+    _index_dir: tempfile::TempDir,
+    /// The same pool the search router reads through, so a case can populate it.
+    indexes: std::sync::Arc<IndexPool>,
     app: axum::Router,
     acme: PgPool,
     /// A tenant admin, with a person behind it.
@@ -84,17 +86,25 @@ async fn fixture() -> Fixture {
     // *answers* `is:favourite` rather than refusing it — the parser and the renderer are proven elsewhere, and
     // routing between them is what was untested.
     let index_dir = tempfile::tempdir().expect("index dir");
+    let indexes = std::sync::Arc::new(IndexPool::new(PoolConfig::new(index_dir.path())));
     let app = router(EngagementState {
         global: global.clone(),
     })
     .merge(dam_api::search::router(dam_api::search::SearchState {
         global: global.clone(),
-        indexes: std::sync::Arc::new(IndexPool::new(PoolConfig::new(index_dir.path()))),
+        indexes: std::sync::Arc::clone(&indexes),
+    }))
+    // The asset routes too, because half of this slice is about engagement arriving *on the asset payload* —
+    // and "the grid and the search results agree" is only checkable with both mounted.
+    .merge(dam_api::assets::router(dam_api::assets::AssetState {
+        global: global.clone(),
+        delivery: None,
     }));
 
     Fixture {
         _pg: pg,
-        _indexes: index_dir,
+        _index_dir: index_dir,
+        indexes,
         app,
         acme,
         key,
@@ -285,6 +295,174 @@ async fn the_engagement_http_contract_holds() {
     the_private_lists_are_the_callers_own(&f, visible).await;
     a_scoped_caller_sees_only_what_they_may(&f, visible, hidden).await;
     search_answers_the_engagement_selectors_through_sql(&f, visible).await;
+    engagement_reaches_the_grid_and_the_panel_in_one_request(&f, visible).await;
+    favourites_first_puts_them_first_and_leaves_the_rest_alone(&f).await;
+    a_ranked_search_result_carries_engagement_too(&f, visible).await;
+}
+
+async fn a_ranked_search_result_carries_engagement_too(f: &Fixture, visible: Uuid) {
+    // The ranked path is a *different* code path from the relational one — it walks its window one row at a time,
+    // because the ranking is the order — so folding engagement into one of them proves nothing about the other.
+    // Reaching it needs a populated index, which is why this case builds one.
+    let defs = dam_db::fields::load(&mut *f.acme.acquire().await.expect("conn"))
+        .await
+        .expect("defs");
+    let schema = dam_search::IndexSchema::new(defs);
+    let slug = dam_core::TenantSlug::new("acme").expect("slug");
+    dam_search::reindex::tenant(&f.acme, &f.indexes, &slug, &schema, 500)
+        .await
+        .expect("reindex");
+
+    // A plain filename search: no relational clause, so it goes to the index and claims its ranking.
+    let (status, body) = call(f, "GET", "/search?q=visible", &f.key, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["ranked"], json!(true), "{body}");
+
+    let found = body["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|item| item["id"] == json!(visible.to_string()))
+        .unwrap_or_else(|| panic!("the indexed asset is missing: {body}"))
+        .clone();
+    assert_eq!(
+        found["is_favourite"],
+        json!(true),
+        "a ranked result's star is empty: {found}"
+    );
+    assert_eq!(found["average_stars"], json!(2.0), "{found}");
+}
+
+async fn engagement_reaches_the_grid_and_the_panel_in_one_request(f: &Fixture, visible: Uuid) {
+    // The grid carries only what a cell draws — the filled star and the library's average — because every field
+    // on a summary is multiplied by the page size.
+    let (status, body) = call(f, "GET", "/assets?limit=50", &f.key, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let row = body["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|item| item["id"] == json!(visible.to_string()))
+        .expect("the favourited asset")
+        .clone();
+    assert_eq!(row["is_favourite"], json!(true), "{row}");
+    assert_eq!(row["average_stars"], json!(2.0), "{row}");
+    // And not the rest: a grid cell draws neither the counts nor the watch state, so they would be weight.
+    for absent in ["rating_count", "favourite_count", "my_stars", "is_watched"] {
+        assert!(
+            row.get(absent).is_none(),
+            "{absent} is on the summary: {row}"
+        );
+    }
+
+    // A search result draws its star exactly as a browse result does. Without the same read on that path, a
+    // favourited asset appears unfavourited the moment somebody searches for it and the star flips back when
+    // they clear the query — which reads as data loss rather than as a missing join.
+    let (_, searched) = call(
+        f,
+        "GET",
+        &format!("/search?q={}", encode("stars:2")),
+        &f.key,
+        None,
+    )
+    .await;
+    let found = searched["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|item| item["id"] == json!(visible.to_string()))
+        .expect("the rated asset")
+        .clone();
+    assert_eq!(
+        found["is_favourite"],
+        json!(true),
+        "the star flipped between browse and search: {found}"
+    );
+    assert_eq!(found["average_stars"], json!(2.0), "{found}");
+
+    // The panel gets the whole picture, in the same request as the asset.
+    let (status, detail) = call(f, "GET", &format!("/assets/{visible}"), &f.key, None).await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    let engagement = detail["engagement"].clone();
+    assert_eq!(engagement["is_favourite"], json!(true), "{engagement}");
+    assert_eq!(engagement["is_watched"], json!(true), "{engagement}");
+    assert_eq!(engagement["rating_count"], json!(1), "{engagement}");
+    assert_eq!(engagement["average_stars"], json!(2.0), "{engagement}");
+    // Ada cleared her own rating earlier, so the average is Grace's and her own star is absent — the two are
+    // different facts and the panel needs both.
+    assert_eq!(engagement["my_stars"], Value::Null, "{engagement}");
+}
+
+async fn favourites_first_puts_them_first_and_leaves_the_rest_alone(f: &Fixture) {
+    // Three more assets, none favourited, created after the favourited one — so newest-first would put the
+    // favourite last and any accidental no-op would be visible.
+    let mut newer = Vec::new();
+    for n in 0..3 {
+        newer.push(asset(f, &format!("newer-{n}"), true).await);
+    }
+
+    let (status, body) = call(f, "GET", "/assets?order=favourites&limit=50", &f.key, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let ids: Vec<String> = body["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .map(|item| item["id"].as_str().expect("id").to_owned())
+        .collect();
+    let favourites: Vec<usize> = body["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| item["is_favourite"] == json!(true))
+        .map(|(at, _)| at)
+        .collect();
+    assert!(!favourites.is_empty(), "nothing was favourited: {body}");
+    assert_eq!(
+        favourites,
+        (0..favourites.len()).collect::<Vec<_>>(),
+        "the favourites are not the leading rows: {ids:?}"
+    );
+
+    // Within the non-favourites, the default order still holds: "favourites first" changes which assets are at
+    // the top and nothing else. A sort that also scrambled the rest would be two changes wearing one label.
+    let (_, newest) = call(f, "GET", "/assets?order=newest&limit=50", &f.key, None).await;
+    let newest_ids: Vec<String> = newest["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .map(|item| item["id"].as_str().expect("id").to_owned())
+        .collect();
+    let tail: Vec<&String> = ids[favourites.len()..].iter().collect();
+    let expected: Vec<&String> = newest_ids
+        .iter()
+        .filter(|id| !ids[..favourites.len()].contains(id))
+        .collect();
+    assert_eq!(tail, expected, "the tail is not in newest order");
+
+    // And it is *this caller's* favourites. Grace favourited nothing, so her favourites-first page is simply
+    // her newest page — an order keyed to the wrong person would reorder it.
+    let (_, grace_favourites) = call(
+        f,
+        "GET",
+        "/assets?order=favourites&limit=50",
+        &f.other_key,
+        None,
+    )
+    .await;
+    let (_, grace_newest) = call(
+        f,
+        "GET",
+        "/assets?order=newest&limit=50",
+        &f.other_key,
+        None,
+    )
+    .await;
+    assert_eq!(
+        grace_favourites["items"], grace_newest["items"],
+        "favourites-first used somebody else's favourites"
+    );
+    assert!(!newer.is_empty());
 }
 
 async fn search_answers_the_engagement_selectors_through_sql(f: &Fixture, visible: Uuid) {

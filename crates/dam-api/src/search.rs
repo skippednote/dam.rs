@@ -145,9 +145,20 @@ pub async fn search(
             limit,
         )
         .await?;
+        // The same engagement read the grid does, so a search result draws its star exactly as a browse result
+        // does (Q.5b·3). Without this a favourited asset appears unfavourited the moment somebody searches for
+        // it, and the star flips back when they clear the query — which reads as data loss.
+        let ids: Vec<uuid::Uuid> = page.items.iter().map(|item| item.id).collect();
+        let engagement = crate::assets::page_engagement(&caller, conn.executor(), &ids)
+            .await
+            .map_err(|_| Failure::Internal)?;
         conn.commit().await?;
         return Ok(Json(AssetPage {
-            items: page.items.iter().map(crate::assets::summary_of).collect(),
+            items: page
+                .items
+                .iter()
+                .map(|row| crate::assets::summary_with_engagement(row, &engagement))
+                .collect(),
             total: page.total,
             offset,
             ranked: false,
@@ -184,12 +195,19 @@ pub async fn search(
         .take(usize::try_from(limit).unwrap_or(usize::MAX))
         .collect();
 
+    let engagement = crate::assets::page_engagement(&caller, conn.executor(), &window)
+        .await
+        .map_err(|_| Failure::Internal)?;
+
     let mut items = Vec::with_capacity(window.len());
     for asset_id in &window {
         // Per id rather than one `IN` query, because the ranking is the order and a set query returns rows
         // in whatever order it likes. The window is at most 200 rows.
         if let Some(found) = assets::detail(conn.executor(), &caller.predicate, *asset_id).await? {
-            items.push(crate::assets::summary_of(&found.summary));
+            items.push(crate::assets::summary_with_engagement(
+                &found.summary,
+                &engagement,
+            ));
         }
     }
     conn.commit().await?;

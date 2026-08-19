@@ -53,22 +53,43 @@ pub enum Order {
     FilenameAsc,
     FilenameDesc,
     LargestFirst,
+    /// The named person's favourites first, then newest within each group (Q.5b·3).
+    ///
+    /// The identity is *in the variant* deliberately. This is the one order that is not a property of the
+    /// library, so asking for it without saying whose favourites is a question with no answer — and putting the
+    /// identity in the type means that question cannot be asked. The alternative, a viewer threaded alongside
+    /// every order, would be `None` for four of the five and forgettable for the fifth.
+    FavouritesFirst(Uuid),
 }
 
 impl Order {
-    /// The SQL fragment, with `assets.id` as the tie-break.
+    /// Pushes the `ORDER BY`, with `assets.id` as the tie-break.
     ///
     /// The tie-break is not decoration: `created_at` is not unique, and an offset walk over a
     /// non-deterministic order silently skips and repeats rows between pages. A virtualised grid scrolling
     /// back over a page it has already seen would show different assets, which reads as data corruption.
-    fn fragment(self) -> &'static str {
+    ///
+    /// Pushed rather than returned as a string, because one of these orders binds a value. An `ORDER BY` built
+    /// by formatting a uuid into SQL would be the injection hole this closed set exists to avoid — the fact that
+    /// a uuid cannot carry an injection is luck, not a design.
+    fn push(self, builder: &mut QueryBuilder<Postgres>) {
         match self {
-            Self::Newest => " ORDER BY assets.created_at DESC, assets.id DESC",
-            Self::Oldest => " ORDER BY assets.created_at ASC, assets.id ASC",
-            Self::FilenameAsc => " ORDER BY assets.filename ASC, assets.id ASC",
-            Self::FilenameDesc => " ORDER BY assets.filename DESC, assets.id DESC",
-            Self::LargestFirst => " ORDER BY assets.bytes DESC, assets.id DESC",
-        }
+            Self::Newest => builder.push(" ORDER BY assets.created_at DESC, assets.id DESC"),
+            Self::Oldest => builder.push(" ORDER BY assets.created_at ASC, assets.id ASC"),
+            Self::FilenameAsc => builder.push(" ORDER BY assets.filename ASC, assets.id ASC"),
+            Self::FilenameDesc => builder.push(" ORDER BY assets.filename DESC, assets.id DESC"),
+            Self::LargestFirst => builder.push(" ORDER BY assets.bytes DESC, assets.id DESC"),
+            Self::FavouritesFirst(viewer) => {
+                // `EXISTS … DESC` puts true before false. Then the default order within each group, so
+                // "favourites first" changes which assets are at the top and nothing else — a sort that also
+                // scrambled the rest would be two changes wearing one label.
+                builder.push(
+                    " ORDER BY EXISTS (SELECT 1 FROM asset_favourites f                        WHERE f.asset_id = assets.id AND f.identity_id = ",
+                );
+                builder.push_bind(viewer);
+                builder.push(") DESC, assets.created_at DESC, assets.id DESC")
+            }
+        };
     }
 }
 
@@ -106,7 +127,7 @@ where
     builder.push(WARMEST_PLACEMENT);
     builder.push(" WHERE ");
     crate::access::push_asset_filter(&mut builder, predicate)?;
-    builder.push(order.fragment());
+    order.push(&mut builder);
     builder.push(" LIMIT ");
     builder.push_bind(limit);
     builder.push(" OFFSET ");
@@ -187,7 +208,7 @@ where
     // fails to resolve the name — which is what a composed query like `in:exterior harbour` did, on a tenant
     // that had text fields. The tenant in the first test of this had none, so nothing emitted the reference.
     crate::query_sql::push_where(&mut builder, planned)?;
-    builder.push(order.fragment());
+    order.push(&mut builder);
     builder.push(" LIMIT ");
     builder.push_bind(limit);
     builder.push(" OFFSET ");

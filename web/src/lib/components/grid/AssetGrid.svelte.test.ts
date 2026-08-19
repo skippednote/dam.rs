@@ -28,7 +28,11 @@ function asset(index: number): AssetSummary {
 		rights_state: index % 7 === 0 ? 'denied' : 'allowed',
 		provenance_state: 'valid',
 		thumbnail_url: null,
-		tag_confidence: 0.8
+		tag_confidence: 0.8,
+		// Engagement, as the API now sends it on every summary (Q.5b·3). Every third asset is a favourite and
+		// every fifth is rated, so a fixture never makes "all false" look correct by accident.
+		is_favourite: index % 3 === 0,
+		average_stars: index % 5 === 0 ? 4 : null
 	};
 }
 
