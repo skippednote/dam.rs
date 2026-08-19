@@ -1570,8 +1570,19 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
   takes the profile's metadata type over the mime's class (a profile is a statement, a class is a guess), applies
   the defaults as real validated metadata, and records the profile on the asset. 9 db cases + the ingest case;
   11 mutations all caught.
-- [ ] **Q.3b Upload profile administration and the uploader.** The API and UI for managing profiles, and the
-  uploader honouring `require_complete` — the client-side rule that is the point of the flag.
+- [x] **Q.3b·1 The upload-profile API, and naming a profile at upload time.** `GET/POST /upload-profiles`,
+  `PATCH/DELETE /upload-profiles/{id}`. **Listing is Read** — deliberately, because the uploader has to render
+  the picker and honour the required-field rule before it can upload anything, so a client that could not list
+  profiles could not obey them; editing is Manage. Invalid defaults are 422 with the field named, on amend as
+  well as create, so a form can put the error where the value was typed and a profile cannot be *edited* into a
+  state that breaks every intake from that source. Both intakes — TUS and presigned — accept a `profile` key in
+  `Upload-Metadata` and record the resolved id on the session, because finalise runs from a queue long after the
+  request and the profile has to be recoverable from the row. An unknown key resolves to nothing and finalise
+  falls back: the bytes are the point, and a mistyped profile is recoverable afterwards while a refused upload is
+  not. 7 API cases, 2 tus cases, 2 unit cases; 9 mutations all caught, two of which found untested behaviour —
+  the documented `ai_tags_enabled` default, and re-validation on amend.
+- [ ] **Q.3b·2 The profile UI**: an admin section for profiles, and the uploader picking one and honouring
+  `require_complete`.
 - [ ] **Q.4 Auto-import mappings.** Embedded metadata (XMP/EXIF/IPTC) → field definitions, on ingest.
 - [ ] **Q.5 Ratings, favourites, watch.** Three engagement features and their facets; favourites rank first
   in search, watch is what makes notification worth having.

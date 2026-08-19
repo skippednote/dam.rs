@@ -14,3 +14,4 @@ pub mod schema;
 pub mod search;
 pub mod shares;
 pub mod tus;
+pub mod upload_profiles;

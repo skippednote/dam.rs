@@ -53,6 +53,8 @@ pub async fn create<'e, E>(
     declared_filename: Option<&str>,
     declared_mime: Option<&str>,
     created_by: Option<Uuid>,
+    // The profile this upload was made under (Q.3), or `None` to let finalise fall back.
+    upload_profile_id: Option<Uuid>,
 ) -> Result<ResumableSession, Error>
 where
     E: sqlx::PgExecutor<'e>,
@@ -70,8 +72,8 @@ where
     sqlx::query(
         "INSERT INTO upload_sessions \
          (id, tenant_id, upload_id, status, offset_bytes, declared_length, declared_filename, \
-          declared_mime, created_by) \
-         VALUES (gen_random_uuid(), $1, $2, 'active', 0, $3, $4, $5, $6)",
+          declared_mime, created_by, upload_profile_id) \
+         VALUES (gen_random_uuid(), $1, $2, 'active', 0, $3, $4, $5, $6, $7)",
     )
     .bind(tenant)
     .bind(upload_id)
@@ -79,6 +81,7 @@ where
     .bind(declared_filename)
     .bind(declared_mime)
     .bind(created_by)
+    .bind(upload_profile_id)
     .execute(executor)
     .await?;
 

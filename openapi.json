@@ -1364,10 +1364,181 @@
           }
         }
       }
+    },
+    "/upload-profiles": {
+      "get": {
+        "tags": [
+          "uploads"
+        ],
+        "summary": "Every profile, in display order.",
+        "operationId": "list",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProfileRow"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "uploads"
+        ],
+        "summary": "Creates a profile.",
+        "operationId": "create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateProfileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileRow"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The key is already taken"
+          },
+          "422": {
+            "description": "The defaults do not validate; `reason` names the fields"
+          }
+        }
+      }
+    },
+    "/upload-profiles/{id}": {
+      "delete": {
+        "tags": [
+          "uploads"
+        ],
+        "summary": "Removes a profile. Assets that arrived under it keep everything but the reference.",
+        "operationId": "remove",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed"
+          },
+          "404": {
+            "description": "No such profile"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "uploads"
+        ],
+        "summary": "Amends a profile.",
+        "operationId": "amend",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AmendProfileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileRow"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such profile"
+          },
+          "422": {
+            "description": "The defaults do not validate"
+          }
+        }
+      }
     }
   },
   "components": {
     "schemas": {
+      "AmendProfileRequest": {
+        "type": "object",
+        "description": "What to change. An omitted member is left alone.",
+        "properties": {
+          "ai_tags_enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "defaults": {},
+          "is_default": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "metadata_type_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "require_complete": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      },
       "AmendRequest": {
         "type": "object",
         "description": "What to change. An omitted member is left alone; `search_alias: null` clears it.",
@@ -1923,6 +2094,40 @@
           }
         }
       },
+      "CreateProfileRequest": {
+        "type": "object",
+        "description": "A profile to create.",
+        "required": [
+          "key",
+          "label"
+        ],
+        "properties": {
+          "ai_tags_enabled": {
+            "type": "boolean",
+            "description": "Defaults to true: tagging on is the ordinary case, and a profile that silently disabled enrichment\nwould be a surprising default to inherit."
+          },
+          "defaults": {},
+          "is_default": {
+            "type": "boolean"
+          },
+          "key": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "metadata_type_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "require_complete": {
+            "type": "boolean"
+          }
+        }
+      },
       "CreateTreeRequest": {
         "type": "object",
         "description": "A tree to create.",
@@ -2388,6 +2593,52 @@
               "null"
             ],
             "format": "int32"
+          }
+        }
+      },
+      "ProfileRow": {
+        "type": "object",
+        "description": "A profile as a client sees it.",
+        "required": [
+          "id",
+          "key",
+          "label",
+          "defaults",
+          "require_complete",
+          "ai_tags_enabled",
+          "is_default"
+        ],
+        "properties": {
+          "ai_tags_enabled": {
+            "type": "boolean"
+          },
+          "defaults": {
+            "description": "Metadata applied to everything arriving under this profile, filling only what the upload omits."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "is_default": {
+            "type": "boolean"
+          },
+          "key": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "metadata_type_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The form uploads under this profile get. `None` lets the file's media class decide."
+          },
+          "require_complete": {
+            "type": "boolean",
+            "description": "Whether the uploader should insist on required fields before proceeding.\n\nA rule for the client, not a server-side gate: by the time an upload finalises its bytes are staged, and\nrefusing then would strand them over metadata a person could have supplied."
           }
         }
       },

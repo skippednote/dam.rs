@@ -215,6 +215,19 @@ async fn create(
     let upload_id = uuid::Uuid::new_v4().simple().to_string();
 
     let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
+
+    // Resolved from the key here, so the *session* records which profile it was made under: finalise can run
+    // from a queue long after this request, and the profile has to be recoverable from the row rather than from
+    // whatever header is still in scope. An unknown key resolves to nothing and finalise falls back — see
+    // `Metadata::profile` for why that is better than refusing.
+    let profile_id = match metadata.profile.as_deref() {
+        Some(key) => dam_db::upload_profiles::by_key_on(conn.executor(), key)
+            .await
+            .map_err(|_| Refusal::Internal)?
+            .map(|profile| profile.id),
+        None => None,
+    };
+
     uploads::create(
         conn.executor(),
         caller.tenant_id,
@@ -223,6 +236,7 @@ async fn create(
         metadata.filename.as_deref(),
         metadata.mime.as_deref(),
         caller.identity_id,
+        profile_id,
     )
     .await?;
     conn.commit().await?;
@@ -272,6 +286,15 @@ async fn presign(
     let url = state.store.presign_put(&key, PRESIGN_TTL).await?;
 
     let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
+    // The presigned path resolves the profile too. Both intakes have to, or which endpoint a client happened to
+    // use would decide whether its intake's rules applied.
+    let profile_id = match metadata.profile.as_deref() {
+        Some(key) => dam_db::upload_profiles::by_key_on(conn.executor(), key)
+            .await
+            .map_err(|_| Refusal::Internal)?
+            .map(|profile| profile.id),
+        None => None,
+    };
     uploads::create(
         conn.executor(),
         caller.tenant_id,
@@ -280,6 +303,7 @@ async fn presign(
         metadata.filename.as_deref(),
         metadata.mime.as_deref(),
         caller.identity_id,
+        profile_id,
     )
     .await?;
     conn.commit().await?;
@@ -514,6 +538,13 @@ fn header_str<'h>(headers: &'h HeaderMap, name: &str) -> Option<&'h str> {
 struct Metadata {
     filename: Option<String>,
     mime: Option<String>,
+    /// The upload profile the client named, by key (Q.3).
+    ///
+    /// A key rather than an id, because a client that knows its intake by name should not have to look up a
+    /// uuid first — and because an id in a header is one more thing to get wrong in an integration script. An
+    /// unknown key resolves to the tenant's fallback rather than failing: the bytes are the point, and a
+    /// mistyped profile is recoverable afterwards while a refused upload is not.
+    profile: Option<String>,
 }
 
 impl Metadata {
@@ -546,6 +577,7 @@ impl Metadata {
             match key {
                 "filename" | "name" => out.filename = Some(value),
                 "filetype" | "type" | "mimetype" => out.mime = Some(value),
+                "profile" | "uploadprofile" => out.profile = Some(value),
                 _ => {}
             }
         }
@@ -619,19 +651,29 @@ mod tests {
     }
 
     #[test]
-    fn metadata_decodes_a_filename_and_type() {
+    fn metadata_decodes_a_filename_a_type_and_a_profile() {
         let raw = format!(
-            "filename {},filetype {}",
+            "filename {},filetype {},profile {}",
             encode("holiday photo.jpg"),
-            encode("image/jpeg")
+            encode("image/jpeg"),
+            encode("press")
         );
         assert_eq!(
             Metadata::parse(&raw),
             Metadata {
                 filename: Some("holiday photo.jpg".to_owned()),
                 mime: Some("image/jpeg".to_owned()),
+                profile: Some("press".to_owned()),
             }
         );
+    }
+
+    #[test]
+    fn an_upload_that_names_no_profile_says_so_rather_than_guessing() {
+        // `None` here is what makes finalise fall back to the tenant's default profile. An empty string would
+        // instead be a *named* profile that resolves to nothing, which is a different and worse answer.
+        let raw = format!("filename {}", encode("a.png"));
+        assert_eq!(Metadata::parse(&raw).profile, None);
     }
 
     #[test]

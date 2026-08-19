@@ -41,6 +41,8 @@ struct Fixture {
     _pg: PostgresHarness,
     app: axum::Router,
     global: PgPool,
+    /// The first tenant's own schema, for asserting on rows the API wrote.
+    tenant: PgPool,
     key: String,
     other_key: String,
     /// A key on the *same* tenant and identity as `key`, scoped to reading only.
@@ -63,10 +65,16 @@ async fn fixture() -> Fixture {
     let store: Arc<dyn dam_store::ResumableStore> = Arc::new(FakeS3Store::with_test_clock().0);
     let app = tus::router(tus::AppState::new(global.clone(), store));
 
+    let tenant = pg
+        .pool_for_schema("t_acme")
+        .await
+        .expect("the first tenant's schema");
+
     Fixture {
         _pg: pg,
         app,
         global,
+        tenant,
         key,
         other_key,
         read_only_key,
@@ -772,6 +780,74 @@ async fn a_presign_without_a_declared_length_is_refused(f: &Fixture) {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
+async fn an_upload_records_the_profile_it_named(f: &Fixture) {
+    // The session records *which* profile it was made under, because finalise can run from a queue long after
+    // this request and the profile has to be recoverable from the row rather than from a header that is gone.
+    let profile = dam_db::upload_profiles::create(
+        &f.tenant,
+        dam_db::upload_profiles::NewProfile {
+            key: "press".to_owned(),
+            label: "Press".to_owned(),
+            metadata_type_id: None,
+            defaults: serde_json::json!({}),
+            require_complete: false,
+            ai_tags_enabled: false,
+            is_default: false,
+        },
+    )
+    .await
+    .expect("profile");
+
+    // Named by key rather than id: a client that knows its intake by name should not have to look up a uuid,
+    // and an id in a header is one more thing for an integration script to get wrong.
+    let response = send(
+        &f.app,
+        Request::post("/uploads")
+            .header(header::AUTHORIZATION, format!("Bearer {}", f.key))
+            .header("Tus-Resumable", TUS_VERSION)
+            .header("Upload-Length", "10")
+            .header("Upload-Metadata", "profile cHJlc3M=")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let location = response
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .expect("location")
+        .to_owned();
+    let upload_id = location.rsplit('/').next().expect("an id").to_owned();
+
+    let recorded: Option<uuid::Uuid> =
+        sqlx::query_scalar("SELECT upload_profile_id FROM upload_sessions WHERE upload_id = $1")
+            .bind(&upload_id)
+            .fetch_one(&f.tenant)
+            .await
+            .expect("session");
+    assert_eq!(recorded, Some(profile.id));
+
+    // An unknown key resolves to nothing rather than refusing the upload: the bytes are the point, and a
+    // mistyped profile is recoverable afterwards while a refused upload is not. Finalise then falls back.
+    let response = send(
+        &f.app,
+        Request::post("/uploads")
+            .header(header::AUTHORIZATION, format!("Bearer {}", f.key))
+            .header("Tus-Resumable", TUS_VERSION)
+            .header("Upload-Length", "10")
+            .header("Upload-Metadata", "profile bm8tc3VjaC1wcm9maWxl")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::CREATED,
+        "a mistyped profile must not cost somebody their upload"
+    );
+}
+
 async fn a_read_only_key_cannot_obtain_a_presigned_url(f: &Fixture) {
     // The gate that matters most on this endpoint: a presigned PUT is a write credential that outlives
     // the request and travels outside this server's control, so handing one to a read-only key would be
@@ -820,6 +896,7 @@ async fn the_presigned_path_holds() {
     a_presigned_put_is_issued_with_a_session_behind_it(&f).await;
     a_presigned_key_is_always_inside_the_callers_own_prefix(&f).await;
     a_presign_without_a_declared_length_is_refused(&f).await;
+    an_upload_records_the_profile_it_named(&f).await;
     a_read_only_key_cannot_obtain_a_presigned_url(&f).await;
 }
 

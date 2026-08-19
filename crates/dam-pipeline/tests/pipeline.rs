@@ -107,6 +107,9 @@ async fn stage(f: &Fixture, upload_id: &str, filename: &str, bytes: &[u8]) {
         Some(filename),
         Some("image/jpeg"),
         None,
+        // No profile named on the session, deliberately: the finalisation case marks its profile as the
+        // tenant's fallback, so this also exercises the resolution path an ordinary upload takes.
+        None,
     )
     .await
     .expect("session");
@@ -388,6 +391,7 @@ async fn an_incomplete_upload_is_a_permanent_refusal_not_a_retry(f: &Fixture) {
         Some("truncated.jpg"),
         Some("image/jpeg"),
         None,
+        None,
     )
     .await
     .expect("session");
@@ -661,6 +665,7 @@ async fn a_file_no_renderer_can_read_is_not_a_failure(f: &Fixture) {
         Some(11),
         Some("notes.txt"),
         Some("text/plain"),
+        None,
         None,
     )
     .await

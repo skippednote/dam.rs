@@ -440,10 +440,56 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/upload-profiles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every profile, in display order. */
+        get: operations["list"];
+        put?: never;
+        /** Creates a profile. */
+        post: operations["create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/upload-profiles/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Removes a profile. Assets that arrived under it keep everything but the reference. */
+        delete: operations["remove"];
+        options?: never;
+        head?: never;
+        /** Amends a profile. */
+        patch: operations["amend"];
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description What to change. An omitted member is left alone. */
+        AmendProfileRequest: {
+            ai_tags_enabled?: boolean | null;
+            defaults?: unknown;
+            is_default?: boolean | null;
+            label?: string | null;
+            /** Format: uuid */
+            metadata_type_id?: string | null;
+            require_complete?: boolean | null;
+        };
         /** @description What to change. An omitted member is left alone; `search_alias: null` clears it. */
         AmendRequest: {
             ai_writable?: boolean | null;
@@ -716,6 +762,21 @@ export interface components {
             parent_id?: string | null;
             slug: string;
         };
+        /** @description A profile to create. */
+        CreateProfileRequest: {
+            /**
+             * @description Defaults to true: tagging on is the ordinary case, and a profile that silently disabled enrichment
+             *     would be a surprising default to inherit.
+             */
+            ai_tags_enabled?: boolean;
+            defaults?: unknown;
+            is_default?: boolean;
+            key: string;
+            label: string;
+            /** Format: uuid */
+            metadata_type_id?: string | null;
+            require_complete?: boolean;
+        };
         /** @description A tree to create. */
         CreateTreeRequest: {
             key: string;
@@ -914,6 +975,29 @@ export interface components {
             preview_url?: string | null;
             /** Format: int32 */
             width?: number | null;
+        };
+        /** @description A profile as a client sees it. */
+        ProfileRow: {
+            ai_tags_enabled: boolean;
+            /** @description Metadata applied to everything arriving under this profile, filling only what the upload omits. */
+            defaults: unknown;
+            /** Format: uuid */
+            id: string;
+            is_default: boolean;
+            key: string;
+            label: string;
+            /**
+             * Format: uuid
+             * @description The form uploads under this profile get. `None` lets the file's media class decide.
+             */
+            metadata_type_id?: string | null;
+            /**
+             * @description Whether the uploader should insist on required fields before proceeding.
+             *
+             *     A rule for the client, not a server-side gate: by the time an upload finalises its bytes are staged, and
+             *     refusing then would strand them over metadata a person could have supplied.
+             */
+            require_complete: boolean;
         };
         /**
          * @description Content-credential verification outcome. Mirrors the `assets.provenance_state` CHECK.
@@ -2281,6 +2365,128 @@ export interface operations {
             };
             /** @description Authenticated, and holds no manage scope */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileRow"][];
+                };
+            };
+        };
+    };
+    create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateProfileRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileRow"];
+                };
+            };
+            /** @description The key is already taken */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The defaults do not validate; `reason` names the fields */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    remove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such profile */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    amend: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AmendProfileRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileRow"];
+                };
+            };
+            /** @description No such profile */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The defaults do not validate */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

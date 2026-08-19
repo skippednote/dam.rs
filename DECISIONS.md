@@ -1863,3 +1863,24 @@ fixed. Reversible: yes — enforcing it at the API boundary is additive.
 **An upload naming a profile that no longer exists falls back rather than failing.** A session can outlive an
 administrator's tidy-up, and refusing the upload at that point would strand staged bytes over a configuration
 change nobody told the uploader about. Reversible: yes.
+
+**Listing upload profiles needs Read, not Manage.** The uploader must render the profile picker and honour
+`require_complete` before it can upload anything, so a client that could not list profiles could not obey them —
+the rule would exist only in the database. Editing stays Manage: a profile decides what is true of everything
+arriving from a source. Reversible: no, tightening it would break the uploader.
+
+**An upload names its profile by key, in `Upload-Metadata`.** A key rather than an id, because a client that
+knows its intake by name should not have to look up a uuid first, and an id in a header is one more thing for an
+integration script to get wrong. The resolved id is stored on the *session*, because finalise runs from a queue
+long after the request and the profile has to be recoverable from the row. Both intakes resolve it — TUS and
+presigned — or which endpoint a client happened to use would decide whether its intake's rules applied.
+Reversible: yes.
+
+**An unknown profile key does not refuse the upload.** It resolves to nothing and finalise falls back to the
+tenant's default. The bytes are the point: a mistyped profile is recoverable afterwards, while a refused upload
+is somebody's work lost. `None` and "a named profile that resolves to nothing" are deliberately the same outcome
+here, and a unit case pins that an absent key parses as `None` rather than as an empty name. Reversible: yes.
+
+**A profile's defaults are re-validated on amend, not only on create.** Otherwise a profile could be edited into
+a state that breaks every upload from that source, with the person who could fix it never seeing why. Mutation
+testing found this: nothing covered the amend path. Reversible: no.

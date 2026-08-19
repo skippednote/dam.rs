@@ -41,6 +41,7 @@ async fn a_session_round_trips_through_the_database_unchanged() {
         Some("holiday.jpg"),
         Some("image/jpeg"),
         None,
+        None,
     )
     .await
     .expect("create");
@@ -62,7 +63,7 @@ async fn the_part_list_survives_persistence_in_order() {
     // returned the parts sorted differently would produce a scrambled object that still
     // completes successfully.
     let (_pg, pool) = db().await;
-    let mut s = uploads::create(&pool, TENANT, "parts", None, None, None, None)
+    let mut s = uploads::create(&pool, TENANT, "parts", None, None, None, None, None)
         .await
         .expect("create");
     s.s3_upload_id = Some("mpu-1".into());
@@ -113,6 +114,7 @@ async fn a_session_round_trips_through_a_tenant_conn_transaction() {
         None,
         None,
         None,
+        None,
     )
     .await
     .expect("create");
@@ -155,6 +157,7 @@ async fn work_in_an_uncommitted_tenant_conn_is_not_visible_elsewhere() {
         None,
         None,
         None,
+        None,
     )
     .await
     .expect("create");
@@ -188,7 +191,7 @@ async fn the_database_refuses_a_session_the_rust_should_never_have_built() {
     // engine failed to flush, and saving it would let a later completion produce an upload S3
     // rejects at the last step — after every byte had been paid for.
     let (_pg, pool) = db().await;
-    let mut s = uploads::create(&pool, TENANT, "bad-tail", None, None, None, None)
+    let mut s = uploads::create(&pool, TENANT, "bad-tail", None, None, None, None, None)
         .await
         .expect("create");
     s.tail_len = MIN_PART_SIZE as u64;
@@ -205,7 +208,7 @@ async fn only_expired_active_sessions_are_reapable() {
     let (_pg, pool) = db().await;
 
     // Expired and still active: the only reapable shape.
-    let stale = uploads::create(&pool, TENANT, "stale", None, None, None, None)
+    let stale = uploads::create(&pool, TENANT, "stale", None, None, None, None, None)
         .await
         .expect("create");
     uploads::force_expiry_for_test(&pool, &stale.id, -1)
@@ -214,7 +217,7 @@ async fn only_expired_active_sessions_are_reapable() {
 
     // Expired but completed: its bytes were promoted, so there is nothing to reclaim and the
     // row is history.
-    let mut done = uploads::create(&pool, TENANT, "done", Some(4), None, None, None)
+    let mut done = uploads::create(&pool, TENANT, "done", Some(4), None, None, None, None)
         .await
         .expect("create");
     done.offset = 4;
@@ -225,7 +228,7 @@ async fn only_expired_active_sessions_are_reapable() {
         .expect("age it");
 
     // Active but not yet expired.
-    uploads::create(&pool, TENANT, "fresh", None, None, None, None)
+    uploads::create(&pool, TENANT, "fresh", None, None, None, None, None)
         .await
         .expect("create");
 
@@ -247,7 +250,7 @@ async fn reaping_aborts_the_multipart_upload_and_removes_every_staged_object() {
     let s3 = SeaweedfsHarness::start().await.expect("start seaweedfs");
     let store = s3.store();
 
-    let mut session = uploads::create(&pool, TENANT, "abandoned", None, None, None, None)
+    let mut session = uploads::create(&pool, TENANT, "abandoned", None, None, None, None, None)
         .await
         .expect("create");
 
@@ -313,7 +316,7 @@ async fn reaping_is_idempotent_and_reaping_nothing_is_not_an_error() {
         "a reaper that errors when there is nothing to do fails its own cron every minute"
     );
 
-    let session = uploads::create(&pool, TENANT, "twice", None, None, None, None)
+    let session = uploads::create(&pool, TENANT, "twice", None, None, None, None, None)
         .await
         .expect("create");
     uploads::force_expiry_for_test(&pool, &session.id, -1)
@@ -334,9 +337,18 @@ async fn the_reaper_respects_its_batch_limit() {
     // database with it.
     let (_pg, pool) = db().await;
     for i in 0..5 {
-        let s = uploads::create(&pool, TENANT, &format!("batch-{i}"), None, None, None, None)
-            .await
-            .expect("create");
+        let s = uploads::create(
+            &pool,
+            TENANT,
+            &format!("batch-{i}"),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("create");
         uploads::force_expiry_for_test(&pool, &s.id, -1)
             .await
             .expect("age it");
