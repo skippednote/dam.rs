@@ -1308,6 +1308,31 @@
         }
       }
     },
+    "/me": {
+      "get": {
+        "tags": [
+          "comments"
+        ],
+        "summary": "Who the caller is.",
+        "description": "Needed because a UI has to know which comments it may offer to edit. The alternative — offering Edit on\neverything and letting the server refuse — puts a control on screen that exists only to fail, which teaches\npeople to distrust every other control beside it.\n\nAnswers about the caller and nobody else, so there is no id to pass and nothing to point at somebody with.",
+        "operationId": "me",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonView"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key has no person behind it"
+          }
+        }
+      }
+    },
     "/people": {
       "get": {
         "tags": [

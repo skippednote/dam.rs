@@ -297,6 +297,71 @@ export async function removeUploadProfile(id: string): Promise<void> {
 	await request<void>(`/upload-profiles/${id}`, { method: 'DELETE' });
 }
 
+export type Comment = components['schemas']['CommentView'];
+export type Person = components['schemas']['PersonView'];
+
+/**
+ * Comments on an asset (Q.6c).
+ *
+ * Names arrive resolved, so a thread never has to look a person up. Every call needs a person behind the key: a
+ * comment is somebody's words.
+ */
+export async function listComments(assetId: string): Promise<Comment[]> {
+	return request<Comment[]>(`/assets/${assetId}/comments`);
+}
+
+export async function postComment(
+	assetId: string,
+	body: {
+		body: string;
+		visibility?: 'public' | 'private';
+		recipients?: string[];
+		parent_id?: string | null;
+	}
+): Promise<Comment> {
+	return request<Comment>(`/assets/${assetId}/comments`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body)
+	});
+}
+
+/**
+ * Rewrites a comment's words, or moves its status — one or the other.
+ *
+ * The server refuses a request naming both, because they carry different rights: the words are their author's and
+ * the status is any reader's. The two arguments are separate here so a caller cannot accidentally send both.
+ */
+export async function amendComment(
+	commentId: string,
+	change: { body: string } | { status: Comment['status'] }
+): Promise<Comment> {
+	return request<Comment>(`/comments/${commentId}`, {
+		method: 'PATCH',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(change)
+	});
+}
+
+export async function deleteComment(commentId: string): Promise<void> {
+	await request<void>(`/comments/${commentId}`, { method: 'DELETE' });
+}
+
+/** Everyone in this tenant, for the recipient picker. */
+export async function listPeople(): Promise<Person[]> {
+	return request<Person[]>('/people');
+}
+
+/**
+ * Who the caller is.
+ *
+ * A thread needs it to know which comments it may offer to edit. There is no id to pass — the answer is about the
+ * credential — so it cannot be pointed at anybody else.
+ */
+export async function whoAmI(): Promise<Person> {
+	return request<Person>('/me');
+}
+
 export type Engagement = components['schemas']['EngagementView'];
 export type EngagementList = components['schemas']['ListPage'];
 

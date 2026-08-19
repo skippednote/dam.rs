@@ -409,6 +409,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Who the caller is.
+         * @description Needed because a UI has to know which comments it may offer to edit. The alternative — offering Edit on
+         *     everything and letting the server refuse — puts a control on screen that exists only to fail, which teaches
+         *     people to distrust every other control beside it.
+         *
+         *     Answers about the caller and nobody else, so there is no id to pass and nothing to point at somebody with.
+         */
+        get: operations["me"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/people": {
         parameters: {
             query?: never;
@@ -2655,6 +2679,32 @@ export interface operations {
                 content?: never;
             };
             /** @description Authenticated, and holds no read scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    me: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PersonView"];
+                };
+            };
+            /** @description The key has no person behind it */
             403: {
                 headers: {
                     [name: string]: unknown;

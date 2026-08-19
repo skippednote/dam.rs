@@ -276,6 +276,24 @@ async fn the_comment_http_contract_holds() {
     the_refusals_say_what_is_wrong(&f, visible).await;
     deleting_is_204_and_takes_the_replies(&f, visible).await;
     a_comment_outlives_its_author_and_says_so(&f, visible).await;
+    me_answers_about_the_caller_and_nobody_else(&f).await;
+}
+
+async fn me_answers_about_the_caller_and_nobody_else(f: &Fixture) {
+    // A UI needs this to know which comments it may offer to edit. Offering Edit on everything and letting the
+    // server refuse would put a control on screen that exists only to fail.
+    let (status, body) = call(f, "GET", "/me", &f.key, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["id"], json!(f.ada.to_string()), "{body}");
+    assert_eq!(body["email"], json!("ada@example.com"), "{body}");
+
+    // Different credential, different answer — there is no id to pass, so it cannot be pointed at anybody else.
+    let (_, body) = call(f, "GET", "/me", &f.other_key, None).await;
+    assert_eq!(body["id"], json!(f.grace.to_string()), "{body}");
+
+    // A key with no person behind it has no answer.
+    let (status, _) = call(f, "GET", "/me", &f.machine_key, None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
 async fn a_comment_outlives_its_author_and_says_so(f: &Fixture, visible: Uuid) {

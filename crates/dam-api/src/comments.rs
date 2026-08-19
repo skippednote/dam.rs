@@ -53,6 +53,7 @@ pub fn router(state: CommentState) -> Router {
             axum::routing::patch(amend).delete(remove),
         )
         .route("/people", get(people))
+        .route("/me", get(me))
         .with_state(Arc::new(state))
 }
 
@@ -283,6 +284,40 @@ pub async fn people(
     // is no parameter to point at another tenant with.
     let found = comments::people(&state.global, caller.tenant_id).await?;
     Ok(Json(found.into_iter().map(person).collect()))
+}
+
+/// Who the caller is.
+///
+/// Needed because a UI has to know which comments it may offer to edit. The alternative — offering Edit on
+/// everything and letting the server refuse — puts a control on screen that exists only to fail, which teaches
+/// people to distrust every other control beside it.
+///
+/// Answers about the caller and nobody else, so there is no id to pass and nothing to point at somebody with.
+#[utoipa::path(
+    get,
+    path = "/me",
+    responses(
+        (status = 200, body = PersonView),
+        (status = 403, description = "The key has no person behind it"),
+    ),
+    tag = "comments",
+)]
+pub async fn me(
+    State(state): State<Arc<CommentState>>,
+    headers: HeaderMap,
+) -> Result<Json<PersonView>, Failure> {
+    let caller = caller::authorize(&state.global, &headers, Action::Read).await?;
+    let identity = caller
+        .identity_id
+        .ok_or(Failure::Refused(caller::Refusal::Forbidden))?;
+    let found = comments::people_by_id(&state.global, &[identity]).await?;
+    found
+        .into_iter()
+        .next()
+        .map(|person| Json(self::person(person)))
+        // Authenticated against an identity row that has since gone. A 403 rather than a 500: the credential is
+        // no longer usable, which is a fact about the caller rather than a fault in the server.
+        .ok_or(Failure::Refused(caller::Refusal::Forbidden))
 }
 
 /// Authorises, resolves the person, and builds the plan every comment call needs.

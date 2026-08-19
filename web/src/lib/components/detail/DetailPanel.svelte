@@ -20,6 +20,7 @@
 	import ProvenanceBadge from '$lib/components/state/ProvenanceBadge.svelte';
 	import AssetTypePicker from './AssetTypePicker.svelte';
 	import CategoryPanel from './CategoryPanel.svelte';
+	import CommentPanel from './CommentPanel.svelte';
 	import EngagementPanel from './EngagementPanel.svelte';
 	import MetadataEditor from './MetadataEditor.svelte';
 	import SharePanel from './SharePanel.svelte';
@@ -207,6 +208,10 @@
 	<!-- Where it is filed, before sharing: a reader checking an asset asks "what is this and where does it
 	     live" before "who can have it". -->
 	<CategoryPanel assetId={asset.id} />
+
+	<!-- The conversation after the filing and before sharing: what people have *said* about an asset is part of
+	     understanding it, and it belongs beside the metadata rather than behind a tab. -->
+	<CommentPanel assetId={asset.id} />
 
 	<SharePanel assetId={asset.id} />
 

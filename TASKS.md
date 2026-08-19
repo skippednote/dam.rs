@@ -26,14 +26,14 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M0–M3c** Foundation, ingest, metadata/search/rights, delivery/sharing/restore | complete |
 | **F** The UI: browse, detail, upload, filter rail, lightbox, bulk bar, design pass | complete |
 | **F.11b** Share/portal UI, schema administration, metadata types | complete except restore UX |
-| **Q** Acquia parity, 20 slices | Q.1–Q.5 done; Q.6a–Q.6b done; Q.6c–Q.20 open |
+| **Q** Acquia parity, 20 slices | Q.1–Q.6 done; Q.7–Q.20 open |
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | schema exists, behaviour unwritten |
 | **M6** Workflow/proofing, annotations, analytics | not started |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** Q.6c comment UI
+**Next up, in order:** Q.7 activity feed and dashboard
 → Q.6 comments → Q.7 activity feed → Q.8 versions → Q.9 attachments → Q.10 history → Q.11 conversions →
 Q.12 intended use → Q.13 orders → Q.14 portals → Q.15–Q.19 search → Q.20 sundries → M4 → M5 → M6 → M3d →
 Pre-GA → Entries.
@@ -1768,8 +1768,28 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
       Eleven of twelve mutations caught. The survivor is the identity unwrap, which `caller::authorize` already
       guarantees — the same shape as the engagement handlers, and the reason the `Caller::identity_id` cleanup is
       on this list. One mutation found a real gap: nothing covered a comment outliving its author.
-- [ ] **Q.6c The comment UI.** A thread in the detail panel, public/private with the consequence spelled out, a
-  recipient picker, and the status control.
+- [x] **Q.6c The comment thread, and three latent UI bugs.** A thread in the detail panel: compose, reply, edit
+      your own, delete your own, move a status. The compose box states the *consequence* — "Everyone who can see
+      this asset" / "Only you and the people you choose" — because somebody who infers a switch wrongly cannot take
+      the words back. A private comment with nobody named cannot be sent, said before writing rather than refused
+      after. Edit and Delete appear only on your own comments, since an affordance that exists to be refused
+      teaches people to distrust every control beside it; the status control appears on all of them, because
+      `approved` is somebody else's verdict. No reply control on a reply. Added `GET /me`, without which the panel
+      could not know whose comments to offer to edit.
+
+      Seventeen mutations caught, and the three that survived first were all real:
+
+      1. **`checked={expr}` on a radio sets `defaultChecked`, not the property** — so the control was not
+         controlled, and flipping the default in source changed nothing on screen.
+      2. **`bind:group` over booleans ignores the initial value entirely.** Replacing the attribute form with it
+         fixed nothing; the radios are string-valued states now, which is what radios are.
+      3. **The reset effect's first run overwrote the declared defaults**, so the `$state` initialiser was dead
+         code and the compose box had two defaults that could disagree. Guarded, as the engagement panel already
+         was.
+
+      Driving the real thing found a fourth: on a tenant with one member the private option was a dead end — the
+      picker empty, the requirement unsatisfiable, and nothing saying so. It now names the situation and the way
+      out.
 - [ ] **Q.7 Activity feed, dashboard sections, spotlight searches.** What turns the landing page from a
   redirect into a place.
 - [ ] **Q.8 Versions.** Add a version, list them, download an earlier one, and the detail tab.

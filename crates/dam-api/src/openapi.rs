@@ -36,6 +36,7 @@ use utoipa::OpenApi;
         crate::comments::amend,
         crate::comments::remove,
         crate::comments::people,
+        crate::comments::me,
         crate::engagement::set_rating,
         crate::engagement::clear_rating,
         crate::engagement::add_favourite,
