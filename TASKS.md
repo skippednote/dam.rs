@@ -1532,7 +1532,18 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
   the group, since it describes the deployment's limitation rather than the tenant's data. 8 API cases; 8
   mutations all caught, one of which proved nothing checked that `authorize` still *called* the renderability
   check.
-- [ ] **Q.2c Categories in the UI**: the browse tree in the filter rail with counts, categories on the detail
+- [x] **Q.2c·1 `in:` — categories in the query language.** `in:exterior.yellow` filters by category, always
+  including descendants (which is what clicking a branch means, and why the paths are ltree). It lives in the
+  query string rather than in a `category=` parameter *because* the filter rail's own rule is that it edits one
+  string — so "copy this search" copies all of it, and a rail with state beside the text box is the split that
+  rule exists to prevent. `in` is reserved, so a tenant field of that name cannot shadow the browse tree;
+  values are case-folded like every other selector; unknown, empty and retired categories are refused by name
+  rather than silently becoming free text. `search_schema` now loads the tenant's live category paths
+  lower-cased, excluding vocabularies and retired terms. 4 parser cases plus one end-to-end case proving the
+  whole chain — database paths → parser schema → resolution → SQL that returns descendants — because each link
+  is individually plausible and the failure mode is a join between them. 9 mutations all caught; two found real
+  blind spots (mixed-case ltree paths, and a vocabulary term becoming filterable as a category).
+- [ ] **Q.2c·2 Categories in the UI**: the browse tree in the filter rail with counts, categories on the detail
   panel, filing from there, and the uncategorised worklist surfaced.
 - [ ] **Q.3 Upload profiles.** Per-profile metadata defaults, required-field enforcement in the uploader,
   and the per-profile AI switches Acquia's backfill respects.

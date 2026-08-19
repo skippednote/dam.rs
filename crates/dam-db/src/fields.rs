@@ -179,9 +179,43 @@ where
 /// separately could pair a fresh alias with a stale field list — and the symptom would be a shorthand key
 /// resolving to a field that no longer exists.
 pub async fn search_schema(pool: &sqlx::PgPool) -> Result<dam_core::shorthand::Schema, Error> {
-    let defs = load(pool).await?;
-    let aliases = aliases(pool).await?;
-    Ok(dam_core::shorthand::Schema::new(defs, aliases))
+    let mut conn = pool.acquire().await?;
+    search_schema_on(&mut conn).await
+}
+
+/// [`search_schema`] on a caller's connection.
+pub async fn search_schema_on(
+    conn: &mut sqlx::PgConnection,
+) -> Result<dam_core::shorthand::Schema, Error> {
+    let defs = load(&mut *conn).await?;
+    let aliases = aliases(&mut *conn).await?;
+    // The category paths too, so `in:exterior.yellow` resolves while parsing rather than needing a second
+    // round trip afterwards. Loaded from the same connection as the fields for the same reason they are
+    // assembled together: a stale half would resolve a selector against a tree that has since changed.
+    let categories = category_paths(&mut *conn).await?;
+    Ok(dam_core::shorthand::Schema::new(defs, aliases).with_categories(categories))
+}
+
+/// Every live category path in every category tree, lower-cased, mapped to its term id.
+///
+/// Lower-cased because the selector is case-folded like every other one: a user typing the label they see on
+/// screen is not wrong, and the filter rail's own links must survive a label's case changing.
+///
+/// Deprecated categories are excluded. A retired category cannot take new assets ([`crate::categories::file`]),
+/// and offering it as a filter would keep it alive in the one place somebody would notice it — which is the
+/// opposite of retiring it.
+async fn category_paths<'e, E>(executor: E) -> Result<HashMap<String, Uuid>, Error>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    let rows: Vec<(String, Uuid)> = sqlx::query_as(
+        "SELECT lower(t.path::text), t.id FROM taxonomy_terms t \
+         JOIN taxonomies x ON x.id = t.taxonomy_id AND x.kind = 'category' \
+         WHERE t.deprecated_at IS NULL",
+    )
+    .fetch_all(executor)
+    .await?;
+    Ok(rows.into_iter().collect())
 }
 
 /// Validates `payload` against the tenant's field definitions, resolving taxonomy references.

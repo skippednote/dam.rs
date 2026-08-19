@@ -280,8 +280,10 @@ async fn plan(
     q: &str,
 ) -> Result<(Planned, Vec<dam_core::fields::FieldDef>), Failure> {
     let defs = dam_db::fields::load(&mut *conn).await?;
-    let aliases = dam_db::fields::aliases(&mut *conn).await?;
-    let parse_schema = shorthand::Schema::new(defs.clone(), aliases);
+    // `search_schema_on` rather than assembling here: it also loads the tenant's category paths, which is
+    // what lets `in:exterior.yellow` resolve while parsing. Assembling the two halves separately is how a
+    // fresh alias gets paired with a stale field list.
+    let parse_schema = dam_db::fields::search_schema_on(&mut *conn).await?;
 
     let parsed = if q.trim().is_empty() {
         dam_core::query::Query::All

@@ -32,20 +32,7 @@ use uuid::Uuid;
 /// *current search* as well as the caller's scope — a tree that counted the whole library while the user had
 /// a query active would offer branches that lead to nothing.
 fn everything() -> Planned {
-    let access = policy::compile(
-        &Grants::from(vec![Grant {
-            permissions: vec!["asset:read".to_owned()],
-            asset_group_ids: vec![],
-            all_asset_groups: true,
-            valid_from: None,
-            valid_until: None,
-            requires_eula: false,
-            eula_accepted: true,
-        }]),
-        Action::Read,
-        Utc::now(),
-    );
-    Planned::new(Query::All, access, &[]).expect("valid plan")
+    Planned::new(Query::All, everything_access(), &[]).expect("valid plan")
 }
 
 /// A connection from the pool.
@@ -103,6 +90,7 @@ async fn the_category_contract_holds() {
     only_confirmed_categories_count_and_they_read_deepest_first(&pool, tree).await;
     filing_under_a_retired_category_is_refused(&pool, tree).await;
     a_slug_is_unique_among_siblings_and_free_across_branches(&pool, tree).await;
+    the_in_selector_resolves_and_filters_end_to_end(&pool, tree).await;
 }
 
 async fn a_tree_is_created_with_nested_categories(pool: &PgPool) -> Uuid {
@@ -583,4 +571,144 @@ async fn a_slug_is_unique_among_siblings_and_free_across_branches(pool: &PgPool,
         .map(|node| node.path)
         .collect();
     assert_eq!(filed, ["interior.yellow"]);
+}
+
+async fn the_in_selector_resolves_and_filters_end_to_end(pool: &PgPool, tree: Uuid) {
+    // The whole chain in one case: the tenant's category paths are loaded into the parser's schema, `in:<path>`
+    // resolves to a term id while parsing, and the planned query renders SQL that returns the right assets.
+    //
+    // Worth doing as one case rather than three unit tests, because each link is individually plausible and the
+    // failure mode is a *join* between them — a path loaded lower-cased but matched raw, say, or a term filter
+    // that renders without the descendant clause. None of those show up until all three run together.
+    let schema = dam_db::fields::search_schema(pool)
+        .await
+        .expect("schema with categories");
+
+    let yellow = categories::by_path(c!(pool), tree, "exterior.yellow")
+        .await
+        .expect("path")
+        .expect("yellow");
+    let query = dam_core::shorthand::parse("in:exterior.yellow", &schema).expect("parses");
+    assert_eq!(
+        query,
+        dam_core::query::Query::Term {
+            term_id: yellow.id,
+            include_descendants: true,
+        }
+    );
+
+    // Filed under the leaf, and a second asset filed under the *sibling* so the descendant clause has to be
+    // doing real work rather than matching everything.
+    let leaf_asset = asset(pool, "in-selector-leaf").await;
+    categories::file(c!(pool), leaf_asset, yellow.id, None)
+        .await
+        .expect("file");
+
+    // Now the branch: `in:exterior` must return the leaf's asset too, which is the property that makes
+    // clicking a branch in a browse tree mean what a user expects.
+    let branch = dam_core::shorthand::parse("in:exterior", &schema).expect("parses");
+    let planned = Planned::new(branch, everything_access(), schema.fields()).expect("plan");
+    let unfiled = asset(pool, "in-selector-unfiled").await;
+    let ids = matching(pool, &planned).await;
+    assert!(
+        ids.contains(&leaf_asset),
+        "an asset filed under a leaf must be returned by a query on the branch"
+    );
+    // And an asset in no category is not, so the filter is a filter.
+    assert!(
+        !ids.contains(&unfiled),
+        "the branch query must not return assets outside it"
+    );
+
+    // A retired category disappears from the selector: it cannot take new assets, so offering it as a filter
+    // would keep it alive in the one place somebody would notice.
+    let green = categories::by_path(c!(pool), tree, "exterior.green")
+        .await
+        .expect("path")
+        .expect("green");
+    assert!(
+        green.retired,
+        "the retirement case above deprecated this one"
+    );
+    let after = dam_db::fields::search_schema(pool).await.expect("schema");
+    let refusal = dam_core::shorthand::parse("in:exterior.green", &after)
+        .expect_err("a retired category is not a filter");
+    assert_eq!(refusal.code, "unknown_category");
+
+    // A *vocabulary* term is not a category, so its path is not a filter either. Without this the `kind`
+    // join in the path loader is unobservable: dropping it would make `in:timber` resolve, and a browse
+    // selector would silently start filtering by an AI tag vocabulary.
+    let refusal = dam_core::shorthand::parse("in:timber", &after)
+        .expect_err("a vocabulary term is not a category");
+    assert_eq!(refusal.code, "unknown_category");
+
+    // An ltree label may contain capitals, so a category's own path can. The loader lower-cases, and a user
+    // typing the label as they see it must still resolve — which is only observable when the *stored* path is
+    // not already lower-case.
+    let exterior = categories::by_path(c!(pool), tree, "exterior")
+        .await
+        .expect("path")
+        .expect("exterior");
+    let mixed = categories::create(
+        c!(pool),
+        NewCategory {
+            taxonomy_id: tree,
+            parent_id: Some(exterior.id),
+            slug: "Weathered".to_owned(),
+            label: "Weathered".to_owned(),
+        },
+    )
+    .await
+    .expect("a category whose slug carries capitals");
+    let with_mixed = dam_db::fields::search_schema(pool).await.expect("schema");
+    for typed in [
+        "in:exterior.Weathered",
+        "in:exterior.weathered",
+        "in:EXTERIOR.WEATHERED",
+    ] {
+        let query = dam_core::shorthand::parse(typed, &with_mixed)
+            .unwrap_or_else(|e| panic!("{typed} should resolve: {e}"));
+        assert_eq!(
+            query,
+            dam_core::query::Query::Term {
+                term_id: mixed,
+                include_descendants: true,
+            },
+            "{typed}"
+        );
+    }
+}
+
+/// The access half of a plan that sees everything, split out so `everything()` and this share one definition.
+fn everything_access() -> policy::AccessPredicate {
+    policy::compile(
+        &Grants::from(vec![Grant {
+            permissions: vec!["asset:read".to_owned()],
+            asset_group_ids: vec![],
+            all_asset_groups: true,
+            valid_from: None,
+            valid_until: None,
+            requires_eula: false,
+            eula_accepted: true,
+        }]),
+        Action::Read,
+        Utc::now(),
+    )
+}
+
+/// The asset ids a planned query matches.
+///
+/// The same shape `query_sql`'s own suite uses: this is the SQL the search endpoint runs for a relational
+/// filter, and rendering it here is what makes the `in:` chain testable without an index.
+async fn matching(pool: &PgPool, planned: &Planned) -> Vec<Uuid> {
+    let mut builder: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
+        "SELECT assets.id FROM assets \
+         LEFT JOIN asset_metadata ON asset_metadata.asset_id = assets.id WHERE ",
+    );
+    dam_db::query_sql::push_where(&mut builder, planned).expect("render");
+    builder
+        .build_query_scalar()
+        .fetch_all(pool)
+        .await
+        .expect("query")
 }

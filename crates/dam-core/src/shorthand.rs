@@ -32,12 +32,18 @@
 use crate::fields::{FieldDef, FieldKind};
 use crate::query::{Comparison, Endpoint, Literal, Query};
 use std::collections::HashMap;
+use uuid::Uuid;
 
 /// Longest input accepted, in characters.
 ///
 /// A search string arrives in a URL, so this is untrusted input. Bounding it here is cheaper than
 /// bounding the parsed tree, and it puts the IR's node limit out of reach from this entry point.
 pub const MAX_INPUT_CHARS: usize = 4096;
+
+/// The selector that filters by category: `in:exterior.yellow`.
+///
+/// Reserved, so a field of this name cannot shadow the browse tree.
+pub const CATEGORY_SELECTOR: &str = "in";
 
 /// Deepest parenthesis nesting.
 ///
@@ -51,11 +57,29 @@ pub struct Schema {
     fields: Vec<FieldDef>,
     /// `search_alias` → field key.
     aliases: HashMap<String, String>,
+    /// Category ltree path → term id, so `in:exterior.yellow` resolves here rather than needing a second
+    /// round trip after parsing.
+    ///
+    /// Categories live in the query string rather than in a separate parameter deliberately: the filter rail
+    /// exists to edit *one* string, so that "copy this search" copies all of it. A `category=` alongside `q`
+    /// would be exactly the two-filters-and-no-way-to-see-the-whole-thing split the rail was built to avoid.
+    categories: HashMap<String, Uuid>,
 }
 
 impl Schema {
     pub fn new(fields: Vec<FieldDef>, aliases: HashMap<String, String>) -> Self {
-        Self { fields, aliases }
+        Self {
+            fields,
+            aliases,
+            categories: HashMap::new(),
+        }
+    }
+
+    /// The same schema, able to resolve `in:<path>`.
+    #[must_use]
+    pub fn with_categories(mut self, categories: HashMap<String, Uuid>) -> Self {
+        self.categories = categories;
+        self
     }
 
     /// The definitions, for a caller that needs to plan the query this schema parsed.
@@ -64,6 +88,14 @@ impl Schema {
     /// loaded set could validate a query the parser built from a field the planner has never heard of.
     pub fn fields(&self) -> &[FieldDef] {
         &self.fields
+    }
+
+    /// Resolves a category path to its term id.
+    fn resolve_category(&self, path: &str) -> Option<Uuid> {
+        // Case-folded, like every other selector value: a path typed `Exterior.Yellow` is the same category,
+        // and refusing it would make the rail's own links unusable if a label ever changed case.
+        let lowered = path.to_ascii_lowercase();
+        self.categories.get(&lowered).copied()
     }
 
     /// Resolves a key or alias to a definition.
@@ -412,6 +444,38 @@ impl<'a> Parser<'a> {
         }
         if !is_field_shaped(name) {
             return Ok(Query::Text(text.to_owned()));
+        }
+
+        // `in:` is the category selector, not a field. Checked before field resolution because `in` is a
+        // reserved name here: a tenant that defined a field called `in` would shadow the browse tree, and the
+        // rail's own links would stop working for reasons nobody could see.
+        if name.eq_ignore_ascii_case(CATEGORY_SELECTOR) {
+            let path = rest.trim();
+            if path.is_empty() {
+                return Err(ParseError::new(
+                    "empty_category",
+                    column,
+                    format!(
+                        "{CATEGORY_SELECTOR}: needs a category path, like {CATEGORY_SELECTOR}:exterior.yellow"
+                    ),
+                ));
+            }
+            let Some(term_id) = self.schema.resolve_category(path) else {
+                return Err(ParseError::new(
+                    "unknown_category",
+                    column + name.chars().count() + 1,
+                    format!(
+                        "no category at path {path:?}; treating a typo as free text would return \
+                         nothing and explain nothing"
+                    ),
+                ));
+            };
+            return Ok(Query::Term {
+                term_id,
+                // Always. "In Exterior" colloquially includes everything filed beneath it, which is what
+                // clicking a branch in a browse tree means and why the paths are `ltree` in the first place.
+                include_descendants: true,
+            });
         }
 
         let Some(def) = self.schema.resolve(name) else {

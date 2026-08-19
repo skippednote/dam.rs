@@ -1781,3 +1781,26 @@ query.** The first is §7: a rollup reporting the true total would tell a group-
 of the library they cannot reach is. The second is a deliberate split — the tree is browse chrome and counts
 everything the caller may see, while narrowing counts to the current search is what the search endpoint's facets
 already do. Reversible: yes.
+
+**Categories filter through the query string, not a separate parameter.** `in:exterior.yellow` is a shorthand
+selector, so the whole filter stays in one string. That is the filter rail's own stated rule — it edits the
+query rather than keeping state beside the text box, because two filters with no way to see the whole thing
+makes "copy this search" copy half of it. A `category=` alongside `q` would have been exactly that split. The
+cost is a parser change and a schema that carries category paths; the benefit is that a category filter is
+typeable, shareable and negatable (`-in:exterior`) like everything else. Reversible: yes, but the parameter
+would reintroduce the split.
+
+**`in` is a reserved selector name.** A tenant that defined a field called `in` would otherwise shadow the
+browse tree, and the rail's own links would stop working for a reason invisible from either side. The selector
+wins over a field of the same name, and a test pins it. Reversible: no.
+
+**`in:` always includes descendants.** "In Exterior" colloquially means everything filed beneath it, which is
+what clicking a branch in a browse tree means — and it is why category paths are `ltree` in the first place.
+There is no syntax for "this category only" yet; if one is ever wanted it should be the marked case, not the
+default. Reversible: yes.
+
+**Category paths are loaded lower-cased, and retired categories are not filterable.** Case-folding matches every
+other selector value: a user typing the label they see is not wrong, and an ltree label may legitimately carry
+capitals. Retired categories are excluded because a retired category cannot take new assets, so offering it as a
+filter would keep it alive in the one place somebody would notice — the opposite of retiring it. Vocabulary
+terms are excluded too, or `in:` would silently start filtering by an AI tag vocabulary. Reversible: yes.

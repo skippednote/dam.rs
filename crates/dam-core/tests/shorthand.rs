@@ -13,6 +13,7 @@
 use dam_core::fields::{Constraints, FieldDef, FieldKind};
 use dam_core::query::{Comparison, Endpoint, Literal, Query};
 use dam_core::shorthand;
+use std::collections::HashMap;
 use uuid::Uuid;
 
 fn def(key: &str, kind: FieldKind, alias: Option<&str>) -> FieldDef {
@@ -34,13 +35,23 @@ fn def(key: &str, kind: FieldKind, alias: Option<&str>) -> FieldDef {
     def
 }
 
-/// The tenant's schema, with the aliases the shorthand resolves.
+/// The category term ids the `in:` selector resolves to.
+const EXTERIOR: Uuid = Uuid::from_u128(0xE0);
+const YELLOW: Uuid = Uuid::from_u128(0xE1);
+
+/// The tenant's schema, with the aliases and category paths the shorthand resolves.
 fn schema() -> shorthand::Schema {
     shorthand::Schema::new(
         fields(),
         [("bra", "brand"), ("yr", "year")]
             .into_iter()
             .map(|(alias, key)| (alias.to_owned(), key.to_owned()))
+            .collect(),
+    )
+    .with_categories(
+        [("exterior", EXTERIOR), ("exterior.yellow", YELLOW)]
+            .into_iter()
+            .map(|(path, id)| (path.to_owned(), id))
             .collect(),
     )
 }
@@ -530,4 +541,98 @@ fn fields() -> Vec<FieldDef> {
         def("category", FieldKind::TaxonomyRef, None),
         def("homepage", FieldKind::Url, None),
     ]
+}
+
+#[test]
+fn in_filters_by_category_and_includes_everything_beneath_it() {
+    // Categories live in the query string rather than a separate parameter, because the filter rail edits one
+    // string and "copy this search" has to copy all of it.
+    assert_eq!(
+        parse("in:exterior.yellow"),
+        Query::Term {
+            term_id: YELLOW,
+            // Always true: "in Exterior" colloquially means everything filed beneath it, which is what
+            // clicking a branch in a browse tree means and why the paths are ltree.
+            include_descendants: true,
+        }
+    );
+
+    // A branch, and it composes with everything else the shorthand can express.
+    assert_eq!(
+        parse("in:exterior bra:acme"),
+        Query::And(vec![
+            Query::Term {
+                term_id: EXTERIOR,
+                include_descendants: true,
+            },
+            Query::Field {
+                key: "brand".to_owned(),
+                op: Comparison::Equals(Literal::Text("acme".to_owned())),
+            },
+        ])
+    );
+
+    // Negation works, which is what makes "everything except the interiors" expressible at all.
+    assert_eq!(
+        parse("-in:exterior"),
+        Query::Not(Box::new(Query::Term {
+            term_id: EXTERIOR,
+            include_descendants: true,
+        }))
+    );
+
+    // Case-folded like every other selector value: the rail's own links must keep working if a label's case
+    // changes, and a user typing what they see on screen is not wrong.
+    assert_eq!(
+        parse("in:Exterior.Yellow"),
+        Query::Term {
+            term_id: YELLOW,
+            include_descendants: true,
+        }
+    );
+}
+
+#[test]
+fn an_unknown_category_is_refused_rather_than_searched_for_as_text() {
+    // Same reasoning as an unknown field: treating `in:extrior` as free text returns nothing and explains
+    // nothing, and the user concludes the library is empty rather than that they mistyped.
+    let error = parse_err("in:extrior");
+    assert_eq!(error.code, "unknown_category");
+    // The column points at the *path*, not at `in`, because that is the part to fix.
+    assert_eq!(error.column, 4, "underline the path: {error:?}");
+
+    let error = parse_err("in:");
+    assert_eq!(error.code, "empty_category");
+}
+
+#[test]
+fn a_field_cannot_shadow_the_category_selector() {
+    // `in` is reserved. A tenant defining a field called `in` would otherwise take over the browse tree, and
+    // the rail's links would break for a reason nobody could see from either side.
+    let with_in_field =
+        shorthand::Schema::new(vec![def("in", FieldKind::Text, None)], HashMap::new())
+            .with_categories(
+                [("exterior", EXTERIOR)]
+                    .into_iter()
+                    .map(|(path, id)| (path.to_owned(), id))
+                    .collect(),
+            );
+    assert_eq!(
+        shorthand::parse("in:exterior", &with_in_field).expect("parses"),
+        Query::Term {
+            term_id: EXTERIOR,
+            include_descendants: true,
+        },
+        "the category selector wins over a field of the same name"
+    );
+}
+
+#[test]
+fn a_quoted_in_is_text_like_every_other_quoted_selector() {
+    // Quoting suppresses every operator meaning. Somebody searching for the literal string "in:exterior" —
+    // in a filename, say — must be able to.
+    assert_eq!(
+        parse("\"in:exterior\""),
+        Query::Text("in:exterior".to_owned())
+    );
 }
