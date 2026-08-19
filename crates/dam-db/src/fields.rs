@@ -229,7 +229,40 @@ pub async fn validate_on(
     mode: Mode,
     writer: Writer,
 ) -> Result<Accepted, ValidationOutcome> {
-    let defs = load(&mut *conn).await.map_err(ValidationOutcome::Failed)?;
+    validate_for_on(conn, None, payload, mode, writer).await
+}
+
+/// Validation scoped to one asset's metadata type (Q.1).
+///
+/// With `for_asset` supplied, the definitions are the ones that asset's type includes rather than the whole
+/// tenant vocabulary. That is what makes a type mean anything: a field the asset's form does not show is a
+/// field a write must not accept, or the type is decoration and the value lands somewhere no form will ever
+/// display it again.
+///
+/// The refusal a caller sees for such a key is `unknown_field`, deliberately the same one an actual typo gets.
+/// The alternative — a distinct "not in this type" code — would disclose the rest of the tenant's schema to a
+/// caller holding one asset, and the fix is the same either way: send a key this asset's form offers.
+///
+/// `None` means the whole vocabulary, which is what creation before a type is chosen needs.
+pub async fn validate_for_on(
+    conn: &mut sqlx::PgConnection,
+    for_asset: Option<Uuid>,
+    payload: &Map<String, Value>,
+    mode: Mode,
+    writer: Writer,
+) -> Result<Accepted, ValidationOutcome> {
+    let defs = match for_asset {
+        Some(asset_id) => crate::metadata_types::fields_for_on(&mut *conn, asset_id)
+            .await
+            .map_err(|refusal| match refusal {
+                crate::metadata_types::TypeRefusal::Database(error) => {
+                    ValidationOutcome::Failed(error)
+                }
+                // Every other variant is about editing a type, and none of them can arise from a read.
+                other => ValidationOutcome::Failed(Error::Migrate(other.to_string())),
+            })?,
+        None => load(&mut *conn).await.map_err(ValidationOutcome::Failed)?,
+    };
     let accepted = dam_core::fields::validate(&defs, payload, mode, writer)
         .map_err(ValidationOutcome::Rejected)?;
 

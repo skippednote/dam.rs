@@ -400,8 +400,12 @@ pub async fn update_metadata(
     // does not apply to it, while a key present with `null` is an instruction to clear — and clearing a
     // required field is refused. Merging first and validating the whole document would lose that distinction
     // and demand every required field on every edit of one caption.
-    let accepted = match dam_db::fields::validate_on(
+    let accepted = match dam_db::fields::validate_for_on(
         conn.executor(),
+        // Scoped to this asset's metadata type (Q.1): a field its form does not show is a field this write
+        // must not accept, or the type is decoration and the value lands where no form will display it again.
+        // Same transaction as the read and the write, so a type reassignment cannot land in between.
+        Some(asset_id),
         &patch.values,
         dam_core::fields::Mode::Patch,
         dam_core::fields::Writer::Human,

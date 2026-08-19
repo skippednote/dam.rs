@@ -144,6 +144,22 @@ fn blob(f: &Fixture) -> &dyn BlobStore {
 // ─── finalisation ───────────────────────────────────────────────────────────
 
 async fn a_staged_upload_becomes_an_asset(f: &Fixture) {
+    // A metadata type claiming the image class, defined before the upload: ingest should pick it from the
+    // sniffed mime without being told, so an asset arrives carrying the form it should have (Q.1). Without a
+    // type present this assertion is vacuous, which is why the type is created here rather than in the fixture.
+    let image_type = dam_db::metadata_types::define(
+        &f.tenant,
+        dam_db::metadata_types::NewType {
+            key: "image".to_owned(),
+            label: "Image".to_owned(),
+            applies_to: vec!["image".to_owned()],
+            is_default: false,
+            field_keys: vec![],
+        },
+    )
+    .await
+    .expect("define image type");
+
     let bytes = jpeg(640, 480);
     stage(f, "finalise001", "harbour.jpg", &bytes).await;
 
@@ -183,6 +199,18 @@ async fn a_staged_upload_becomes_an_asset(f: &Fixture) {
         "dimensions come from the header, read as a ranged prefix rather than a download"
     );
     assert_eq!(row.4, "active");
+
+    let assigned: Option<uuid::Uuid> =
+        sqlx::query_scalar("SELECT metadata_type_id FROM assets WHERE id = $1")
+            .bind(finalised.asset_id)
+            .fetch_one(&f.tenant)
+            .await
+            .expect("metadata type");
+    assert_eq!(
+        assigned,
+        Some(image_type.id),
+        "ingest picks the type claiming the sniffed mime's media class, so nobody has to set it by hand"
+    );
 
     // The bytes are at the content-addressed key, and the staging object is gone.
     let original = Key::original(f.tenant_id, &finalised.content_hash).expect("key");

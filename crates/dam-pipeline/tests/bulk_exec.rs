@@ -248,6 +248,87 @@ async fn a_bulk_metadata_set_merges_into_every_target(f: &Fixture) {
     assert_eq!(gained["campaign"], "spring-2026");
 }
 
+async fn a_target_whose_type_excludes_the_field_is_reported_not_written(f: &Fixture) {
+    // With metadata types, "does this patch apply" stops being a property of the patch alone (Q.1): a field on
+    // the image form is not on the archive form, and a selection spanning both is legitimately partial. The
+    // pre-flight check still catches what is wrong for everyone; this is the per-item half.
+    //
+    // Reported rather than silently skipped, and reported rather than written: a bulk edit that could write
+    // outside an asset's form while the single-asset endpoint refuses it would make the two paths disagree
+    // about what the schema means.
+    field(f, "print_dpi").await;
+    let narrow = dam_db::metadata_types::define(
+        &f.tenant,
+        dam_db::metadata_types::NewType {
+            key: "captions-only".to_owned(),
+            label: "Captions only".to_owned(),
+            applies_to: vec![],
+            is_default: false,
+            field_keys: vec!["caption".to_owned()],
+        },
+    )
+    .await
+    .expect("define type");
+
+    let inside = asset(f, "type-ok.jpg").await;
+    let outside = asset(f, "type-narrow.jpg").await;
+    dam_db::metadata_types::assign(&f.tenant, outside, Some(narrow.id))
+        .await
+        .expect("assign");
+
+    let id = operation(
+        f,
+        "metadata_set",
+        serde_json::json!({ "values": { "print_dpi": "300" } }),
+        &[inside, outside],
+    )
+    .await;
+    let executed = run(f, id).await.expect("run");
+
+    // `partial`, which is the state that exists precisely so a UI cannot put a green tick over this.
+    assert_eq!(executed.state, "partial", "one applied, one refused");
+    assert_eq!(executed.done, 1);
+    assert_eq!(executed.failed, 1);
+
+    // The untyped asset took the value.
+    let applied: serde_json::Value =
+        sqlx::query_scalar("SELECT values FROM asset_metadata WHERE asset_id = $1")
+            .bind(inside)
+            .fetch_one(&f.tenant)
+            .await
+            .expect("values");
+    assert_eq!(applied["print_dpi"], "300");
+
+    // The narrow one did not, and the reason names the field rather than saying "failed".
+    let stored: Option<serde_json::Value> =
+        sqlx::query_scalar("SELECT values FROM asset_metadata WHERE asset_id = $1")
+            .bind(outside)
+            .fetch_optional(&f.tenant)
+            .await
+            .expect("query");
+    assert!(
+        stored.is_none() || stored.as_ref().and_then(|v| v.get("print_dpi")).is_none(),
+        "a field outside the asset's type must not be written: {stored:?}"
+    );
+    let reason: Option<String> = sqlx::query_scalar(
+        "SELECT reason FROM bulk_operation_items WHERE operation_id = $1 AND asset_id = $2",
+    )
+    .bind(id)
+    .bind(outside)
+    .fetch_one(&f.tenant)
+    .await
+    .expect("reason");
+    let reason = reason.unwrap_or_default();
+    assert!(
+        reason.contains("print_dpi") && reason.contains("metadata type"),
+        "the reason should name the field and why: {reason:?}"
+    );
+
+    dam_db::metadata_types::remove(&f.tenant, narrow.id)
+        .await
+        .expect("remove type");
+}
+
 async fn an_invalid_patch_fails_before_any_asset_is_touched(f: &Fixture) {
     // The patch is identical for every target, so a bad one fails all 40,000 identically. Saying it once —
     // permanently, with the field named — beats recording the same failure per item.
@@ -362,6 +443,7 @@ async fn bulk_execution_holds() {
     a_bulk_delete_deletes_what_it_may_and_reports_the_rest(&f).await;
     re_running_a_finished_operation_changes_nothing(&f).await;
     a_bulk_metadata_set_merges_into_every_target(&f).await;
+    a_target_whose_type_excludes_the_field_is_reported_not_written(&f).await;
     an_invalid_patch_fails_before_any_asset_is_touched(&f).await;
     an_unimplemented_kind_is_refused_by_name(&f).await;
     a_vanished_operation_is_permanent(&f).await;

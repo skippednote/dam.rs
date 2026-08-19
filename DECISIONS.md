@@ -1670,3 +1670,35 @@ loosening this would let a read-only key reshape the tenant.
 looked for `message`, the server sends `reason`, so every refusal that had something specific to say — a
 schema key already taken, a share link revoked, a kind locked by 12 assets — reached the user as "Request
 failed (409)". One line in one place, and it fixes the whole app at once. Reversible: no, it is the fix.
+
+**A metadata type is a selection over the field vocabulary, not a second vocabulary.** `field_defs` remains the
+one place a key has a kind and a validation rule — the schema-admin refusals exist to protect exactly that, and
+a per-type copy of a definition would reintroduce the divergence they prevent. So `description` shared by the
+image and video types is one definition reached two ways, and a value written under either is readable under
+both. The payoff is that `dam_core::fields::validate` needed no change: it takes a slice of definitions, and
+choosing the slice is a database concern. Reversible: yes, but per-type definitions would be a one-way loss.
+
+**Metadata-type resolution has no dead end.** The asset's own type, else the tenant's default, else the whole
+vocabulary. The third step is what makes migration 0015 a no-op for every existing tenant — opting in is
+defining a type — and it exists because a field list is what the metadata form enumerates: a resolution that
+returned nothing would not lose data, it would *hide* it, with nothing to alarm on. The types table is created
+empty for the same reason; seeding built-in types would narrow every existing asset's form in a migration.
+Reversible: yes.
+
+**A write is scoped to the asset's own form.** A field the asset's type does not include is refused, with the
+same `unknown_field` code a typo gets — a distinct "not in this type" code would disclose the rest of the
+tenant's schema to a caller holding one asset, and the fix is identical either way. Without this a type is
+decoration: the value lands in the JSONB and no form ever displays it again, which is the silent-discard
+failure `unknown_field` was introduced to prevent. Reversible: no.
+
+**A bulk item outside its asset's type fails per item rather than failing the operation.** With types,
+"applicable" stops being a property of the patch alone: a field on the image form is not on the archive form,
+and a selection spanning both is legitimately partial. The pre-flight check still fails the whole operation for
+what is wrong for everyone — a typo, a bad kind, an out-of-range value — and this is the per-item half, which
+is what `partial` exists to report. Writing anyway would make the bulk path and the single-asset path disagree
+about what the schema means. Reversible: yes.
+
+**Ingest picks the metadata type from the sniffed mime's media class.** Null is valid and resolves via the
+fallback, but leaving every asset null would make types something an administrator applies by hand to a library
+that already exists. The class vocabulary (image/video/audio/document/archive) is deliberately coarser than
+mime: it exists so the choice is predictable to the person who set up the types. Reversible: yes.

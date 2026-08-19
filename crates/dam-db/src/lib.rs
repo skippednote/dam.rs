@@ -16,6 +16,7 @@ pub mod facets;
 pub mod fields;
 pub mod jobs;
 pub mod judgements;
+pub mod metadata_types;
 pub mod migrate;
 pub mod paths;
 pub mod provenance;

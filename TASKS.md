@@ -1456,7 +1456,20 @@ ARCHITECTURE never named, and that the product is *six applications* rather than
 
 Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driven against the real stack.
 
-- [ ] **Q.1 Metadata types bound to asset kinds.** Acquia groups fields into types (Image: 12 fields,
+- [x] **Q.1a Metadata types: the model, and the writes that respect it.** `metadata_types` +
+  `metadata_type_fields` + `assets.metadata_type_id` (migration 0015). `field_defs` stays the tenant's field
+  *vocabulary* — one key, one kind, one rule — because that is what the F.11b·2a refusals protect; a type is a
+  *selection* over it, which is also why `dam_core::fields::validate` needed no change at all. Resolution has
+  no dead end: the asset's type, else the tenant default, else the whole vocabulary — so the migration is a
+  no-op for every existing tenant and a resolution bug can never *hide* stored metadata. Ingest assigns a type
+  from the sniffed mime's media class; the single-asset patch validates against the asset's own form; a bulk
+  item whose type excludes the field is a named per-item failure, not a silent write, so the two write paths
+  agree about what the schema means. 12 db cases + one pure class test; 13 mutations all caught. Mutation
+  testing found two tests passing for the wrong reason — an SVG "verified" by a fallback, and a refusal that
+  only worked because the field was undefined rather than out-of-type.
+- [ ] **Q.1b Metadata type administration.** The API and the `/schema` UI for creating types, assigning their
+  fields, nominating the default, and setting an asset's type from its detail panel.
+- [ ] **Q.1 (original scope note) Metadata types bound to asset kinds.** Acquia groups fields into types (Image: 12 fields,
   Video: 0, Archives: 1, plus custom) and an asset's detail page names its type. damrs has one flat
   `field_defs` per tenant, so a video carries the print-resolution fields and an archive carries alt text.
   Extends the schema administration in F.11b·2a.

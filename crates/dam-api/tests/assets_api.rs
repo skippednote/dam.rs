@@ -575,6 +575,79 @@ async fn an_undefined_field_is_refused_rather_than_stored(f: &Fixture) {
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
 
+async fn a_field_outside_the_assets_metadata_type_is_refused(f: &Fixture) {
+    // A metadata type narrows what this asset's form shows, and the write has to agree with the form (Q.1).
+    // Without this case the endpoint's scoping is unobservable: the fixture defines no types, so validating
+    // against the whole vocabulary and validating against the asset's type give the same answer — which is
+    // exactly the mutation that survived until this test existed.
+    // Both fields are real definitions in this tenant. `brand` being *defined* is the whole point: if it were
+    // undefined, the unscoped validator would refuse it too and this case would pass whether or not the
+    // endpoint scopes anything. The mutation harness caught exactly that first time round.
+    field(&f.acme, "caption", "text", false).await;
+    field(&f.acme, "brand", "text", false).await;
+
+    let video_only = dam_db::metadata_types::define(
+        &f.acme,
+        dam_db::metadata_types::NewType {
+            key: "video".to_owned(),
+            label: "Video".to_owned(),
+            applies_to: vec!["video".to_owned()],
+            is_default: false,
+            field_keys: vec!["caption".to_owned()],
+        },
+    )
+    .await
+    .expect("define type");
+
+    let id = asset(&f.acme, "typed.mp4").await;
+    dam_db::metadata_types::assign(&f.acme, id, Some(video_only.id))
+        .await
+        .expect("assign");
+
+    // `caption` is on the form: accepted.
+    let response = send(
+        &f.app,
+        patch_metadata(
+            id,
+            &f.key,
+            serde_json::json!({"values": {"caption": "on the form"}}),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // `brand` is a real field in this tenant and is *not* on this asset's form: 422, with the key named so a
+    // client can place the error next to the input rather than in a banner.
+    let response = send(
+        &f.app,
+        patch_metadata(
+            id,
+            &f.key,
+            serde_json::json!({"values": {"brand": "off the form"}}),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = json(response).await;
+    assert_eq!(body[0]["key"], "brand");
+
+    // And nothing was stored, because a refused patch is a refused patch.
+    let stored: Option<Value> =
+        sqlx::query_scalar("SELECT values FROM asset_metadata WHERE asset_id = $1")
+            .bind(id)
+            .fetch_optional(&f.acme)
+            .await
+            .expect("query");
+    let stored = stored.unwrap_or_else(|| serde_json::json!({}));
+    assert!(stored.get("brand").is_none(), "{stored}");
+
+    // Removed again so the cases after this one still see a tenant with no types — the fallback path they
+    // rely on, and one this file should keep exercising.
+    dam_db::metadata_types::remove(&f.acme, video_only.id)
+        .await
+        .expect("remove type");
+}
+
 async fn another_tenants_asset_cannot_be_edited_and_answers_404(f: &Fixture) {
     let theirs = asset(&f.globex, "not-yours.jpg").await;
     assert_eq!(
@@ -619,5 +692,6 @@ async fn the_metadata_contract_holds() {
     editing_one_field_does_not_demand_every_required_one(&f).await;
     clearing_a_required_field_is_refused_with_a_code(&f).await;
     an_undefined_field_is_refused_rather_than_stored(&f).await;
+    a_field_outside_the_assets_metadata_type_is_refused(&f).await;
     another_tenants_asset_cannot_be_edited_and_answers_404(&f).await;
 }

@@ -193,11 +193,22 @@ pub async fn upload(
     let mut conn = TenantConn::begin(global, slug).await?;
     let asset_id = Uuid::new_v4();
 
+    // Resolved on this connection, inside the same transaction as the insert: a type created or
+    // re-pointed between the two would otherwise put the asset on a form that no longer matches its class.
+    let metadata_type_id = dam_db::metadata_types::for_mime_on(conn.executor(), &promoted.mime)
+        .await
+        .map_err(|refusal| dam_db::Error::Migrate(refusal.to_string()))?
+        .map(|chosen| chosen.id);
+
     sqlx::query(
+        // `metadata_type_id` comes from the mime's media class (Q.1), chosen here rather than left null so
+        // an asset arrives with the form it should have. Null is still valid and still resolves — see
+        // `metadata_types::fields_for` — but leaving every asset to the fallback would make types something
+        // an administrator has to apply by hand to a library that already exists.
         "INSERT INTO assets \
          (id, content_hash, filename, ext, mime, bytes, width, height, orientation, color_space, \
-          has_alpha, status, version_group_id, source) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'active', $1, 'ui')",
+          has_alpha, status, version_group_id, source, metadata_type_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'active', $1, 'ui', $12)",
     )
     .bind(asset_id)
     .bind(&content_hash)
@@ -215,6 +226,7 @@ pub async fn upload(
     )
     .bind(probe.as_ref().and_then(|p| p.color_space.clone()))
     .bind(probe.as_ref().and_then(|p| p.has_alpha))
+    .bind(metadata_type_id)
     .execute(conn.executor())
     .await
     .map_err(dam_db::Error::from)?;

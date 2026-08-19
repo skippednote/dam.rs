@@ -266,6 +266,23 @@ async fn apply_metadata(
         Some(true) => {}
     }
 
+    // Per item, not once for the operation (Q.1). The pre-flight `validate_patch` catches what is wrong for
+    // everyone — a typo, a bad kind, an out-of-range value — but with metadata types "applicable" stops being
+    // a property of the patch alone: a field on the image form is not on the archive form, and a selection
+    // spanning both is a legitimately partial operation. So this is a *skip with a reason* rather than a
+    // failure, which is exactly what the `partial` end state exists to report.
+    let applicable = dam_db::metadata_types::fields_for_on(&mut *conn, asset_id)
+        .await
+        .map_err(|refusal| dam_db::Error::Migrate(refusal.to_string()))?;
+    if let Some(outside) = values
+        .keys()
+        .find(|key| !applicable.iter().any(|def| &&def.key == key))
+    {
+        return Ok(Applied::Failed(format!(
+            "{outside} is not part of this asset's metadata type"
+        )));
+    }
+
     let stored: Option<Value> =
         sqlx::query_scalar("SELECT values FROM asset_metadata WHERE asset_id = $1")
             .bind(asset_id)
