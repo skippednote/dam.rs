@@ -370,6 +370,17 @@ export async function loadDashboard(): Promise<Dashboard> {
 	return request<Dashboard>('/dashboard');
 }
 
+/**
+ * Everything that has happened to one asset, newest first (Q.10).
+ *
+ * The same line shape as the dashboard feed, deliberately: one renderer serves both. Covers the whole version group,
+ * so a superseded version's history shows what replaced it — the entry that explains all the others.
+ */
+export async function loadHistory(assetId: string, limit?: number): Promise<ActivityEntry[]> {
+	const query = limit === undefined ? '' : `?limit=${limit}`;
+	return request<ActivityEntry[]>(`/assets/${assetId}/history${query}`);
+}
+
 export type Comment = components['schemas']['CommentView'];
 export type Person = components['schemas']['PersonView'];
 

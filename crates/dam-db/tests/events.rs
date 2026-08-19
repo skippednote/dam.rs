@@ -114,6 +114,7 @@ async fn the_event_contract_holds() {
     the_feed_is_bounded_and_deterministic(&pool, shared, ada).await;
     the_counts_are_scoped_and_come_from_one_statement(&pool, shared, embargoed, press).await;
     an_unknown_kind_reads_back_as_itself(&pool, shared, ada).await;
+    a_history_covers_the_whole_version_group(&pool).await;
     // Last, because it removes the default partition to prove what it is for.
     without_the_default_partition_the_write_fails(&pool, shared, ada).await;
 }
@@ -458,4 +459,79 @@ async fn an_unknown_kind_reads_back_as_itself(pool: &PgPool, shared: Uuid, ada: 
         feed.iter().any(|entry| entry.kind == "transcoded"),
         "an unrecognised kind was dropped from the feed: {feed:?}"
     );
+}
+
+async fn a_history_covers_the_whole_version_group(pool: &PgPool) {
+    // "The history of this asset" means the story of the thing, so a person looking at version 1 has to see that
+    // version 2 replaced it — the single most important entry there is. A history scoped to one row would be a
+    // fragment missing exactly the event that explains the others.
+    let first = asset(pool, "history-v1", None).await;
+    let second = asset(pool, "history-v2", None).await;
+    let unrelated = asset(pool, "history-other", None).await;
+    let ada = Uuid::new_v4();
+
+    events::record(c!(pool), NewEvent::by(Kind::Uploaded, first, ada))
+        .await
+        .expect("record");
+    dam_db::versions::add(c!(pool), first, second, everything().access())
+        .await
+        .expect("version");
+    events::record(c!(pool), NewEvent::by(Kind::Uploaded, second, ada))
+        .await
+        .expect("record");
+    events::record(c!(pool), NewEvent::by(Kind::Downloaded, unrelated, ada))
+        .await
+        .expect("record");
+
+    // Asked from the *superseded* row, which is the case that matters: it must still see what replaced it.
+    let history = events::for_asset(c!(pool), first, everything().access(), 50)
+        .await
+        .expect("history");
+    let assets: Vec<Option<Uuid>> = history.iter().map(|entry| entry.asset_id).collect();
+    assert!(assets.contains(&Some(first)), "{history:?}");
+    assert!(
+        assets.contains(&Some(second)),
+        "the history of a superseded version does not show what replaced it: {history:?}"
+    );
+    // And nothing from outside the group.
+    assert!(
+        !assets.contains(&Some(unrelated)),
+        "an unrelated asset's event is in this history: {history:?}"
+    );
+
+    // Filtered by the predicate, like everything else: an asset the caller cannot see has no history rather than
+    // an empty one, and a sibling version outside their scope contributes nothing.
+    let elsewhere = group(pool, "history-scope").await;
+    let scoped = events::for_asset(c!(pool), first, scoped(elsewhere).access(), 50)
+        .await
+        .expect("history");
+    assert!(
+        scoped.is_empty(),
+        "a history leaked past the caller's scope: {scoped:?}"
+    );
+
+    // Newest first. A history read top-down has to open with what happened last, and the entry that explains the
+    // rest — "this was replaced" — is always the newest one.
+    assert_eq!(
+        history.first().map(|entry| entry.asset_id),
+        Some(Some(second)),
+        "the newest entry is not first: {history:?}"
+    );
+
+    // Bounded, like the feed.
+    let one = events::for_asset(c!(pool), first, everything().access(), 1)
+        .await
+        .expect("history");
+    assert_eq!(one.len(), 1);
+
+    // And clamped rather than passed through: `LIMIT 0` would answer "nothing has happened" and `LIMIT -1` is an
+    // error from Postgres, so a caller asking for nonsense gets the smallest sensible answer instead of either.
+    let none = events::for_asset(c!(pool), first, everything().access(), 0)
+        .await
+        .expect("a zero limit is clamped, not refused");
+    assert_eq!(none.len(), 1, "{none:?}");
+    let negative = events::for_asset(c!(pool), first, everything().access(), -5)
+        .await
+        .expect("a negative limit is clamped, not an error");
+    assert_eq!(negative.len(), 1, "{negative:?}");
 }

@@ -449,6 +449,57 @@
         }
       }
     },
+    "/assets/{asset_id}/history": {
+      "get": {
+        "tags": [
+          "history"
+        ],
+        "summary": "Everything that has happened to one asset, newest first.",
+        "operationId": "history",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Lines to return, newest first. Clamped rather than refused — a caller asking for a thousand wants \"lots\",\nand a 422 would be pedantry about a request whose intent is clear.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ActivityEntry"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such asset, or not one this caller may see"
+          }
+        }
+      }
+    },
     "/assets/{asset_id}/metadata": {
       "patch": {
         "tags": [

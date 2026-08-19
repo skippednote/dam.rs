@@ -26,14 +26,14 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M0–M3c** Foundation, ingest, metadata/search/rights, delivery/sharing/restore | complete |
 | **F** The UI: browse, detail, upload, filter rail, lightbox, bulk bar, design pass | complete |
 | **F.11b** Share/portal UI, schema administration, metadata types | complete except restore UX |
-| **Q** Acquia parity, 20 slices | Q.1–Q.9 done; Q.10–Q.20 open |
+| **Q** Acquia parity, 20 slices | Q.1–Q.10 done; Q.11–Q.20 open |
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | schema exists, behaviour unwritten |
 | **M6** Workflow/proofing, annotations, analytics | not started |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** Q.10 the history tab
+**Next up, in order:** Q.11 asset conversions
 → Q.6 comments → Q.7 activity feed → Q.8 versions → Q.9 attachments → Q.10 history → Q.11 conversions →
 Q.12 intended use → Q.13 orders → Q.14 portals → Q.15–Q.19 search → Q.20 sundries → M4 → M5 → M6 → M3d →
 Pre-GA → Entries.
@@ -1861,7 +1861,37 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
 
       **Open:** whether paperwork should be readable by a narrower audience than the asset it belongs to. A release
       form carries a signature and an address, so it is arguably more sensitive than the photograph.
-- [ ] **Q.10 History tab** over the existing audit log; alternate preview upload.
+- [x] **Q.10 History tab.** `events::for_asset` plus `GET /assets/{id}/history` and a disclosure in the detail
+      panel. Three decisions worth keeping:
+
+      **It reads the whole version group, not one row.** "The history of this asset" means the story of the thing, and
+      somebody looking at March's cut needs to see that April's replaced it — the single entry that explains all the
+      others. A per-row history would make each version's story a fragment missing exactly that. Attached paperwork is
+      *not* folded in, for the opposite reason: a release form has its own story, and mixing "somebody signed this"
+      with "somebody re-cropped that" under one heading serves neither.
+
+      **It filters on the access predicate, not the caller's query.** Whatever somebody searched for to arrive at an
+      asset does not narrow what has happened to it. An asset outside their scope is 404 rather than an empty list,
+      because "nothing has happened to this" is a different and untrue statement — and the gap between the two
+      answers is an existence oracle.
+
+      **One renderer, shared with the dashboard.** A history line and a feed line are the same sentence about
+      different scopes, so the API returns the same shape and the phrasing moved into `$lib/activity`. A second copy
+      would be a second place to add a verb when a new event kind appears, and the forgotten one would silently fall
+      through to the plain form. A mutation to the shared module now fails *both* suites, which is what makes the
+      sharing real rather than nominal.
+
+      Eleven mutations caught, six in Rust and five in the panel. Driving it against the live server found what the
+      mocked suite could not: the failure message and "nothing recorded yet" rendered together, which reads as "the
+      read failed, and also there is no history" — a claim a failed read is in no position to make. The dev database
+      was also a migration behind, which is how `LIBRARY_ROWS` referencing `attached_to` turned every listing into a
+      500 the moment the API was restarted: a reminder that `mise run migrate` belongs in the same breath as a
+      migration, not the next session.
+
+      **Not done here:** the alternate preview upload that shared this Acquia slice. It is an ingest concern rather
+      than a history one — a second rendition for an asset whose own bytes preview badly — and folding it in would
+      have made this slice two features.
+
 - [ ] **Q.11 Asset conversions.** Named, user-selectable download formats per media class, each with a
   description written for the person choosing and its own role permissions.
 - [ ] **Q.12 Intended-use capture.** The question asked before download, and the record that makes the

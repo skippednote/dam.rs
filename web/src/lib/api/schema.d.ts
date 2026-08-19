@@ -126,6 +126,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/assets/{asset_id}/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Everything that has happened to one asset, newest first. */
+        get: operations["history"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/assets/{asset_id}/metadata": {
         parameters: {
             query?: never;
@@ -2094,6 +2111,40 @@ export interface operations {
             };
             /** @description Empty or over-long body, an unknown visibility, a private comment with no recipients, or a reply to a reply */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    history: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Lines to return, newest first. Clamped rather than refused — a caller asking for a thousand wants "lots",
+                 *     and a 422 would be pedantry about a request whose intent is clear.
+                 */
+                limit?: number | null;
+            };
+            header?: never;
+            path: {
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActivityEntry"][];
+                };
+            };
+            /** @description No such asset, or not one this caller may see */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

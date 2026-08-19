@@ -89,6 +89,11 @@ async fn fixture() -> Fixture {
     })
     .merge(dam_api::comments::router(dam_api::comments::CommentState {
         global: global.clone(),
+    }))
+    // The history endpoint returns the same line shape as the feed, so it belongs to the same suite: one renderer,
+    // one set of cases about how a line reads.
+    .merge(dam_api::history::router(dam_api::history::HistoryState {
+        global: global.clone(),
     }));
 
     Fixture {
@@ -272,6 +277,106 @@ async fn the_dashboard_http_contract_holds() {
     a_comment_event_carries_no_words(&f, visible).await;
     the_work_queue_counts_assets_with_nothing_written(&f).await;
     a_machine_credential_has_no_dashboard(&f).await;
+    one_assets_history_is_its_own(&f, visible, hidden).await;
+    an_unreachable_assets_history_is_absent_not_empty(&f, hidden).await;
+    a_history_length_is_clamped_rather_than_refused(&f, visible).await;
+}
+
+async fn one_assets_history_is_its_own(f: &Fixture, visible: Uuid, hidden: Uuid) {
+    // The earlier cases have written comments against both assets, so there is something to separate.
+    let (status, body) = call(
+        f,
+        "GET",
+        &format!("/assets/{visible}/history"),
+        &f.key,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let lines = body.as_array().expect("array");
+    assert!(!lines.is_empty(), "no history at all: {body}");
+    assert!(
+        lines
+            .iter()
+            .all(|line| line["asset_id"] == json!(visible.to_string())),
+        "another asset's events are in this history: {body}"
+    );
+    // The same shape as a feed line, which is the point of sharing the type: a renderer that handles one handles
+    // both.
+    assert!(lines[0]["kind"].is_string(), "{body}");
+    assert_eq!(lines[0]["filename"], json!("visible.jpg"), "{body}");
+    assert_eq!(
+        lines[0]["actor"]["email"],
+        json!("ada@example.com"),
+        "{body}"
+    );
+
+    // And the other asset has its own, so the filter is doing work rather than the fixture being one-sided. The
+    // non-empty assertion is the part that matters: `all` over an empty list is true, which would make this case
+    // pass whatever the endpoint did.
+    let (_, other) = call(f, "GET", &format!("/assets/{hidden}/history"), &f.key, None).await;
+    assert!(
+        !other.as_array().expect("array").is_empty(),
+        "the second asset has no history, so this case proves nothing: {other}"
+    );
+    assert!(
+        other
+            .as_array()
+            .expect("array")
+            .iter()
+            .all(|line| line["asset_id"] == json!(hidden.to_string())),
+        "{other}"
+    );
+}
+
+async fn an_unreachable_assets_history_is_absent_not_empty(f: &Fixture, hidden: Uuid) {
+    // 404, not `[]`. An empty history would say "this exists and nothing has happened to it" — a different and
+    // untrue statement, and the difference between the two answers is an existence oracle.
+    let (status, body) = call(
+        f,
+        "GET",
+        &format!("/assets/{hidden}/history"),
+        &f.scoped_key,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+
+    // Identical answer for an asset that does not exist at all, which is what makes the pair safe.
+    let (nowhere, body) = call(
+        f,
+        "GET",
+        &format!("/assets/{}/history", Uuid::new_v4()),
+        &f.scoped_key,
+        None,
+    )
+    .await;
+    assert_eq!(nowhere, StatusCode::NOT_FOUND, "{body}");
+}
+
+async fn a_history_length_is_clamped_rather_than_refused(f: &Fixture, visible: Uuid) {
+    let (status, body) = call(
+        f,
+        "GET",
+        &format!("/assets/{visible}/history?limit=1"),
+        &f.key,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body.as_array().expect("array").len(), 1, "{body}");
+
+    // A caller asking for a thousand wants "lots". A 422 would be pedantry about a request whose intent is clear.
+    let (absurd, body) = call(
+        f,
+        "GET",
+        &format!("/assets/{visible}/history?limit=100000"),
+        &f.key,
+        None,
+    )
+    .await;
+    assert_eq!(absurd, StatusCode::OK, "{body}");
+    assert!(!body.as_array().expect("array").is_empty(), "{body}");
 }
 
 async fn an_empty_library_has_zeroes_rather_than_nothing(f: &Fixture) {

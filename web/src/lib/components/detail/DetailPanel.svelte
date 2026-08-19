@@ -23,6 +23,7 @@
 	import CommentPanel from './CommentPanel.svelte';
 	import EngagementPanel from './EngagementPanel.svelte';
 	import AttachmentPanel from './AttachmentPanel.svelte';
+	import HistoryPanel from './HistoryPanel.svelte';
 	import VersionPanel from './VersionPanel.svelte';
 	import MetadataEditor from './MetadataEditor.svelte';
 	import SharePanel from './SharePanel.svelte';
@@ -227,6 +228,10 @@
 	<CommentPanel assetId={asset.id} />
 
 	<SharePanel assetId={asset.id} />
+
+	<!-- Last, and closed: a history is what you consult when something looks wrong, not what you read first. Being a
+	     disclosure is also why it costs nothing to have here — it fetches only once somebody opens it. -->
+	<HistoryPanel assetId={asset.id} filename={asset.filename} />
 
 	{#if Object.keys(technical).length > 0}
 		<details>

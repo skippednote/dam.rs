@@ -28,6 +28,7 @@
 //! than routine.
 
 use crate::Error;
+use dam_core::policy::AccessPredicate;
 use dam_core::query::Planned;
 use sqlx::{Postgres, QueryBuilder};
 use uuid::Uuid;
@@ -211,6 +212,73 @@ pub async fn feed(
     // order silently skips and repeats rows — and it is here now rather than being remembered then. Recorded as
     // precautionary rather than left looking tested.
     builder.push(" ORDER BY e.occurred_at DESC, e.id DESC LIMIT ");
+    builder.push_bind(limit.clamp(1, MAX_FEED));
+
+    type Row = (
+        Uuid,
+        chrono::DateTime<chrono::Utc>,
+        String,
+        Option<Uuid>,
+        Option<String>,
+        Option<Uuid>,
+        String,
+        serde_json::Value,
+        Option<i64>,
+    );
+    let rows: Vec<Row> = builder.build_query_as().fetch_all(&mut *conn).await?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(id, occurred_at, kind, asset_id, filename, actor_id, actor_kind, context, bytes)| {
+                Entry {
+                    id,
+                    occurred_at,
+                    kind,
+                    asset_id,
+                    filename,
+                    actor_id,
+                    actor_kind,
+                    context,
+                    bytes,
+                }
+            },
+        )
+        .collect())
+}
+
+/// Everything that has happened to one asset, newest first.
+///
+/// **The whole version group, not one row.** "The history of this asset" means the story of the thing, and a person
+/// looking at version 1 needs to see that version 2 replaced it — that is the single most important entry there is.
+/// Scoping to one row would make each version's history a fragment, and the fragment would be missing exactly the
+/// event that explains the others.
+///
+/// Attached paperwork is *not* included, for the opposite reason: a release form has its own story, and folding it
+/// in would mix "somebody signed this" with "somebody re-cropped that" under one heading.
+pub async fn for_asset(
+    conn: &mut sqlx::PgConnection,
+    asset_id: Uuid,
+    predicate: &AccessPredicate,
+    limit: i64,
+) -> Result<Vec<Entry>, Error> {
+    // From the visible set, so an asset the caller cannot see has no history rather than an empty one — and so a
+    // sibling version outside their scope contributes nothing.
+    let mut builder: QueryBuilder<Postgres> = QueryBuilder::new(
+        "WITH visible AS (SELECT assets.id, assets.filename, assets.version_group_id FROM assets \
+         LEFT JOIN asset_metadata ON asset_metadata.asset_id = assets.id WHERE ",
+    );
+    // The *access* predicate, not the caller's current query: whatever they searched for to arrive here does not
+    // narrow what has happened to the asset. A history filtered by a search box would be a different question.
+    crate::access::push_asset_filter(&mut builder, predicate)?;
+    builder.push(
+        ") SELECT e.id, e.occurred_at, e.kind, e.asset_id, visible.filename, e.actor_id, \
+                  e.actor_kind, e.context, e.bytes \
+          FROM events e JOIN visible ON visible.id = e.asset_id \
+          WHERE visible.version_group_id = (SELECT version_group_id FROM assets WHERE id = ",
+    );
+    builder.push_bind(asset_id);
+    builder.push(") ORDER BY e.occurred_at DESC, e.id DESC LIMIT ");
     builder.push_bind(limit.clamp(1, MAX_FEED));
 
     type Row = (

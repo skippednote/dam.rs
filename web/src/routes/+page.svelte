@@ -22,8 +22,11 @@
 	 */
 	import { onMount } from 'svelte';
 	import { resolve } from '$app/paths';
-	import { ApiError, loadDashboard, type ActivityEntry, type Dashboard } from '$lib/api/client';
+	import { ApiError, loadDashboard, type Dashboard } from '$lib/api/client';
 	import { session } from '$lib/api/session.svelte';
+	// The phrasing is shared with the per-asset history panel (Q.10): same sentence, different scope. See
+	// `$lib/activity` on why there is only one copy.
+	import { phrase, when } from '$lib/activity';
 
 	let data = $state<Dashboard | null>(null);
 	let error = $state('');
@@ -41,43 +44,6 @@
 		} finally {
 			loading = false;
 		}
-	}
-
-	/** One feed line as a sentence. The kind decides the verb; anything unrecognised is reported as itself. */
-	function phrase(entry: ActivityEntry): string {
-		const who = entry.actor?.name ?? 'Somebody';
-		const what = entry.filename ?? 'an asset';
-		switch (entry.kind) {
-			case 'upload':
-				return `${who} uploaded ${what}`;
-			case 'edit':
-				return `${who} edited ${what}`;
-			case 'share':
-				return `${who} shared ${what}`;
-			case 'comment':
-				// The context says public or private, and that is all it says — the words are not here.
-				return entry.context && (entry.context as Record<string, unknown>).visibility === 'private'
-					? `${who} left a private comment on ${what}`
-					: `${who} commented on ${what}`;
-			case 'download':
-				return `${who} downloaded ${what}`;
-			case 'delete':
-				return `${who} deleted ${what}`;
-			case 'restore':
-				return `${who} asked for ${what} to be restored`;
-			default:
-				// A kind this build does not know about. Named rather than dropped: hiding activity is worse than
-				// phrasing it plainly.
-				return `${who}: ${entry.kind} on ${what}`;
-		}
-	}
-
-	function when(iso: string): string {
-		const seconds = (Date.now() - new Date(iso).getTime()) / 1000;
-		if (seconds < 90) return 'just now';
-		if (seconds < 3600) return `${Math.round(seconds / 60)} min ago`;
-		if (seconds < 86400) return `${Math.round(seconds / 3600)} h ago`;
-		return new Date(iso).toLocaleDateString();
 	}
 
 	onMount(load);

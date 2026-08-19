@@ -34,6 +34,7 @@ use utoipa::OpenApi;
         crate::attachments::list,
         crate::attachments::attach,
         crate::attachments::detach,
+        crate::history::history,
         crate::versions::history,
         crate::versions::add,
         crate::versions::make_current,

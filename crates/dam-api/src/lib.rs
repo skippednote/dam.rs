@@ -14,6 +14,7 @@ pub mod dashboard;
 pub mod delivery;
 pub mod dto;
 pub mod engagement;
+pub mod history;
 pub mod openapi;
 pub mod schema;
 pub mod search;

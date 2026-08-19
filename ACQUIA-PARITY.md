@@ -240,7 +240,9 @@ that cheap high-value features are not stuck behind large ones.
 **The asset's own history**
 8. Versions: add, list, download an earlier one, and the detail tab
 9. Attached documents, and the has-attachment facet
-10. History tab over the existing audit log; alternate preview upload
+10. History tab over the existing audit log — done. Whole version group, access-filtered, one renderer shared with
+    the dashboard feed. The alternate preview upload that shared this slice is deferred to ingest: it is a second
+    rendition for an asset whose own bytes preview badly, which has nothing to do with a history
 
 **Distribution**
 11. Asset conversions: named formats, per-role permissions, and the download dialog that offers them
