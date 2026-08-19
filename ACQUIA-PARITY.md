@@ -248,7 +248,9 @@ that cheap high-value features are not stuck behind large ones.
 11. Asset conversions: named formats, per-role permissions, and the download dialog that offers them — done for
     images, including the authenticated download the DAM had never had. Video conversions are open: they need a
     parameterised ffmpeg recipe. An administration screen for the format list is open too; the API is complete
-12. Intended-use capture before download, and the record that makes it auditable
+12. Intended-use capture before download, and the record that makes it auditable — done, and it turned
+    `license_scopes.max_downloads` from a decorative number into a cap that refuses. A declared vocabulary of a
+    tenant's own (rather than the one derived from its licences) is open
 13. Orders: approval, pickup, metadata export, multiple recipients, expiry
 14. Portals: the four types, branded, over the share-portal foundation
 

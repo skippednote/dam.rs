@@ -122,6 +122,18 @@ async function connect(
 		// Q.11's download panel asks this on every asset the detail view opens. Answered here so a suite about
 		// something else does not fail on an unmocked route — and answered with formats, because a panel that
 		// renders an empty list is not the panel these suites are meant to be indifferent to.
+		if (path.endsWith('/usage-options') || path === '/usage-options') {
+			// Q.12's intended-use vocabulary, asked alongside the formats. Empty here: a suite about
+			// something else should not grow a form it never meant to test.
+			return route.fulfill({
+				json: {
+					channels: [],
+					territories: [],
+					default_channel: 'internal',
+					default_territory: 'WORLD'
+				}
+			});
+		}
 		if (path.endsWith('/download-options')) {
 			return route.fulfill({
 				json: { original_available: true, media_class: 'image', conversions: [] }

@@ -37,6 +37,7 @@ pub mod taxonomy;
 pub mod tenant_conn;
 pub mod upload_profiles;
 pub mod uploads;
+pub mod usage;
 pub mod versions;
 
 #[cfg(feature = "testing")]

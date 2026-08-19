@@ -19,6 +19,17 @@
 //!
 //! Deduplicated on `(asset, conversion)`, so twenty people choosing the same format is one render.
 //!
+//! ## The intended use is captured, and a default is not a declaration (Q.12)
+//!
+//! `channel` and `territory` decide the rights answer, so a download is also the moment to ask what the copy is
+//! for. Both fields are optional on the wire and the *presence* of them is what marks the record as declared —
+//! not a flag the client sets, which a client could assert without anybody having answered.
+//!
+//! Every download is written to `rights_usage` **before** the URL is minted. That ledger is what
+//! `license_scopes.max_downloads` is summed against, so an unrecorded download makes a cap under-count and
+//! permits more than the licence allows; a recorded download that then failed to mint over-counts and permits
+//! fewer. The first is a licence breach and the second is an inconvenience.
+//!
 //! ## Two gates, asset first
 //!
 //! Download for the asset, then the conversion's own permission. Naming a format the caller has no permission
@@ -31,7 +42,7 @@ use crate::caller;
 use crate::delivery::{self, DeliveryState};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::Duration as ChronoDuration;
 use dam_core::policy::Action;
@@ -56,11 +67,126 @@ impl std::fmt::Debug for DownloadState {
     }
 }
 
-/// The download route.
+/// The download routes.
 pub fn router(state: DownloadState) -> Router {
     Router::new()
         .route("/assets/{asset_id}/download", post(download))
+        .route("/assets/{asset_id}/usage", get(ledger))
+        .route("/usage-options", get(options))
         .with_state(Arc::new(state))
+}
+
+/// What a person may declare a download as.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct UsageOptions {
+    /// Channels any of this tenant's licences reference, inclusions and exclusions alike.
+    pub channels: Vec<String>,
+    pub territories: Vec<String>,
+    /// What a download is recorded as when nobody declares anything, so a client can show it as the default
+    /// rather than inventing its own.
+    pub default_channel: String,
+    pub default_territory: String,
+}
+
+/// One line of the ledger.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct UsageRecord {
+    pub id: Uuid,
+    pub channel: Option<String>,
+    pub territory: Option<String>,
+    /// Whether somebody stated this use, or the API defaulted it. The difference is the whole point of asking.
+    pub declared: bool,
+    /// Who took it. Absent for a download by a machine credential, which has no person behind it.
+    pub person: Option<crate::comments::PersonView>,
+    pub recorded_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// The channels and territories a download may be declared as.
+///
+/// Derived from the tenant's licences rather than configured, so every option is one that can change a rights
+/// answer. Read, not Download: a person filling in a form has not asked for bytes yet.
+#[utoipa::path(
+    get,
+    path = "/usage-options",
+    responses((status = 200, body = UsageOptions)),
+    tag = "conversions",
+)]
+pub async fn options(
+    State(state): State<Arc<DownloadState>>,
+    headers: HeaderMap,
+) -> Result<Json<UsageOptions>, Failure> {
+    let caller = caller::authorize(&state.global, &headers, Action::Read).await?;
+    let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
+    let (channels, territories) = dam_db::usage::vocabulary(conn.executor()).await?;
+    conn.commit().await?;
+    Ok(Json(UsageOptions {
+        channels,
+        territories,
+        default_channel: INTERNAL_CHANNEL.to_owned(),
+        default_territory: WORLDWIDE.to_owned(),
+    }))
+}
+
+/// What one asset has been taken for, newest first.
+///
+/// Read: how an asset has been used is part of its rights position, and somebody deciding whether they may use
+/// it benefits from seeing that it went out under a print licence last month. It names colleagues, which the
+/// comment threads and the activity feed already do within a tenant.
+#[utoipa::path(
+    get,
+    path = "/assets/{asset_id}/usage",
+    responses(
+        (status = 200, body = Vec<UsageRecord>),
+        (status = 404, description = "No such asset, or not one this caller may see"),
+    ),
+    tag = "conversions",
+)]
+pub async fn ledger(
+    State(state): State<Arc<DownloadState>>,
+    headers: HeaderMap,
+    Path(asset_id): Path<Uuid>,
+) -> Result<Json<Vec<UsageRecord>>, Failure> {
+    let caller = caller::authorize(&state.global, &headers, Action::Read).await?;
+    let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
+    // Visibility first, so an asset the caller cannot see is absent rather than shown as having no history.
+    let visible =
+        dam_db::assets::visible_among(conn.executor(), &caller.predicate, &[asset_id]).await?;
+    if visible.is_empty() {
+        conn.commit().await?;
+        return Err(Failure::NotFound);
+    }
+    let rows = dam_db::usage::for_asset(conn.executor(), asset_id, &caller.predicate, 100).await?;
+    conn.commit().await?;
+
+    // Names in one lookup, as the dashboard and the history panel do.
+    let ids: Vec<Uuid> = {
+        let mut ids: Vec<Uuid> = rows.iter().filter_map(|row| row.recorded_by).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    };
+    let people = dam_db::comments::people_by_id(&state.global, &ids).await?;
+
+    Ok(Json(
+        rows.into_iter()
+            .map(|row| UsageRecord {
+                id: row.id,
+                channel: row.channel,
+                territory: row.territory,
+                declared: row.declared,
+                person: row.recorded_by.and_then(|id| {
+                    people.iter().find(|person| person.id == id).map(|person| {
+                        crate::comments::PersonView {
+                            id: person.id,
+                            name: person.display_name.clone(),
+                            email: person.email.clone(),
+                        }
+                    })
+                }),
+                recorded_at: row.recorded_at,
+            })
+            .collect(),
+    ))
 }
 
 /// How long a download URL lives.
@@ -78,23 +204,50 @@ pub struct DownloadRequest {
     pub format: String,
     /// Where the copy is going, which is what rights are evaluated against.
     ///
-    /// Defaulted rather than required *for now*: every existing caller of the rights evaluator passes a usage,
-    /// and asking the person is Q.12's intended-use capture. The default is the narrowest honest thing — a
-    /// generic internal channel and worldwide territory — and it is a default a licence can refuse.
-    #[serde(default = "internal_channel")]
-    pub channel: String,
-    #[serde(default = "worldwide")]
-    pub territory: String,
+    /// Optional, and its *presence* is the declaration: a request that names a channel is one where somebody
+    /// answered, and the ledger row says so. Absent, the API supplies the narrowest honest default — a generic
+    /// internal channel — and records that nobody was asked. See migration 0024 on why the difference is worth
+    /// a column.
+    ///
+    /// Not required outright, because a machine integration genuinely has one fixed usage and making it restate
+    /// it on every call would be ceremony. What must not happen is a default that *looks* like an answer.
+    pub channel: Option<String>,
+    pub territory: Option<String>,
 }
+
+impl DownloadRequest {
+    /// The usage to evaluate, and whether anybody actually said so.
+    ///
+    /// Both fields together: half a declaration is not one. Somebody who named a channel and left the territory
+    /// to a default has still had the question put to them, but the record would claim more than was asked, so
+    /// this counts as declared only when the request carried both.
+    fn usage(&self) -> (Usage, bool) {
+        let declared = self.channel.is_some() && self.territory.is_some();
+        (
+            Usage {
+                channel: self
+                    .channel
+                    .clone()
+                    .unwrap_or_else(|| INTERNAL_CHANNEL.to_owned()),
+                territory: self
+                    .territory
+                    .clone()
+                    .unwrap_or_else(|| WORLDWIDE.to_owned()),
+            },
+            declared,
+        )
+    }
+}
+
+/// What an undeclared download is recorded as.
+///
+/// `internal` rather than something broader: a licence that restricts a channel should refuse an undeclared
+/// download rather than wave it through under a permissive guess.
+const INTERNAL_CHANNEL: &str = "internal";
+const WORLDWIDE: &str = "WORLD";
 
 fn original() -> String {
     dam_media::profiles::ORIGINAL.to_owned()
-}
-fn internal_channel() -> String {
-    "internal".to_owned()
-}
-fn worldwide() -> String {
-    "WORLD".to_owned()
 }
 
 /// A URL to fetch, or word that the format is being made.
@@ -217,22 +370,59 @@ pub async fn download(
         conversion.key
     };
 
-    // Rights, and then the signature. Evaluated here as well as at delivery: see the module docs.
     let Some(delivery) = state.delivery.as_ref() else {
         tracing::error!("a download was asked for with no delivery state configured");
         return Err(Failure::Internal);
     };
     let now = delivery.now();
+    let (usage, declared) = request.usage();
+
+    // Rights evaluated here in full, rather than left to `issue`. Two reasons, and the first is the one that
+    // matters: the evaluation is where the *consuming scope* comes from, and a ledger row with no scope counts
+    // toward no cap. The second is that a refusal caught here never reaches the ledger, so a denied attempt is
+    // not recorded as a download.
+    //
+    // `evaluate` rather than `effective`: the cached form returns a verdict and nothing else, and re-deriving
+    // which licence permitted this from the verdict would be a second answer to a question the evaluator
+    // already answers.
+    let evaluation = dam_db::rights::evaluate(delivery.pool(), asset_id, &usage, now).await?;
+    if !evaluation.permits_distribution() {
+        return Err(Failure::Forbidden(format!(
+            "rights refuse this download ({}){}",
+            evaluation.verdict.as_str(),
+            reasons_of(&evaluation)
+        )));
+    }
+
+    // Recorded before the URL exists. An unrecorded download makes `max_downloads` under-count and permits more
+    // than the licence allows; a recorded one that then fails to mint over-counts and permits fewer. A licence
+    // breach is worse than an inconvenience, so the order is this way round — and a write failure refuses the
+    // download rather than handing out an unaudited copy.
+    let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
+    dam_db::usage::record_download(
+        conn.executor(),
+        &dam_db::usage::NewDownload {
+            asset_id,
+            channel: usage.channel.clone(),
+            territory: usage.territory.clone(),
+            license_scope_id: evaluation.consuming_scope,
+            declared,
+            recorded_by: caller.identity_id,
+        },
+    )
+    .await?;
+    conn.commit().await?;
+
     // `issue` returns the token; the URL is built by the state that knows the public origin. Returning the bare
     // token would be handing a client an unfetchable string — the mistake `sign_preview` documents having made.
+    //
+    // It re-checks rights, which is not redundant with the check above: this is the one chokepoint every byte
+    // passes through, and a caller reaching it by another route must be refused there too.
     let token = delivery::issue(
         delivery,
         asset_id,
         &transform,
-        &Usage {
-            channel: request.channel.clone(),
-            territory: request.territory.clone(),
-        },
+        &usage,
         caller.identity_id,
         ChronoDuration::minutes(DOWNLOAD_TTL_MINUTES),
         now,
@@ -248,6 +438,23 @@ pub async fn download(
             format: transform,
         }),
     ))
+}
+
+/// The reason codes of a refusal, as a sentence fragment.
+///
+/// Shared between the two refusal paths — the explicit evaluation here and delivery's own — so a client sees the
+/// same shape whichever refused. Empty when there is nothing to say, rather than a dangling colon.
+fn reasons_of(evaluation: &dam_core::rights_eval::Evaluation) -> String {
+    let codes: Vec<&str> = evaluation
+        .reasons
+        .iter()
+        .map(|reason| reason.code)
+        .collect();
+    if codes.is_empty() {
+        String::new()
+    } else {
+        format!(": {}", codes.join(", "))
+    }
 }
 
 /// Maps a delivery refusal onto a status.

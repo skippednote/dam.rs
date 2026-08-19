@@ -733,6 +733,45 @@
         }
       }
     },
+    "/assets/{asset_id}/usage": {
+      "get": {
+        "tags": [
+          "conversions"
+        ],
+        "summary": "What one asset has been taken for, newest first.",
+        "description": "Read: how an asset has been used is part of its rights position, and somebody deciding whether they may use\nit benefits from seeing that it went out under a print licence last month. It names colleagues, which the\ncomment threads and the activity feed already do within a tenant.",
+        "operationId": "ledger",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/UsageRecord"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such asset, or not one this caller may see"
+          }
+        }
+      }
+    },
     "/assets/{asset_id}/versions": {
       "get": {
         "tags": [
@@ -2724,6 +2763,28 @@
         }
       }
     },
+    "/usage-options": {
+      "get": {
+        "tags": [
+          "conversions"
+        ],
+        "summary": "The channels and territories a download may be declared as.",
+        "description": "Derived from the tenant's licences rather than configured, so every option is one that can change a rights\nanswer. Read, not Download: a person filling in a form has not asked for bytes yet.",
+        "operationId": "options",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageOptions"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/watches": {
       "get": {
         "tags": [
@@ -4081,15 +4142,21 @@
         "description": "What to download, and what for.",
         "properties": {
           "channel": {
-            "type": "string",
-            "description": "Where the copy is going, which is what rights are evaluated against.\n\nDefaulted rather than required *for now*: every existing caller of the rights evaluator passes a usage,\nand asking the person is Q.12's intended-use capture. The default is the narrowest honest thing — a\ngeneric internal channel and worldwide territory — and it is a default a licence can refuse."
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the copy is going, which is what rights are evaluated against.\n\nOptional, and its *presence* is the declaration: a request that names a channel is one where somebody\nanswered, and the ledger row says so. Absent, the API supplies the narrowest honest default — a generic\ninternal channel — and records that nobody was asked. See migration 0024 on why the difference is worth\na column.\n\nNot required outright, because a machine integration genuinely has one fixed usage and making it restate\nit on every call would be ceremony. What must not happen is a default that *looks* like an answer."
           },
           "format": {
             "type": "string",
             "description": "`original`, or a conversion's key. Defaults to the original, because that is what \"download\" means\nwithout further information."
           },
           "territory": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -5001,6 +5068,84 @@
           },
           "label": {
             "type": "string"
+          }
+        }
+      },
+      "UsageOptions": {
+        "type": "object",
+        "description": "What a person may declare a download as.",
+        "required": [
+          "channels",
+          "territories",
+          "default_channel",
+          "default_territory"
+        ],
+        "properties": {
+          "channels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Channels any of this tenant's licences reference, inclusions and exclusions alike."
+          },
+          "default_channel": {
+            "type": "string",
+            "description": "What a download is recorded as when nobody declares anything, so a client can show it as the default\nrather than inventing its own."
+          },
+          "default_territory": {
+            "type": "string"
+          },
+          "territories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "UsageRecord": {
+        "type": "object",
+        "description": "One line of the ledger.",
+        "required": [
+          "id",
+          "declared",
+          "recorded_at"
+        ],
+        "properties": {
+          "channel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "declared": {
+            "type": "boolean",
+            "description": "Whether somebody stated this use, or the API defaulted it. The difference is the whole point of asking."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "person": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PersonView",
+                "description": "Who took it. Absent for a download by a machine credential, which has no person behind it."
+              }
+            ]
+          },
+          "recorded_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "territory": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },

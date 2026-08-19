@@ -70,9 +70,14 @@ async function connect(
 		renderingTimes?: number;
 		/** A refusal for the download request, with the server's sentence. */
 		downloadRefusal?: { status: number; reason: string };
+		/** The intended-use vocabulary this tenant's licences reference. */
+		channels?: string[];
+		territories?: string[];
+		/** Status for the vocabulary request: a tenant with no licences still gets a download button. */
+		vocabularyStatus?: number;
 	} = {}
 ) {
-	const recorder = { asked: [] as string[] };
+	const recorder = { asked: [] as string[], declared: [] as (string | null)[] };
 	let rendering = options.renderingTimes ?? 0;
 
 	await page.addInitScript(() => {
@@ -84,6 +89,19 @@ async function connect(
 		const url = new URL(route.request().url());
 		const path = url.pathname;
 
+		if (path.endsWith('/usage-options') || path === '/usage-options') {
+			if (options.vocabularyStatus) {
+				return route.fulfill({ status: options.vocabularyStatus, json: { reason: 'no' } });
+			}
+			return route.fulfill({
+				json: {
+					channels: options.channels ?? [],
+					territories: options.territories ?? [],
+					default_channel: 'internal',
+					default_territory: 'WORLD'
+				}
+			});
+		}
 		if (path.endsWith('/download-options')) {
 			if (options.optionsStatus) {
 				return route.fulfill({
@@ -112,8 +130,17 @@ async function connect(
 					json: { reason: 'expected application/json' }
 				});
 			}
-			const body = route.request().postDataJSON() as { format: string };
+			const body = route.request().postDataJSON() as {
+				format: string;
+				channel?: string;
+				territory?: string;
+			};
 			recorder.asked.push(body.format);
+			// What the request *carried*, which is what makes a declaration a declaration: the server reads the
+			// presence of both fields, not a flag.
+			recorder.declared.push(
+				body.channel && body.territory ? `${body.channel}/${body.territory}` : null
+			);
 			if (options.downloadRefusal) {
 				return route.fulfill({
 					status: options.downloadRefusal.status,
@@ -330,15 +357,77 @@ test('a class with no formats says which class', async ({ page }) => {
 	await expect(panel(page).getByRole('button', { name: /Original file/ })).toBeVisible();
 });
 
+test('a stated use travels with the download, and a default does not', async ({ page }) => {
+	const recorder = await connect(page, {
+		channels: ['web', 'print'],
+		territories: ['WORLD', 'GB']
+	});
+	await open(page);
+
+	// Untouched: nothing is sent, and the server records that nobody was asked. The panel names which default
+	// applies rather than leaving the reader to guess what "not stated" means — asserted on the option's text
+	// rather than its visibility, because an `option` inside a closed `select` is never visible.
+	await expect(panel(page).getByLabel('What for')).toHaveValue('');
+	await expect(panel(page).getByLabel('What for').locator('option').first()).toHaveText(
+		'Not stated (internal)'
+	);
+	await panel(page)
+		.getByRole('button', { name: /Web JPEG/ })
+		.click();
+	await expect(page).toHaveURL(/settings/);
+	expect(recorder.declared).toEqual([null]);
+
+	// Now stated. Both fields, because half an answer would be recorded as a whole one.
+	await open(page);
+	await panel(page).getByLabel('What for').selectOption('print');
+	await expect(panel(page).getByText('Stating the use records it')).toBeVisible();
+	await panel(page).getByLabel('Where').selectOption('GB');
+	await expect(panel(page).getByText('Recorded against this asset as print in GB')).toBeVisible();
+	await panel(page)
+		.getByRole('button', { name: /Web JPEG/ })
+		.click();
+	await expect(page).toHaveURL(/settings/);
+	expect(recorder.declared[1]).toBe('print/GB');
+});
+
+test('a half-answered use is not sent as a declaration', async ({ page }) => {
+	// A channel with no territory is not an answer. The server can only see what arrived, so sending half would
+	// have it record a stated use nobody completed.
+	const recorder = await connect(page, { channels: ['web'], territories: ['GB'] });
+	await open(page);
+
+	await panel(page).getByLabel('What for').selectOption('web');
+	await panel(page)
+		.getByRole('button', { name: /Web JPEG/ })
+		.click();
+	await expect(page).toHaveURL(/settings/);
+	expect(recorder.declared).toEqual([null]);
+});
+
+test('a tenant with no vocabulary still has a download button', async ({ page }) => {
+	// The form is absent, not empty, and the failure of one read does not remove the other. A tenant with no
+	// licences has nothing to declare against — and still needs to be able to take their own files.
+	await connect(page, { vocabularyStatus: 500 });
+	await open(page);
+
+	await expect(panel(page).getByLabel('What for')).toHaveCount(0);
+	await expect(panel(page).getByRole('button', { name: /Original file/ })).toBeVisible();
+	await expect(panel(page).getByRole('button', { name: /Web JPEG/ })).toBeVisible();
+});
+
 test('the download panel has no accessibility violations', async ({ page }) => {
 	await connect(page, {
 		formats: [
 			format(),
 			format({ id: 'c-print', key: 'print-full', label: 'Print PNG', format: 'png', sort_order: 1 })
-		]
+		],
+		channels: ['web', 'print'],
+		territories: ['WORLD', 'GB']
 	});
 	await open(page);
 	await expect(panel(page).getByText('Web JPEG')).toBeVisible();
+	// With the form present, which is the new interactive markup here.
+	await expect(panel(page).getByLabel('What for')).toBeVisible();
 
 	const results = await new AxeBuilder({ page }).withTags(WCAG_21_AA).analyze();
 	expect(results.violations).toEqual([]);

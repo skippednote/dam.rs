@@ -311,6 +311,216 @@ async fn the_download_http_contract_holds() {
     an_unknown_format_is_absent(&f, photograph).await;
     a_format_for_another_class_is_refused(&f, document).await;
     an_unlicensed_download_is_refused_with_its_reasons(&f, unlicensed).await;
+    a_declared_use_is_recorded_as_declared(&f, photograph).await;
+    a_defaulted_use_is_recorded_as_defaulted(&f, photograph).await;
+    a_refused_download_is_not_recorded(&f, unlicensed).await;
+    the_ledger_names_who_took_it(&f, photograph).await;
+    the_options_are_the_tenants_own_vocabulary(&f).await;
+    a_cap_reached_through_the_ledger_refuses(&f).await;
+}
+
+async fn a_declared_use_is_recorded_as_declared(f: &Fixture, photograph: Uuid) {
+    let before = ledger_rows(f, photograph).await.len();
+    let (status, body) = call(
+        f,
+        &format!("/assets/{photograph}/download"),
+        &f.downloader_key,
+        json!({ "channel": "print", "territory": "GB" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let rows = ledger_rows(f, photograph).await;
+    assert_eq!(rows.len(), before + 1, "the download was not recorded");
+    let latest = &rows[0];
+    assert_eq!(latest["channel"], json!("print"), "{latest}");
+    assert_eq!(latest["territory"], json!("GB"), "{latest}");
+    assert_eq!(
+        latest["declared"],
+        json!(true),
+        "a stated use was recorded as a default: {latest}"
+    );
+}
+
+async fn a_defaulted_use_is_recorded_as_defaulted(f: &Fixture, photograph: Uuid) {
+    // The distinction the column exists for. A row saying `internal` because nobody was asked must not look
+    // like a row saying `internal` because somebody chose it.
+    let (status, body) = call(
+        f,
+        &format!("/assets/{photograph}/download"),
+        &f.downloader_key,
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let rows = ledger_rows(f, photograph).await;
+    assert_eq!(rows[0]["channel"], json!("internal"), "{}", rows[0]);
+    assert_eq!(rows[0]["declared"], json!(false), "{}", rows[0]);
+
+    // Half a declaration is not one: naming the channel and leaving the territory to a default would make the
+    // record claim more than was asked.
+    call(
+        f,
+        &format!("/assets/{photograph}/download"),
+        &f.downloader_key,
+        json!({ "channel": "print" }),
+    )
+    .await;
+    let rows = ledger_rows(f, photograph).await;
+    assert_eq!(rows[0]["channel"], json!("print"), "{}", rows[0]);
+    assert_eq!(
+        rows[0]["declared"],
+        json!(false),
+        "half a declaration was recorded as one: {}",
+        rows[0]
+    );
+}
+
+async fn a_refused_download_is_not_recorded(f: &Fixture, unlicensed: Uuid) {
+    // A denied attempt is not a download. Recording one would make a cap count refusals against the licence
+    // that refused them.
+    let (status, _) = call(
+        f,
+        &format!("/assets/{unlicensed}/download"),
+        &f.downloader_key,
+        json!({ "channel": "web", "territory": "GB" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        ledger_rows(f, unlicensed).await.is_empty(),
+        "a refused download is in the ledger"
+    );
+}
+
+async fn the_ledger_names_who_took_it(f: &Fixture, photograph: Uuid) {
+    let rows = ledger_rows(f, photograph).await;
+    let named = rows
+        .iter()
+        .find(|row| row["person"] != Value::Null)
+        .expect("somebody took it");
+    assert_eq!(
+        named["person"]["email"],
+        json!("dee@example.com"),
+        "{named}"
+    );
+
+    // Read, not Download: how an asset has been used is part of its rights position, and a reader deciding
+    // whether they may use it benefits from seeing that it went out under a print licence.
+    let (status, body) =
+        call_get(f, &format!("/assets/{photograph}/usage"), &f.read_only_key).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(!body.as_array().expect("array").is_empty(), "{body}");
+
+    // And an asset the caller cannot see has no ledger, answering as an absent one does.
+    let (missing, _) = call_get(
+        f,
+        &format!("/assets/{}/usage", Uuid::new_v4()),
+        &f.read_only_key,
+    )
+    .await;
+    assert_eq!(missing, StatusCode::NOT_FOUND);
+}
+
+async fn the_options_are_the_tenants_own_vocabulary(f: &Fixture) {
+    let (status, body) = call_get(f, "/usage-options", &f.read_only_key).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // The fixture's licence is worldwide with no channel restriction, so `WORLD` is the one territory it
+    // references and there are no channels to offer. Saying so honestly is better than inventing a list: the
+    // options are what can change an answer here.
+    assert!(
+        body["territories"]
+            .as_array()
+            .expect("array")
+            .contains(&json!("WORLD")),
+        "{body}"
+    );
+    // The default is named, so a client shows what an unanswered download is recorded as rather than guessing.
+    assert_eq!(body["default_channel"], json!("internal"), "{body}");
+    assert_eq!(body["default_territory"], json!("WORLD"), "{body}");
+}
+
+async fn a_cap_reached_through_the_ledger_refuses(f: &Fixture) {
+    // The point of writing the ledger at all: `max_downloads` was summed against it from the day it was
+    // written and nothing ever wrote a download, so a cap of one permitted an unlimited number.
+    let capped = asset(f, "capped", "image/jpeg").await;
+    let license_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO licenses (id, name, license_type, perpetual) \
+         VALUES ($1, 'one download', 'rights_managed', true)",
+    )
+    .bind(license_id)
+    .execute(&f.acme)
+    .await
+    .expect("licence");
+    sqlx::query(
+        "INSERT INTO license_scopes (id, license_id, territories, max_downloads) \
+         VALUES (gen_random_uuid(), $1, '{WORLD}', 1)",
+    )
+    .bind(license_id)
+    .execute(&f.acme)
+    .await
+    .expect("scope");
+    sqlx::query("INSERT INTO asset_licenses (asset_id, license_id) VALUES ($1, $2)")
+        .bind(capped)
+        .bind(license_id)
+        .execute(&f.acme)
+        .await
+        .expect("attach");
+
+    let (first, body) = call(
+        f,
+        &format!("/assets/{capped}/download"),
+        &f.downloader_key,
+        json!({ "channel": "web", "territory": "WORLD" }),
+    )
+    .await;
+    assert_eq!(first, StatusCode::OK, "{body}");
+
+    let (second, body) = call(
+        f,
+        &format!("/assets/{capped}/download"),
+        &f.downloader_key,
+        json!({ "channel": "web", "territory": "WORLD" }),
+    )
+    .await;
+    assert_eq!(
+        second,
+        StatusCode::FORBIDDEN,
+        "a cap of one permitted a second download: {body}"
+    );
+    assert!(
+        body["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("downloads_exhausted")),
+        "the refusal does not say the cap is spent: {body}"
+    );
+}
+
+/// The ledger for one asset, newest first.
+async fn ledger_rows(f: &Fixture, asset_id: Uuid) -> Vec<Value> {
+    let (status, body) = call_get(f, &format!("/assets/{asset_id}/usage"), &f.printer_key).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body.as_array().cloned().unwrap_or_default()
+}
+
+async fn call_get(f: &Fixture, path: &str, key: &str) -> (StatusCode, Value) {
+    let request = Request::builder()
+        .method("GET")
+        .uri(path)
+        .header(header::AUTHORIZATION, format!("Bearer {key}"))
+        .body(Body::empty())
+        .expect("request");
+    let response = f.app.clone().oneshot(request).await.expect("response");
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .expect("body");
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
 }
 
 async fn downloading_is_download_not_read(f: &Fixture, photograph: Uuid) {

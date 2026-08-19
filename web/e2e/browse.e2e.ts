@@ -183,6 +183,18 @@ async function connect(page: Page): Promise<Recorder> {
 		if (path.pathname === '/fields') {
 			return route.fulfill({ json: FIELDS });
 		}
+		if (path.pathname.endsWith('/usage-options') || path.pathname === '/usage-options') {
+			// Q.12's intended-use vocabulary, asked alongside the formats. Empty here: a suite about
+			// something else should not grow a form it never meant to test.
+			return route.fulfill({
+				json: {
+					channels: [],
+					territories: [],
+					default_channel: 'internal',
+					default_territory: 'WORLD'
+				}
+			});
+		}
 		if (path.pathname.endsWith('/download-options')) {
 			// Q.11's download panel asks this on every asset the detail view opens. Answered so a suite about
 			// something else does not render an error banner it never intended to test.

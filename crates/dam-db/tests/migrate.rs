@@ -113,6 +113,9 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             // each constrained in the column — the constraints *are* the specification for a usable recipe, so
             // the Rust layer reports which one refused rather than restating them.
             //
+            // 113 since 0024: a `rights_usage` row may only claim a declaration if it is a download — the
+            // column's meaning depends on another column's value, which is a thing a future writer gets wrong.
+            //
             // 97 since 0021: the events default partition inherits its parent's `actor_kind` check, for the same
             // reason it inherits the indexes.
             //
@@ -124,7 +127,7 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             //
             // 92 since 0018: `auto_import_mappings.source` is shape-checked, because a mapping's left-hand side is
             // free text and a malformed one would silently never match.
-            112,
+            113,
         ),
         (
             "hnsw indexes",

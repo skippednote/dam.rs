@@ -549,6 +549,125 @@ fn a_cap_of_zero_permits_nothing_and_is_not_the_same_as_uncapped() {
     );
 }
 
+// ─── which scope a download consumes (Q.12) ─────────────────────────────────
+
+#[test]
+fn a_download_consumes_the_scope_with_the_most_headroom() {
+    // `downloads_remaining` reports the *most* headroom any covering scope has, so a download has to consume
+    // that same scope — otherwise the figure a caller is watching never moves while downloads happen.
+    let generous = Scope {
+        max_downloads: Some(50),
+        ..open_scope()
+    };
+    let tight = Scope {
+        max_downloads: Some(3),
+        ..open_scope()
+    };
+    let generous_id = generous.id;
+
+    let mut license = open_license("two scopes");
+    license.scopes = vec![tight, generous];
+    let outcome = eval(&inputs(vec![license], vec![]), &web_in("GB"));
+
+    assert_eq!(outcome.verdict, RightsState::Allowed);
+    assert_eq!(outcome.downloads_remaining, Some(50));
+    assert_eq!(
+        outcome.consuming_scope,
+        Some(generous_id),
+        "a download would be attributed to a scope other than the one being reported"
+    );
+}
+
+#[test]
+fn an_uncapped_scope_takes_the_attribution_from_a_capped_one() {
+    // Within a licence the scopes are alternatives, so while an uncapped alternative permits the use, another
+    // scope's cap does not bear on it. The ledger row is still written — the download happened — it simply
+    // advances no cap, because there is none. Attributing to the capped scope instead would consume a
+    // allowance that was never what permitted the download.
+    let capped = Scope {
+        max_downloads: Some(2),
+        ..open_scope()
+    };
+    let uncapped = open_scope();
+    let uncapped_id = uncapped.id;
+
+    let mut license = open_license("mixed");
+    license.scopes = vec![capped, uncapped];
+    let outcome = eval(&inputs(vec![license], vec![]), &web_in("GB"));
+
+    assert_eq!(outcome.consuming_scope, Some(uncapped_id));
+    // And nothing is reported as remaining, because the covering set includes an uncapped alternative.
+    assert_eq!(
+        outcome.downloads_remaining,
+        Some(2),
+        "the capped scope still reports its own headroom"
+    );
+}
+
+#[test]
+fn an_exhausted_scope_is_never_the_one_consumed() {
+    // The scope loop skips an exhausted scope entirely — it does not cover the usage any more. So the
+    // attribution has to fall to whichever alternative actually permitted the download.
+    //
+    // Asserted in **both orderings**, because scope order within a licence is arbitrary and the first version of
+    // this case only tried one. A mutation that set the attribution before checking the cap survived it: with the
+    // spent scope first, the later good scope overwrote the wrong answer and the case passed anyway.
+    for spent_first in [true, false] {
+        let spent = Scope {
+            max_downloads: Some(5),
+            ..open_scope()
+        };
+        let spare = Scope {
+            max_downloads: Some(1),
+            ..open_scope()
+        };
+        let spent_id = spent.id;
+        let spare_id = spare.id;
+
+        let mut license = open_license("one spent");
+        license.scopes = if spent_first {
+            vec![spent, spare]
+        } else {
+            vec![spare, spent]
+        };
+        let mut i = inputs(vec![license], vec![]);
+        i.consumed = vec![(
+            spent_id,
+            Consumed {
+                impressions: 0,
+                downloads: 5,
+            },
+        )];
+
+        let outcome = eval(&i, &web_in("GB"));
+        assert_eq!(outcome.verdict, RightsState::Allowed);
+        assert_eq!(
+            outcome.consuming_scope,
+            Some(spare_id),
+            "spent scope listed {}",
+            if spent_first { "first" } else { "second" }
+        );
+    }
+}
+
+#[test]
+fn a_refused_usage_has_no_consuming_scope() {
+    // Nothing to consume: no scope permitted the use. A ledger row written against `None` counts toward no
+    // cap, which is the honest outcome — but this case should not reach the ledger at all, and the API only
+    // records after a URL is minted.
+    let unknown = eval(&inputs(vec![], vec![]), &web_in("GB"));
+    assert_eq!(unknown.consuming_scope, None);
+
+    let mut denied = open_license("elsewhere only");
+    denied.scopes = vec![Scope {
+        territories: vec!["FR".to_owned()],
+        ..open_scope()
+    }];
+    let outcome = eval(&inputs(vec![denied], vec![]), &web_in("GB"));
+    assert_eq!(outcome.verdict, RightsState::Denied);
+    assert_eq!(outcome.consuming_scope, None);
+}
+
 // ─── legal hold ─────────────────────────────────────────────────────────────
 
 #[test]

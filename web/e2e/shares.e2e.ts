@@ -136,6 +136,18 @@ async function connectManagement(page: Page): Promise<Recorder> {
 			recorder.revoked.push(url.pathname.split('/').pop() ?? '');
 			return route.fulfill({ status: 204, body: '' });
 		}
+		if (url.pathname.endsWith('/usage-options') || url.pathname === '/usage-options') {
+			// Q.12's intended-use vocabulary, asked alongside the formats. Empty here: a suite about
+			// something else should not grow a form it never meant to test.
+			return route.fulfill({
+				json: {
+					channels: [],
+					territories: [],
+					default_channel: 'internal',
+					default_territory: 'WORLD'
+				}
+			});
+		}
 		if (url.pathname.endsWith('/download-options')) {
 			// Q.11's download panel asks this on every asset the detail view opens. Answered so a suite about
 			// sharing does not render an error banner it never intended to test.

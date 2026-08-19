@@ -26,14 +26,14 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M0–M3c** Foundation, ingest, metadata/search/rights, delivery/sharing/restore | complete |
 | **F** The UI: browse, detail, upload, filter rail, lightbox, bulk bar, design pass | complete |
 | **F.11b** Share/portal UI, schema administration, metadata types | complete except restore UX |
-| **Q** Acquia parity, 20 slices | Q.1–Q.11 done; Q.12–Q.20 open |
+| **Q** Acquia parity, 20 slices | Q.1–Q.12 done; Q.13–Q.20 open |
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | schema exists, behaviour unwritten |
 | **M6** Workflow/proofing, annotations, analytics | not started |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** Q.12 intended-use capture
+**Next up, in order:** Q.13 orders
 → Q.6 comments → Q.7 activity feed → Q.8 versions → Q.9 attachments → Q.10 history → Q.11 conversions →
 Q.12 intended use → Q.13 orders → Q.14 portals → Q.15–Q.19 search → Q.20 sundries → M4 → M5 → M6 → M3d →
 Pre-GA → Entries.
@@ -1931,8 +1931,43 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
       not a format somebody chooses); the CHECK is `media_class = 'image'` so the database cannot hold a promise
       nothing keeps. Also an administration screen for the format list — the API is complete and the UI for it is
       not, so a tenant configures formats through SQL or the API today.
-- [ ] **Q.12 Intended-use capture.** The question asked before download, and the record that makes the
-  answer auditable. damrs has `Usage` in the rights evaluator; this is the capture and the reporting.
+- [x] **Q.12 Intended-use capture, and the cap that was decoration.** The question asked before a download, the
+      record that makes the answer auditable, and — as a consequence — `license_scopes.max_downloads` finally
+      refusing.
+
+      **`rights_usage` has been summed against `max_downloads` since migration 0005 and nothing ever wrote a
+      download row.** The cap permitted an unlimited number, exactly as that migration's own comment warned about
+      `max_impressions`: "Without it, `max_impressions` is decoration." Writing the ledger closes it. Flagged in
+      NEEDS-REVIEW.md because it changes outcomes for a tenant who already set a cap, and because history is not
+      backfilled — every cap starts counting from now, since attributing past downloads to a licence scope would
+      mean guessing, and a guess in a rights ledger is worse than a gap.
+
+      **A default is not a declaration.** `channel` and `territory` are optional and their *presence* is what
+      marks the record as declared — not a flag a client sets, which a client could assert without anybody having
+      answered. Half an answer counts as none: a person who named a channel and left the territory has still been
+      asked, but the record must not claim more than they said. Migration 0024 adds the column and a CHECK that
+      only a download may claim one, because a connector report has no person at a dialog.
+
+      **The download is recorded before the URL is minted.** An unrecorded download makes a cap under-count and
+      permits more than the licence allows; a recorded one that then fails to mint over-counts and permits fewer.
+      A licence breach is worse than an inconvenience.
+
+      **Attribution comes from the evaluation, not a second derivation.** `Evaluation::consuming_scope` is the
+      covering scope with the most headroom, counting uncapped as unlimited — the same rule
+      `downloads_remaining` reports by, so recording a download makes the reported figure go down by one.
+
+      **The vocabulary is derived, not configured**: the channels and territories the tenant's own licences
+      reference, exclusions included, because "worldwide except China" makes `CN` worth declaring and the honest
+      answer to declaring it is a refusal with a reason. Twenty mutations caught. One of my own tests was
+      order-dependent — the exhausted-scope case only tried one scope ordering, so a mutation that attributed
+      before checking the cap survived it; it now asserts both orderings.
+
+      **Open:** a *declared* vocabulary of its own, for a tenant that wants options no licence mentions. That is a
+      table and a screen, and the derived list covers the case where declaring changes an answer.
+      Also open: the panel's own behaviour was verified by its twelve Playwright cases against a production build
+      rather than by a live click this time — the dev detail panel would not open to synthetic clicks, and the
+      substance (vocabulary, declared and defaulted records, attribution, the ledger read) was verified against
+      the live server directly.
 - [ ] **Q.13 Orders.** Approval, a pickup page, metadata export with the order, multiple recipients, expiry,
   and hiding an expired order's contents.
 - [ ] **Q.14 Portals.** Standard, Brand, Video and Channel, branded, over the share-portal foundation.

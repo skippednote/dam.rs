@@ -2070,3 +2070,28 @@ omission one 415 — axum's JSON extractor refuses a body without it. The mocked
 requests themselves and never checked a header, so a real click was the only thing that could find it. The
 download suite's mock now enforces the header the way the server does: a mock more permissive than the server
 certifies bugs. Reversible: yes.
+
+**A default is not a declaration.** `POST /assets/{id}/download` takes `channel` and `territory` as optional
+fields, and their *presence* is what marks the ledger row as declared — never a flag the client sets, which a
+client could assert without anybody having answered. Half an answer counts as none: somebody who named a channel
+and left the territory to a default has been asked, but the record must not claim more than they said. An audit
+that cannot tell "somebody said print" from "nobody asked and the API said internal" is not an audit.
+Reversible: yes.
+
+**A download is recorded before its URL is minted.** The ledger is what `max_downloads` is summed against, so an
+unrecorded download makes a cap under-count and permits more than the licence allows, while a recorded one whose
+mint then fails over-counts and permits fewer. The first is a licence breach and the second an inconvenience, so
+the write comes first and a write failure refuses the download rather than handing out an unaudited copy.
+Reversible: yes.
+
+**A download is attributed to the covering scope with the most headroom.** Counting an uncapped scope as
+unlimited, which means that while an uncapped alternative covers the usage a capped scope's allowance is
+untouched — that is what "scopes are alternatives" already means in the evaluator rather than a loophole. Most
+headroom, because `downloads_remaining` reports a maximum: any other choice would leave a caller watching a
+figure that never moved while downloads happened. Reversible: yes.
+
+**The intended-use vocabulary is derived from the tenant's licences.** The channels and territories any licence
+scope references, inclusions and exclusions alike: every option is then one that can change a rights answer, and
+"worldwide except China" makes `CN` worth offering because the honest answer to declaring it is a refusal with a
+reason rather than an absence from the list. A tenant wanting options no licence mentions needs a declared
+vocabulary of its own, which is a table and a screen. Reversible: yes.

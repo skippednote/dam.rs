@@ -16,6 +16,13 @@
 	`status: 'rendering'` — and this polls until the URL arrives. Showing "failed" or a dead button would be wrong
 	twice: nothing failed, and the thing they asked for is on its way.
 
+	## The use is declared, and a default is not a declaration
+
+	Channel and territory decide the rights answer, so the panel asks before it takes a copy — and only counts an
+	answer as one when the person supplied both. Leaving them alone downloads under the server's default and the
+	ledger records that nobody was asked, which is the distinction the whole capture exists for. The choice
+	persists while the panel is open, because somebody taking six assets for one campaign should say so once.
+
 	## The refusal is the server's own words
 
 	Rights are evaluated when the URL is minted, so a download can be refused for a reason the person can act on: a
@@ -27,13 +34,19 @@
 	import {
 		ApiError,
 		loadDownloadOptions,
+		loadUsageOptions,
 		requestDownload,
-		type DownloadOptions
+		type DownloadOptions,
+		type UsageOptions
 	} from '$lib/api/client';
 
 	let { assetId }: { assetId: string } = $props();
 
 	let options = $state<DownloadOptions | null>(null);
+	let vocabulary = $state<UsageOptions | null>(null);
+	/** The declared use. Empty means "not answered", which is what makes the record honest. */
+	let channel = $state('');
+	let territory = $state('');
 	let error = $state('');
 	let notice = $state('');
 	let loaded = $state(false);
@@ -59,7 +72,16 @@
 
 	async function load() {
 		try {
-			options = await loadDownloadOptions(assetId);
+			// Both, and `allSettled` rather than `all`: a tenant with no licences has no vocabulary to offer, and
+			// that must not remove the download button. The lesson is old here — one failing read used to empty a
+			// whole panel.
+			const [formats, uses] = await Promise.allSettled([
+				loadDownloadOptions(assetId),
+				loadUsageOptions()
+			]);
+			if (uses.status === 'fulfilled') vocabulary = uses.value;
+			if (formats.status === 'rejected') throw formats.reason;
+			options = formats.value;
 		} catch (caught) {
 			// A reader without download scope gets a 403 here, which is not a fault: they may look and not take.
 			// The panel says nothing at all in that case rather than showing an error about a thing they were
@@ -86,7 +108,7 @@
 		void (async () => {
 			try {
 				for (let attempt = 0; attempt < POLL_ATTEMPTS; attempt += 1) {
-					const issued = await requestDownload(assetId, format);
+					const issued = await requestDownload(assetId, format, declaredUse());
 					if (issued.url) {
 						// A navigation, not a fetch: the URL redirects to the object store, and following it in
 						// script would pull the bytes through the page for no reason.
@@ -112,6 +134,16 @@
 	function sizeOf(format: { max_width: number; max_height: number }): string {
 		return `${format.max_width} × ${format.max_height}`;
 	}
+
+	/**
+	 * The use to send, or nothing.
+	 *
+	 * Both fields or neither: half an answer would be recorded as a full declaration by a server that only sees
+	 * what arrived, and the record would then claim more than the person was asked.
+	 */
+	function declaredUse(): { channel: string; territory: string } | undefined {
+		return channel && territory ? { channel, territory } : undefined;
+	}
 </script>
 
 <!--
@@ -135,6 +167,47 @@
 		<p role="status" aria-live="polite" class="text-xs text-muted">{notice}</p>
 
 		{#if options}
+			{#if vocabulary && (vocabulary.channels.length > 0 || vocabulary.territories.length > 0)}
+				<!--
+					Asked, not enforced. Leaving these alone downloads under the server's default and the record
+					says nobody was asked — which is the honest outcome and better than a required field somebody
+					fills in at random to get past it.
+				-->
+				<div class="grid grid-cols-2 gap-2">
+					<label class="text-xs text-muted">
+						What for
+						<select
+							bind:value={channel}
+							class="mt-0.5 w-full rounded-md border border-line bg-raised px-1.5 py-1 text-xs"
+						>
+							<option value="">Not stated ({vocabulary.default_channel})</option>
+							{#each vocabulary.channels as option (option)}
+								<option value={option}>{option}</option>
+							{/each}
+						</select>
+					</label>
+					<label class="text-xs text-muted">
+						Where
+						<select
+							bind:value={territory}
+							class="mt-0.5 w-full rounded-md border border-line bg-raised px-1.5 py-1 text-xs"
+						>
+							<option value="">Not stated ({vocabulary.default_territory})</option>
+							{#each vocabulary.territories as option (option)}
+								<option value={option}>{option}</option>
+							{/each}
+						</select>
+					</label>
+				</div>
+				<p class="text-xs text-muted">
+					{#if channel && territory}
+						Recorded against this asset as {channel} in {territory}.
+					{:else}
+						Stating the use records it against the asset and is what the licence is checked against.
+					{/if}
+				</p>
+			{/if}
+
 			<ul class="space-y-1">
 				{#if options.original_available}
 					<li class="rounded-md border border-line px-2 py-1.5">

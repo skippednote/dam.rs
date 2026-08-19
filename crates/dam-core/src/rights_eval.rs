@@ -201,6 +201,18 @@ pub struct Evaluation {
     /// Impressions left across the scopes that cover this usage, if any is capped.
     pub impressions_remaining: Option<i64>,
     pub downloads_remaining: Option<i64>,
+    /// The scope a download under this usage consumes against (Q.12).
+    ///
+    /// `None` when nothing permitted the usage. When several scopes cover it, this is the one with the most
+    /// headroom, counting an uncapped scope as unlimited — the same rule `downloads_remaining` reports by, so
+    /// that recording a download makes the reported figure go down by one. Any other choice would leave a
+    /// caller watching a number that never moved.
+    ///
+    /// Attributing to an *uncapped* scope when one covers the usage is deliberate rather than a way of avoiding
+    /// the cap: within a licence the scopes are alternatives, so while an uncapped alternative permits the use,
+    /// another scope's cap genuinely does not bear on it. The ledger row is still written — the download is a
+    /// fact, and `rights_usage` is where the facts go — it simply advances no cap, because there is none.
+    pub consuming_scope: Option<Uuid>,
     /// The earliest moment this verdict could change on its own.
     ///
     /// Exact rather than a polling guess: a licence window closing or a release lapsing is the only way an
@@ -243,6 +255,7 @@ pub fn evaluate(inputs: &Inputs, usage: &Usage, now: DateTime<Utc>) -> Evaluatio
         reasons,
         impressions_remaining: None,
         downloads_remaining: None,
+        consuming_scope: None,
         expires_at: None,
         ai_processing_allowed,
         ai_training_allowed,
@@ -273,6 +286,7 @@ pub fn evaluate(inputs: &Inputs, usage: &Usage, now: DateTime<Utc>) -> Evaluatio
             )],
             impressions_remaining: None,
             downloads_remaining: None,
+            consuming_scope: None,
             expires_at: None,
             ai_processing_allowed: false,
             ai_training_allowed: false,
@@ -302,6 +316,10 @@ pub fn evaluate(inputs: &Inputs, usage: &Usage, now: DateTime<Utc>) -> Evaluatio
     let mut earliest_change: Option<DateTime<Utc>> = None;
     let mut impressions_remaining: Option<i64> = None;
     let mut downloads_remaining: Option<i64> = None;
+    let mut consuming_scope: Option<Uuid> = None;
+    // Sentinel below every real headroom, so the first covering scope always wins the comparison. `i64::MAX`
+    // stands for uncapped, which is why this cannot start there.
+    let mut best_headroom: i64 = i64::MIN;
     // The **longest** notice period among the attached licences, not the shortest. A licence that takes
     // ninety days to renew needs ninety days' warning; taking the minimum would report it as merely
     // allowed until it was already too late to renew, which is the one failure this verdict exists to
@@ -400,6 +418,7 @@ pub fn evaluate(inputs: &Inputs, usage: &Usage, now: DateTime<Utc>) -> Evaluatio
                 impressions_remaining =
                     Some(impressions_remaining.map_or(left, |l: i64| l.max(left)));
             }
+            let mut headroom = i64::MAX;
             if let Some(cap) = scope.max_downloads {
                 let left = cap - consumed.downloads;
                 if left <= 0 {
@@ -411,6 +430,14 @@ pub fn evaluate(inputs: &Inputs, usage: &Usage, now: DateTime<Utc>) -> Evaluatio
                     continue;
                 }
                 downloads_remaining = Some(downloads_remaining.map_or(left, |l: i64| l.max(left)));
+                headroom = left;
+            }
+
+            // The scope a download would consume against. Most headroom wins, so this tracks whatever
+            // `downloads_remaining` reports — see the field's own note.
+            if headroom > best_headroom {
+                best_headroom = headroom;
+                consuming_scope = Some(scope.id);
             }
 
             covered = true;
@@ -467,6 +494,7 @@ pub fn evaluate(inputs: &Inputs, usage: &Usage, now: DateTime<Utc>) -> Evaluatio
         reasons,
         impressions_remaining,
         downloads_remaining,
+        consuming_scope,
         expires_at: earliest_change,
         ai_processing_allowed,
         ai_training_allowed,

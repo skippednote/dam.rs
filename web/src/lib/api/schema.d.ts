@@ -212,6 +212,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/assets/{asset_id}/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What one asset has been taken for, newest first.
+         * @description Read: how an asset has been used is part of its rights position, and somebody deciding whether they may use
+         *     it benefits from seeing that it went out under a print licence last month. It names colleagues, which the
+         *     comment threads and the activity feed already do within a tenant.
+         */
+        get: operations["ledger"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/assets/{asset_id}/versions": {
         parameters: {
             query?: never;
@@ -875,6 +897,27 @@ export interface paths {
         patch: operations["amend"];
         trace?: never;
     };
+    "/usage-options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The channels and territories a download may be declared as.
+         * @description Derived from the tenant's licences rather than configured, so every option is one that can change a rights
+         *     answer. Read, not Download: a person filling in a form has not asked for bytes yet.
+         */
+        get: operations["options"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/watches": {
         parameters: {
             query?: never;
@@ -1488,17 +1531,21 @@ export interface components {
             /**
              * @description Where the copy is going, which is what rights are evaluated against.
              *
-             *     Defaulted rather than required *for now*: every existing caller of the rights evaluator passes a usage,
-             *     and asking the person is Q.12's intended-use capture. The default is the narrowest honest thing — a
-             *     generic internal channel and worldwide territory — and it is a default a licence can refuse.
+             *     Optional, and its *presence* is the declaration: a request that names a channel is one where somebody
+             *     answered, and the ledger row says so. Absent, the API supplies the narrowest honest default — a generic
+             *     internal channel — and records that nobody was asked. See migration 0024 on why the difference is worth
+             *     a column.
+             *
+             *     Not required outright, because a machine integration genuinely has one fixed usage and making it restate
+             *     it on every call would be ceremony. What must not happen is a default that *looks* like an answer.
              */
-            channel?: string;
+            channel?: string | null;
             /**
              * @description `original`, or a conversion's key. Defaults to the original, because that is what "download" means
              *     without further information.
              */
             format?: string;
-            territory?: string;
+            territory?: string | null;
         };
         /**
          * @description An asset's engagement, as the caller may see it.
@@ -1927,6 +1974,30 @@ export interface components {
             id: string;
             key: string;
             label: string;
+        };
+        /** @description What a person may declare a download as. */
+        UsageOptions: {
+            /** @description Channels any of this tenant's licences reference, inclusions and exclusions alike. */
+            channels: string[];
+            /**
+             * @description What a download is recorded as when nobody declares anything, so a client can show it as the default
+             *     rather than inventing its own.
+             */
+            default_channel: string;
+            default_territory: string;
+            territories: string[];
+        };
+        /** @description One line of the ledger. */
+        UsageRecord: {
+            channel?: string | null;
+            /** @description Whether somebody stated this use, or the API defaulted it. The difference is the whole point of asking. */
+            declared: boolean;
+            /** Format: uuid */
+            id: string;
+            person?: null | components["schemas"]["PersonView"];
+            /** Format: date-time */
+            recorded_at: string;
+            territory?: string | null;
         };
         /** @description Why an edit was refused, field by field. */
         ValidationProblem: {
@@ -2529,6 +2600,34 @@ export interface operations {
             };
             /** @description No such type */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ledger: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageRecord"][];
+                };
+            };
+            /** @description No such asset, or not one this caller may see */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4356,6 +4455,25 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    options: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageOptions"];
+                };
             };
         };
     };

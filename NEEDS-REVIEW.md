@@ -325,3 +325,37 @@ the kind of default that is never revisited once assets have been accepted under
 
 **What I did instead.** Moved to 1.10 (lifecycle engine), which §6.4 settles fully. 1.9 is the only
 M1 task left blocked besides the TUS surface.
+
+---
+
+## `max_downloads` now refuses (Q.12) — a caps enforcement change, not a new decision
+
+**Not blocking.** Implemented, and flagged because it changes outcomes for any tenant that already has a
+capped licence scope.
+
+`license_scopes.max_downloads` has existed since migration 0005 and the evaluator has summed
+`rights_usage.downloads` against it since the same day. Nothing ever wrote a download row, so the cap permitted
+an unlimited number — exactly what that migration's own comment warned about for `max_impressions`: "Without it,
+`max_impressions` is decoration."
+
+Q.12 writes the ledger, so the cap now bites. Three consequences worth a human's eye:
+
+1. **A licence that says "50 downloads" starts refusing at 50.** That is what the licence says, and the
+   direction is conservative, but a tenant who set a cap believing it decorative will see refusals they did not
+   see yesterday. The refusal names `downloads_exhausted`, so it is explicable rather than mysterious.
+
+2. **Historic downloads are not in the ledger**, because nothing recorded them. Every cap therefore starts
+   counting from now rather than from the licence's beginning. The alternative — backfilling from `events`,
+   where download events *were* recorded — would attribute each to a licence scope by guessing which one applied
+   at the time, and a guess in a rights ledger is worse than a gap. If you want the backfill, it is a damctl
+   command and a decision about attribution, not a code change.
+
+3. **A download is recorded before the URL is minted**, so a mint that then fails over-counts a cap by one. The
+   reverse order would under-count, which permits more than the licence allows. I chose the conservative
+   direction; say if you would rather have the other.
+
+**The narrower question I did decide** and would flag if you disagree: when several scopes cover a usage, the
+download is attributed to the one with the most headroom, counting an uncapped scope as unlimited. That matches
+what `downloads_remaining` reports (a maximum), so the figure a caller watches goes down by one per download. It
+also means that while an uncapped alternative covers the usage, a capped scope's allowance is untouched — which
+is what "scopes are alternatives" already means in the evaluator, not a loophole added here.

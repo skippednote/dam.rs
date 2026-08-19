@@ -375,11 +375,35 @@ export async function loadDownloadOptions(assetId: string): Promise<DownloadOpti
  * are being made, and the caller asks again. That is a 202 on the wire, which `request` does not distinguish from
  * a 200; the status field is what a client reads, because the difference matters to the person waiting.
  */
-export async function requestDownload(assetId: string, format: string): Promise<DownloadIssued> {
+export async function requestDownload(
+	assetId: string,
+	format: string,
+	use?: { channel: string; territory: string }
+): Promise<DownloadIssued> {
+	// The declaration is the *presence* of the fields: sending them means somebody answered, and the ledger row
+	// says so. Sending a channel the person did not choose would make the record claim more than was asked.
 	return request<DownloadIssued>(`/assets/${assetId}/download`, {
 		method: 'POST',
-		body: JSON.stringify({ format })
+		body: JSON.stringify(use ? { format, ...use } : { format })
 	});
+}
+
+export type UsageOptions = components['schemas']['UsageOptions'];
+export type UsageRecord = components['schemas']['UsageRecord'];
+
+/**
+ * What a download may be declared as (Q.12).
+ *
+ * Derived from the tenant's own licences, so every option is one that can change a rights answer. Read scope: a
+ * person filling in the form has not asked for bytes yet.
+ */
+export async function loadUsageOptions(): Promise<UsageOptions> {
+	return request<UsageOptions>('/usage-options');
+}
+
+/** What one asset has been taken for, newest first. */
+export async function loadUsageLedger(assetId: string): Promise<UsageRecord[]> {
+	return request<UsageRecord[]>(`/assets/${assetId}/usage`);
 }
 
 export type Dashboard = components['schemas']['Dashboard'];
