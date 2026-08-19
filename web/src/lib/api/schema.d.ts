@@ -73,6 +73,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/assets/{asset_id}/comments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every comment on an asset this caller may read. */
+        get: operations["list"];
+        put?: never;
+        /** Posts a comment. */
+        post: operations["post_comment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/assets/{asset_id}/metadata": {
         parameters: {
             query?: never;
@@ -339,6 +357,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/comments/{comment_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Deletes a comment and its replies. The author only. */
+        delete: operations["remove"];
+        options?: never;
+        head?: never;
+        /** Rewrites a comment's words, or moves its status. */
+        patch: operations["amend"];
+        trace?: never;
+    };
     "/favourites": {
         parameters: {
             query?: never;
@@ -365,6 +401,23 @@ export interface paths {
         };
         /** The tenant's field definitions, in display order. */
         get: operations["fields"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/people": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Everyone in this tenant, for a recipient picker. */
+        get: operations["people"];
         put?: never;
         post?: never;
         delete?: never;
@@ -625,6 +678,11 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description What to change about a comment. One of the two, never both — see the module docs. */
+        AmendCommentRequest: {
+            body?: string | null;
+            status?: string | null;
+        };
         /** @description What to change. An omitted member is left alone. */
         AmendMappingRequest: {
             enabled?: boolean | null;
@@ -926,6 +984,35 @@ export interface components {
             /** @description Whether the state is final, so a client polls this instead of re-implementing the state vocabulary. */
             terminal: boolean;
         };
+        /** @description One comment, as a thread draws it. */
+        CommentView: {
+            /** Format: uuid */
+            asset_id: string;
+            author: components["schemas"]["PersonView"];
+            body: string;
+            /** Format: date-time */
+            created_at: string;
+            /**
+             * Format: date-time
+             * @description Set when the words changed after posting, so a thread can say "edited" rather than silently showing
+             *     different text than whoever replied to it read.
+             */
+            edited_at?: string | null;
+            /** Format: uuid */
+            id: string;
+            /**
+             * Format: uuid
+             * @description The comment this replies to, if any. Threads are one level deep.
+             */
+            parent_id?: string | null;
+            /** @description Who this was addressed to. Routing — and, on a private comment, also who may read it. */
+            recipients: components["schemas"]["PersonView"][];
+            /** @description `open`, `resolved`, `approved` or `changes_requested`. */
+            status: string;
+            status_by?: null | components["schemas"]["PersonView"];
+            /** @description `public` or `private`. A private comment reaches its author and its recipients, and nobody else. */
+            visibility: string;
+        };
         /** @description A mapping to create. */
         CreateMappingRequest: {
             /** @description Defaults to true: a mapping saved and then not applied would be a surprising thing to have to switch on. */
@@ -1181,6 +1268,18 @@ export interface components {
         OrderRequest: {
             keys: string[];
         };
+        /** @description A person, as a thread names them. */
+        PersonView: {
+            /**
+             * @description Included because two colleagues can share a display name, and a picker that cannot tell them apart
+             *     misroutes a private comment — the one failure this list exists to prevent.
+             */
+            email: string;
+            /** Format: uuid */
+            id: string;
+            /** @description The name to show, falling back to the email when nobody set one. */
+            name: string;
+        };
         /**
          * @description Lifecycle state of one `object_placements` row.
          *
@@ -1230,6 +1329,16 @@ export interface components {
             preview_url?: string | null;
             /** Format: int32 */
             width?: number | null;
+        };
+        /** @description A comment to post. */
+        PostCommentRequest: {
+            body: string;
+            /** Format: uuid */
+            parent_id?: string | null;
+            /** @description Who to route it to. Required when `visibility` is `private`. */
+            recipients?: string[];
+            /** @description Defaults to public. Private is the deliberate choice, so it is the one you have to name. */
+            visibility?: string;
         };
         /** @description A profile as a client sees it. */
         ProfileRow: {
@@ -1589,6 +1698,73 @@ export interface operations {
             };
             /** @description Authenticated, and holds no manage scope */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommentView"][];
+                };
+            };
+            /** @description No such asset, or not one this caller may see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    post_comment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PostCommentRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommentView"];
+                };
+            };
+            /** @description No such asset or parent comment, or not one this caller may see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Empty or over-long body, an unknown visibility, a private comment with no recipients, or a reply to a reply */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2344,6 +2520,86 @@ export interface operations {
             };
         };
     };
+    remove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                comment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted, along with any replies to it */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Deleting somebody else's comment */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such comment, or not one this caller may read */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    amend: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                comment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AmendCommentRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommentView"];
+                };
+            };
+            /** @description Rewriting somebody else's words */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such comment, or not one this caller may read */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Both a body and a status, neither, an unknown status, or a bad length */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     favourites: {
         parameters: {
             query?: {
@@ -2404,6 +2660,25 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    people: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PersonView"][];
+                };
             };
         };
     };

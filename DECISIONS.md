@@ -1974,3 +1974,17 @@ Because focus stays on the cell, the outcome goes to a live region: nothing the 
 so a silent toggle is indistinguishable from one that did nothing. `ctrl+f` and `cmd+f` are explicitly excluded —
 find-in-page is a more important key than this one. Reversible: yes.
 
+**`GET /people` lists a tenant's members with their email addresses.** A recipient picker needs it and a comment
+thread needs it — a thread rendering author ids as uuids is unreadable, so names have to be resolvable somewhere.
+The email is included rather than the display name alone because two colleagues can share a name, and a picker
+that cannot tell them apart misroutes a private comment, which is the exact failure the list exists to prevent.
+Scoped to the caller's own tenant, taken from the credential with no parameter to point elsewhere with, and
+disabled identities are excluded because they cannot read a comment addressed to them anyway. This is not a new
+exposure: a comment already shows its author, and a tenant's roster is not secret to its own members. Reversible:
+yes, in the narrowing direction.
+
+**A comment outlives its author.** `asset_comments.author_id` has no foreign key into the control plane, per the
+note in migration 0001, so deleting an identity leaves the comment standing. That is the right outcome — the words
+were said, and deleting the person does not unsay them — and the API names the gap ("Someone no longer here")
+rather than rendering a blank author, because an empty name reads as a fault rather than as a fact. Reversible: no.
+

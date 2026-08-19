@@ -488,3 +488,74 @@ async fn require_visible_asset(
         .map(|_| ())
         .ok_or(CommentRefusal::UnknownAsset(asset_id))
 }
+
+/// A person, as a comment thread needs to name them.
+///
+/// Lives here rather than in an identity module because comments are the first thing that needs it: a thread
+/// showing `author_id` as a uuid is unreadable, and every consumer would otherwise build its own lookup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Person {
+    pub id: Uuid,
+    /// The name to show. Falls back to the email when nobody set one, because a blank name in a picker is worse
+    /// than an address.
+    pub display_name: String,
+    pub email: String,
+}
+
+/// Everyone in this tenant, for a recipient picker and for naming comment authors.
+///
+/// **Reads the global schema, so it takes the global pool and the tenant id** — not a `TenantConn`. Membership is
+/// the D2 boundary: identities are global and who belongs to which tenant is global, while everything a comment
+/// knows is tenant-local.
+///
+/// Scoped to one tenant's members. The email is included because two colleagues can share a display name, and a
+/// picker that cannot tell them apart is a picker that misroutes a private comment — which is the one failure this
+/// list exists to prevent. Disabled identities are excluded: they cannot read a comment addressed to them.
+pub async fn people(pool: &sqlx::PgPool, tenant_id: Uuid) -> Result<Vec<Person>, Error> {
+    let rows: Vec<(Uuid, Option<String>, String)> = sqlx::query_as(
+        "SELECT i.id, i.display_name, i.email \
+         FROM dam_global.identities i \
+         JOIN dam_global.tenant_members m ON m.identity_id = i.id \
+         WHERE m.tenant_id = $1 AND i.status <> 'disabled' \
+         ORDER BY coalesce(i.display_name, i.email), i.id",
+    )
+    .bind(tenant_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(id, display_name, email)| Person {
+            id,
+            display_name: display_name.unwrap_or_else(|| email.clone()),
+            email,
+        })
+        .collect())
+}
+
+/// The people named by `ids`, in one query, for naming a thread's authors and recipients.
+///
+/// Not scoped to a tenant, deliberately: the ids come from comment rows this caller has already been allowed to
+/// read, so the scoping happened at the gate. Scoping again here would need the tenant id threaded through every
+/// call for no additional safety — and would quietly drop the name of an author who has since left the tenant,
+/// turning their comments into anonymous text.
+pub async fn people_by_id(pool: &sqlx::PgPool, ids: &[Uuid]) -> Result<Vec<Person>, Error> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows: Vec<(Uuid, Option<String>, String)> = sqlx::query_as(
+        "SELECT id, display_name, email FROM dam_global.identities WHERE id = ANY($1)",
+    )
+    .bind(ids)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(id, display_name, email)| Person {
+            id,
+            display_name: display_name.unwrap_or_else(|| email.clone()),
+            email,
+        })
+        .collect())
+}

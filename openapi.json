@@ -238,6 +238,90 @@
         }
       }
     },
+    "/assets/{asset_id}/comments": {
+      "get": {
+        "tags": [
+          "comments"
+        ],
+        "summary": "Every comment on an asset this caller may read.",
+        "operationId": "list",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CommentView"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such asset, or not one this caller may see"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "comments"
+        ],
+        "summary": "Posts a comment.",
+        "operationId": "post_comment",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PostCommentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommentView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such asset or parent comment, or not one this caller may see"
+          },
+          "422": {
+            "description": "Empty or over-long body, an unknown visibility, a private comment with no recipients, or a reply to a reply"
+          }
+        }
+      }
+    },
     "/assets/{asset_id}/metadata": {
       "patch": {
         "tags": [
@@ -1070,6 +1154,86 @@
         }
       }
     },
+    "/comments/{comment_id}": {
+      "delete": {
+        "tags": [
+          "comments"
+        ],
+        "summary": "Deletes a comment and its replies. The author only.",
+        "operationId": "remove",
+        "parameters": [
+          {
+            "name": "comment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted, along with any replies to it"
+          },
+          "403": {
+            "description": "Deleting somebody else's comment"
+          },
+          "404": {
+            "description": "No such comment, or not one this caller may read"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "comments"
+        ],
+        "summary": "Rewrites a comment's words, or moves its status.",
+        "operationId": "amend",
+        "parameters": [
+          {
+            "name": "comment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AmendCommentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommentView"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Rewriting somebody else's words"
+          },
+          "404": {
+            "description": "No such comment, or not one this caller may read"
+          },
+          "422": {
+            "description": "Both a body and a status, neither, an unknown status, or a bad length"
+          }
+        }
+      }
+    },
     "/favourites": {
       "get": {
         "tags": [
@@ -1140,6 +1304,30 @@
           },
           "403": {
             "description": "Authenticated, and holds no read scope"
+          }
+        }
+      }
+    },
+    "/people": {
+      "get": {
+        "tags": [
+          "comments"
+        ],
+        "summary": "Everyone in this tenant, for a recipient picker.",
+        "operationId": "people",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PersonView"
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -1982,6 +2170,24 @@
   },
   "components": {
     "schemas": {
+      "AmendCommentRequest": {
+        "type": "object",
+        "description": "What to change about a comment. One of the two, never both — see the module docs.",
+        "properties": {
+          "body": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "AmendMappingRequest": {
         "type": "object",
         "description": "What to change. An omitted member is left alone.",
@@ -2587,6 +2793,82 @@
           }
         }
       },
+      "CommentView": {
+        "type": "object",
+        "description": "One comment, as a thread draws it.",
+        "required": [
+          "id",
+          "asset_id",
+          "author",
+          "body",
+          "visibility",
+          "status",
+          "recipients",
+          "created_at"
+        ],
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "author": {
+            "$ref": "#/components/schemas/PersonView"
+          },
+          "body": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "edited_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Set when the words changed after posting, so a thread can say \"edited\" rather than silently showing\ndifferent text than whoever replied to it read."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "parent_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The comment this replies to, if any. Threads are one level deep."
+          },
+          "recipients": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PersonView"
+            },
+            "description": "Who this was addressed to. Routing — and, on a private comment, also who may read it."
+          },
+          "status": {
+            "type": "string",
+            "description": "`open`, `resolved`, `approved` or `changes_requested`."
+          },
+          "status_by": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PersonView",
+                "description": "Who last moved the status. Absent while it is still as posted."
+              }
+            ]
+          },
+          "visibility": {
+            "type": "string",
+            "description": "`public` or `private`. A private comment reaches its author and its recipients, and nobody else."
+          }
+        }
+      },
       "CreateMappingRequest": {
         "type": "object",
         "description": "A mapping to create.",
@@ -3142,6 +3424,29 @@
           }
         }
       },
+      "PersonView": {
+        "type": "object",
+        "description": "A person, as a thread names them.",
+        "required": [
+          "id",
+          "name",
+          "email"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "Included because two colleagues can share a display name, and a picker that cannot tell them apart\nmisroutes a private comment — the one failure this list exists to prevent."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string",
+            "description": "The name to show, falling back to the email when nobody set one."
+          }
+        }
+      },
       "PlacementState": {
         "type": "string",
         "description": "Lifecycle state of one `object_placements` row.\n\nMirrors the `object_placements.state` CHECK. In `dam-core` rather than `dam-store`\nbecause both the database layer that loads it and the resolution layer that acts on it\nneed the same vocabulary — and a second definition is how the two drift.\n\nOnly `Present` is readable. The others each mean something different to an operator,\nwhich is why this is not a boolean: `Uploading` will resolve itself, `Missing` needs a\nre-replication, `Corrupt` needs a scrub, and `Deleting` is expected to disappear.",
@@ -3250,6 +3555,37 @@
               "null"
             ],
             "format": "int32"
+          }
+        }
+      },
+      "PostCommentRequest": {
+        "type": "object",
+        "description": "A comment to post.",
+        "required": [
+          "body"
+        ],
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "parent_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "recipients": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Who to route it to. Required when `visibility` is `private`."
+          },
+          "visibility": {
+            "type": "string",
+            "description": "Defaults to public. Private is the deliberate choice, so it is the one you have to name."
           }
         }
       },

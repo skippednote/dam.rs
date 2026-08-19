@@ -26,14 +26,14 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M0–M3c** Foundation, ingest, metadata/search/rights, delivery/sharing/restore | complete |
 | **F** The UI: browse, detail, upload, filter rail, lightbox, bulk bar, design pass | complete |
 | **F.11b** Share/portal UI, schema administration, metadata types | complete except restore UX |
-| **Q** Acquia parity, 20 slices | Q.1–Q.5 done; Q.6a done; Q.6b–Q.20 open |
+| **Q** Acquia parity, 20 slices | Q.1–Q.5 done; Q.6a–Q.6b done; Q.6c–Q.20 open |
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | schema exists, behaviour unwritten |
 | **M6** Workflow/proofing, annotations, analytics | not started |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** Q.6b comment API
+**Next up, in order:** Q.6c comment UI
 → Q.6 comments → Q.7 activity feed → Q.8 versions → Q.9 attachments → Q.10 history → Q.11 conversions →
 Q.12 intended use → Q.13 orders → Q.14 portals → Q.15–Q.19 search → Q.20 sundries → M4 → M5 → M6 → M3d →
 Pre-GA → Entries.
@@ -1747,8 +1747,27 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
       gaps: the thread ordering was unobservable because the reply happened to be the next comment created, and
       nothing covered a reply pointing at a comment on a different asset.
 
-- [ ] **Q.6b The comment API.** `GET/POST /assets/{id}/comments`, `PATCH/DELETE /comments/{id}`, status moves, and
-  the recipient picker's identity list.
+- [x] **Q.6b The comment API, and the first identity endpoint.** `GET/POST /assets/{asset_id}/comments`,
+      `PATCH/DELETE /comments/{comment_id}`, and `GET /people`. `Read` is the bar and an identity is required: a
+      comment is somebody's words, and an anonymous one could never be edited, deleted or attributed.
+
+      Names are resolved server-side, in one lookup per request. A thread rendering `author_id` as a uuid is
+      unreadable, and making the client resolve them would be a request per distinct person on the page. A comment
+      whose author has since been deleted reads "Someone no longer here" rather than blank — offboarding is the
+      ordinary case, and an empty name reads as a rendering fault.
+
+      `PATCH` takes the words *or* the status, never both: they carry different rights, so a request naming both
+      would half-apply for a caller who holds one and not the other. An unknown visibility or status is refused by
+      name rather than defaulted — silently widening a comment somebody meant to keep private is the worst
+      available outcome.
+
+      `/people` is the first endpoint that reads the control plane's identity tables. Scoped by the *credential*,
+      with no parameter to point at another tenant with, and it carries the email deliberately: two colleagues can
+      share a display name, and a picker that cannot tell them apart misroutes a private comment.
+
+      Eleven of twelve mutations caught. The survivor is the identity unwrap, which `caller::authorize` already
+      guarantees — the same shape as the engagement handlers, and the reason the `Caller::identity_id` cleanup is
+      on this list. One mutation found a real gap: nothing covered a comment outliving its author.
 - [ ] **Q.6c The comment UI.** A thread in the detail panel, public/private with the consequence spelled out, a
   recipient picker, and the status control.
 - [ ] **Q.7 Activity feed, dashboard sections, spotlight searches.** What turns the landing page from a
