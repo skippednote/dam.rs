@@ -1,3 +1,41 @@
+# Open — may an administrator read a private comment? 2026-08-19 (Q.6)
+
+**Q.6a is built with the strict rule — a private comment is readable by its author and the people it names, and
+by nobody else — and I want your view before anything relaxes that.**
+
+The strict rule is implemented and mutation-tested. `everything()`, the widest access predicate the system can
+compile, does not open a private comment: there is no administrator path to one, deliberately.
+
+I did not decide this the way I decided the engagement disclosures earlier today. There, minimum disclosure was
+plainly the reversible direction and I logged it in `DECISIONS.md` and continued. Here both answers are
+defensible, and the choice is about what the product *promises*:
+
+- **An admin can read them.** Moderation, legal discovery and offboarding all eventually need it. A DAM under a
+  retention or e-discovery obligation cannot have a store of text nobody can produce. And an administrator who
+  can already read every asset arguably reads every note about them.
+- **An admin cannot read them.** "Private" is a word users act on. If it means "private unless somebody with the
+  right role looks", then the honest label is "restricted", and calling it private is a promise the system does
+  not keep. Once made, that promise cannot be un-made retroactively — anybody who wrote a private note under the
+  strict rule wrote it under the old promise.
+
+What makes this worth stopping on rather than logging: the permissive direction is **not reversible**. Adding an
+admin reader later is additive and affects only notes written afterwards, if the UI says so. Removing one is
+impossible for everything already written under it.
+
+Three things follow from your answer, and none of them are built yet:
+
+1. Whether `comments::read` and `comments::on_asset` take a "may override visibility" capability at all. Today
+   they take a reader identity and nothing else, which is what makes the strict rule structural rather than a
+   policy check somebody can forget.
+2. Whether an override read is *audited*. If an admin can read private comments, every such read should be a row
+   in `audit_log` — an unlogged override is indistinguishable from a leak after the fact.
+3. What the UI says when composing a private comment. Under the strict rule it can say "only you and the people
+   you name"; under the permissive one it must not.
+
+Until you say otherwise the strict rule stands, and Q.6b/Q.6c will be built on it.
+
+---
+
 # Answered — thumbnails, 2026-08-18 (A.7)
 
 **You said: "We should see thumbnails. We can worry about ai gates later."** So the internal-preview reading is

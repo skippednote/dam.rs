@@ -66,7 +66,8 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             // 62 since 0017: `upload_profiles`; 63 since 0018: `auto_import_mappings`; 66 since 0019 added the
             // three engagement tables — separate because a rating aggregates, a favourite is a private list and
             // a watch is a standing request, and one table would carry a null column per unused role.
-            66,
+            // 68 since 0020: `asset_comments` and its routing table.
+            68,
         ),
         (
             "view count",
@@ -92,19 +93,22 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             //
             // 226 since 0018: auto_import_mappings gains a primary key, its source/field unique index and the
             // partial resolution index.
-            234,
+            241,
         ),
         (
             "check constraints",
             "SELECT count(*) FROM pg_constraint c JOIN pg_namespace n ON n.oid=c.connamespace WHERE n.nspname='t_acme' AND c.contype='c'",
             // 91 since 0014, which added the `upload_sessions.content_hash` shape check. 90 came from 0012:
             // a superseded term must be deprecated, and cannot supersede itself.
+            // 96 since 0020: a comment's body length, visibility and status are all constrained in the column, so
+            // none of the three can hold a value this module cannot read back.
+            //
             // 93 since 0019: `asset_ratings.stars` is range-checked in the column, so a rating outside 1–5 cannot
             // exist even if a future caller skips the Rust check.
             //
             // 92 since 0018: `auto_import_mappings.source` is shape-checked, because a mapping's left-hand side is
             // free text and a malformed one would silently never match.
-            93,
+            96,
         ),
         (
             "hnsw indexes",

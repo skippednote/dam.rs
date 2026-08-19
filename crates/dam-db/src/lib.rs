@@ -13,6 +13,7 @@ pub mod auto_import;
 pub mod bulk;
 pub mod categories;
 pub mod collections;
+pub mod comments;
 pub mod derivatives;
 pub mod engagement;
 pub mod facets;

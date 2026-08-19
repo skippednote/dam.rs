@@ -26,19 +26,19 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M0–M3c** Foundation, ingest, metadata/search/rights, delivery/sharing/restore | complete |
 | **F** The UI: browse, detail, upload, filter rail, lightbox, bulk bar, design pass | complete |
 | **F.11b** Share/portal UI, schema administration, metadata types | complete except restore UX |
-| **Q** Acquia parity, 20 slices | Q.1–Q.5 done; Q.6–Q.20 open |
+| **Q** Acquia parity, 20 slices | Q.1–Q.5 done; Q.6a done; Q.6b–Q.20 open |
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | schema exists, behaviour unwritten |
 | **M6** Workflow/proofing, annotations, analytics | not started |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** Q.6 comments
+**Next up, in order:** Q.6b comment API
 → Q.6 comments → Q.7 activity feed → Q.8 versions → Q.9 attachments → Q.10 history → Q.11 conversions →
 Q.12 intended use → Q.13 orders → Q.14 portals → Q.15–Q.19 search → Q.20 sundries → M4 → M5 → M6 → M3d →
 Pre-GA → Entries.
 
-**Open questions parked for a human:** `NEEDS-REVIEW.md` item 2.4 (rule-based asset groups) and task 3.x
+**Open questions parked for a human:** `NEEDS-REVIEW.md` Q.6 (may an admin read a private comment?), item 2.4 (rule-based asset groups) and task 3.x
 (which AWS-native features to rely on rather than build).
 
 **The bar every slice clears:** `cargo fmt --check`, `cargo clippy --all-targets --all-features -D warnings`,
@@ -1729,8 +1729,28 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
   that looks load-bearing. Narrowing the type touches every handler, so it is its own change.
 - [ ] **Q.5c The engagement UI.** Stars in the detail panel, a favourite toggle on the card, a watch toggle, and
   the two private lists as places you can go.
-- [ ] **Q.6 Comments.** Public and private, routed to chosen recipients, with statuses that carry approval.
-  This is M6's "annotations" with Acquia's shape.
+- [x] **Q.6a Comments: the model, and two gates in the right order.** Migration `0020`, `dam_db::comments`. Every
+      read passes the caller's *asset* predicate first and the comment's own visibility second, because the other
+      order — find what is addressed to me, then check the assets — discloses the existence of assets through the
+      comments hanging off them. Being addressed is therefore not a grant: a recipient who loses access to the
+      asset stops seeing the comment, while the routing row stays exactly where it was. A private comment with no
+      recipients is refused, because a note only its author can read is one that failed silently. One level of
+      threading. Statuses (`open`, `resolved`, `approved`, `changes_requested`) are movable by any reader and
+      record who moved them — `approved` is somebody else's verdict, so a status only its author could move could
+      never mean approval — and nothing is gated on them yet, deliberately.
+
+      **The strict visibility rule is in `NEEDS-REVIEW.md`, not decided.** Whether a tenant admin may read a
+      private comment is a promise about the product, both answers are defensible, and the permissive direction
+      cannot be reversed for anything already written. Q.6b/Q.6c build on the strict rule until told otherwise.
+
+      Fifteen of sixteen mutations caught; the survivor is a redundant join documented as such. Two were real
+      gaps: the thread ordering was unobservable because the reply happened to be the next comment created, and
+      nothing covered a reply pointing at a comment on a different asset.
+
+- [ ] **Q.6b The comment API.** `GET/POST /assets/{id}/comments`, `PATCH/DELETE /comments/{id}`, status moves, and
+  the recipient picker's identity list.
+- [ ] **Q.6c The comment UI.** A thread in the detail panel, public/private with the consequence spelled out, a
+  recipient picker, and the status control.
 - [ ] **Q.7 Activity feed, dashboard sections, spotlight searches.** What turns the landing page from a
   redirect into a place.
 - [ ] **Q.8 Versions.** Add a version, list them, download an earlier one, and the detail tab.
