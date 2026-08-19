@@ -360,6 +360,73 @@ async fn an_unknown_transform_is_not_deliverable(f: &Fixture) {
     assert_eq!(get(&f.app, &token).await.status(), StatusCode::NOT_FOUND);
 }
 
+async fn a_tenant_conversion_resolves_like_a_built_in(f: &Fixture) {
+    // The gap only a live run found. The download endpoint minted a perfectly good signed URL for a tenant
+    // format and this route 404'd it, because the transform was resolved against the built-in set alone. An API
+    // test that asserted "a URL came back" could not see it; following the URL is what did.
+    let id = asset_with_bytes(f, "tenant-format").await;
+    licence(f, id, None).await;
+
+    sqlx::query(
+        "INSERT INTO conversions \
+         (id, key, label, description, media_class, max_width, max_height, format, quality, fit) \
+         VALUES (gen_random_uuid(), 'web-1600', 'Web JPEG', 'For a web page.', 'image', 1600, 1600, \
+                 'jpeg', 82, 'contain')",
+    )
+    .execute(&f.pool)
+    .await
+    .expect("conversion");
+
+    let conversion =
+        dam_db::conversions::by_key(&mut f.pool.acquire().await.expect("conn"), "web-1600")
+            .await
+            .expect("read")
+            .expect("present");
+    // The conversion's own `op_hash`, as the worker records it. A fixture inventing a hash would record a
+    // derivative that is correctly never found, which would make this case pass for the wrong reason.
+    sqlx::query(
+        "INSERT INTO derivatives (id, asset_id, role, profile, op_hash, object_key, mime, bytes) \
+         VALUES (gen_random_uuid(), $1, 'rendition', 'web-1600', $2, $3, 'image/jpeg', 5)",
+    )
+    .bind(id)
+    .bind(conversion.op_hash().expect("renderable"))
+    .bind("acme/p/tenant-format-1600")
+    .execute(&f.pool)
+    .await
+    .expect("derivative");
+    // No object is written: delivery presigns a key rather than reading it, which is what the other cases in
+    // this suite rely on too. What is being tested here is the *resolution* of a name to a key.
+
+    let token = delivery::issue(
+        &f.state,
+        id,
+        "web-1600",
+        &web(),
+        None,
+        Duration::minutes(10),
+        now(),
+    )
+    .await
+    .expect("issue");
+    assert_eq!(
+        get(&f.app, &token).await.status(),
+        StatusCode::FOUND,
+        "a tenant conversion's URL does not resolve"
+    );
+
+    // Withdrawing it does not break the link. The token carries the key, and a link issued while the format was
+    // offered was a promise; an administrator tidying a list must not retract it.
+    sqlx::query("UPDATE conversions SET is_active = false WHERE key = 'web-1600'")
+        .execute(&f.pool)
+        .await
+        .expect("withdraw");
+    assert_eq!(
+        get(&f.app, &token).await.status(),
+        StatusCode::FOUND,
+        "withdrawing a format broke a link that was already issued"
+    );
+}
+
 // ─── the D12 property ───────────────────────────────────────────────────────
 
 async fn a_valid_signature_over_an_unlicensed_asset_is_still_refused(f: &Fixture) {
@@ -1103,6 +1170,7 @@ async fn the_delivery_chokepoint_holds() {
     a_signed_url_for_a_licensed_asset_redirects_to_the_object(&f).await;
     the_transform_selects_which_object_is_served(&f).await;
     an_unknown_transform_is_not_deliverable(&f).await;
+    a_tenant_conversion_resolves_like_a_built_in(&f).await;
     a_redefined_profile_misses_the_cache_instead_of_serving_stale_bytes(&f).await;
     a_serve_is_recorded_at_most_once_an_hour(&f).await;
 

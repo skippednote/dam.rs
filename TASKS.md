@@ -26,14 +26,14 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M0–M3c** Foundation, ingest, metadata/search/rights, delivery/sharing/restore | complete |
 | **F** The UI: browse, detail, upload, filter rail, lightbox, bulk bar, design pass | complete |
 | **F.11b** Share/portal UI, schema administration, metadata types | complete except restore UX |
-| **Q** Acquia parity, 20 slices | Q.1–Q.10 done; Q.11–Q.20 open |
+| **Q** Acquia parity, 20 slices | Q.1–Q.11 done; Q.12–Q.20 open |
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | schema exists, behaviour unwritten |
 | **M6** Workflow/proofing, annotations, analytics | not started |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** Q.11 asset conversions
+**Next up, in order:** Q.12 intended-use capture
 → Q.6 comments → Q.7 activity feed → Q.8 versions → Q.9 attachments → Q.10 history → Q.11 conversions →
 Q.12 intended use → Q.13 orders → Q.14 portals → Q.15–Q.19 search → Q.20 sundries → M4 → M5 → M6 → M3d →
 Pre-GA → Entries.
@@ -1892,8 +1892,45 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
       than a history one — a second rendition for an asset whose own bytes preview badly — and folding it in would
       have made this slice two features.
 
-- [ ] **Q.11 Asset conversions.** Named, user-selectable download formats per media class, each with a
-  description written for the person choosing and its own role permissions.
+- [x] **Q.11 Asset conversions, and the download the DAM never had.** Four slices in one feature: the
+      `conversions` table (Q.11a), its API and the offer for one asset (Q.11b), `POST /assets/{id}/download` plus
+      the worker that renders a format on demand (Q.11c), and the panel that offers them (Q.11d).
+
+      **The DAM had no authenticated download at all.** Only the share portal minted delivery URLs; a signed-in
+      person could read "the original is available" with nothing to press. That is the larger half of this slice.
+
+      **The cache key is the recipe, so there is no revision column.** Redefining a conversion *is* a different
+      `op_hash`, and the next request renders fresh — a revision an editor bumps would be a second mechanism for
+      what the first already guarantees. What `op_hash` cannot see is the renderer, which is global: one
+      `RENDERER_REVISION` folded into every hash, built-in and tenant alike, because a database row cannot be
+      hand-bumped in the commit that changes the pipeline. A consequence worth knowing: two names for one recipe
+      share one rendered object.
+
+      **A format not yet rendered is 202 with the render queued**, deduplicated on `(asset, conversion)` so twenty
+      people choosing the same thing is one job. Not a dead URL, and not a synchronous render inside a request.
+
+      **Two gates, asset first**, and a conversion's permission narrows only — `Caller::permissions` now carries
+      the fine-grained `roles.permissions` strings that `Action` deliberately does not model. A format the caller
+      may not use is absent from the offer and *named* on a direct request, which is the one place this departs
+      from the hidden/absent rule: a format is tenant configuration, and somebody refused one is better served by
+      knowing which permission to ask for.
+
+      Thirty-eight mutations caught across the four slices. Three of my own tests were vacuous and mutation
+      testing found each: an ordering case with one row in the table, a permission case that never ran against the
+      unit implementing it, and a renderer-revision case that compared two hand-derived strings — which is why
+      `op_hash_at` now takes the revision as an argument rather than reading a constant.
+
+      **What only the live run found**, and neither the API tests nor the mocked browser suite could:
+      delivery resolved a transform against the built-in profile set alone, so the download endpoint returned a
+      perfectly good signed URL that then 404'd; and `request()` in the web client left `Content-Type` to each
+      call site, so the one endpoint where I forgot it answered 415 while every mocked test passed. The header now
+      lives in the helper once, the ~15 duplicated declarations are gone, and the download suite's mock enforces
+      the header the way axum does — a mock more permissive than the server certifies bugs.
+
+      **Open:** video conversions, which need a parameterised ffmpeg recipe (`transcode_proxy` is one fixed proxy,
+      not a format somebody chooses); the CHECK is `media_class = 'image'` so the database cannot hold a promise
+      nothing keeps. Also an administration screen for the format list — the API is complete and the UI for it is
+      not, so a tenant configures formats through SQL or the API today.
 - [ ] **Q.12 Intended-use capture.** The question asked before download, and the record that makes the
   answer auditable. damrs has `Usage` in the rights evaluator; this is the capture and the reporting.
 - [ ] **Q.13 Orders.** Approval, a pickup page, metadata export with the order, multiple recipients, expiry,

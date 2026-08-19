@@ -923,6 +923,297 @@ async fn derivation_holds() {
 }
 
 #[tokio::test]
+async fn conversion_rendering_holds() {
+    // Q.11c. The tenant-defined path, which shares this module's renderer and its vips fallback — see
+    // `derive::Recipe` on why a signature changed for that.
+    let f = fixture().await;
+    a_named_format_is_rendered_and_recorded(&f).await;
+    rendering_the_same_format_twice_records_one_row(&f).await;
+    a_conversion_for_the_wrong_class_is_permanent(&f).await;
+    an_unknown_conversion_is_permanent(&f).await;
+    a_withdrawn_conversion_still_renders(&f).await;
+}
+
+/// A conversion row, returning its key.
+async fn declare_conversion(
+    f: &Fixture,
+    key: &str,
+    size: i32,
+    format: &str,
+    class: &str,
+) -> String {
+    sqlx::query(
+        "INSERT INTO conversions \
+         (id, key, label, description, media_class, max_width, max_height, format, quality, fit) \
+         VALUES (gen_random_uuid(), $1, $1, 'A format.', $2, $3, $3, $4, 82, 'contain')",
+    )
+    .bind(key)
+    .bind(class)
+    .bind(size)
+    .bind(format)
+    .execute(&f.tenant)
+    .await
+    .expect("conversion");
+    key.to_owned()
+}
+
+async fn a_named_format_is_rendered_and_recorded(f: &Fixture) {
+    let bytes = jpeg(1200, 800);
+    stage(f, "conv001", "poster.jpg", &bytes).await;
+    let finalised = dam_pipeline::finalise::upload(
+        &f.global,
+        f.store.as_ref(),
+        &f.slug,
+        f.tenant_id,
+        "conv001",
+    )
+    .await
+    .expect("finalise");
+
+    let key = declare_conversion(f, "email-600", 600, "png", "image").await;
+    let rendered = dam_pipeline::derive::conversion(
+        &f.global,
+        blob(f),
+        &f.slug,
+        f.tenant_id,
+        finalised.asset_id,
+        &key,
+    )
+    .await
+    .expect("render");
+    assert!(rendered.rendered, "{rendered:?}");
+
+    // Recorded under the role 0001 reserved for exactly this and which nothing had ever written, with the
+    // conversion's key as the profile name — which is what a delivery token carries.
+    let row: (String, String, String, i64) = sqlx::query_as(
+        "SELECT role, profile, mime, bytes FROM derivatives WHERE asset_id = $1 AND profile = $2",
+    )
+    .bind(finalised.asset_id)
+    .bind(&key)
+    .fetch_one(&f.tenant)
+    .await
+    .expect("row");
+    assert_eq!(row.0, "rendition");
+    assert_eq!(row.1, "email-600");
+    assert_eq!(row.2, "image/png", "the recipe's format, not the source's");
+    assert!(row.3 > 0);
+
+    // And the bytes are in the store, decodable, and no larger than the box the tenant asked for. This is the
+    // half that proves the recipe reached the renderer rather than a default.
+    let object: String = sqlx::query_scalar(
+        "SELECT object_key FROM derivatives WHERE asset_id = $1 AND profile = $2",
+    )
+    .bind(finalised.asset_id)
+    .bind(&key)
+    .fetch_one(&f.tenant)
+    .await
+    .expect("key");
+    let stored = blob(f)
+        .get(&Key::new(object).expect("valid key"), None)
+        .await
+        .expect("get")
+        .into_bytes(&Key::new("x").expect("k"))
+        .expect("bytes");
+    let decoded = image::load_from_memory(&stored).expect("the rendition decodes");
+    assert!(
+        decoded.width() <= 600 && decoded.height() <= 600,
+        "fitted into the tenant's 600 box, got {}x{}",
+        decoded.width(),
+        decoded.height()
+    );
+}
+
+async fn rendering_the_same_format_twice_records_one_row(f: &Fixture) {
+    // At-least-once queue plus two people choosing the same format. The second call must not re-render or
+    // insert a second row: the cache key is content-addressed on the recipe.
+    let bytes = jpeg(400, 400);
+    stage(f, "conv002", "again.jpg", &bytes).await;
+    let finalised = dam_pipeline::finalise::upload(
+        &f.global,
+        f.store.as_ref(),
+        &f.slug,
+        f.tenant_id,
+        "conv002",
+    )
+    .await
+    .expect("finalise");
+    let key = declare_conversion(f, "small-200", 200, "jpeg", "image").await;
+
+    let first = dam_pipeline::derive::conversion(
+        &f.global,
+        blob(f),
+        &f.slug,
+        f.tenant_id,
+        finalised.asset_id,
+        &key,
+    )
+    .await
+    .expect("render");
+    let second = dam_pipeline::derive::conversion(
+        &f.global,
+        blob(f),
+        &f.slug,
+        f.tenant_id,
+        finalised.asset_id,
+        &key,
+    )
+    .await
+    .expect("render again");
+    assert!(first.rendered);
+    assert!(
+        !second.rendered,
+        "the second render did work it did not need to"
+    );
+
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM derivatives WHERE asset_id = $1 AND profile = $2")
+            .bind(finalised.asset_id)
+            .bind(&key)
+            .fetch_one(&f.tenant)
+            .await
+            .expect("count");
+    assert_eq!(count, 1);
+}
+
+async fn a_conversion_for_the_wrong_class_is_permanent(f: &Fixture) {
+    // A *document* asset with an image format named against it. That direction, not the reverse: the table's
+    // CHECK constrains conversions to `image`, so an image conversion of a text file is the reachable mismatch —
+    // and it is reachable, because a job payload is not a promise. It could have been enqueued before the asset
+    // was replaced, or by anything that writes the queue directly.
+    //
+    // Permanent rather than transient: retrying cannot make a text file into a photograph.
+    let mut conn = dam_db::TenantConn::begin(&f.global, &f.slug)
+        .await
+        .expect("conn");
+    let mut session = dam_db::uploads::create(
+        conn.executor(),
+        f.tenant_id,
+        "conv003",
+        Some(11),
+        Some("readme.txt"),
+        Some("text/plain"),
+        None,
+        None,
+    )
+    .await
+    .expect("session");
+    conn.commit().await.expect("commit");
+    dam_store::resumable::patch(
+        f.store.as_ref(),
+        &mut session,
+        0,
+        bytes::Bytes::from_static(b"plain words"),
+        StorageClass::Standard,
+    )
+    .await
+    .expect("patch");
+    let mut conn = dam_db::TenantConn::begin(&f.global, &f.slug)
+        .await
+        .expect("conn");
+    dam_db::uploads::save(conn.executor(), &session)
+        .await
+        .expect("save");
+    conn.commit().await.expect("commit");
+    let finalised = dam_pipeline::finalise::upload(
+        &f.global,
+        f.store.as_ref(),
+        &f.slug,
+        f.tenant_id,
+        "conv003",
+    )
+    .await
+    .expect("finalise");
+    let key = declare_conversion(f, "doc-800", 800, "png", "image").await;
+
+    let refusal = dam_pipeline::derive::conversion(
+        &f.global,
+        blob(f),
+        &f.slug,
+        f.tenant_id,
+        finalised.asset_id,
+        &key,
+    )
+    .await
+    .expect_err("a class mismatch must refuse");
+    // Permanent, and — the part that matters — refused *for the right reason*. Without the class check this
+    // still fails: the renderer cannot read a text file either, so it comes back as "no renderer can read
+    // this". Both are permanent, so the only observable difference is what an operator reads in a dead-lettered
+    // job, which is why this asserts the sentence rather than only the variant. Mutation testing found the
+    // weaker version of this case passing with the check removed.
+    let dam_pipeline::Error::Permanent(reason) = &refusal else {
+        panic!("a class mismatch must be permanent, got {refusal:?}");
+    };
+    assert!(
+        reason.contains("applies to image") && reason.contains("document"),
+        "the refusal does not say the format is for a different kind of thing: {reason}"
+    );
+}
+
+async fn an_unknown_conversion_is_permanent(f: &Fixture) {
+    let bytes = jpeg(300, 300);
+    stage(f, "conv004", "unknown.jpg", &bytes).await;
+    let finalised = dam_pipeline::finalise::upload(
+        &f.global,
+        f.store.as_ref(),
+        &f.slug,
+        f.tenant_id,
+        "conv004",
+    )
+    .await
+    .expect("finalise");
+
+    let refusal = dam_pipeline::derive::conversion(
+        &f.global,
+        blob(f),
+        &f.slug,
+        f.tenant_id,
+        finalised.asset_id,
+        "no-such-format",
+    )
+    .await
+    .expect_err("an unknown format must refuse");
+    assert!(
+        matches!(refusal, dam_pipeline::Error::Permanent(_)),
+        "retrying cannot make a conversion exist: {refusal:?}"
+    );
+}
+
+async fn a_withdrawn_conversion_still_renders(f: &Fixture) {
+    // The key is what a delivery token carries, so a link issued while a format was offered must still
+    // resolve. Refusing here would make withdrawing a format retroactively break links that were valid when
+    // they were sent.
+    let bytes = jpeg(500, 500);
+    stage(f, "conv005", "withdrawn.jpg", &bytes).await;
+    let finalised = dam_pipeline::finalise::upload(
+        &f.global,
+        f.store.as_ref(),
+        &f.slug,
+        f.tenant_id,
+        "conv005",
+    )
+    .await
+    .expect("finalise");
+    let key = declare_conversion(f, "retired-300", 300, "jpeg", "image").await;
+    sqlx::query("UPDATE conversions SET is_active = false WHERE key = $1")
+        .bind(&key)
+        .execute(&f.tenant)
+        .await
+        .expect("withdraw");
+
+    let rendered = dam_pipeline::derive::conversion(
+        &f.global,
+        blob(f),
+        &f.slug,
+        f.tenant_id,
+        finalised.asset_id,
+        &key,
+    )
+    .await
+    .expect("a withdrawn format still renders for links already issued");
+    assert!(rendered.rendered);
+}
+
+#[tokio::test]
 async fn the_whole_chain_runs_through_the_worker() {
     // The dispatch, not just the stages: finalisation enqueues derivation, derivation enqueues indexing, and
     // an unknown kind is permanent. Driving `handle` directly rather than the polling loop keeps the test
@@ -1041,8 +1332,10 @@ async fn the_whole_chain_runs_through_the_worker() {
 
     indexing_twice_leaves_one_document(&f, &context).await;
 
-    // An unknown kind is permanent rather than retried: it means version skew, and retrying will not teach
-    // this binary a job it does not know.
+    // An unknown kind is **transient**, which is the opposite of what this asserted until Q.11. Version skew is
+    // a rolling deploy, and the fleet contains workers that *do* understand the kind — so the retry is the whole
+    // point. Marking it permanent collapsed the attempts and dead-lettered work a newer worker would have done,
+    // which is exactly what happened live: an old dev worker claimed the first conversion render and killed it.
     let unknown = dam_db::jobs::enqueue(
         &f.global,
         dam_db::jobs::JobSpec::new(f.tenant_id, "no_such_kind"),
@@ -1063,5 +1356,23 @@ async fn the_whole_chain_runs_through_the_worker() {
     let error = dam_pipeline::worker::handle(&context, job)
         .await
         .expect_err("an unknown kind cannot be handled");
-    assert!(!error.is_transient(), "{error}");
+    assert!(
+        error.is_transient(),
+        "an unknown kind must be retried so another worker can take it: {error}"
+    );
+
+    // And the retry is real: after `fail`, the job is queued again rather than dead, with an attempt spent. This
+    // is the half the variant alone does not prove — `worker::fail` collapses the attempts of a *permanent*
+    // error, so asserting only on `is_transient` would pass while the job still died.
+    dam_pipeline::worker::record_failure(&context, job, &error)
+        .await
+        .expect("record");
+    let (state, attempts): (String, i32) =
+        sqlx::query_as("SELECT state, attempts FROM dam_global.jobs WHERE id = $1")
+            .bind(unknown)
+            .fetch_one(&f.global)
+            .await
+            .expect("row");
+    assert_eq!(state, "queued", "an unknown kind was dead-lettered");
+    assert!(attempts < 5, "the remaining attempts were collapsed");
 }

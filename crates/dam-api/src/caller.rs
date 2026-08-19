@@ -40,6 +40,15 @@ pub struct Caller {
     /// `editors` is visible to whoever holds that role, and the dashboard cannot answer that from the predicate —
     /// which has already been compiled down to asset groups and knows nothing about role *names*.
     pub role_names: Vec<String>,
+    /// The fine-grained permission strings this caller's active roles carry.
+    ///
+    /// Carried for the same reason as `role_names`: the compiled predicate has already been reduced to asset
+    /// groups and knows nothing about the strings. Q.11's download formats are the first feature to need them —
+    /// a "Print TIFF" may require `conversion:print`.
+    ///
+    /// **Narrowing only.** Nothing is granted by what is in here: a handler reaches these after `authorize` has
+    /// allowed the action, and a permission can only remove a choice from what the predicate already permitted.
+    pub permissions: Vec<String>,
 }
 
 /// Why a request was refused before it reached a handler.
@@ -149,7 +158,11 @@ pub async fn authorize(
     )
     .await?;
 
-    let predicate = policy::compile(&grants, action, chrono::Utc::now());
+    let now = chrono::Utc::now();
+    // One instant for both, so a role expiring between the two cannot leave a caller holding a permission the
+    // predicate no longer reflects.
+    let permissions = grants.permissions_at(now);
+    let predicate = policy::compile(&grants, action, now);
     if predicate.matches_nothing() {
         conn.commit().await?;
         return Err(Refusal::Forbidden);
@@ -173,6 +186,7 @@ pub async fn authorize(
         api_key_id: authenticated.api_key_id,
         predicate,
         role_names,
+        permissions,
     })
 }
 

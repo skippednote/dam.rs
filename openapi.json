@@ -449,6 +449,99 @@
         }
       }
     },
+    "/assets/{asset_id}/download": {
+      "post": {
+        "tags": [
+          "conversions"
+        ],
+        "summary": "Mints a download URL for an asset, in the original or a named format.",
+        "operationId": "download",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DownloadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "A signed URL",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DownloadIssued"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "The format is being rendered; ask again",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DownloadIssued"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The rights refuse this usage, or the format needs a permission the caller does not hold"
+          },
+          "404": {
+            "description": "No such asset, or not one this caller may download"
+          }
+        }
+      }
+    },
+    "/assets/{asset_id}/download-options": {
+      "get": {
+        "tags": [
+          "conversions"
+        ],
+        "summary": "What this asset can be had as, for this caller.",
+        "operationId": "options",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DownloadOptions"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such asset, or not one this caller may download"
+          }
+        }
+      }
+    },
     "/assets/{asset_id}/history": {
       "get": {
         "tags": [
@@ -1537,6 +1630,162 @@
         }
       }
     },
+    "/conversions": {
+      "get": {
+        "tags": [
+          "conversions"
+        ],
+        "summary": "Every conversion, withdrawn ones included.",
+        "operationId": "list",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ConversionView"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller holds no manage scope"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "conversions"
+        ],
+        "summary": "Adds a named format.",
+        "operationId": "create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversionView"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "That key is already taken"
+          },
+          "422": {
+            "description": "The recipe is one nothing can render; the body names what was refused"
+          }
+        }
+      }
+    },
+    "/conversions/{id}": {
+      "patch": {
+        "tags": [
+          "conversions"
+        ],
+        "summary": "Replaces a format's definition.",
+        "description": "Every asset's rendition under this format re-renders on next request, because the cache key is the recipe.\nThat is the intended behaviour and the reason there is no revision to bump.",
+        "operationId": "redefine",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversionView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such conversion"
+          },
+          "422": {
+            "description": "The recipe is one nothing can render"
+          }
+        }
+      }
+    },
+    "/conversions/{id}/active": {
+      "patch": {
+        "tags": [
+          "conversions"
+        ],
+        "summary": "Withdraws a format, or puts a withdrawn one back.",
+        "operationId": "set_active",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActiveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversionView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such conversion"
+          }
+        }
+      }
+    },
     "/dashboard": {
       "get": {
         "tags": [
@@ -2522,6 +2771,18 @@
   },
   "components": {
     "schemas": {
+      "ActiveRequest": {
+        "type": "object",
+        "description": "Whether a conversion is withdrawn or in use.",
+        "required": [
+          "is_active"
+        ],
+        "properties": {
+          "is_active": {
+            "type": "boolean"
+          }
+        }
+      },
       "ActivityEntry": {
         "type": "object",
         "description": "One line of activity.",
@@ -3358,6 +3619,141 @@
           }
         }
       },
+      "ConversionRequest": {
+        "type": "object",
+        "description": "A conversion to create or redefine.",
+        "required": [
+          "label",
+          "description",
+          "max_width",
+          "max_height",
+          "format",
+          "quality"
+        ],
+        "properties": {
+          "background": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "fit": {
+            "type": "string"
+          },
+          "format": {
+            "type": "string"
+          },
+          "key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Required on create, ignored on redefine — a delivery token carries the key, so renaming one would\nstrand links that were valid when they were sent."
+          },
+          "label": {
+            "type": "string"
+          },
+          "max_height": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "max_width": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "media_class": {
+            "type": "string"
+          },
+          "quality": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "required_permission": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sort_order": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "ConversionView": {
+        "type": "object",
+        "description": "One named format, as a person choosing sees it.",
+        "required": [
+          "id",
+          "key",
+          "label",
+          "description",
+          "media_class",
+          "max_width",
+          "max_height",
+          "format",
+          "quality",
+          "fit",
+          "background",
+          "is_active",
+          "sort_order"
+        ],
+        "properties": {
+          "background": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string",
+            "description": "Written for whoever is choosing. The reason this table exists rather than a list of sizes."
+          },
+          "fit": {
+            "type": "string"
+          },
+          "format": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "is_active": {
+            "type": "boolean"
+          },
+          "key": {
+            "type": "string",
+            "description": "The name a download request carries. Stable across relabelling."
+          },
+          "label": {
+            "type": "string"
+          },
+          "max_height": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "max_width": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "media_class": {
+            "type": "string"
+          },
+          "quality": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "required_permission": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The permission a role must carry. Present for administration; the download options never list a format\nthe caller cannot use, so it is always `null` there."
+          },
+          "sort_order": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
       "Counts": {
         "type": "object",
         "description": "The counts a landing page leads with.",
@@ -3625,6 +4021,74 @@
             "type": "string"
           },
           "label": {
+            "type": "string"
+          }
+        }
+      },
+      "DownloadIssued": {
+        "type": "object",
+        "description": "A URL to fetch, or word that the format is being made.",
+        "required": [
+          "status",
+          "format"
+        ],
+        "properties": {
+          "format": {
+            "type": "string",
+            "description": "What was asked for, echoed so a client holding several requests can tell them apart."
+          },
+          "status": {
+            "type": "string",
+            "description": "`ready` or `rendering`. A client polls on `rendering`."
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The signed URL. Absent while a conversion is still being rendered."
+          }
+        }
+      },
+      "DownloadOptions": {
+        "type": "object",
+        "description": "What one asset can be had as.",
+        "required": [
+          "original_available",
+          "media_class",
+          "conversions"
+        ],
+        "properties": {
+          "conversions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConversionView"
+            },
+            "description": "The formats this caller may ask for, in the order somebody configured. See `original_available` on what\nthis list does and does not promise."
+          },
+          "media_class": {
+            "type": "string",
+            "description": "The asset's media class, so a client can say \"no formats are configured for video yet\" rather than\nshowing an empty list with no explanation."
+          },
+          "original_available": {
+            "type": "boolean",
+            "description": "Whether the untransformed bytes can be fetched now.\n\nFalse for archived bytes and for a restore in flight: offering them would be offering a download that\nbegins a wait nobody was told about.\n\nIt says nothing about the conversions below it. A conversion that has *already* been rendered is its own\nobject and does not tier, so it stays available while the original does not — but one that has not been\nrendered is produced from the original (`derive::asset` reads the original bytes), so for an archived\nasset it needs the same restore. This response does not yet distinguish those two cases: the readiness\nof a particular format is the download route's answer, and that route does not exist yet. Listing a\nformat here means the tenant offers it, not that its bytes exist this second."
+          }
+        }
+      },
+      "DownloadRequest": {
+        "type": "object",
+        "description": "What to download, and what for.",
+        "properties": {
+          "channel": {
+            "type": "string",
+            "description": "Where the copy is going, which is what rights are evaluated against.\n\nDefaulted rather than required *for now*: every existing caller of the rights evaluator passes a usage,\nand asking the person is Q.12's intended-use capture. The default is the narrowest honest thing — a\ngeneric internal channel and worldwide territory — and it is a default a licence can refuse."
+          },
+          "format": {
+            "type": "string",
+            "description": "`original`, or a conversion's key. Defaults to the original, because that is what \"download\" means\nwithout further information."
+          },
+          "territory": {
             "type": "string"
           }
         }

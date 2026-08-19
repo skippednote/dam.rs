@@ -83,6 +83,11 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 	const response = await fetch(`${session.base}${path}`, {
 		...init,
 		headers: {
+			// Set here, once, for anything with a body. Every call site used to declare it, which meant one
+			// omission was one 415: axum's JSON extractor refuses a request without it, and the mocked e2e
+			// suites never checked a header they were fulfilling themselves. A real click against the real
+			// server is what found it — the download endpoint answered 415 while every test passed.
+			...(init.body ? { 'Content-Type': 'application/json' } : {}),
 			...(init.headers ?? {}),
 			Authorization: `Bearer ${session.key}`
 		}
@@ -181,7 +186,6 @@ export async function saveMetadata(
 ): Promise<{ values: Record<string, unknown> }> {
 	return request(`/assets/${id}/metadata`, {
 		method: 'PATCH',
-		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ values })
 	});
 }
@@ -225,7 +229,6 @@ export async function defineField(body: {
 }): Promise<SchemaField> {
 	return request<SchemaField>('/schema/fields', {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(body)
 	});
 }
@@ -237,7 +240,6 @@ export async function amendField(
 ): Promise<AmendedField> {
 	return request<AmendedField>(`/schema/fields/${encodeURIComponent(key)}`, {
 		method: 'PATCH',
-		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(body)
 	});
 }
@@ -251,7 +253,6 @@ export async function removeField(key: string): Promise<RemovedField> {
 export async function reorderFields(keys: string[]): Promise<void> {
 	await request<void>('/schema/fields/order', {
 		method: 'PUT',
-		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ keys })
 	});
 }
@@ -277,7 +278,6 @@ export async function createUploadProfile(body: {
 }): Promise<UploadProfile> {
 	return request<UploadProfile>('/upload-profiles', {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(body)
 	});
 }
@@ -288,7 +288,6 @@ export async function amendUploadProfile(
 ): Promise<UploadProfile> {
 	return request<UploadProfile>(`/upload-profiles/${id}`, {
 		method: 'PATCH',
-		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(body)
 	});
 }
@@ -316,7 +315,6 @@ export async function attachDocument(
 ): Promise<AssetAttachment[]> {
 	return request<AssetAttachment[]>(`/assets/${assetId}/attachments`, {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ document_id: documentId, kind })
 	});
 }
@@ -347,7 +345,6 @@ export async function listVersions(assetId: string): Promise<AssetVersion[]> {
 export async function addVersion(assetId: string, newAssetId: string): Promise<AssetVersion[]> {
 	return request<AssetVersion[]>(`/assets/${assetId}/versions`, {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ new_asset_id: newAssetId })
 	});
 }
@@ -355,6 +352,34 @@ export async function addVersion(assetId: string, newAssetId: string): Promise<A
 /** Makes an earlier version current again. A promotion, so its number does not change. */
 export async function makeVersionCurrent(assetId: string): Promise<AssetVersion[]> {
 	return request<AssetVersion[]>(`/assets/${assetId}/versions/current`, { method: 'POST' });
+}
+
+export type DownloadOptions = components['schemas']['DownloadOptions'];
+export type ConversionFormat = components['schemas']['ConversionView'];
+export type DownloadIssued = components['schemas']['DownloadIssued'];
+
+/**
+ * What an asset can be had as (Q.11).
+ *
+ * Download rather than Read, on the server: what formats an asset comes in is a question about taking a copy of
+ * it. So a reader who may only look gets a 403 here, and the panel says nothing rather than showing an empty list.
+ */
+export async function loadDownloadOptions(assetId: string): Promise<DownloadOptions> {
+	return request<DownloadOptions>(`/assets/${assetId}/download-options`);
+}
+
+/**
+ * Asks for a copy, in the original or a named format.
+ *
+ * Returns `{ status: 'rendering' }` the first time somebody asks for a format nobody has asked for yet — the bytes
+ * are being made, and the caller asks again. That is a 202 on the wire, which `request` does not distinguish from
+ * a 200; the status field is what a client reads, because the difference matters to the person waiting.
+ */
+export async function requestDownload(assetId: string, format: string): Promise<DownloadIssued> {
+	return request<DownloadIssued>(`/assets/${assetId}/download`, {
+		method: 'POST',
+		body: JSON.stringify({ format })
+	});
 }
 
 export type Dashboard = components['schemas']['Dashboard'];
@@ -405,7 +430,6 @@ export async function postComment(
 ): Promise<Comment> {
 	return request<Comment>(`/assets/${assetId}/comments`, {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(body)
 	});
 }
@@ -422,7 +446,6 @@ export async function amendComment(
 ): Promise<Comment> {
 	return request<Comment>(`/comments/${commentId}`, {
 		method: 'PATCH',
-		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(change)
 	});
 }
@@ -458,7 +481,6 @@ export type EngagementList = components['schemas']['ListPage'];
 export async function setRating(assetId: string, stars: number): Promise<Engagement> {
 	return request<Engagement>(`/assets/${assetId}/rating`, {
 		method: 'PUT',
-		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ stars })
 	});
 }
@@ -521,7 +543,6 @@ export async function createAutoImportMapping(body: {
 }): Promise<AutoImportMapping> {
 	return request<AutoImportMapping>('/auto-import-mappings', {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(body)
 	});
 }
@@ -532,7 +553,6 @@ export async function amendAutoImportMapping(
 ): Promise<AutoImportMapping> {
 	return request<AutoImportMapping>(`/auto-import-mappings/${id}`, {
 		method: 'PATCH',
-		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(body)
 	});
 }
@@ -562,7 +582,6 @@ export async function createCategoryTree(body: {
 }): Promise<CategoryTree> {
 	return request<CategoryTree>('/categories', {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(body)
 	});
 }
@@ -573,7 +592,6 @@ export async function createCategory(
 ): Promise<CategoryNode> {
 	return request<CategoryNode>(`/categories/${treeId}/nodes`, {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(body)
 	});
 }
@@ -619,7 +637,6 @@ export async function defineMetadataType(body: {
 }): Promise<MetadataTypeRow> {
 	return request<MetadataTypeRow>('/schema/types', {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(body)
 	});
 }
@@ -631,7 +648,6 @@ export async function amendMetadataType(
 ): Promise<MetadataTypeRow> {
 	return request<MetadataTypeRow>(`/schema/types/${id}`, {
 		method: 'PATCH',
-		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(body)
 	});
 }
@@ -651,7 +667,6 @@ export async function setAssetType(
 ): Promise<AssetTypeView> {
 	return request<AssetTypeView>(`/assets/${assetId}/metadata-type`, {
 		method: 'PUT',
-		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ metadata_type_id: metadataTypeId })
 	});
 }
@@ -666,7 +681,6 @@ export async function createShare(body: {
 }): Promise<CreatedShare> {
 	return request<CreatedShare>('/shares', {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(body)
 	});
 }
@@ -725,7 +739,6 @@ export async function previewBulk(
 ): Promise<BulkPreview> {
 	return request<BulkPreview>('/bulk/preview', {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ kind, asset_ids: assetIds, params })
 	});
 }
@@ -738,7 +751,6 @@ export async function createBulk(
 ): Promise<BulkStatus> {
 	return request<BulkStatus>('/bulk', {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ kind, asset_ids: assetIds, params })
 	});
 }

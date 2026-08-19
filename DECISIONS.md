@@ -2009,3 +2009,64 @@ latest has a stale screen. Quietly re-pointing the group would discard whatever 
 names the situation and tells them to reload. 409 rather than 422 because the request is well formed and the world
 moved on, which is what a conflict means. Reversible: no.
 
+
+**A history covers the whole version group.** Asking for one asset's history returns events for every version in
+its group, so a person looking at March's cut sees that April's replaced it — the single entry that explains all
+the others. A per-row history would make each version's story a fragment missing exactly that. Attached paperwork
+is *not* folded in: a release form has its own story, and mixing "somebody signed this" with "somebody re-cropped
+that" under one heading serves neither. Reversible: yes, in either direction.
+
+**A history filters on access, not on the caller's current query.** Whatever somebody searched for to arrive at an
+asset does not narrow what has happened to it. An asset outside their scope is 404 rather than an empty list,
+because "nothing has happened to this" is a different and untrue statement — and the gap between the two answers
+is an existence oracle. Reversible: no.
+
+**A tenant conversion has no revision column.** `derivatives.op_hash` covers every field of the recipe, so
+redefining a conversion *is* a different cache key and the next request renders fresh. A revision an editor bumps
+would be a second mechanism for what the first already guarantees, and the second is the one that gets forgotten.
+What `op_hash` cannot see is a change to the renderer, which is global rather than per-row — hence one
+`RENDERER_REVISION` folded into every hash, built-in and tenant alike, because a tenant row cannot be hand-bumped
+in the commit that changes the pipeline. Reversible: yes.
+
+**A conversion's colour profile and rendering intent are not editable.** `op_hash` takes both (§18.1) and
+`derive::render` applies neither. Exposing them as fields would let the cache key change while the output did not:
+the same bytes under two names, one of them called a CMYK conversion. Fixed in code at `srgb`/`perceptual` until
+the renderer honours them. Reversible: yes — they become columns when it does.
+
+**Conversions are constrained to images.** vips is what renders, and a video conversion needs a parameterised
+ffmpeg recipe that does not exist — `video::transcode_proxy` is one fixed proxy, not a format somebody chooses. The
+CHECK is `media_class = 'image'` so the database cannot hold a promise nothing keeps; widening it is what adding
+video conversions means, and it is one place. Reversible: yes.
+
+**A withdrawn conversion is hidden, never deleted.** A delivery token carries the conversion's key, so a link
+already in somebody's email resolves through that row. Withdrawing removes a format from what is offered and
+leaves what has been rendered resolvable; an administrator tidying a list must not break a colleague's link.
+Reversible: yes.
+
+**A format the caller may not use is absent from the offer, and named on a direct request.** The offer omits it,
+because a list of things you cannot have is a worse answer than a shorter list. A *direct* request for one is
+answered with a 403 naming the permission — deliberately unlike the asset rule, where "you may not see it" and "it
+does not exist" collapse into one answer. The difference is what is being disclosed: a conversion is tenant
+configuration, and that a "Print TIFF" format exists says nothing about anybody's library, while a person who
+cannot use one is better served by being told which permission to ask for. Reversible: yes, in the narrowing
+direction — the 403 can become a 404 without breaking a client that already handles both.
+
+**A caller carries their fine-grained permission strings.** `Action` stays coarse — see policy.rs on why there are
+only three shapes of gate — and `Caller::permissions` is the other half of that sentence: the strings a feature
+names when it needs to be narrower than "may download". Narrowing only, and always after a gate: a handler reaches
+these once `authorize` has already allowed the action, so a permission can only remove a choice from what the
+predicate permitted. Active roles only, for the same reason the predicate uses them. Reversible: no.
+
+**An unknown job kind is transient, not permanent.** It was permanent, on the argument that retrying cannot teach
+this binary a job it does not know — true, and the wrong conclusion. An unknown kind means a worker older than
+whatever enqueued it, which is exactly a rolling deploy: the fleet contains workers that *do* understand the kind,
+and the retry is claimable by them. Marking it permanent collapsed the remaining attempts and dead-lettered the
+job, so every job of a newly deployed kind that an old worker happened to claim was lost silently. Found by
+running the real thing — an old dev worker was still up when Q.11's conversion render shipped and it killed the
+first job. A genuinely unknown kind still dead-letters once its attempts are spent. Reversible: yes.
+
+**The web client sets `Content-Type` once, in `request`.** Every call site used to declare it, which made one
+omission one 415 — axum's JSON extractor refuses a body without it. The mocked browser suites fulfilled the
+requests themselves and never checked a header, so a real click was the only thing that could find it. The
+download suite's mock now enforces the header the way the server does: a mock more permissive than the server
+certifies bugs. Reversible: yes.

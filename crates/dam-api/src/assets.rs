@@ -514,6 +514,15 @@ pub enum Failure {
     /// The request itself is not usable, with the reason as one sentence. `Invalid` carries per-field
     /// problems for a form to place; this is for refusals that belong to the request as a whole.
     Unprocessable(String),
+    /// Authenticated, and refused for a *named* reason: a rights verdict with its codes, or a download format
+    /// whose permission the caller does not hold (Q.11).
+    ///
+    /// Distinct from `NotFound`, and the difference is deliberate. The asset rule collapses "you may not see it"
+    /// into "it does not exist", because the gap between those answers is an existence oracle. Neither of these
+    /// is about an asset's existence: the caller has already been shown the asset, and what is being withheld is
+    /// a licence verdict or a piece of tenant configuration. A person refused for a reason they can act on
+    /// deserves to be told which one. See DECISIONS.md.
+    Forbidden(String),
     Internal,
 }
 
@@ -534,6 +543,11 @@ impl IntoResponse for Failure {
                 .into_response(),
             Self::Unprocessable(reason) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({ "reason": reason })),
+            )
+                .into_response(),
+            Self::Forbidden(reason) => (
+                StatusCode::FORBIDDEN,
                 Json(serde_json::json!({ "reason": reason })),
             )
                 .into_response(),

@@ -41,6 +41,8 @@ pub mod kind {
     pub const INDEX: &str = "index";
     /// A bulk operation is driven to a terminal state.
     pub const BULK: &str = "bulk";
+    /// One asset is rendered into one tenant-defined download format (Q.11).
+    pub const RENDER_CONVERSION: &str = "render_conversion";
 }
 
 /// How long to wait when the queue is empty.
@@ -146,6 +148,18 @@ pub async fn run(context: &Context, shutdown: impl std::future::Future<Output = 
 /// The queue counts attempts and backs off; it has no way to know that a malformed file will still be
 /// malformed in four minutes. Collapsing the remaining attempts is what turns "retry five times over twenty
 /// minutes" into "this will never work, say so now".
+///
+/// Public so a test can assert what a failure *does* to the row rather than only which variant was returned —
+/// the distinction that mattered when an unknown job kind was permanent: the variant looked deliberate and the
+/// effect was losing work.
+pub async fn record_failure(
+    context: &Context,
+    job: &Job,
+    error: &Error,
+) -> std::result::Result<(), dam_db::Error> {
+    fail(context, job, error).await
+}
+
 async fn fail(
     context: &Context,
     job: &Job,
@@ -218,6 +232,30 @@ pub async fn handle(context: &Context, job: &Job) -> Result<()> {
             Ok(())
         }
 
+        kind::RENDER_CONVERSION => {
+            let asset_id = uuid_field(job, "asset_id")?;
+            let key = string_field(job, "conversion")?;
+            let rendered = crate::derive::conversion(
+                &context.global,
+                context.store.as_ref() as &dyn BlobStore,
+                &slug,
+                job.tenant_id,
+                asset_id,
+                &key,
+            )
+            .await?;
+
+            tracing::info!(
+                %asset_id,
+                conversion = %rendered.key,
+                rendered = rendered.rendered,
+                "conversion rendered"
+            );
+            // No index, no chained job. A conversion is a delivery format: it changes nothing searchable, and
+            // enqueueing an index here would make every download somebody chooses rewrite a search document.
+            Ok(())
+        }
+
         kind::INDEX => {
             let asset_id = uuid_field(job, "asset_id")?;
             index_one(context, &slug, job.tenant_id, asset_id).await
@@ -268,11 +306,18 @@ pub async fn handle(context: &Context, job: &Job) -> Result<()> {
             Ok(())
         }
 
-        // Not an error to be retried: an unknown kind means a worker older than whatever enqueued it, and
-        // retrying will not make this binary understand it. Permanent, so it lands in `failed` where an
-        // operator can see the version skew rather than in a backoff loop.
-        other => Err(Error::Permanent(format!(
-            "this worker does not handle jobs of kind {other:?}"
+        // **Transient**, and this was wrong until Q.11 made it visible. An unknown kind means a worker older
+        // than whatever enqueued it — which is precisely a rolling deploy, the moment a new kind first appears.
+        // Marking it permanent collapsed the remaining attempts and dead-lettered the job, so every job of a
+        // newly deployed kind that an old worker happened to claim was *lost*, silently, until somebody noticed
+        // work missing. Found by running the real thing: an old dev worker was still up when the conversion
+        // render shipped, and it killed the first job.
+        //
+        // Retrying will not teach *this* binary the kind. It does not need to: the retry is claimable by any
+        // worker in the fleet, and the new ones understand it. A genuinely unknown kind — a typo, a kind since
+        // removed — still dead-letters once its attempts are spent, which is where an operator sees it.
+        other => Err(Error::Transient(format!(
+            "this worker does not handle jobs of kind {other:?}; another worker in the fleet may"
         ))),
     }
 }
@@ -339,6 +384,31 @@ pub async fn enqueue_finalise(
             // asset to appear.
             .priority(30)
             .dedupe_key(format!("finalise:{upload_id}")),
+    )
+    .await?)
+}
+
+/// Queues one asset's render into one named download format.
+///
+/// Deduplicated on `(asset, conversion)`, which is what makes two people choosing the same format at the same
+/// moment one render rather than two. The key rather than the id, because the key is what the request carried
+/// and what the delivery token will carry — a dedupe key built from something the caller never named would not
+/// collapse the case it exists for.
+///
+/// Priority sits above a background derive and below finalisation: somebody is waiting, but not for the thing
+/// that makes their upload appear at all.
+pub async fn enqueue_conversion(
+    global: &sqlx::PgPool,
+    tenant_id: Uuid,
+    asset_id: Uuid,
+    conversion: &str,
+) -> Result<Uuid> {
+    Ok(jobs::enqueue(
+        global,
+        jobs::JobSpec::new(tenant_id, kind::RENDER_CONVERSION)
+            .payload(serde_json::json!({ "asset_id": asset_id, "conversion": conversion }))
+            .priority(40)
+            .dedupe_key(format!("conversion:{asset_id}:{conversion}")),
     )
     .await?)
 }

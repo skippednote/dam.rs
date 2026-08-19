@@ -183,6 +183,13 @@ async function connect(page: Page): Promise<Recorder> {
 		if (path.pathname === '/fields') {
 			return route.fulfill({ json: FIELDS });
 		}
+		if (path.pathname.endsWith('/download-options')) {
+			// Q.11's download panel asks this on every asset the detail view opens. Answered so a suite about
+			// something else does not render an error banner it never intended to test.
+			return route.fulfill({
+				json: { original_available: true, media_class: 'image', conversions: [] }
+			});
+		}
 		if (path.pathname.startsWith('/assets/') && path.pathname.endsWith('/metadata')) {
 			const body = route.request().postDataJSON() as { values: Record<string, unknown> };
 			recorder.patches.push(body.values);

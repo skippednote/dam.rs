@@ -27,6 +27,7 @@
 use crate::{Error, Result};
 use dam_core::StorageClass;
 use dam_db::TenantConn;
+use dam_media::derive::Rendition;
 use dam_media::profiles::{self, Profile};
 use dam_store::{BlobStore, Key};
 use uuid::Uuid;
@@ -120,7 +121,13 @@ pub async fn asset(
     let mut refused = Vec::new();
 
     for profile in outstanding {
-        match render_one(store, tenant_id, &content_hash, &source, profile).await {
+        let op_hash = profile.op_hash();
+        let recipe = Recipe {
+            rendition: &profile.rendition,
+            color_profile: profile.color_profile,
+            op_hash: &op_hash,
+        };
+        match render_one(store, tenant_id, &content_hash, &source, &recipe).await {
             Ok(output) => {
                 // `record_on`, not `record`: this has to run on the tenant-scoped connection, or the
                 // unqualified `derivatives` resolves against whatever schema the pooled connection last had.
@@ -178,6 +185,151 @@ pub async fn asset(
     })
 }
 
+/// What rendering one tenant conversion produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversionRendered {
+    pub asset_id: Uuid,
+    /// The conversion's key, which is also `derivatives.profile`.
+    pub key: String,
+    /// False when the recipe was already recorded, which is the ordinary outcome of two people asking for the
+    /// same format at once. Not an error: the queue is at-least-once and the cache key is content-addressed.
+    pub rendered: bool,
+}
+
+/// Renders one tenant-defined conversion for one asset (Q.11c).
+///
+/// Separate from [`asset`] because the two answer different questions. That one renders *everything the system
+/// needs* for a new upload, in a fixed set, from one read of the original. This renders *one format somebody
+/// asked for*, on demand, and its failure modes are the caller's problem rather than a placeholder in a grid:
+/// somebody is waiting for a download.
+///
+/// Shares the renderer, the vips fallback and the cache key derivation with [`asset`] — see [`Recipe`] on why
+/// that mattered enough to change a signature for.
+pub async fn conversion(
+    global: &sqlx::PgPool,
+    store: &dyn BlobStore,
+    slug: &dam_core::TenantSlug,
+    tenant_id: Uuid,
+    asset_id: Uuid,
+    key: &str,
+) -> Result<ConversionRendered> {
+    let mut conn = TenantConn::begin(global, slug).await?;
+    let found = dam_db::conversions::by_key(conn.executor(), key).await?;
+    let asset = sqlx::query_as::<_, (String, String)>(
+        "SELECT content_hash, mime FROM assets WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(asset_id)
+    .fetch_optional(conn.executor())
+    .await
+    .map_err(dam_db::Error::from)?;
+    conn.commit().await?;
+
+    // Withdrawn conversions render. The key is what a delivery token carries, so a link issued while a format
+    // was offered must still resolve — and refusing here would make withdrawing a format retroactively break
+    // links that were valid when they were sent.
+    let Some(conversion) = found else {
+        return Err(Error::Permanent(format!(
+            "no conversion named {key} in this tenant"
+        )));
+    };
+    let Some((content_hash, mime)) = asset else {
+        // Deleted between the request and the job being claimed. Ordinary, and permanent.
+        return Err(Error::Permanent(format!(
+            "asset {asset_id} does not exist or was deleted"
+        )));
+    };
+
+    // The class is checked here as well as where the format was offered. A job payload is not a promise: it
+    // could have been enqueued before somebody redefined the conversion, and rendering an image recipe over a
+    // PDF would either fail obscurely or produce something nobody asked for.
+    let class = dam_db::conversions::class_of(&mime);
+    if class != conversion.media_class {
+        return Err(Error::Permanent(format!(
+            "conversion {key} applies to {} and asset {asset_id} is {class}",
+            conversion.media_class
+        )));
+    }
+
+    let Some(rendition) = conversion.rendition() else {
+        // A recipe this build cannot render — a newer migration widened the vocabulary and this binary is the
+        // older half of a rolling deploy. Permanent for *this* worker; a newer one will take the retry.
+        return Err(Error::Permanent(format!(
+            "conversion {key} names a format or fit this build cannot render ({}, {})",
+            conversion.format, conversion.fit
+        )));
+    };
+    let op_hash = dam_media::profiles::tenant_op_hash(&rendition);
+
+    // Already there is the ordinary outcome of two people choosing the same format at once, and of a redelivery
+    // of a link. Checked before the original is fetched, because that fetch is the expensive part.
+    let mut conn = TenantConn::begin(global, slug).await?;
+    let existing = dam_db::derivatives::by_op_hash(conn.executor(), asset_id, &op_hash).await?;
+    conn.commit().await?;
+    if existing.is_some() {
+        return Ok(ConversionRendered {
+            asset_id,
+            key: conversion.key,
+            rendered: false,
+        });
+    }
+
+    let original = Key::original(tenant_id, &content_hash)?;
+    let source = store.get(&original, None).await?.into_bytes(&original)?;
+
+    let recipe = Recipe {
+        rendition: &rendition,
+        // Fixed, not from the row: `derive::render` does not apply a colour profile, so letting a tenant set
+        // one would change the cache key without changing the output. See `profiles::TENANT_COLOR_PROFILE`.
+        color_profile: dam_media::profiles::TENANT_COLOR_PROFILE,
+        op_hash: &op_hash,
+    };
+    let output = match render_one(store, tenant_id, &content_hash, &source, &recipe).await {
+        Ok(output) => output,
+        // Unlike [`asset`], an unreadable source *is* this job's failure. There is no placeholder to fall back
+        // to: somebody chose a format for a file that cannot be rendered into it, and the honest outcome is a
+        // failed job with the reason rather than a download that never appears.
+        Err(refusal) => {
+            return Err(match refusal {
+                Refusal::Unreadable(reason) => Error::Permanent(format!(
+                    "asset {asset_id} ({mime}) cannot be rendered as {key}: {reason}"
+                )),
+                other => Error::Transient(format!(
+                    "rendering {key} for asset {asset_id} ({mime}): {}",
+                    other.reason()
+                )),
+            });
+        }
+    };
+
+    let mut conn = TenantConn::begin(global, slug).await?;
+    dam_db::derivatives::record_on(
+        conn.executor(),
+        &dam_db::derivatives::NewDerivative {
+            asset_id,
+            // `rendition`, which is the role 0001 reserved for exactly this and which nothing had ever
+            // written. It tiers, unlike a thumbnail or a proxy: a print-sized export is large and rarely
+            // fetched twice, which is the case §6.4's minimum billable size argument does *not* cover.
+            role: "rendition",
+            profile: &conversion.key,
+            op_hash: &op_hash,
+            object_key: output.key.as_str(),
+            mime: output.mime,
+            bytes: i64::try_from(output.bytes.len()).unwrap_or(i64::MAX),
+            width: dimension(rendition.width),
+            height: dimension(rendition.height),
+            regen_cost_ms: output.cost_ms,
+        },
+    )
+    .await?;
+    conn.commit().await?;
+
+    Ok(ConversionRendered {
+        asset_id,
+        key: conversion.key,
+        rendered: true,
+    })
+}
+
 /// Why one profile did not render.
 enum Refusal {
     /// No renderer can read this source. Not a failure: see [`Derived::refused`].
@@ -208,7 +360,19 @@ struct Output {
     cost_ms: Option<i32>,
 }
 
-/// Renders one profile and stores it.
+/// One thing to render: the recipe, the colour treatment it is hashed under, and the cache key.
+///
+/// Takes the place of a `&Profile` so a tenant-defined conversion (Q.11) renders through *this* function rather
+/// than a parallel one — including the libvips fallback, which is the half a second implementation would forget.
+/// A `Profile` has a `&'static str` name and a per-profile revision that a database row cannot have, so the
+/// shared shape is the three things the renderer actually reads.
+struct Recipe<'a> {
+    rendition: &'a Rendition,
+    color_profile: &'a str,
+    op_hash: &'a str,
+}
+
+/// Renders one recipe and stores it.
 ///
 /// The error is a `String` rather than a `crate::Error` because every failure here is *per profile* and the
 /// caller collects them: a PDF that has no `web-2048` must not stop the thumbnail from being recorded.
@@ -217,17 +381,17 @@ async fn render_one(
     tenant_id: Uuid,
     content_hash: &str,
     source: &[u8],
-    profile: &Profile,
+    recipe: &Recipe<'_>,
 ) -> std::result::Result<Output, Refusal> {
     let started = std::time::Instant::now();
 
-    let bytes = match dam_media::derive::render(source, &profile.rendition) {
+    let bytes = match dam_media::derive::render(source, recipe.rendition) {
         Ok(bytes) => bytes,
         Err(pure_rust) => {
             // The libvips fallback. Reached for camera RAW, PSD, PDF and HEIF — the formats §18.2 puts behind
             // it — and it runs inside `dam_media::sandbox`, because those are the loaders libvips itself marks
             // untrusted.
-            match render_via_vips(source, profile).await {
+            match render_via_vips(source, recipe).await {
                 Ok(bytes) => bytes,
                 Err(VipsFailure::NotInstalled(reason)) => {
                     return Err(Refusal::ToolMissing(format!(
@@ -248,8 +412,8 @@ async fn render_one(
         }
     };
 
-    let ext = profile.rendition.format.extension();
-    let key = Key::derivative(tenant_id, content_hash, &profile.op_hash(), ext)
+    let ext = recipe.rendition.format.extension();
+    let key = Key::derivative(tenant_id, content_hash, recipe.op_hash, ext)
         .map_err(|e| Refusal::Failed(format!("deriving the object key: {e}")))?;
 
     store
@@ -265,7 +429,7 @@ async fn render_one(
 
     Ok(Output {
         key,
-        mime: profile.rendition.format.mime(),
+        mime: recipe.rendition.format.mime(),
         bytes,
         cost_ms: i32::try_from(started.elapsed().as_millis()).ok(),
     })
@@ -285,7 +449,7 @@ enum VipsFailure {
 
 async fn render_via_vips(
     source: &[u8],
-    profile: &Profile,
+    recipe: &Recipe<'_>,
 ) -> std::result::Result<Vec<u8>, VipsFailure> {
     let tools = dam_media::vips::Toolchain::discover().map_err(|e| {
         // Named explicitly. A worker without vips renders a subset of formats, and "no thumbnail" with no
@@ -299,7 +463,7 @@ async fn render_via_vips(
     let input = dir.path().join("source");
     let output = dir
         .path()
-        .join(format!("out.{}", profile.rendition.format.extension()));
+        .join(format!("out.{}", recipe.rendition.format.extension()));
     tokio::fs::write(&input, source)
         .await
         .map_err(|e| VipsFailure::Failed(format!("writing the source: {e}")))?;
@@ -309,14 +473,14 @@ async fn render_via_vips(
         &input,
         &output,
         &dam_media::vips::RenderSpec {
-            width: profile.rendition.width,
-            height: profile.rendition.height,
-            format: profile.rendition.format,
-            quality: profile.rendition.quality,
-            fit: profile.rendition.fit,
+            width: recipe.rendition.width,
+            height: recipe.rendition.height,
+            format: recipe.rendition.format,
+            quality: recipe.rendition.quality,
+            fit: recipe.rendition.fit,
             // Converted at delivery, which is D11's rule: the master keeps its own profile, and a derivative
             // for the web is sRGB.
-            output_profile: Some(profile.color_profile.to_owned()),
+            output_profile: Some(recipe.color_profile.to_owned()),
             intent: dam_media::vips::Intent::Perceptual,
         },
     )

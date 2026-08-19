@@ -599,18 +599,34 @@ async fn object_key(
     // has a different hash — and a name lookup would keep serving the bytes rendered under the old
     // definition forever, with no error anywhere and a customer seeing yesterday's quality setting
     // indefinitely.
-    let profile = dam_media::profiles::by_name(&claim.transform)
-        // An unknown profile is not deliverable rather than approximated: rendering something plausible
+    // Built-in profile first, then the tenant's own conversions (Q.11). Two sources, one derivation: both end
+    // at an `op_hash`, and the lookup below is the same either way.
+    //
+    // The tenant half was missing when the download endpoint shipped, and *only* following a real URL found it:
+    // the endpoint returned a perfectly good signed URL for `web-1600`, and this function 404'd it because the
+    // name was not a built-in. An API test that asserted a URL was returned could not see that, which is what
+    // "verify by running the real thing" means in practice.
+    let op_hash = match dam_media::profiles::by_name(&claim.transform) {
+        Some(profile) => profile.op_hash(),
+        None => dam_db::conversions::by_key(
+            &mut *state.global.acquire().await.map_err(dam_db::Error::from)?,
+            &claim.transform,
+        )
+        .await?
+        // Withdrawn conversions resolve: the token carries the key, and a link issued while a format was
+        // offered must keep working. `by_key` includes them for exactly this caller.
+        .and_then(|conversion| conversion.op_hash())
+        // An unknown transform is not deliverable rather than approximated: rendering something plausible
         // would silently hand back a different size than the caller integrated against.
-        .ok_or(Refusal::NotDeliverable)?;
+        .ok_or(Refusal::NotDeliverable)?,
+    };
 
-    let derivative =
-        dam_db::derivatives::by_op_hash(&state.global, claim.asset_id, &profile.op_hash())
-            .await?
-            // A miss is not a failure — it means this recipe has not been rendered yet. Returning
-            // `NotDeliverable` is the honest answer until 3.2's render-on-demand path exists; what it must
-            // never do is fall back to a name match, which is the bug above.
-            .ok_or(Refusal::NotDeliverable)?;
+    let derivative = dam_db::derivatives::by_op_hash(&state.global, claim.asset_id, &op_hash)
+        .await?
+        // A miss is not a failure — it means this recipe has not been rendered yet. For a tenant conversion the
+        // download endpoint queues the render and answers 202, so a caller reaching here with a miss is one
+        // whose URL was minted before the bytes existed and used after they were reaped.
+        .ok_or(Refusal::NotDeliverable)?;
 
     // Coarse by design — see `derivatives::SERVED_RESOLUTION`. Failing to record a serve must not fail the
     // delivery: the bytes are authorised and the timestamp is a lifecycle hint.

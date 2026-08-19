@@ -134,6 +134,14 @@ async function connect(
 		if (path.startsWith('/assets/') && path.endsWith('/type')) {
 			return route.fulfill({ json: { field_keys: [] } });
 		}
+		// Q.11's download panel asks this on every asset the detail view opens. Answered here so a suite about
+		// something else does not fail on an unmocked route — and answered with formats, because a panel that
+		// renders an empty list is not the panel these suites are meant to be indifferent to.
+		if (path.endsWith('/download-options')) {
+			return route.fulfill({
+				json: { original_available: true, media_class: 'image', conversions: [] }
+			});
+		}
 		if (path.startsWith('/assets/')) {
 			// Keyed by which asset was asked for: the second one is deliberately untouched, so a panel that kept
 			// the first one's stars would be visible.

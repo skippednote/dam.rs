@@ -23,6 +23,7 @@
 	import CommentPanel from './CommentPanel.svelte';
 	import EngagementPanel from './EngagementPanel.svelte';
 	import AttachmentPanel from './AttachmentPanel.svelte';
+	import DownloadPanel from './DownloadPanel.svelte';
 	import HistoryPanel from './HistoryPanel.svelte';
 	import VersionPanel from './VersionPanel.svelte';
 	import MetadataEditor from './MetadataEditor.svelte';
@@ -160,6 +161,10 @@
 			</p>
 		{/if}
 	</div>
+
+	<!-- Directly under the paragraph about availability, because that paragraph is what somebody reads before
+	     deciding to take a copy. The panel hides itself for a caller who may look and not download. -->
+	<DownloadPanel assetId={asset.id} />
 
 	<dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
 		<dt class="text-muted">Type</dt>

@@ -245,7 +245,9 @@ that cheap high-value features are not stuck behind large ones.
     rendition for an asset whose own bytes preview badly, which has nothing to do with a history
 
 **Distribution**
-11. Asset conversions: named formats, per-role permissions, and the download dialog that offers them
+11. Asset conversions: named formats, per-role permissions, and the download dialog that offers them — done for
+    images, including the authenticated download the DAM had never had. Video conversions are open: they need a
+    parameterised ffmpeg recipe. An administration screen for the format list is open too; the API is complete
 12. Intended-use capture before download, and the record that makes it auditable
 13. Orders: approval, pickup, metadata export, multiple recipients, expiry
 14. Portals: the four types, branded, over the share-portal foundation

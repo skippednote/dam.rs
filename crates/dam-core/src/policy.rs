@@ -113,6 +113,29 @@ impl Grants {
     fn active(&self, now: DateTime<Utc>) -> impl Iterator<Item = &Grant> {
         self.0.iter().filter(move |g| g.is_active_at(now))
     }
+
+    /// Every fine-grained permission string an active role carries, sorted and deduplicated.
+    ///
+    /// `Action` is the axis the *gates* differ along and is deliberately coarse; this is the other half of that
+    /// sentence — the strings a feature can name when it needs to be narrower than "may download". Q.11's
+    /// conversions are the first user: a "Print TIFF" format may require `conversion:print`.
+    ///
+    /// **Only for narrowing, and only after a gate.** Nothing here grants anything: a caller reaches a question
+    /// about permissions *after* the compiled predicate has already allowed the action for the asset, and a
+    /// permission can only remove a choice from what that allowed. A feature that consulted this instead of the
+    /// predicate would be deciding access in a place nobody would look — §12's argument, applied to the strings.
+    ///
+    /// Active roles only, for the same reason the predicate uses them: a window checked when the role was
+    /// granted is not a window. An expired role's permissions are gone the moment it expires.
+    pub fn permissions_at(&self, now: DateTime<Utc>) -> Vec<String> {
+        let mut held: Vec<String> = self
+            .active(now)
+            .flat_map(|grant| grant.permissions.iter().cloned())
+            .collect();
+        held.sort_unstable();
+        held.dedup();
+        held
+    }
 }
 
 /// The compiled visibility scope for one caller and one action.
@@ -383,6 +406,82 @@ mod tests {
         assert_eq!(Action::Read.permission(), "asset:read");
         assert_eq!(Action::Download.permission(), "asset:download");
         assert_eq!(Action::Manage.permission(), "asset:manage");
+    }
+
+    #[test]
+    fn a_permission_from_an_expired_role_is_not_held() {
+        // The same rule the predicate follows, for the same reason: a window checked when the role was granted
+        // is not a window. Q.11's download formats gate on these strings, so an expired role that still handed
+        // out `conversion:print` would keep offering a format somebody's access to had ended.
+        let now = Utc::now();
+        let grants = Grants::from(vec![
+            Grant {
+                permissions: vec!["asset:download".into(), "conversion:web".into()],
+                asset_group_ids: vec![],
+                all_asset_groups: true,
+                valid_from: None,
+                valid_until: None,
+                requires_eula: false,
+                eula_accepted: true,
+            },
+            Grant {
+                permissions: vec!["conversion:print".into()],
+                asset_group_ids: vec![],
+                all_asset_groups: true,
+                valid_from: None,
+                valid_until: Some(now - chrono::Duration::days(1)),
+                requires_eula: false,
+                eula_accepted: true,
+            },
+            Grant {
+                permissions: vec!["conversion:future".into()],
+                asset_group_ids: vec![],
+                all_asset_groups: true,
+                valid_from: Some(now + chrono::Duration::days(1)),
+                valid_until: None,
+                requires_eula: false,
+                eula_accepted: true,
+            },
+        ]);
+
+        let held = grants.permissions_at(now);
+        assert_eq!(
+            held,
+            vec!["asset:download".to_owned(), "conversion:web".to_owned()],
+            "an expired or not-yet-active role's permissions are still held"
+        );
+
+        // And the expired one comes back when the clock is inside its window, which is what proves the filter
+        // is the window rather than something about that particular role.
+        let earlier = grants.permissions_at(now - chrono::Duration::days(2));
+        assert!(
+            earlier.contains(&"conversion:print".to_owned()),
+            "{earlier:?}"
+        );
+    }
+
+    #[test]
+    fn held_permissions_are_deduplicated_and_ordered() {
+        // Two roles carrying the same string is ordinary — every role grants `asset:read`. A caller holding it
+        // twice is not more permitted, and the duplicate would show up in any diagnostic that prints the set.
+        let role = |permission: &str| Grant {
+            permissions: vec!["asset:read".into(), permission.into()],
+            asset_group_ids: vec![],
+            all_asset_groups: true,
+            valid_from: None,
+            valid_until: None,
+            requires_eula: false,
+            eula_accepted: true,
+        };
+        let grants = Grants::from(vec![role("conversion:web"), role("conversion:print")]);
+        assert_eq!(
+            grants.permissions_at(Utc::now()),
+            vec![
+                "asset:read".to_owned(),
+                "conversion:print".to_owned(),
+                "conversion:web".to_owned()
+            ]
+        );
     }
 
     #[test]

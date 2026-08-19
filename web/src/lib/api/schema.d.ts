@@ -126,6 +126,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/assets/{asset_id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Mints a download URL for an asset, in the original or a named format. */
+        post: operations["download"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assets/{asset_id}/download-options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** What this asset can be had as, for this caller. */
+        get: operations["options"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/assets/{asset_id}/history": {
         parameters: {
             query?: never;
@@ -460,6 +494,62 @@ export interface paths {
         head?: never;
         /** Rewrites a comment's words, or moves its status. */
         patch: operations["amend"];
+        trace?: never;
+    };
+    "/conversions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every conversion, withdrawn ones included. */
+        get: operations["list"];
+        put?: never;
+        /** Adds a named format. */
+        post: operations["create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/conversions/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Replaces a format's definition.
+         * @description Every asset's rendition under this format re-renders on next request, because the cache key is the recipe.
+         *     That is the intended behaviour and the reason there is no revision to bump.
+         */
+        patch: operations["redefine"];
+        trace?: never;
+    };
+    "/conversions/{id}/active": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Withdraws a format, or puts a withdrawn one back. */
+        patch: operations["set_active"];
         trace?: never;
     };
     "/dashboard": {
@@ -806,6 +896,10 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description Whether a conversion is withdrawn or in use. */
+        ActiveRequest: {
+            is_active: boolean;
+        };
         /** @description One line of activity. */
         ActivityEntry: {
             actor?: null | components["schemas"]["PersonView"];
@@ -1198,6 +1292,57 @@ export interface components {
             /** @description `public` or `private`. A private comment reaches its author and its recipients, and nobody else. */
             visibility: string;
         };
+        /** @description A conversion to create or redefine. */
+        ConversionRequest: {
+            background?: string;
+            description: string;
+            fit?: string;
+            format: string;
+            /**
+             * @description Required on create, ignored on redefine — a delivery token carries the key, so renaming one would
+             *     strand links that were valid when they were sent.
+             */
+            key?: string | null;
+            label: string;
+            /** Format: int32 */
+            max_height: number;
+            /** Format: int32 */
+            max_width: number;
+            media_class?: string;
+            /** Format: int32 */
+            quality: number;
+            required_permission?: string | null;
+            /** Format: int32 */
+            sort_order?: number;
+        };
+        /** @description One named format, as a person choosing sees it. */
+        ConversionView: {
+            background: string;
+            /** @description Written for whoever is choosing. The reason this table exists rather than a list of sizes. */
+            description: string;
+            fit: string;
+            format: string;
+            /** Format: uuid */
+            id: string;
+            is_active: boolean;
+            /** @description The name a download request carries. Stable across relabelling. */
+            key: string;
+            label: string;
+            /** Format: int32 */
+            max_height: number;
+            /** Format: int32 */
+            max_width: number;
+            media_class: string;
+            /** Format: int32 */
+            quality: number;
+            /**
+             * @description The permission a role must carry. Present for administration; the download options never list a format
+             *     the caller cannot use, so it is always `null` there.
+             */
+            required_permission?: string | null;
+            /** Format: int32 */
+            sort_order: number;
+        };
         /** @description The counts a landing page leads with. */
         Counts: {
             /**
@@ -1301,6 +1446,59 @@ export interface components {
             is_default?: boolean;
             key: string;
             label: string;
+        };
+        /** @description A URL to fetch, or word that the format is being made. */
+        DownloadIssued: {
+            /** @description What was asked for, echoed so a client holding several requests can tell them apart. */
+            format: string;
+            /** @description `ready` or `rendering`. A client polls on `rendering`. */
+            status: string;
+            /** @description The signed URL. Absent while a conversion is still being rendered. */
+            url?: string | null;
+        };
+        /** @description What one asset can be had as. */
+        DownloadOptions: {
+            /**
+             * @description The formats this caller may ask for, in the order somebody configured. See `original_available` on what
+             *     this list does and does not promise.
+             */
+            conversions: components["schemas"]["ConversionView"][];
+            /**
+             * @description The asset's media class, so a client can say "no formats are configured for video yet" rather than
+             *     showing an empty list with no explanation.
+             */
+            media_class: string;
+            /**
+             * @description Whether the untransformed bytes can be fetched now.
+             *
+             *     False for archived bytes and for a restore in flight: offering them would be offering a download that
+             *     begins a wait nobody was told about.
+             *
+             *     It says nothing about the conversions below it. A conversion that has *already* been rendered is its own
+             *     object and does not tier, so it stays available while the original does not — but one that has not been
+             *     rendered is produced from the original (`derive::asset` reads the original bytes), so for an archived
+             *     asset it needs the same restore. This response does not yet distinguish those two cases: the readiness
+             *     of a particular format is the download route's answer, and that route does not exist yet. Listing a
+             *     format here means the tenant offers it, not that its bytes exist this second.
+             */
+            original_available: boolean;
+        };
+        /** @description What to download, and what for. */
+        DownloadRequest: {
+            /**
+             * @description Where the copy is going, which is what rights are evaluated against.
+             *
+             *     Defaulted rather than required *for now*: every existing caller of the rights evaluator passes a usage,
+             *     and asking the person is Q.12's intended-use capture. The default is the narrowest honest thing — a
+             *     generic internal channel and worldwide territory — and it is a default a licence can refuse.
+             */
+            channel?: string;
+            /**
+             * @description `original`, or a conversion's key. Defaults to the original, because that is what "download" means
+             *     without further information.
+             */
+            format?: string;
+            territory?: string;
         };
         /**
          * @description An asset's engagement, as the caller may see it.
@@ -2111,6 +2309,83 @@ export interface operations {
             };
             /** @description Empty or over-long body, an unknown visibility, a private comment with no recipients, or a reply to a reply */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    download: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DownloadRequest"];
+            };
+        };
+        responses: {
+            /** @description A signed URL */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DownloadIssued"];
+                };
+            };
+            /** @description The format is being rendered; ask again */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DownloadIssued"];
+                };
+            };
+            /** @description The rights refuse this usage, or the format needs a permission the caller does not hold */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such asset, or not one this caller may download */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    options: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DownloadOptions"];
+                };
+            };
+            /** @description No such asset, or not one this caller may download */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3068,6 +3343,140 @@ export interface operations {
             };
             /** @description Both a body and a status, neither, an unknown status, or a bad length */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversionView"][];
+                };
+            };
+            /** @description The caller holds no manage scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConversionRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversionView"];
+                };
+            };
+            /** @description That key is already taken */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The recipe is one nothing can render; the body names what was refused */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    redefine: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConversionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversionView"];
+                };
+            };
+            /** @description No such conversion */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The recipe is one nothing can render */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    set_active: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ActiveRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversionView"];
+                };
+            };
+            /** @description No such conversion */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
