@@ -178,6 +178,17 @@ pub async fn post_comment(
     )
     .await
     .map_err(Refused)?;
+
+    // The feed entry (Q.7), in the same transaction as the comment. A private comment is recorded as an event on a
+    // public feed, so the *words* are deliberately not in the context — only that somebody commented. Putting an
+    // excerpt there would route a private note onto a screen its author restricted.
+    dam_db::events::record(
+        conn.executor(),
+        dam_db::events::NewEvent::by(dam_db::events::Kind::Commented, asset_id, author).with(
+            serde_json::json!({ "visibility": posted.visibility.as_str(), "reply": posted.parent_id.is_some() }),
+        ),
+    )
+    .await?;
     conn.commit().await?;
 
     let Json(mut views) = present_all(&state, vec![posted]).await?;

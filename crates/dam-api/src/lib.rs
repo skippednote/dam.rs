@@ -9,6 +9,7 @@ pub mod bulk;
 pub mod caller;
 pub mod categories;
 pub mod comments;
+pub mod dashboard;
 pub mod delivery;
 pub mod dto;
 pub mod engagement;

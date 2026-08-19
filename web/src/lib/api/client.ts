@@ -297,6 +297,19 @@ export async function removeUploadProfile(id: string): Promise<void> {
 	await request<void>(`/upload-profiles/${id}`, { method: 'DELETE' });
 }
 
+export type Dashboard = components['schemas']['Dashboard'];
+export type ActivityEntry = components['schemas']['ActivityEntry'];
+
+/**
+ * The landing page's data, in one request.
+ *
+ * One call rather than three, because the page cannot render usefully without all of it — and three would let the
+ * counts disagree with the list beneath them.
+ */
+export async function loadDashboard(): Promise<Dashboard> {
+	return request<Dashboard>('/dashboard');
+}
+
 export type Comment = components['schemas']['CommentView'];
 export type Person = components['schemas']['PersonView'];
 

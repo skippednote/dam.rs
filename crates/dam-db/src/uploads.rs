@@ -113,6 +113,11 @@ pub struct Declared {
     /// cannot be one transaction, so without this a crash between them left the bytes stored and the retry
     /// failing at "staging object not found".
     pub content_hash: Option<String>,
+    /// Who started the upload, when a person did (Q.7).
+    ///
+    /// Read here for the same reason as the profile: finalisation runs from a queue long after the request, so the
+    /// feed entry's actor has to be recoverable from the row rather than passed in.
+    pub created_by: Option<uuid::Uuid>,
 }
 
 /// The declared fields for one upload, or `None` if there is no such session.
@@ -132,9 +137,10 @@ where
             Option<Uuid>,
             Option<String>,
             Option<Uuid>,
+            Option<Uuid>,
         ),
     >(
-        "SELECT declared_filename, declared_mime, asset_id, content_hash, upload_profile_id \
+        "SELECT declared_filename, declared_mime, asset_id, content_hash, upload_profile_id, created_by \
          FROM upload_sessions WHERE tenant_id = $1 AND upload_id = $2",
     )
     .bind(tenant)
@@ -143,12 +149,13 @@ where
     .await?;
 
     Ok(row.map(
-        |(filename, mime, asset_id, content_hash, upload_profile_id)| Declared {
+        |(filename, mime, asset_id, content_hash, upload_profile_id, created_by)| Declared {
             filename,
             mime,
             asset_id,
             content_hash,
             upload_profile_id,
+            created_by,
         },
     ))
 }

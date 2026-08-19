@@ -26,14 +26,14 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M0–M3c** Foundation, ingest, metadata/search/rights, delivery/sharing/restore | complete |
 | **F** The UI: browse, detail, upload, filter rail, lightbox, bulk bar, design pass | complete |
 | **F.11b** Share/portal UI, schema administration, metadata types | complete except restore UX |
-| **Q** Acquia parity, 20 slices | Q.1–Q.6 done; Q.7–Q.20 open |
+| **Q** Acquia parity, 20 slices | Q.1–Q.7 done; Q.8–Q.20 open |
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | schema exists, behaviour unwritten |
 | **M6** Workflow/proofing, annotations, analytics | not started |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** Q.7 activity feed and dashboard
+**Next up, in order:** Q.8 versions
 → Q.6 comments → Q.7 activity feed → Q.8 versions → Q.9 attachments → Q.10 history → Q.11 conversions →
 Q.12 intended use → Q.13 orders → Q.14 portals → Q.15–Q.19 search → Q.20 sundries → M4 → M5 → M6 → M3d →
 Pre-GA → Entries.
@@ -1790,8 +1790,33 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
       Driving the real thing found a fourth: on a tenant with one member the private option was a dead end — the
       picker empty, the requirement unsatisfiable, and nothing saying so. It now names the situation and the way
       out.
-- [ ] **Q.7 Activity feed, dashboard sections, spotlight searches.** What turns the landing page from a
-  redirect into a place.
+- [x] **Q.7 The activity feed and the dashboard, and a partition nobody was rolling.** `events` has existed since
+      migration 0001 and **nothing had ever written to it** — which hid a live landmine: it is partitioned by month
+      with one January 2026 partition and a comment promising a `damctl` roll-forward command that was never
+      written. The first event write would have failed, and so would every one after. Migration `0021` adds a
+      default partition, and a case proves the dependency by detaching it and watching the write fail.
+
+      `dam_db::events` records and reads; `finalise`, the comment POST and the share POST now write. Each write is
+      in the same transaction as the thing it describes, so a feed cannot show an upload that rolled back. Two
+      things are deliberately *not* in an event's context: a share's **token**, because a feed is read by everyone
+      who can see the asset and a token is a bearer credential; and a comment's **words**, because a private comment
+      would otherwise reach a public screen through its own feed entry.
+
+      `GET /dashboard` returns counts, feed and saved searches in one request — the page cannot render without all
+      three, and three endpoints would let the numbers disagree with the list beneath them. Every count is the
+      caller's own. The landing page is no longer the scaffold.
+
+      Two bugs found on the way. **`saved_searches::visible_to` takes a pool**, and until the dashboard nothing
+      outside its own tests had ever called it — the same shape that once gave every group-scoped caller a 500 from
+      `check_groups_are_renderable`, because a tenant table resolved against `dam_global`. Added `visible_to_on`.
+      And **comment threads were ordered by uuid**: `coalesce(parent_id, id)` groups them correctly and orders them
+      arbitrarily, which looked right for exactly as long as the uuids happened to agree with the timestamps. They
+      now sort by the thread root's own creation time.
+
+      Thirteen mutations caught, three after closing fixture gaps (the page cap was untested with fewer than a
+      page of rows; an *empty* metadata document was untested because every fixture had no row at all). One survives
+      and is documented: the feed's id tie-break has no observable effect until an offset exists. axe caught an
+      invalid `<dl>` containing an `<a>` directly.
 - [ ] **Q.8 Versions.** Add a version, list them, download an earlier one, and the detail tab.
   `version_group_id`/`version_no` already exist and nothing uses them.
 - [ ] **Q.9 Attached documents**, and the has-attachment facet. Rights and release paperwork on the asset.

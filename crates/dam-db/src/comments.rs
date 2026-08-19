@@ -309,14 +309,19 @@ pub async fn on_asset(
     // refused an asset the caller cannot see — removing it changes no test outcome. Both exist because they do
     // different things: the check produces a *refusal*, while the join would produce an empty list, and "no such
     // asset" is the honest answer to a request naming one. Documented rather than left looking tested.
-    builder
-        .push(" FROM asset_comments c JOIN visible ON visible.id = c.asset_id WHERE c.asset_id = ");
+    // Joined to each comment's thread root, because the order a conversation reads in is *when each thread
+    // started* — and grouping by `coalesce(parent_id, id)` alone orders threads by uuid, which is arbitrary. It
+    // looked correct for exactly as long as the uuids happened to agree with the timestamps.
+    builder.push(
+        " FROM asset_comments c JOIN visible ON visible.id = c.asset_id \
+          JOIN asset_comments root ON root.id = coalesce(c.parent_id, c.id) WHERE c.asset_id = ",
+    );
     builder.push_bind(asset_id);
     builder.push(" AND ");
     push_readable(&mut builder, reader);
-    // Threads together: a reply sorts under its parent's id, and a top-level comment under its own. Then by time
-    // within each thread, so a conversation reads in the order it happened.
-    builder.push(" ORDER BY coalesce(c.parent_id, c.id), c.created_at, c.id");
+    // Threads in the order they started, and within a thread in the order it happened. The root's id is the second
+    // key so two threads opened in the same microsecond still group rather than interleave.
+    builder.push(" ORDER BY root.created_at, root.id, c.created_at, c.id");
 
     let rows: Vec<Row> = builder
         .build_query_as()

@@ -16,6 +16,7 @@ pub mod collections;
 pub mod comments;
 pub mod derivatives;
 pub mod engagement;
+pub mod events;
 pub mod facets;
 pub mod fields;
 pub mod jobs;

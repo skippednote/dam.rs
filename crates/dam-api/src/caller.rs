@@ -34,6 +34,12 @@ pub struct Caller {
     pub api_key_id: Uuid,
     /// The compiled visibility scope. Every query this caller drives renders *this* value.
     pub predicate: AccessPredicate,
+    /// The tenant roles this caller holds.
+    ///
+    /// Carried because sharing is expressed in terms of roles as well as identities: a saved search shared with
+    /// `editors` is visible to whoever holds that role, and the dashboard cannot answer that from the predicate —
+    /// which has already been compiled down to asset groups and knows nothing about role *names*.
+    pub role_names: Vec<String>,
 }
 
 /// Why a request was refused before it reached a handler.
@@ -115,6 +121,20 @@ pub async fn authorize(
     // See the module docs: no identity, no membership, no grants.
     let identity = authenticated.identity_id.ok_or(Refusal::Forbidden)?;
 
+    // Read here as well as inside `grants_for`, because the two want different things from one row: that function
+    // compiles roles into a predicate, and a caller needs the names themselves for anything shared *with a role*.
+    // One extra read on a table already being consulted, rather than threading a second return value out of the
+    // grant loader and changing every one of its callers.
+    let role_names: Vec<String> = sqlx::query_scalar(
+        "SELECT role_names FROM dam_global.tenant_members WHERE tenant_id = $1 AND identity_id = $2",
+    )
+    .bind(authenticated.tenant_id)
+    .bind(identity)
+    .fetch_optional(global)
+    .await
+    .map_err(dam_db::Error::from)?
+    .unwrap_or_default();
+
     let scopes: Vec<&str> = authenticated.scopes.iter().map(String::as_str).collect();
     // The role definitions live in the tenant schema and the membership in the global one, which is the D2
     // boundary rather than an accident — and the tenant side has to be a `TenantConn`, because an
@@ -152,6 +172,7 @@ pub async fn authorize(
         identity_id: authenticated.identity_id,
         api_key_id: authenticated.api_key_id,
         predicate,
+        role_names,
     })
 }
 

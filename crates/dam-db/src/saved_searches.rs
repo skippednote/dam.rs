@@ -206,6 +206,25 @@ pub async fn visible_to(
     roles: &[String],
     limit: i64,
 ) -> Result<Vec<SavedSearch>, Error> {
+    let mut conn = pool.acquire().await?;
+    visible_to_on(&mut conn, viewer, roles, limit).await
+}
+
+/// [`visible_to`] on a caller's connection.
+///
+/// The variant a request path needs, and the reason it exists is a bug this repo has already had once:
+/// `saved_searches` is a *tenant* table, and `TenantConn` sets `search_path` for the duration of its transaction.
+/// Handed the global pool, the pool-taking form above resolves `FROM saved_searches` against `dam_global` and
+/// fails — which is exactly how `check_groups_are_renderable` came to return a 500 to every group-scoped caller.
+///
+/// Until the dashboard, nothing outside this module's own tests called any of this, so the shape had never been
+/// exercised from a request at all.
+pub async fn visible_to_on(
+    conn: &mut sqlx::PgConnection,
+    viewer: Option<Uuid>,
+    roles: &[String],
+    limit: i64,
+) -> Result<Vec<SavedSearch>, Error> {
     let rows = sqlx::query_as::<_, SavedRow>(
         "SELECT id, owner_id, name, query, is_smart_collection, shared, shared_with_roles, \
                 notify_path_id, result_count, counted_at, last_used_at \
@@ -217,7 +236,7 @@ pub async fn visible_to(
     .bind(viewer)
     .bind(roles)
     .bind(limit)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
     Ok(rows.into_iter().map(into_search).collect())
 }

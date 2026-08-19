@@ -375,6 +375,23 @@ export interface paths {
         patch: operations["amend"];
         trace?: never;
     };
+    "/dashboard": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The landing page. */
+        get: operations["dashboard"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/favourites": {
         parameters: {
             query?: never;
@@ -702,6 +719,25 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description One line of activity. */
+        ActivityEntry: {
+            actor?: null | components["schemas"]["PersonView"];
+            /** Format: uuid */
+            asset_id?: string | null;
+            context: unknown;
+            /** @description The asset's name now, so a line reads as a sentence. */
+            filename?: string | null;
+            /** Format: uuid */
+            id: string;
+            /**
+             * @description `upload`, `edit`, `share`, `comment`, `download`, `delete`, `restore` — or anything a future subsystem
+             *     records. Reported as stored rather than mapped onto a known set, so activity this build does not recognise
+             *     is still visible.
+             */
+            kind: string;
+            /** Format: date-time */
+            occurred_at: string;
+        };
         /** @description What to change about a comment. One of the two, never both — see the module docs. */
         AmendCommentRequest: {
             body?: string | null;
@@ -1037,6 +1073,25 @@ export interface components {
             /** @description `public` or `private`. A private comment reaches its author and its recipients, and nobody else. */
             visibility: string;
         };
+        /** @description The counts a landing page leads with. */
+        Counts: {
+            /**
+             * Format: int64
+             * @description Assets this caller can see.
+             */
+            assets: number;
+            /** Format: int64 */
+            comments_this_week: number;
+            /** Format: int64 */
+            downloads_this_week: number;
+            /** Format: int64 */
+            uploads_this_week: number;
+            /**
+             * Format: int64
+             * @description Assets carrying no metadata at all — the work a landing page exists to surface.
+             */
+            without_metadata: number;
+        };
         /** @description A mapping to create. */
         CreateMappingRequest: {
             /** @description Defaults to true: a mapping saved and then not applied would be a surprising thing to have to switch on. */
@@ -1089,6 +1144,13 @@ export interface components {
              *     re-create, which is the same posture as an API key and for the same reason.
              */
             token: string;
+        };
+        /** @description Everything the landing page draws. */
+        Dashboard: {
+            activity: components["schemas"]["ActivityEntry"][];
+            counts: components["schemas"]["Counts"];
+            /** @description Saved searches this caller may open, theirs first. */
+            spotlights: components["schemas"]["Spotlight"][];
         };
         /** @description A field to define. Flags default to the conservative reading when omitted. */
         DefineRequest: {
@@ -1516,6 +1578,21 @@ export interface components {
          * @enum {string}
          */
         SortOrder: "newest" | "oldest" | "filename_asc" | "filename_desc" | "largest_first" | "favourites";
+        /** @description A saved search, as a dashboard tile. */
+        Spotlight: {
+            /**
+             * Format: int64
+             * @description The stored count, and named as stored: it is a cached number a worker refreshes, never an access decision
+             *     and never this caller's count. A tile that presented it as "your results" would be lying to a scoped
+             *     reader.
+             */
+            cached_count?: number | null;
+            /** Format: uuid */
+            id: string;
+            /** @description Whether this caller owns it, so a tile can say "yours" rather than implying everyone's is. */
+            mine: boolean;
+            name: string;
+        };
         /**
          * @description S3 storage classes, matching `object_placements.storage_class`.
          * @enum {string}
@@ -2617,6 +2694,32 @@ export interface operations {
             };
             /** @description Both a body and a status, neither, an unknown status, or a bad length */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    dashboard: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Dashboard"];
+                };
+            };
+            /** @description The credential holds no read scope */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -166,6 +166,22 @@ pub async fn create(
         },
     )
     .await?;
+
+    // The feed entry (Q.7), in the same transaction as the share. The *token* is deliberately absent from the
+    // context: a feed is read by everyone who can see the asset, and a share token is a bearer credential — one on
+    // a dashboard would hand the link to everybody the share was not sent to.
+    if let Some(actor) = caller.identity_id {
+        dam_db::events::record(
+            conn.executor(),
+            dam_db::events::NewEvent::by(dam_db::events::Kind::Shared, request.asset_id, actor)
+                .with(serde_json::json!({
+                    "expires_in_hours": request.expires_in_hours,
+                    "max_downloads": request.max_downloads,
+                    "allows_original": request.allow_original,
+                })),
+        )
+        .await?;
+    }
     conn.commit().await?;
 
     let portal_path = format!("/share/{}", created.token());

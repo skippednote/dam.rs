@@ -329,6 +329,33 @@ pub async fn upload(
     .await
     .map_err(dam_db::Error::from)?;
 
+    // The feed entry (Q.7). Recorded inside the same transaction as the asset, so a feed cannot show an upload
+    // that was rolled back — and a failure here fails the finalisation, which is the right trade *only* because it
+    // is the same transaction: outside one, an upload that succeeded and then failed to log would be reported as a
+    // failure despite having worked.
+    dam_db::events::record(
+        conn.executor(),
+        dam_db::events::NewEvent {
+            kind: dam_db::events::Kind::Uploaded,
+            asset_id: Some(asset_id),
+            // From the session rather than invented: an upload made through a service credential has no person,
+            // and `system` is the honest actor for it.
+            actor_id: declared.created_by,
+            actor_kind: declared
+                .created_by
+                .map_or(dam_db::events::ActorKind::System, |_| {
+                    dam_db::events::ActorKind::User
+                }),
+            context: serde_json::json!({
+                "filename": declared_filename,
+                "mime": promoted.mime,
+                "deduplicated": promoted.deduplicated,
+            }),
+            bytes: Some(i64::try_from(size).unwrap_or(i64::MAX)),
+        },
+    )
+    .await?;
+
     // The placement is what makes the tier derivable. Without it the asset reads as `hot` by default, which
     // happens to be right here and would be wrong the moment the lifecycle engine moved the object.
     sqlx::query(

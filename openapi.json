@@ -1234,6 +1234,30 @@
         }
       }
     },
+    "/dashboard": {
+      "get": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "The landing page.",
+        "operationId": "dashboard",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Dashboard"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The credential holds no read scope"
+          }
+        }
+      }
+    },
     "/favourites": {
       "get": {
         "tags": [
@@ -2195,6 +2219,56 @@
   },
   "components": {
     "schemas": {
+      "ActivityEntry": {
+        "type": "object",
+        "description": "One line of activity.",
+        "required": [
+          "id",
+          "occurred_at",
+          "kind",
+          "context"
+        ],
+        "properties": {
+          "actor": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PersonView",
+                "description": "Who did it. Absent for something the system did, and for somebody since deleted."
+              }
+            ]
+          },
+          "asset_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "context": {},
+          "filename": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The asset's name now, so a line reads as a sentence."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`upload`, `edit`, `share`, `comment`, `download`, `delete`, `restore` — or anything a future subsystem\nrecords. Reported as stored rather than mapped onto a known set, so activity this build does not recognise\nis still visible."
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
       "AmendCommentRequest": {
         "type": "object",
         "description": "What to change about a comment. One of the two, never both — see the module docs.",
@@ -2894,6 +2968,41 @@
           }
         }
       },
+      "Counts": {
+        "type": "object",
+        "description": "The counts a landing page leads with.",
+        "required": [
+          "assets",
+          "uploads_this_week",
+          "downloads_this_week",
+          "comments_this_week",
+          "without_metadata"
+        ],
+        "properties": {
+          "assets": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Assets this caller can see."
+          },
+          "comments_this_week": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "downloads_this_week": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "uploads_this_week": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "without_metadata": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Assets carrying no metadata at all — the work a landing page exists to surface."
+          }
+        }
+      },
       "CreateMappingRequest": {
         "type": "object",
         "description": "A mapping to create.",
@@ -3016,6 +3125,33 @@
           "token": {
             "type": "string",
             "description": "The one-time token. The table holds a digest, so a lost link cannot be recovered — revoke and\nre-create, which is the same posture as an API key and for the same reason."
+          }
+        }
+      },
+      "Dashboard": {
+        "type": "object",
+        "description": "Everything the landing page draws.",
+        "required": [
+          "counts",
+          "activity",
+          "spotlights"
+        ],
+        "properties": {
+          "activity": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ActivityEntry"
+            }
+          },
+          "counts": {
+            "$ref": "#/components/schemas/Counts"
+          },
+          "spotlights": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Spotlight"
+            },
+            "description": "Saved searches this caller may open, theirs first."
           }
         }
       },
@@ -3949,6 +4085,36 @@
           "largest_first",
           "favourites"
         ]
+      },
+      "Spotlight": {
+        "type": "object",
+        "description": "A saved search, as a dashboard tile.",
+        "required": [
+          "id",
+          "name",
+          "mine"
+        ],
+        "properties": {
+          "cached_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The stored count, and named as stored: it is a cached number a worker refreshes, never an access decision\nand never this caller's count. A tile that presented it as \"your results\" would be lying to a scoped\nreader."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "mine": {
+            "type": "boolean",
+            "description": "Whether this caller owns it, so a tile can say \"yours\" rather than implying everyone's is."
+          },
+          "name": {
+            "type": "string"
+          }
+        }
       },
       "StorageClass": {
         "type": "string",
