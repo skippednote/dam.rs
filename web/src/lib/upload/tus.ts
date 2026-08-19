@@ -47,18 +47,30 @@ export function encodeMetadata(value: string): string {
 export async function create(
 	base: string,
 	key: string,
-	file: { name: string; size: number; type: string }
+	file: { name: string; size: number; type: string },
+	/**
+	 * The upload profile's *key*, when one was chosen.
+	 *
+	 * By key rather than id, matching the server: a client that knows its intake by name should not have to
+	 * look one up first. Omitted entirely when absent, because an empty `profile` value would be a *named*
+	 * profile that resolves to nothing — a different and worse answer than not naming one.
+	 */
+	profile?: string
 ): Promise<UploadHandle> {
+	const metadata = [
+		`filename ${encodeMetadata(file.name)}`,
+		`filetype ${encodeMetadata(file.type || 'application/octet-stream')}`
+	];
+	if (profile) {
+		metadata.push(`profile ${encodeMetadata(profile)}`);
+	}
 	const response = await fetch(`${base}/uploads`, {
 		method: 'POST',
 		headers: {
 			Authorization: `Bearer ${key}`,
 			'Tus-Resumable': TUS_VERSION,
 			'Upload-Length': String(file.size),
-			'Upload-Metadata': [
-				`filename ${encodeMetadata(file.name)}`,
-				`filetype ${encodeMetadata(file.type || 'application/octet-stream')}`
-			].join(',')
+			'Upload-Metadata': metadata.join(',')
 		}
 	});
 	if (!response.ok) {

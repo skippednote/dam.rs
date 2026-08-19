@@ -37,6 +37,7 @@ export type AssetTypeView = components['schemas']['AssetTypeView'];
 export type CategoryTree = components['schemas']['TreeRow'];
 export type CategoryNode = components['schemas']['NodeRow'];
 export type CategoryWorklist = components['schemas']['Worklist'];
+export type UploadProfile = components['schemas']['ProfileRow'];
 
 /** A failed request, with whatever the server said about it. */
 export class ApiError extends Error {
@@ -252,6 +253,47 @@ export async function reorderFields(keys: string[]): Promise<void> {
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ keys })
 	});
+}
+
+/**
+ * Upload profiles: what an upload arrives already knowing.
+ *
+ * Listing needs only Read, deliberately — the uploader has to render the picker and honour the required-field
+ * rule before it can upload anything.
+ */
+export async function listUploadProfiles(): Promise<UploadProfile[]> {
+	return request<UploadProfile[]>('/upload-profiles');
+}
+
+export async function createUploadProfile(body: {
+	key: string;
+	label: string;
+	metadata_type_id?: string | null;
+	defaults?: Record<string, unknown>;
+	require_complete?: boolean;
+	ai_tags_enabled?: boolean;
+	is_default?: boolean;
+}): Promise<UploadProfile> {
+	return request<UploadProfile>('/upload-profiles', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body)
+	});
+}
+
+export async function amendUploadProfile(
+	id: string,
+	body: Record<string, unknown>
+): Promise<UploadProfile> {
+	return request<UploadProfile>(`/upload-profiles/${id}`, {
+		method: 'PATCH',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body)
+	});
+}
+
+export async function removeUploadProfile(id: string): Promise<void> {
+	await request<void>(`/upload-profiles/${id}`, { method: 'DELETE' });
 }
 
 /**

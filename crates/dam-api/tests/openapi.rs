@@ -119,3 +119,115 @@ fn the_document_ends_with_a_newline_so_it_is_a_well_formed_text_file() {
     // Without one, every future diff touches the last line and buries the actual change.
     assert!(json().ends_with('\n'));
 }
+
+/// Every documented path is actually served by the app router.
+///
+/// The guard that was missing. Each endpoint's own suite builds *its* router directly, so a module can be fully
+/// tested and still not be mounted — which is exactly what happened to `/upload-profiles`: seven passing API
+/// cases, a correct OpenAPI entry, and a 404 from the running server, because the merge into `app::router` was
+/// never applied. The document and the router are two lists that must agree, and nothing compared them.
+///
+/// Probed with each path's own documented method, and with no credentials. A mounted route refuses with 401 or
+/// 403 because authentication runs first; an unmounted path is 404 from axum's routing table. That is the whole
+/// signal, and it needs no database — no handler runs.
+///
+/// OPTIONS would have been the obvious probe and is the wrong one: the CORS layer answers a preflight for any
+/// path at all, so every probe came back 200 and the guard passed while three routers were removed. Found by
+/// mutation-testing the guard itself.
+#[tokio::test]
+async fn every_documented_path_is_mounted_on_the_app_router() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt as _;
+
+    let doc = document();
+    let app = dam_api::app::router(
+        &dam_core::config::Config::default(),
+        route_inspection_deps(),
+    );
+
+    let mut probed = 0usize;
+    let mut unmounted = Vec::new();
+    for (path, methods) in doc["paths"].as_object().expect("paths") {
+        let method = methods
+            .as_object()
+            .expect("methods")
+            .keys()
+            .find(|name| {
+                matches!(
+                    name.as_str(),
+                    "get" | "post" | "put" | "patch" | "delete" | "head"
+                )
+            })
+            .cloned()
+            .expect("every documented path has a method");
+
+        // Template parameters get a syntactically valid stand-in. It is never dereferenced: the request is
+        // refused at authentication, long before a handler reads a path parameter.
+        let concrete = path
+            .split('/')
+            .map(|segment| {
+                if segment.starts_with('{') {
+                    "00000000-0000-4000-8000-000000000000"
+                } else {
+                    segment
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("/");
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method.to_uppercase().as_str())
+                    .uri(&concrete)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+
+        probed += 1;
+        if response.status() == StatusCode::NOT_FOUND {
+            unmounted.push(format!("{} {path}", method.to_uppercase()));
+        }
+    }
+
+    assert!(
+        probed > 20,
+        "the document should describe a real API: {probed} paths"
+    );
+    assert!(
+        unmounted.is_empty(),
+        "documented but not mounted on the app router: {unmounted:?}"
+    );
+}
+
+/// Dependencies for a router that is only ever asked whether a path exists.
+///
+/// Nothing here is connected. `oneshot` with OPTIONS is answered by axum's routing table before any handler
+/// runs, so a lazily-built pool that would fail on first use is never used — which is what keeps this guard
+/// free of Docker and fast enough to run on every push.
+fn route_inspection_deps() -> dam_api::app::AppDeps {
+    let lazy = |name: &str| {
+        sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy(&format!("postgres://unused:unused@127.0.0.1:1/{name}"))
+            .expect("a lazy pool connects to nothing")
+    };
+    dam_api::app::AppDeps {
+        global: lazy("global"),
+        delivery_pool: lazy("delivery"),
+        store: std::sync::Arc::new(dam_store::FakeS3Store::with_test_clock().0),
+        delivery_store: std::sync::Arc::new(dam_store::FakeS3Store::with_test_clock().0),
+        indexes: std::sync::Arc::new(dam_search::IndexPool::new(dam_search::PoolConfig::new(
+            std::path::Path::new("/tmp/damrs-route-inspection"),
+        ))),
+        keyring: dam_core::signed_url::Keyring::single(
+            "k1",
+            dam_core::Secret::new("route-inspection".to_owned()),
+        ),
+        delivery_tenant: uuid::Uuid::nil(),
+    }
+}

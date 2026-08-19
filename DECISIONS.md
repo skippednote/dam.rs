@@ -1884,3 +1884,27 @@ here, and a unit case pins that an absent key parses as `None` rather than as an
 **A profile's defaults are re-validated on amend, not only on create.** Otherwise a profile could be edited into
 a state that breaks every upload from that source, with the person who could fix it never seeing why. Mutation
 testing found this: nothing covered the amend path. Reversible: no.
+
+**Every documented path is asserted to be mounted on the app router.** Each endpoint's own suite builds *its*
+router directly, so a module can be completely tested and still not be served — which is exactly what happened
+to `/upload-profiles`: seven passing API cases, a correct OpenAPI entry, and a 404 from the running server. The
+document and the router are two lists that must agree, and nothing compared them. The guard probes each path
+with its own documented method and no credentials: a mounted route refuses with 401/403 because authentication
+runs first, while an unmounted path is a 404 from axum's routing table. No database, no handler runs.
+
+Its first version was useless and mutation testing said so: it probed with OPTIONS, which the CORS layer answers
+for *any* path, so every probe returned 200 and the guard passed with three routers deleted. Worth recording
+because it is the second time here that a test needed testing. Reversible: no.
+
+**The uploader offers only fields a profile may write, and clears rather than blanks.** A read-only field in the
+defaults form would invite a refusal the person could not have predicted, since the validator rejects it. And an
+empty value is dropped from the payload rather than sent as `""` — the validator accepts an empty string for a
+text field, so sending it would silently default every asset from that intake to blank. Reversible: no.
+
+**The uploader preselects the tenant's fallback profile.** That is what the server applies when nothing is
+named, so showing "no profile" while a profile silently took effect would misdescribe what happens. "No profile"
+is offered last and explicitly, as the deliberate choice. Reversible: yes.
+
+**`require_complete` is applied by the uploader, and the drop target is gated too.** Disabling the file input
+alone would have left the drag-and-drop path working — making the mouse route quietly more permissive than the
+keyboard one, which is the accessible one. Both are gated on the same condition. Reversible: no.

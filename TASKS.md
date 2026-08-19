@@ -1581,8 +1581,20 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
   falls back: the bytes are the point, and a mistyped profile is recoverable afterwards while a refused upload is
   not. 7 API cases, 2 tus cases, 2 unit cases; 9 mutations all caught, two of which found untested behaviour —
   the documented `ai_tags_enabled` default, and re-validation on amend.
-- [ ] **Q.3b·2 The profile UI**: an admin section for profiles, and the uploader picking one and honouring
-  `require_complete`.
+- [x] **Q.3b·2 The profile UI, and a guard for the bug it exposed.** An "Upload profiles" section on `/schema`
+  (third of three named landmarks: fields → types → profiles, the order they depend on each other), offering
+  only fields a profile *may* write — a read-only field would produce a refusal the person could not have
+  predicted. Empty defaults are cleared rather than sent as `""`, which the validator would accept and which
+  would silently blank every asset from that intake. The uploader gains a profile picker, preselecting the
+  tenant's fallback because that is what the server would apply anyway, and applies `require_complete` — the
+  rule exists *only* here, since the server deliberately will not refuse a finished upload over it.
+  **The guard matters more than the UI:** the profile router was never merged into `app::router`, so seven
+  passing API cases and a correct OpenAPI entry coexisted with a 404 from the running server — each endpoint's
+  suite builds its own router, so a module can be fully tested and unmounted. `openapi.rs` now asserts every
+  documented path is served by the app router. Mutation-testing *the guard* found its first version useless: it
+  probed with OPTIONS, which the CORS layer answers for any path, so it passed with three routers removed. 8 e2e
+  cases; 3 mount mutations caught.
+- [ ] **Q.4 Auto-import mappings.** Embedded metadata (XMP/EXIF/IPTC) → field definitions, on ingest.
 - [ ] **Q.4 Auto-import mappings.** Embedded metadata (XMP/EXIF/IPTC) → field definitions, on ingest.
 - [ ] **Q.5 Ratings, favourites, watch.** Three engagement features and their facets; favourites rank first
   in search, watch is what makes notification worth having.

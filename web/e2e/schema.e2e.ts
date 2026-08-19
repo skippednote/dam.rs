@@ -189,6 +189,11 @@ async function connect(
 			types = types.filter((type) => type.id !== id);
 			return route.fulfill({ status: 204, body: '' });
 		}
+		// The page grew an upload-profiles section, and an unstubbed endpoint would surface as a second alert
+		// on a page whose cases assert about the first one.
+		if (url.pathname === '/upload-profiles') {
+			return route.fulfill({ json: [] });
+		}
 		if (url.pathname === '/health') {
 			return route.fulfill({ body: 'ok' });
 		}
@@ -286,7 +291,9 @@ test('a kind locked by stored values is shown in the server’s own words', asyn
 
 	// Verbatim, count included: this sentence is the whole reason the refusal is actionable, and no status
 	// code the page could paraphrase carries the number.
-	await expect(page.getByRole('alert')).toContainText('12 asset(s) already carry a value');
+	await expect(
+		page.getByRole('region', { name: 'Metadata fields' }).getByRole('alert')
+	).toContainText('12 asset(s) already carry a value');
 });
 
 test('removing a field confirms with the count and promises the values survive', async ({
