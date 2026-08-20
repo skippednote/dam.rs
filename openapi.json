@@ -2159,6 +2159,45 @@
         }
       }
     },
+    "/orders/{id}/fulfil": {
+      "post": {
+        "tags": [
+          "orders"
+        ],
+        "summary": "Creates an approved order's pickup, moving it to `ready`.",
+        "description": "Called automatically the moment an approval commits, and exposed so it can be *retried*: the decision and the\npickup are two writes, and an approver should not have to decide twice because the second one failed. That is\nwhat keeps `approved` a meaningful state rather than a transient one.\n\nThe pickup is a share link — see the migration and NEEDS-REVIEW.md on why that rather than a new kind of\ngrant. It inherits the order's expiry, so the window an approver granted is the window the link has.",
+        "operationId": "fulfil",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such order"
+          },
+          "409": {
+            "description": "Not an approved order awaiting a pickup"
+          }
+        }
+      }
+    },
     "/orders/{id}/reject": {
       "post": {
         "tags": [
@@ -2785,6 +2824,114 @@
           },
           "404": {
             "description": "No such share — or revoked, expired, exhausted"
+          }
+        }
+      }
+    },
+    "/share/{token}/items/{asset_id}/download": {
+      "post": {
+        "tags": [
+          "shares"
+        ],
+        "summary": "Consumes one download from an order pickup, for one named item.",
+        "description": "The asset id is in the path and checked against the order's items — a pickup is an agreement about a specific\nset, and letting a recipient name any id would turn one approval into a key to the library.\n\nThe download lands in the usage ledger (Q.12) as a *declared* use, attributed to the person who asked for the\norder. They named the channel and territory when they placed it and an approver agreed to it, which is a\nstronger record than most downloads carry. The recipient collecting has no identity here, so recording them is\nnot an option; recording the requester is the honest answer to \"who is accountable for this copy\".",
+        "operationId": "download_item",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PortalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalDownload"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A passcode is required or wrong"
+          },
+          "403": {
+            "description": "Rights refuse distribution of this asset"
+          },
+          "404": {
+            "description": "No such share, or that asset is not in this pickup"
+          }
+        }
+      }
+    },
+    "/share/{token}/set": {
+      "post": {
+        "tags": [
+          "shares"
+        ],
+        "summary": "Resolves an order pickup: the set, with a preview for each item.",
+        "description": "A separate route from [`portal`] because the two answers have different shapes, and one endpoint returning\neither would make every client branch on which fields are present.",
+        "operationId": "portal_set",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PortalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalSetView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A passcode is required or wrong"
+          },
+          "404": {
+            "description": "No such share, or not an order pickup"
           }
         }
       }
@@ -4875,6 +5022,13 @@
               "$ref": "#/components/schemas/OrderItemView"
             }
           },
+          "pickup_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The pickup URL, **only** on the response that just minted it.\n\nA share token is stored as a digest, so it cannot be shown again — the same property that makes a leaked\ndatabase not a leaked set of links. Anybody who needs the link again re-issues the pickup, which revokes\nthe previous one; see [`fulfil`]. Absent on every ordinary read, which is why it is optional rather than a\nseparate response type."
+          },
           "purpose": {
             "type": "string"
           },
@@ -5021,6 +5175,49 @@
           }
         }
       },
+      "PortalItem": {
+        "type": "object",
+        "description": "One asset in a pickup.",
+        "required": [
+          "asset_id",
+          "filename"
+        ],
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "mime": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "preview_unavailable": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "preview_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A short-lived, rights-checked preview URL, or nothing with a reason."
+          }
+        }
+      },
       "PortalRequest": {
         "type": "object",
         "description": "What a recipient sends. POST rather than GET even for the first look, so the passcode travels in a body —\na passcode in a query string is a passcode in every proxy log on the path.",
@@ -5030,6 +5227,45 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "PortalSetView": {
+        "type": "object",
+        "description": "What the portal shows for an order pickup (Q.13d).\n\nA *set*, which the portal could not render before: `kind = 'order'` points at an order rather than one asset,\nand until now that answered \"this link shares something this portal cannot show yet\".\n\nPer-item previews and per-item refusals, deliberately. An order of forty photographs where two are unlicensed\nis a pickup of thirty-eight, and collapsing that into one refusal would deny the recipient everything they were\nentitled to because of somebody else's paperwork.",
+        "required": [
+          "reference",
+          "purpose",
+          "items"
+        ],
+        "properties": {
+          "downloads_remaining": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PortalItem"
+            }
+          },
+          "purpose": {
+            "type": "string",
+            "description": "Why it was asked for. The recipient is usually the reason it was asked for."
+          },
+          "reference": {
+            "type": "string",
+            "description": "The order's human-quotable reference, so a recipient can say which pickup they mean."
           }
         }
       },

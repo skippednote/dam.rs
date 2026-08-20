@@ -26,17 +26,31 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M0–M3c** Foundation, ingest, metadata/search/rights, delivery/sharing/restore | complete |
 | **F** The UI: browse, detail, upload, filter rail, lightbox, bulk bar, design pass | complete |
 | **F.11b** Share/portal UI, schema administration, metadata types | complete except restore UX |
-| **Q** Acquia parity, 20 slices | Q.1–Q.12 done, Q.13 bar fulfilment; Q.14–Q.20 open |
+| **Q** Acquia parity, 20 slices | Q.1–Q.13 done; Q.14–Q.20 open |
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | schema exists, behaviour unwritten |
 | **M6** Workflow/proofing, annotations, analytics | not started |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** Q.13d order fulfilment (the pickup), then Q.14 portals
+**Next up, in order:** M5 hosted-model enrichment (re-prioritised ahead of Q.14 and M4 — see below)
 → Q.6 comments → Q.7 activity feed → Q.8 versions → Q.9 attachments → Q.10 history → Q.11 conversions →
-Q.12 intended use → Q.13 orders → Q.14 portals → Q.15–Q.19 search → Q.20 sundries → M4 → M5 → M6 → M3d →
-Pre-GA → Entries.
+Q.12 intended use → Q.13 orders → **M5 hosted-model enrichment** → Q.14 portals → Q.15–Q.19 search →
+Q.20 sundries → M4 local AI → M6 → M3d → Pre-GA → Entries.
+
+**Re-prioritised 2026-08-20, at your request: hosted models before local AI.** M5 moves ahead of M4 and ahead of
+the rest of the Q slices. The reasoning holds up independently — M5 needs no model files, no ONNX runtime and no
+GPU, so it is the half of the AI story that can actually run on a laptop and in CI, and §8.2 has the local
+embeddings as the *workhorse* with Claude for "what embeddings cannot see". Building the expensive-per-call half
+first also forces the budget caps (G20) and the provenance/marking surfaces (G2) to exist early, which are the
+things that are painful to retrofit.
+
+**One thing your instruction adds that ARCHITECTURE does not settle:** §8.3 specifies Anthropic, over raw HTTP,
+and builds the cost model on two Anthropic-specific features (batch at 50%, prompt caching at ~90% off a shared
+prefix). ChatGPT and Kimi mean a *provider seam*. The efficient shape, and the one I am building: one
+OpenAI-compatible client covers ChatGPT, Kimi/Moonshot, DeepSeek, Together and most others — they all speak
+`/chat/completions` — and Anthropic keeps its own client because its wire format and its batch/caching economics
+differ. So it is two clients, not one per vendor.
 
 **Open questions parked for a human:** `NEEDS-REVIEW.md` Q.6 (may an admin read a private comment?), item 2.4 (rule-based asset groups) and task 3.x
 (which AWS-native features to rely on rather than build).
@@ -1727,8 +1741,9 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
 - [ ] **Cleanup: `Caller::identity_id` is `Option` but `authorize` guarantees `Some`.** Three call sites re-check
   it (`assets.rs`, `tus.rs`, `engagement.rs`), each with a different refusal, and one of them is unreachable code
   that looks load-bearing. Narrowing the type touches every handler, so it is its own change.
-- [ ] **Q.5c The engagement UI.** Stars in the detail panel, a favourite toggle on the card, a watch toggle, and
-  the two private lists as places you can go.
+- [x] **Q.5c The engagement UI.** Stars in the detail panel, a favourite toggle on the card, a watch toggle, and
+      the two private lists as places you can go. Shipped in `0339f41` (the panel) and `42fac0c` (the grid star and
+      `/favourites`, `/watches`); this box was left unticked by mistake and the commits are the record.
 - [x] **Q.6a Comments: the model, and two gates in the right order.** Migration `0020`, `dam_db::comments`. Every
       read passes the caller's *asset* predicate first and the comment's own visibility second, because the other
       order — find what is addressed to me, then check the assets — discloses the existence of assets through the
@@ -1993,10 +2008,43 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
 
       Twenty-five mutations caught across the model, the API and the two screens.
 
-- [ ] **Q.13d Order fulfilment: the pickup.** Packaging an approved order, the metadata export, and a
-  multi-asset portal view — the share portal handles single-asset shares only today and says so. Until this
-  exists an approved order sits at `approved` with no share, and the interface says "the pickup is being
-  prepared" rather than pretending otherwise. Hiding an expired order's contents belongs here too.
+- [x] **Q.13d Order fulfilment: the pickup.** Approval now makes the pickup in the same request, and the share
+      portal renders a *set* — the case it has said it could not show since 3.4.
+
+      **The pickup is a share of kind `order`** (migration 0026 widens the vocabulary), pointing at the order
+      rather than at a manufactured collection. An order is already a named list of assets with an owner, an
+      expiry and a reason, so a synthetic collection per order would be a shadow object with nothing to add.
+
+      **Per-item previews and per-item refusals.** An order of forty where two are unlicensed is a pickup of
+      thirty-eight; collapsing that into one refusal would deny a recipient what they were entitled to because of
+      somebody else's paperwork. The refused item is still listed by name, because the order is a record of what
+      was asked for.
+
+      **A pickup download lands in the ledger as a declared use** (Q.12), attributed to the requester: they named
+      the channel and an approver agreed to it, which is a stronger record than most downloads carry. The
+      recipient has no identity, so recording them is not an option and recording nobody would lose the only
+      accountable party. Rights are evaluated before the ledger write and before the cap is spent, so a refusal
+      costs the recipient neither.
+
+      **The link is shown once and re-issuable.** A share token is stored as a digest, so the response that mints
+      it is the only readable copy — which the first version of this slice missed entirely: the pickup was created
+      and the token discarded, so an order could be fulfilled that nobody could ever collect. `POST
+      /orders/{id}/fulfil` now re-issues, revoking the previous share so an order never has two live links.
+
+      **The metadata export stops at the tenant's edge.** `GET /orders/{id}/metadata.csv` is for the requester or
+      an approver — somebody signed in exporting metadata they can already read. Putting it in the *pickup* would
+      send descriptive metadata to an outsider, and `field_defs` has no notion of which fields an outsider may
+      see. Recorded in NEEDS-REVIEW.md rather than defaulted.
+
+      Twenty-six mutations caught. Two guards were masking each other — the API and the db layer both refused a
+      re-issue of a non-ready order, so removing either changed nothing observable; the redundant one is gone and
+      the refusal now comes from the layer that owns the invariant. Mutation testing also found a leftover `if
+      false` from an earlier run that had silently disabled the export's audience check; the tree was swept for
+      other residue and is clean.
+
+      **Not done:** a zip. The pickup is a list with a rights-checked download per item, which needs no worker, no
+      archive storage and no second expiry. A single-file archive is a convenience, and `bulk_operations` already
+      reserves `download_zip` for it.
 - [ ] **Q.14 Portals.** Standard, Brand, Video and Channel, branded, over the share-portal foundation.
 - [ ] **Q.15 The built-in facets:** asset status, orientation, average rating, has-attachment. Orientation is
   free — it is a function of dimensions already stored.
@@ -2014,3 +2062,26 @@ storage and usage reports are G19. Entries (the PIM) is a new application and la
 
 Not building: Hootsuite, Mobile, Templates, Video Creator, Syndicate, Digimarc, Google Analytics linkage —
 third-party or separate products, reached through the API and webhooks, which are on the list.
+
+
+## Observed flakes
+
+Failures seen once that were not reproducible, recorded so a later session does not mistake one for a
+regression — and does not claim a fix nobody made.
+
+- **`web/e2e/schema.e2e.ts:372`**, seen once in a full run: passed 96 consecutive repeats and three clean full
+  runs afterwards. Not reproduced, not claimed fixed.
+
+- **`dam-store::s3_conformance::a_plain_http_endpoint_gets_a_client_with_no_tls_at_all`**, seen 2026-08-20 under
+  full-workspace parallel load: `TrustStore configured to enable native roots but no valid root certificates
+  parsed!` from `aws-smithy-http-client`'s rustls provider. Passes in isolation, twice in a row, immediately
+  after. The message comes from reading the *OS* trust store, which this test does not need — the endpoint under
+  test is plain HTTP — so the likely cause is the macOS keychain being briefly unreadable while a dozen test
+  binaries and containers start at once. If it recurs often enough to matter, the fix is to build that client
+  with an explicit empty trust store rather than native roots, since the case is *"no TLS at all"* and native
+  roots are irrelevant to it.
+
+- **Docker vanishing mid-run.** Twice on 2026-08-20 OrbStack stopped during a full suite, which surfaces as
+  `postgres did not accept connections` or `Socket not found: /var/run/docker.sock`. After an OrbStack restart
+  the `/var/run/docker.sock` symlink does not come back, so testcontainers needs
+  `DOCKER_HOST=unix://$HOME/.orbstack/run/docker.sock`. Neither is a code failure; both look like one in a log.

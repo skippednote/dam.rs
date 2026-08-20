@@ -26,6 +26,8 @@ struct Fixture {
     app: axum::Router,
     /// The delivery tenant's schema pool — what the portal reads.
     pool: PgPool,
+    /// The control plane, for the identity an order is placed by.
+    global: PgPool,
     globex: PgPool,
     key: String,
     read_only_key: String,
@@ -68,6 +70,7 @@ async fn fixture() -> Fixture {
         _pg: pg,
         app,
         pool,
+        global: global.clone(),
         globex,
         key,
         read_only_key,
@@ -556,4 +559,302 @@ async fn the_share_contract_holds() {
     an_unlicensed_asset_shares_its_name_but_never_its_bytes(&f).await;
     revoking_kills_the_portal_immediately(&f).await;
     a_eula_gated_share_fails_closed_until_the_flow_exists(&f).await;
+    an_order_pickup_renders_the_whole_set(&f).await;
+    a_pickup_download_records_the_declared_use(&f).await;
+    an_asset_share_is_not_a_pickup(&f).await;
+    a_pickup_refuses_an_asset_that_is_not_in_it(&f).await;
+    one_unlicensed_item_does_not_deny_the_rest(&f).await;
+}
+
+// ─── order pickups (Q.13d) ──────────────────────────────────────────────────
+
+/// An order and its pickup share, made the way fulfilment makes them, returning (order id, token).
+async fn order_pickup(f: &Fixture, assets: &[Uuid], channel: Option<&str>) -> (Uuid, String) {
+    let requester: Uuid = sqlx::query_scalar("SELECT id FROM dam_global.identities LIMIT 1")
+        .fetch_one(&f.global)
+        .await
+        .expect("an identity");
+    let order = dam_db::orders::place(
+        &mut f.pool.acquire().await.expect("conn"),
+        &dam_db::orders::NewOrder {
+            requested_by: requester,
+            purpose: "The spring brochure.".to_owned(),
+            channel: channel.map(str::to_owned),
+            territory: channel.map(|_| "GB".to_owned()),
+            conversion_key: None,
+            include_metadata: false,
+            recipients: vec!["agency@example.com".to_owned()],
+            asset_ids: assets.to_vec(),
+        },
+        &everything(),
+    )
+    .await
+    .expect("place");
+    dam_db::orders::approve(
+        &mut f.pool.acquire().await.expect("conn"),
+        order.id,
+        requester,
+        None,
+        &everything(),
+        14,
+        chrono::Utc::now(),
+    )
+    .await
+    .expect("approve");
+
+    let share = dam_db::shares::create_on(
+        &mut f.pool.acquire().await.expect("conn"),
+        &dam_db::shares::ShareSpec {
+            kind: "order",
+            target_id: Some(order.id),
+            search_query: None,
+            passcode: None,
+            expires_at: None,
+            max_downloads: Some(10),
+            allow_original: true,
+            requires_eula: false,
+            created_by: Some(requester),
+        },
+    )
+    .await
+    .expect("share");
+    dam_db::orders::mark_ready(
+        &mut f.pool.acquire().await.expect("conn"),
+        order.id,
+        share.id,
+    )
+    .await
+    .expect("ready");
+    (order.id, share.token().to_owned())
+}
+
+fn everything() -> dam_core::policy::AccessPredicate {
+    dam_core::policy::compile(
+        &dam_core::policy::Grants::from(vec![dam_core::policy::Grant {
+            permissions: vec!["asset:read".to_owned(), "asset:download".to_owned()],
+            asset_group_ids: vec![],
+            all_asset_groups: true,
+            valid_from: None,
+            valid_until: None,
+            requires_eula: false,
+            eula_accepted: true,
+        }]),
+        dam_core::policy::Action::Download,
+        chrono::Utc::now(),
+    )
+}
+
+async fn an_order_pickup_renders_the_whole_set(f: &Fixture) {
+    // The case the portal could not answer before: `kind = 'order'` points at a set, and until this slice that
+    // was "this link shares something this portal cannot show yet".
+    let one = licensed_asset(f, "pickup-one").await;
+    let two = licensed_asset(f, "pickup-two").await;
+    let (_, token) = order_pickup(f, &[one, two], Some("print")).await;
+
+    let response = send(&f.app, public(&format!("/share/{token}/set"), json!({}))).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json(response).await;
+    assert!(
+        body["reference"]
+            .as_str()
+            .is_some_and(|reference| reference.starts_with("ORD-")),
+        "{body}"
+    );
+    // The reason travels to the recipient, who is usually the reason it was asked for.
+    assert!(
+        body["purpose"]
+            .as_str()
+            .is_some_and(|p| p.contains("brochure")),
+        "{body}"
+    );
+    let items = body["items"].as_array().expect("items");
+    assert_eq!(items.len(), 2, "{body}");
+    // A rights-checked preview per item, and the names as ordered.
+    assert!(
+        items.iter().all(|item| item["preview_url"].is_string()),
+        "{body}"
+    );
+    assert!(
+        items.iter().all(|item| item["filename"].is_string()),
+        "{body}"
+    );
+
+    // The single-asset portal answers this token by pointing at the right route rather than 404ing blankly, and
+    // never by reading an order id as an asset id.
+    let wrong = send(&f.app, public(&format!("/share/{token}"), json!({}))).await;
+    assert_eq!(wrong.status(), StatusCode::NOT_FOUND);
+    let reason = json(wrong).await;
+    assert!(
+        reason["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("order pickup")),
+        "{reason}"
+    );
+}
+
+async fn a_pickup_download_records_the_declared_use(f: &Fixture) {
+    // The loop Q.12 opened, closed: a pickup's download lands in the ledger as a *declared* use, because the
+    // requester named the channel when they placed the order and an approver agreed to it.
+    let one = licensed_asset(f, "pickup-ledger").await;
+    let (order_id, token) = order_pickup(f, &[one], Some("print")).await;
+
+    let response = send(
+        &f.app,
+        public(&format!("/share/{token}/items/{one}/download"), json!({})),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json(response).await;
+    assert!(
+        body["url"].as_str().is_some_and(|url| url.contains("/d/")),
+        "{body}"
+    );
+
+    let rows = dam_db::usage::for_asset(
+        &mut f.pool.acquire().await.expect("conn"),
+        one,
+        &everything(),
+        10,
+    )
+    .await
+    .expect("ledger");
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].channel.as_deref(), Some("print"));
+    assert_eq!(rows[0].territory.as_deref(), Some("GB"));
+    assert!(
+        rows[0].declared,
+        "a pickup download was recorded as an undeclared use: {rows:?}"
+    );
+    // Attributed to the person who asked and stated the use. The recipient has no identity here, so recording
+    // them is not an option and recording nobody would lose the only accountable party.
+    assert!(rows[0].recorded_by.is_some(), "{rows:?}");
+
+    // And the order is collected — idempotently, so a second file is not a second collection.
+    let state: String = sqlx::query_scalar("SELECT state FROM orders WHERE id = $1")
+        .bind(order_id)
+        .fetch_one(&f.pool)
+        .await
+        .expect("state");
+    assert_eq!(state, "collected");
+}
+
+async fn an_asset_share_is_not_a_pickup(f: &Fixture) {
+    // The two kinds must not be confusable. An asset share arriving at the set route is refused *as not a
+    // pickup* rather than answered with a generic absence — the message is the only observable difference, since
+    // both are 404s, and a recipient debugging a link deserves the true reason.
+    let one = licensed_asset(f, "not-a-pickup").await;
+    let (_, token) = share(f, json!({ "asset_id": one })).await;
+
+    let response = send(&f.app, public(&format!("/share/{token}/set"), json!({}))).await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = json(response).await;
+    assert!(
+        body["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("not an order pickup")),
+        "an asset share at the set route is answered as though the pickup vanished: {body}"
+    );
+
+    // And the item-download route likewise: it is for pickups, and an asset share has no items. Asserted on the
+    // *reason* as well, for the same purpose as above — without the kind check the order lookup refuses anyway,
+    // so the message is the whole difference, and "this pickup is no longer available" would be a lie about a
+    // link that was never a pickup.
+    let item = send(
+        &f.app,
+        public(&format!("/share/{token}/items/{one}/download"), json!({})),
+    )
+    .await;
+    assert_eq!(item.status(), StatusCode::NOT_FOUND);
+    let body = json(item).await;
+    assert!(
+        body["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("not an order pickup")),
+        "{body}"
+    );
+}
+
+async fn a_pickup_refuses_an_asset_that_is_not_in_it(f: &Fixture) {
+    // A pickup is an agreement about a specific set. Letting a recipient name any id would turn one approval
+    // into a key to the library, so the id is checked against the order's items.
+    let inside = licensed_asset(f, "pickup-inside").await;
+    let outside = licensed_asset(f, "pickup-outside").await;
+    let (_, token) = order_pickup(f, &[inside], None).await;
+
+    let response = send(
+        &f.app,
+        public(
+            &format!("/share/{token}/items/{outside}/download"),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    // And nothing was consumed or recorded for it.
+    let rows = dam_db::usage::for_asset(
+        &mut f.pool.acquire().await.expect("conn"),
+        outside,
+        &everything(),
+        10,
+    )
+    .await
+    .expect("ledger");
+    assert!(rows.is_empty(), "{rows:?}");
+}
+
+async fn one_unlicensed_item_does_not_deny_the_rest(f: &Fixture) {
+    // An order of forty where two are unlicensed is a pickup of thirty-eight. Collapsing that into one refusal
+    // would deny the recipient what they were entitled to because of somebody else's paperwork.
+    let good = licensed_asset(f, "pickup-good").await;
+    let bad = unlicensed_asset(f, "pickup-bad").await;
+    let (_, token) = order_pickup(f, &[good, bad], None).await;
+
+    let response = send(&f.app, public(&format!("/share/{token}/set"), json!({}))).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json(response).await;
+    let items = body["items"].as_array().expect("items");
+    assert_eq!(items.len(), 2, "{body}");
+    let refused = items
+        .iter()
+        .find(|item| item["preview_url"].is_null())
+        .expect("the unlicensed one");
+    assert!(
+        refused["preview_unavailable"]
+            .as_str()
+            .is_some_and(|why| why.contains("not licensed")),
+        "{body}"
+    );
+    // Its name is still listed — the order is a record of what was asked for — and the other one is collectable.
+    assert!(refused["filename"].is_string(), "{body}");
+    let allowed = send(
+        &f.app,
+        public(&format!("/share/{token}/items/{good}/download"), json!({})),
+    )
+    .await;
+    assert_eq!(allowed.status(), StatusCode::OK);
+
+    // The unlicensed one is refused at the item route too, with the reason rather than a flat 404.
+    let denied = send(
+        &f.app,
+        public(&format!("/share/{token}/items/{bad}/download"), json!({})),
+    )
+    .await;
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+
+    // And that refusal wrote *nothing* to the ledger. This is the whole reason rights are evaluated before the
+    // record rather than left to the mint: a denied attempt is not a download, and recording one would make a
+    // licence cap count refusals against the licence that refused them. Mutation testing found this gap — with
+    // the pre-check removed the mint still refuses, so the only visible difference is the phantom ledger row.
+    let rows = dam_db::usage::for_asset(
+        &mut f.pool.acquire().await.expect("conn"),
+        bad,
+        &everything(),
+        10,
+    )
+    .await
+    .expect("ledger");
+    assert!(
+        rows.is_empty(),
+        "a refused pickup download is in the ledger: {rows:?}"
+    );
 }

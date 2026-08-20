@@ -74,7 +74,7 @@ async function connect(
 		decisionRefusal?: { status: number; reason: string };
 	} = {}
 ) {
-	const recorder = { decisions: [] as string[] };
+	const recorder = { decisions: [] as string[], issued: 0 };
 
 	await page.addInitScript(() => {
 		localStorage.setItem('damrs.api_key', 'damrs_test_key');
@@ -98,6 +98,17 @@ async function connect(
 		if (path.startsWith('/orders/') && method === 'POST') {
 			const [, , id, decision] = path.split('/');
 			recorder.decisions.push(`${id}:${decision}`);
+			if (decision === 'fulfil') {
+				// A *different* link each time: a share token is stored as a digest, so re-issuing is the only way
+				// to recover one, and handing back the same string would mean the previous link still worked.
+				recorder.issued += 1;
+				return route.fulfill({
+					json: {
+						...order({ state: 'ready', decided_by: { id: 'p-ada', name: 'Ada', email: 'a@x' } }),
+						pickup_url: `https://dam.example.com/share/fresh-${recorder.issued}`
+					}
+				});
+			}
 			if (options.decisionRefusal) {
 				return route.fulfill({
 					status: options.decisionRefusal.status,
@@ -109,7 +120,13 @@ async function connect(
 			// Emptying both lists afterwards, which is what a decided order does to a queue.
 			options.queue = [];
 			options.mine = [order({ state, decided_by: { id: 'p-ada', name: 'Ada', email: 'a@x' } })];
-			return route.fulfill({ json: options.mine[0] });
+			return route.fulfill({
+				json: {
+					...options.mine[0],
+					// Only an approval mints a pickup, and only that response carries it.
+					...(state === 'approved' ? { pickup_url: 'https://dam.example.com/share/minted' } : {})
+				}
+			});
 		}
 		return route.fulfill({ status: 404, json: {} });
 	});
@@ -149,7 +166,87 @@ test('an approver reads the reason and decides', async ({ page }) => {
 	expect(recorder.decisions).toEqual(['o-ORD-000001:approve']);
 });
 
-test('an approved order does not claim the files are ready', async ({ page }) => {
+test('a ready pickup says so and offers the metadata it was asked for', async ({ page }) => {
+	await connect(page, {
+		mine: [
+			order({
+				state: 'ready',
+				include_metadata: true,
+				decided_by: { id: 'p-ada', name: 'Ada', email: 'a@x' },
+				expires_at: '2026-09-01T09:00:00Z'
+			})
+		]
+	});
+	await page.goto('/orders');
+
+	await expect(page.getByText('Ready to collect')).toBeVisible();
+	// The export, as a link the browser follows: fetching it in script would pull a spreadsheet through the page
+	// only to hand it back.
+	const link = page.getByRole('link', { name: 'Download the metadata (CSV)' });
+	await expect(link).toHaveAttribute('href', /\/orders\/o-ORD-000001\/metadata\.csv$/);
+	await expect(link).toHaveAttribute('download', '');
+});
+
+test('the pickup link is shown once, and re-issuing replaces it', async ({ page }) => {
+	// A share token is stored as a digest, so the response that mints it is the only readable copy. This page
+	// therefore shows it once and keeps it nowhere — and says how to get another, because otherwise a lost link
+	// means an order nobody can collect.
+	const recorder = await connect(page, {
+		queue: [order()],
+		mine: [order({ state: 'ready', decided_by: { id: 'p-ada', name: 'Ada', email: 'a@x' } })]
+	});
+	await page.goto('/orders');
+
+	// Before anything is minted in this session: the honest note, not a broken link.
+	await expect(page.getByText('The pickup link was shown once')).toBeVisible();
+
+	await page.getByRole('button', { name: 'Issue a new pickup link' }).first().click();
+	await expect(page.getByText('has a new pickup link')).toBeVisible();
+	await expect(page.getByText('https://dam.example.com/share/fresh-1')).toBeVisible();
+	// Addressed: the recipients are named beside the link, because somebody has to send it. Matched on the
+	// sentence rather than the address alone — the queue row lists recipients too, and a bare address matches both.
+	await expect(page.getByText('Send this to agency@example.com')).toBeVisible();
+	expect(recorder.decisions.some((entry) => entry.endsWith(':fulfil'))).toBe(true);
+
+	// Re-issuing again replaces what is shown, rather than accumulating links.
+	await page.getByRole('button', { name: 'Issue a new pickup link' }).first().click();
+	await expect(page.getByText('https://dam.example.com/share/fresh-2')).toBeVisible();
+	await expect(page.getByText('https://dam.example.com/share/fresh-1')).toHaveCount(0);
+});
+
+test('a reader is not offered a re-issue', async ({ page }) => {
+	// The server refuses it, and a button that always 403s teaches people to ignore errors. Whether the queue
+	// loaded is how the page knows.
+	await connect(page, {
+		queue: null,
+		mine: [order({ state: 'ready', decided_by: { id: 'p-ada', name: 'Ada', email: 'a@x' } })]
+	});
+	await page.goto('/orders');
+
+	await expect(page.getByText('Ready to collect')).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Issue a new pickup link' })).toHaveCount(0);
+});
+
+test('a pickup that was not asked to include metadata offers none', async ({ page }) => {
+	// The flag means something. Offering an export nobody asked for is a link that produces a file they then
+	// wonder about.
+	await connect(page, {
+		mine: [
+			order({
+				state: 'ready',
+				include_metadata: false,
+				decided_by: { id: 'p-ada', name: 'Ada', email: 'a@x' },
+				expires_at: '2026-09-01T09:00:00Z'
+			})
+		]
+	});
+	await page.goto('/orders');
+
+	await expect(page.getByText('Ready to collect')).toBeVisible();
+	await expect(page.getByRole('link', { name: /metadata/ })).toHaveCount(0);
+});
+
+test('an approved order whose pickup failed says it can be retried', async ({ page }) => {
 	// The pickup is a later slice. Saying "approved, being prepared" is the honest version; a download button
 	// would be the interface promising something the system has not done.
 	await connect(page, {
@@ -166,9 +263,12 @@ test('an approved order does not claim the files are ready', async ({ page }) =>
 
 	await expect(page.getByText('Approved by Ada Lovelace')).toBeVisible();
 	await expect(page.getByText('Print only.')).toBeVisible();
-	await expect(page.getByText('The pickup is being prepared')).toBeVisible();
+	// `approved` is no longer the ordinary outcome — approval makes the pickup in the same request — so a row in
+	// this state is the retryable failure, and saying so beats looking stuck for a reason nobody can see.
+	await expect(page.getByText('could not be prepared')).toBeVisible();
 	await expect(page.getByText('collect by')).toBeVisible();
-	await expect(page.getByRole('button', { name: /Download/ })).toHaveCount(0);
+	// And nothing to collect, because there is nothing yet.
+	await expect(page.getByText('Ready to collect')).toHaveCount(0);
 });
 
 test('an expired pickup says so rather than reading ready', async ({ page }) => {
@@ -188,8 +288,10 @@ test('an expired pickup says so rather than reading ready', async ({ page }) => 
 
 	await expect(page.getByText('expired', { exact: true })).toBeVisible();
 	await expect(page.getByText('ready', { exact: true })).toHaveCount(0);
-	// And no invitation to collect something that cannot be collected.
+	// And no invitation to collect something that cannot be collected — neither the deadline nor the link.
 	await expect(page.getByText('collect by')).toHaveCount(0);
+	await expect(page.getByText('Ready to collect')).toHaveCount(0);
+	await expect(page.getByRole('link', { name: /metadata/ })).toHaveCount(0);
 });
 
 test('a refusal is shown in the server’s own words', async ({ page }) => {

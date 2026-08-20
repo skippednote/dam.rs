@@ -401,3 +401,30 @@ it is a change to the access model rather than to this feature.
 **Not built yet:** fulfilment. An approved order sits at `approved` with no share, and the interface says
 "the pickup is being prepared" rather than pretending otherwise. That is the next slice: packaging, the
 multi-asset portal view (the portal currently handles single-asset shares only), and the metadata export.
+
+---
+
+## The metadata export stops at the tenant's edge (Q.13d)
+
+**Not blocking.** Implemented the narrow way, and flagged because the wider way is what Acquia does and it needs a
+concept damrs does not have.
+
+An order can be placed with `include_metadata`, and `GET /orders/{id}/metadata.csv` gives the requester (or an
+approver) a spreadsheet of the ordered assets: the file facts plus every declared field, one column per
+`field_defs.key`. That is safe by construction — somebody signed in is exporting metadata they can already read
+in the DAM, which is not a disclosure at all.
+
+**What it deliberately does not do is put that CSV in the pickup.** An external recipient collecting an order
+would then receive descriptive metadata — captions, credits, internal notes, whatever a tenant keeps in its own
+fields — and `field_defs` has no notion of which fields an outsider may see. The options were:
+
+1. **Invent a visibility flag** (`field_defs.external_visible`, say) and default it closed. Then the export is
+   useful in the portal for the fields somebody deliberately opened, and every tenant has a new column to
+   curate. This is the real answer, and it is a schema change plus a screen.
+2. **Export everything to the portal.** One line of code, and the first time a tenant discovers their internal
+   notes went to an agency it is a support call at best.
+3. **Keep it inside the tenant** — what I did. The requester gets the spreadsheet and forwards what they choose,
+   which is the status quo made explicit rather than automated.
+
+If you want (1), say so and it is a slice: a column, an admin toggle beside the existing field settings, and the
+portal gaining the export. I did not want to pick a default for what an outsider may read.

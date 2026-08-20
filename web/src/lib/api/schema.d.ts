@@ -739,6 +739,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/orders/{id}/fulfil": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Creates an approved order's pickup, moving it to `ready`.
+         * @description Called automatically the moment an approval commits, and exposed so it can be *retried*: the decision and the
+         *     pickup are two writes, and an approver should not have to decide twice because the second one failed. That is
+         *     what keeps `approved` a meaningful state rather than a transient one.
+         *
+         *     The pickup is a share link — see the migration and NEEDS-REVIEW.md on why that rather than a new kind of
+         *     grant. It inherits the order's expiry, so the window an approver granted is the window the link has.
+         */
+        post: operations["fulfil"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/orders/{id}/reject": {
         parameters: {
             query?: never;
@@ -924,6 +949,53 @@ export interface paths {
         put?: never;
         /** Consumes one download and mints the URL for it. */
         post: operations["download"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/share/{token}/items/{asset_id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Consumes one download from an order pickup, for one named item.
+         * @description The asset id is in the path and checked against the order's items — a pickup is an agreement about a specific
+         *     set, and letting a recipient name any id would turn one approval into a key to the library.
+         *
+         *     The download lands in the usage ledger (Q.12) as a *declared* use, attributed to the person who asked for the
+         *     order. They named the channel and territory when they placed it and an approver agreed to it, which is a
+         *     stronger record than most downloads carry. The recipient collecting has no identity here, so recording them is
+         *     not an option; recording the requester is the honest answer to "who is accountable for this copy".
+         */
+        post: operations["download_item"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/share/{token}/set": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resolves an order pickup: the set, with a preview for each item.
+         * @description A separate route from [`portal`] because the two answers have different shapes, and one endpoint returning
+         *     either would make every client branch on which fields are present.
+         */
+        post: operations["portal_set"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1864,6 +1936,15 @@ export interface components {
             id: string;
             include_metadata: boolean;
             items: components["schemas"]["OrderItemView"][];
+            /**
+             * @description The pickup URL, **only** on the response that just minted it.
+             *
+             *     A share token is stored as a digest, so it cannot be shown again — the same property that makes a leaked
+             *     database not a leaked set of links. Anybody who needs the link again re-issues the pickup, which revokes
+             *     the previous one; see [`fulfil`]. Absent on every ordinary read, which is why it is optional rather than a
+             *     separate response type.
+             */
+            pickup_url?: string | null;
             purpose: string;
             recipients: string[];
             /** @description Human-quotable, per tenant: `ORD-000123`. */
@@ -1922,12 +2003,45 @@ export interface components {
             /** @description A short-lived delivery URL. Fetch it promptly; the token, not this URL, is what the recipient keeps. */
             url: string;
         };
+        /** @description One asset in a pickup. */
+        PortalItem: {
+            /** Format: uuid */
+            asset_id: string;
+            /** Format: int64 */
+            bytes?: number | null;
+            filename: string;
+            mime?: string | null;
+            preview_unavailable?: string | null;
+            /** @description A short-lived, rights-checked preview URL, or nothing with a reason. */
+            preview_url?: string | null;
+        };
         /**
          * @description What a recipient sends. POST rather than GET even for the first look, so the passcode travels in a body —
          *     a passcode in a query string is a passcode in every proxy log on the path.
          */
         PortalRequest: {
             passcode?: string | null;
+        };
+        /**
+         * @description What the portal shows for an order pickup (Q.13d).
+         *
+         *     A *set*, which the portal could not render before: `kind = 'order'` points at an order rather than one asset,
+         *     and until now that answered "this link shares something this portal cannot show yet".
+         *
+         *     Per-item previews and per-item refusals, deliberately. An order of forty photographs where two are unlicensed
+         *     is a pickup of thirty-eight, and collapsing that into one refusal would deny the recipient everything they were
+         *     entitled to because of somebody else's paperwork.
+         */
+        PortalSetView: {
+            /** Format: int32 */
+            downloads_remaining?: number | null;
+            /** Format: date-time */
+            expires_at?: string | null;
+            items: components["schemas"]["PortalItem"][];
+            /** @description Why it was asked for. The recipient is usually the reason it was asked for. */
+            purpose: string;
+            /** @description The order's human-quotable reference, so a recipient can say which pickup they mean. */
+            reference: string;
         };
         /** @description What the portal shows. */
         PortalView: {
@@ -4055,6 +4169,41 @@ export interface operations {
             };
         };
     };
+    fulfil: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderView"];
+                };
+            };
+            /** @description No such order */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not an approved order awaiting a pickup */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     reject: {
         parameters: {
             query?: never;
@@ -4611,6 +4760,92 @@ export interface operations {
                 content?: never;
             };
             /** @description No such share — or revoked, expired, exhausted */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    download_item: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PortalRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PortalDownload"];
+                };
+            };
+            /** @description A passcode is required or wrong */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Rights refuse distribution of this asset */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such share, or that asset is not in this pickup */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    portal_set: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PortalRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PortalSetView"];
+                };
+            };
+            /** @description A passcode is required or wrong */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such share, or not an order pickup */
             404: {
                 headers: {
                     [name: string]: unknown;

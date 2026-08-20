@@ -421,6 +421,16 @@ export async function loadOrderQueue(): Promise<Order[]> {
 	return request_<Order[]>('/orders/queue');
 }
 
+/**
+ * Re-issues an order's pickup, returning a fresh link and revoking the previous one.
+ *
+ * The only way to recover a lost pickup URL: a share token is stored as a digest, so the response that mints it
+ * is the one place it exists in readable form. Manage scope.
+ */
+export async function reissuePickup(id: string): Promise<Order> {
+	return request_<Order>(`/orders/${id}/fulfil`, { method: 'POST' });
+}
+
 /** Approves, refuses or withdraws an order. */
 export async function decideOrder(
 	id: string,

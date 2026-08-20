@@ -67,6 +67,11 @@ pub fn router(state: ShareState) -> Router {
         .route("/shares", post(create).get(list))
         .route("/shares/{share_id}", delete(revoke))
         .route("/share/{token}", post(portal))
+        .route("/share/{token}/set", post(portal_set))
+        .route(
+            "/share/{token}/items/{asset_id}/download",
+            post(download_item),
+        )
         .route("/share/{token}/download", post(download))
         .with_state(Arc::new(state))
 }
@@ -295,6 +300,37 @@ pub struct PortalView {
     pub expires_at: Option<DateTime<Utc>>,
 }
 
+/// What the portal shows for an order pickup (Q.13d).
+///
+/// A *set*, which the portal could not render before: `kind = 'order'` points at an order rather than one asset,
+/// and until now that answered "this link shares something this portal cannot show yet".
+///
+/// Per-item previews and per-item refusals, deliberately. An order of forty photographs where two are unlicensed
+/// is a pickup of thirty-eight, and collapsing that into one refusal would deny the recipient everything they were
+/// entitled to because of somebody else's paperwork.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct PortalSetView {
+    /// The order's human-quotable reference, so a recipient can say which pickup they mean.
+    pub reference: String,
+    /// Why it was asked for. The recipient is usually the reason it was asked for.
+    pub purpose: String,
+    pub items: Vec<PortalItem>,
+    pub downloads_remaining: Option<i32>,
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+/// One asset in a pickup.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct PortalItem {
+    pub asset_id: Uuid,
+    pub filename: String,
+    pub mime: Option<String>,
+    pub bytes: Option<i64>,
+    /// A short-lived, rights-checked preview URL, or nothing with a reason.
+    pub preview_url: Option<String>,
+    pub preview_unavailable: Option<String>,
+}
+
 /// What the portal needs to say about the file: filename, mime, bytes, width, height.
 type AssetFacts = (String, String, i64, Option<i32>, Option<i32>);
 
@@ -318,12 +354,22 @@ pub async fn portal(
     let now = state.delivery.now();
     let share = resolve_for_portal(&state, &token, request.passcode.as_deref(), now).await?;
     let asset_id = share.target_id.ok_or_else(|| {
-        // A collection or search share. The portal renders assets; the wider kinds need their own view.
+        // A collection or search share. Those still need their own view; an order pickup is handled by
+        // `portal_set` below, which is a *different route* because the two answers have different shapes and one
+        // endpoint returning either would make every client branch on a field.
         Failure::Portal(
             StatusCode::NOT_FOUND,
             "this link shares something this portal cannot show yet".to_owned(),
         )
     })?;
+    if share.kind == "order" {
+        // Answered rather than half-rendered: an order share's `target_id` is an order, and reading it as an
+        // asset id would produce a confident 404 about an asset that never existed.
+        return Err(Failure::Portal(
+            StatusCode::NOT_FOUND,
+            "this is an order pickup; ask for /share/{token}/set".to_owned(),
+        ));
+    }
 
     let row: Option<AssetFacts> = sqlx::query_as(
         "SELECT filename, mime, bytes, width, height FROM assets \
@@ -373,6 +419,126 @@ pub async fn portal(
         preview_url,
         preview_unavailable,
         download_allowed: true,
+        downloads_remaining: share
+            .max_downloads
+            .map(|max| (max - share.download_count).max(0)),
+        expires_at: share.expires_at,
+    }))
+}
+
+/// Resolves an order pickup: the set, with a preview for each item.
+///
+/// A separate route from [`portal`] because the two answers have different shapes, and one endpoint returning
+/// either would make every client branch on which fields are present.
+#[utoipa::path(
+    post,
+    path = "/share/{token}/set",
+    request_body = PortalRequest,
+    responses(
+        (status = 200, body = PortalSetView),
+        (status = 401, description = "A passcode is required or wrong"),
+        (status = 404, description = "No such share, or not an order pickup"),
+    ),
+    tag = "shares",
+)]
+pub async fn portal_set(
+    State(state): State<Arc<ShareState>>,
+    Path(token): Path<String>,
+    Json(request): Json<PortalRequest>,
+) -> Result<Json<PortalSetView>, Failure> {
+    let now = state.delivery.now();
+    let share = resolve_for_portal(&state, &token, request.passcode.as_deref(), now).await?;
+    let order_id = match (share.kind.as_str(), share.target_id) {
+        ("order", Some(id)) => id,
+        // The same flat answer a dead token gets. A recipient of an asset share learns nothing about what other
+        // kinds of link exist.
+        _ => {
+            return Err(Failure::Portal(
+                StatusCode::NOT_FOUND,
+                "this link is not an order pickup".to_owned(),
+            ));
+        }
+    };
+
+    // The delivery pool, not a `TenantConn`: the portal serves exactly one tenant and that pool is already
+    // pinned to its schema — the same reason every other read in this module uses it. A `TenantConn` here would
+    // need a slug this state does not carry, for no gain.
+    let mut conn = state
+        .delivery
+        .pool()
+        .acquire()
+        .await
+        .map_err(dam_db::Error::from)?;
+    let order = dam_db::orders::for_share(&mut conn, share.id).await?;
+    let Some(order) = order.filter(|order| order.id == order_id) else {
+        // The share names an order that is gone. Flat 404: the recipient learns the link no longer works, not
+        // what used to be behind it.
+        return Err(Failure::Portal(
+            StatusCode::NOT_FOUND,
+            "this pickup is no longer available".to_owned(),
+        ));
+    };
+
+    // A preview per item, each rights-checked on its own. An order of forty where two are unlicensed is a pickup
+    // of thirty-eight; collapsing that into one refusal would deny the recipient what they were entitled to
+    // because of somebody else's paperwork.
+    let mut items = Vec::with_capacity(order.items.len());
+    for item in &order.items {
+        let facts: Option<AssetFacts> = sqlx::query_as(
+            "SELECT filename, mime, bytes, width, height FROM assets              WHERE id = $1 AND deleted_at IS NULL",
+        )
+        .bind(item.asset_id)
+        .fetch_optional(state.delivery.pool())
+        .await
+        .map_err(dam_db::Error::from)?;
+
+        let (mime, bytes) = match &facts {
+            Some((_, mime, bytes, _, _)) => (Some(mime.clone()), Some(*bytes)),
+            // Deleted since the order was placed. Listed with the name it was ordered under and nothing else,
+            // because the order is still a record of what was asked for.
+            None => (None, None),
+        };
+        let (preview_url, preview_unavailable) = if facts.is_none() {
+            (None, Some("this asset has been deleted".to_owned()))
+        } else {
+            match delivery::issue_for_share(
+                &state.delivery,
+                item.asset_id,
+                "web-2048",
+                &portal_usage(),
+                None,
+                Some(share.id),
+                PORTAL_PREVIEW_TTL,
+                now,
+            )
+            .await
+            {
+                Ok(minted) => (Some(state.delivery.url_for(&minted)), None),
+                Err(delivery::Refusal::RightsDenied { .. }) => (
+                    None,
+                    Some("this asset is not licensed for distribution".to_owned()),
+                ),
+                Err(delivery::Refusal::NotDeliverable) => {
+                    (None, Some("no preview has been rendered yet".to_owned()))
+                }
+                Err(_) => return Err(Failure::Internal),
+            }
+        };
+
+        items.push(PortalItem {
+            asset_id: item.asset_id,
+            filename: item.filename.clone(),
+            mime,
+            bytes,
+            preview_url,
+            preview_unavailable,
+        });
+    }
+
+    Ok(Json(PortalSetView {
+        reference: order.reference,
+        purpose: order.purpose,
+        items,
         downloads_remaining: share
             .max_downloads
             .map(|max| (max - share.download_count).max(0)),
@@ -444,6 +610,139 @@ pub async fn download(
     })?;
 
     let count = shares::consume_download(state.delivery.pool(), share.id, now).await?;
+
+    Ok(Json(PortalDownload {
+        url: state.delivery.url_for(&minted),
+        downloads_remaining: share.max_downloads.map(|max| (max - count).max(0)),
+    }))
+}
+
+/// Consumes one download from an order pickup, for one named item.
+///
+/// The asset id is in the path and checked against the order's items — a pickup is an agreement about a specific
+/// set, and letting a recipient name any id would turn one approval into a key to the library.
+///
+/// The download lands in the usage ledger (Q.12) as a *declared* use, attributed to the person who asked for the
+/// order. They named the channel and territory when they placed it and an approver agreed to it, which is a
+/// stronger record than most downloads carry. The recipient collecting has no identity here, so recording them is
+/// not an option; recording the requester is the honest answer to "who is accountable for this copy".
+#[utoipa::path(
+    post,
+    path = "/share/{token}/items/{asset_id}/download",
+    request_body = PortalRequest,
+    responses(
+        (status = 200, body = PortalDownload),
+        (status = 401, description = "A passcode is required or wrong"),
+        (status = 403, description = "Rights refuse distribution of this asset"),
+        (status = 404, description = "No such share, or that asset is not in this pickup"),
+    ),
+    tag = "shares",
+)]
+pub async fn download_item(
+    State(state): State<Arc<ShareState>>,
+    Path((token, asset_id)): Path<(String, Uuid)>,
+    Json(request): Json<PortalRequest>,
+) -> Result<Json<PortalDownload>, Failure> {
+    let now = state.delivery.now();
+    let share = resolve_for_portal(&state, &token, request.passcode.as_deref(), now).await?;
+    if share.kind != "order" {
+        return Err(Failure::Portal(
+            StatusCode::NOT_FOUND,
+            "this link is not an order pickup".to_owned(),
+        ));
+    }
+
+    let mut conn = state
+        .delivery
+        .pool()
+        .acquire()
+        .await
+        .map_err(dam_db::Error::from)?;
+    let order = dam_db::orders::for_share(&mut conn, share.id).await?;
+    let Some(order) = order else {
+        return Err(Failure::Portal(
+            StatusCode::NOT_FOUND,
+            "this pickup is no longer available".to_owned(),
+        ));
+    };
+    if !order.items.iter().any(|item| item.asset_id == asset_id) {
+        // Not in the set. The same flat answer a dead token gets: a recipient learns nothing about which assets
+        // exist by naming ids at a pickup.
+        return Err(Failure::Portal(
+            StatusCode::NOT_FOUND,
+            "that asset is not in this pickup".to_owned(),
+        ));
+    }
+
+    // The format the order was approved for. An approver who agreed to a 2048px JPEG did not agree to the master,
+    // which is also why `allow_original` was set from the same field at fulfilment.
+    let transform = order
+        .conversion_key
+        .clone()
+        .unwrap_or_else(|| dam_media::profiles::ORIGINAL.to_owned());
+
+    // The usage the requester declared, or the same defaults the authenticated download uses.
+    let usage = dam_core::rights_eval::Usage {
+        channel: order
+            .channel
+            .clone()
+            .unwrap_or_else(|| "internal".to_owned()),
+        territory: order
+            .territory
+            .clone()
+            .unwrap_or_else(|| "WORLD".to_owned()),
+    };
+    let declared = order.channel.is_some() && order.territory.is_some();
+
+    // Rights first, then the ledger, then the count: a refusal must spend neither one of the recipient's
+    // downloads nor a line in the ledger, and an unrecorded download would make a cap under-count.
+    let evaluation = dam_db::rights::evaluate(state.delivery.pool(), asset_id, &usage, now).await?;
+    if !evaluation.permits_distribution() {
+        return Err(Failure::Portal(
+            StatusCode::FORBIDDEN,
+            "this asset is not licensed for distribution".to_owned(),
+        ));
+    }
+
+    dam_db::usage::record_download(
+        &mut conn,
+        &dam_db::usage::NewDownload {
+            asset_id,
+            channel: usage.channel.clone(),
+            territory: usage.territory.clone(),
+            license_scope_id: evaluation.consuming_scope,
+            declared,
+            recorded_by: Some(order.requested_by),
+        },
+    )
+    .await?;
+
+    let minted = delivery::issue_for_share(
+        &state.delivery,
+        asset_id,
+        &transform,
+        &usage,
+        None,
+        Some(share.id),
+        PORTAL_DOWNLOAD_TTL,
+        now,
+    )
+    .await
+    .map_err(|refusal| match refusal {
+        delivery::Refusal::RightsDenied { .. } => Failure::Portal(
+            StatusCode::FORBIDDEN,
+            "this asset is not licensed for distribution".to_owned(),
+        ),
+        delivery::Refusal::NotDeliverable => Failure::Portal(
+            StatusCode::NOT_FOUND,
+            "that format has not been rendered yet".to_owned(),
+        ),
+        _ => Failure::Internal,
+    })?;
+
+    let count = shares::consume_download(state.delivery.pool(), share.id, now).await?;
+    // The order has been collected. Idempotent, so a recipient fetching a second file is not a second collection.
+    dam_db::orders::mark_collected(&mut conn, order.id).await?;
 
     Ok(Json(PortalDownload {
         url: state.delivery.url_for(&minted),

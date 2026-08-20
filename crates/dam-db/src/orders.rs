@@ -334,6 +334,40 @@ pub async fn mark_ready(
     read(&mut *conn, id).await?.ok_or(OrderRefusal::Unknown(id))
 }
 
+/// Points an already-ready order at a new pickup share.
+///
+/// Separate from [`mark_ready`] because the two guard different things: that one is the transition out of
+/// `approved` and must refuse anything else, while this one *keeps* the state and swaps the link — which is what
+/// re-issuing a lost pickup is. A share token is stored as a digest and cannot be shown twice, so re-issuing is
+/// the only way to recover a link, and the caller revokes the previous one first.
+pub async fn replace_pickup(
+    conn: &mut sqlx::PgConnection,
+    id: Uuid,
+    share_link_id: Uuid,
+) -> Result<Order, OrderRefusal> {
+    let order = read(&mut *conn, id)
+        .await?
+        .ok_or(OrderRefusal::Unknown(id))?;
+    if order.state != "ready" && order.state != "collected" {
+        return Err(OrderRefusal::WrongState(
+            order.reference,
+            order.state,
+            "re-issued",
+        ));
+    }
+    // Back to `ready`: a re-issued pickup has not been collected through the new link, and leaving it
+    // `collected` would say somebody had taken what this link points at.
+    sqlx::query(
+        "UPDATE orders SET state = 'ready', share_link_id = $2, updated_at = now() WHERE id = $1",
+    )
+    .bind(id)
+    .bind(share_link_id)
+    .execute(&mut *conn)
+    .await
+    .map_err(Error::from)?;
+    read(&mut *conn, id).await?.ok_or(OrderRefusal::Unknown(id))
+}
+
 /// Records that the pickup was used.
 ///
 /// Idempotent: a recipient downloading twice is one collection, and the second call is not an error. The share's

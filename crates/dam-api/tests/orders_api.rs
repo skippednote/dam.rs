@@ -94,6 +94,8 @@ async fn fixture() -> Fixture {
 
     let app = router(OrderState {
         global: global.clone(),
+        // A public origin, so the pickup URL this suite reads is the absolute one a recipient would be sent.
+        public_url: Some("https://dam.example.com".to_owned()),
     });
 
     Fixture {
@@ -254,6 +256,253 @@ async fn the_order_http_contract_holds() {
     a_second_decision_is_a_conflict(&f, open).await;
     a_requester_withdraws_their_own_and_only_before_a_decision(&f, open).await;
     an_approval_opens_a_window_without_handing_anything_over(&f, open).await;
+    an_approval_makes_a_pickup(&f, open).await;
+    a_pickup_url_is_shown_once_and_re_issuable(&f, open).await;
+    the_metadata_export_is_the_tenants_own_columns(&f, open).await;
+}
+
+async fn a_pickup_url_is_shown_once_and_re_issuable(f: &Fixture, open: Uuid) {
+    // A share token is stored as a digest, so the response that mints it is the only place it exists in readable
+    // form. Two things are therefore load-bearing: the approval must carry the URL, and losing it must be
+    // recoverable — otherwise an order can be fulfilled and nobody can ever collect. The first version of this
+    // slice had the second half missing entirely.
+    let (_, placed) = call(f, "POST", "/orders", &f.reader_key, Some(ask(&[open]))).await;
+    let id = placed["id"].as_str().expect("id").to_owned();
+
+    let (status, approved) = call(
+        f,
+        "POST",
+        &format!("/orders/{id}/approve"),
+        &f.admin_key,
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{approved}");
+    let first = approved["pickup_url"]
+        .as_str()
+        .expect("the approval carries the pickup URL")
+        .to_owned();
+    assert!(
+        first.starts_with("https://dam.example.com/share/"),
+        "the pickup URL is not one a recipient could open: {first}"
+    );
+
+    // Never again on an ordinary read. A field that sometimes held a live token would be a token in every log
+    // that printed an order.
+    let (_, read_back) = call(f, "GET", &format!("/orders/{id}"), &f.reader_key, None).await;
+    assert_eq!(read_back["pickup_url"], Value::Null, "{read_back}");
+    assert_eq!(read_back["state"], json!("ready"), "{read_back}");
+
+    // Re-issuing gives a *different* link and revokes the old one, so an order never has two live pickups —
+    // which matters because revoking the pickup is how an order is closed.
+    let (again, reissued) = call(
+        f,
+        "POST",
+        &format!("/orders/{id}/fulfil"),
+        &f.admin_key,
+        None,
+    )
+    .await;
+    assert_eq!(again, StatusCode::OK, "{reissued}");
+    let second = reissued["pickup_url"]
+        .as_str()
+        .expect("a fresh URL")
+        .to_owned();
+    assert_ne!(first, second, "re-issuing handed back the same link");
+    assert_eq!(reissued["state"], json!("ready"), "{reissued}");
+
+    // And a *second* re-issue differs from the first, which is the assertion that actually pins the token to the
+    // share that was just made rather than to anything else: comparing only against the approval's URL passed
+    // even when every re-issue returned one fixed string.
+    let (_, third_time) = call(
+        f,
+        "POST",
+        &format!("/orders/{id}/fulfil"),
+        &f.admin_key,
+        None,
+    )
+    .await;
+    let third = third_time["pickup_url"].as_str().expect("a fresh URL");
+    assert_ne!(second, third, "every re-issue hands back the same link");
+
+    let order_uuid = Uuid::parse_str(&id).expect("uuid");
+    let live: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM share_links s JOIN orders o ON o.share_link_id = s.id \
+         WHERE o.id = $1 AND s.revoked_at IS NULL",
+    )
+    .bind(order_uuid)
+    .fetch_one(&f.acme)
+    .await
+    .expect("count");
+    assert_eq!(live, 1, "an order has more than one live pickup");
+    let revoked: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM share_links WHERE kind = 'order' AND revoked_at IS NOT NULL",
+    )
+    .fetch_one(&f.acme)
+    .await
+    .expect("count");
+    assert!(revoked >= 1, "the previous pickup was left live");
+
+    // A reader cannot re-issue: the pickup link is the thing an order exists to control.
+    let (refused, _) = call(
+        f,
+        "POST",
+        &format!("/orders/{id}/fulfil"),
+        &f.reader_key,
+        None,
+    )
+    .await;
+    assert_eq!(refused, StatusCode::FORBIDDEN);
+
+    // And a decision that was a refusal cannot be turned into a pickup by asking for one.
+    let (_, rejected) = call(f, "POST", "/orders", &f.reader_key, Some(ask(&[open]))).await;
+    let rejected_id = rejected["id"].as_str().expect("id").to_owned();
+    call(
+        f,
+        "POST",
+        &format!("/orders/{rejected_id}/reject"),
+        &f.admin_key,
+        Some(json!({ "note": "No." })),
+    )
+    .await;
+    let (revived, body) = call(
+        f,
+        "POST",
+        &format!("/orders/{rejected_id}/fulfil"),
+        &f.admin_key,
+        None,
+    )
+    .await;
+    assert_eq!(
+        revived,
+        StatusCode::CONFLICT,
+        "a refused order was given a pickup: {body}"
+    );
+}
+
+async fn an_approval_makes_a_pickup(f: &Fixture, open: Uuid) {
+    // Approval commits the decision and then makes the pickup — two writes, so a failed pickup leaves a standing
+    // decision that can be retried rather than an approver deciding twice.
+    let (_, placed) = call(f, "POST", "/orders", &f.reader_key, Some(ask(&[open]))).await;
+    let id = placed["id"].as_str().expect("id").to_owned();
+
+    let (status, body) = call(
+        f,
+        "POST",
+        &format!("/orders/{id}/approve"),
+        &f.admin_key,
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["state"],
+        json!("ready"),
+        "an approval left nothing to collect: {body}"
+    );
+
+    // The pickup is a share, with the order's own window — the whole reason fulfilment creates one rather than
+    // granting the requester something new.
+    let (kind, expires): (String, Option<chrono::DateTime<chrono::Utc>>) = sqlx::query_as(
+        "SELECT s.kind, s.expires_at FROM share_links s \
+         JOIN orders o ON o.share_link_id = s.id WHERE o.id = $1",
+    )
+    .bind(Uuid::parse_str(&id).expect("uuid"))
+    .fetch_one(&f.acme)
+    .await
+    .expect("the pickup share");
+    assert_eq!(kind, "order");
+    assert!(expires.is_some(), "the pickup has no window");
+
+    // Fulfilling again *re-issues*: a fresh link with the previous one revoked, because a token is stored as a
+    // digest and cannot be shown twice. What matters here is that it does not leave two live shares; the URL
+    // itself is asserted in `a_pickup_url_is_shown_once_and_re_issuable`.
+    let (again, body) = call(
+        f,
+        "POST",
+        &format!("/orders/{id}/fulfil"),
+        &f.admin_key,
+        None,
+    )
+    .await;
+    assert_eq!(again, StatusCode::OK, "{body}");
+}
+
+async fn the_metadata_export_is_the_tenants_own_columns(f: &Fixture, open: Uuid) {
+    // A field definition, so the export has a real column rather than only the file facts.
+    sqlx::query(
+        "INSERT INTO field_defs (id, key, label, kind) \
+         VALUES (gen_random_uuid(), 'campaign', 'Campaign', 'text') \
+         ON CONFLICT DO NOTHING",
+    )
+    .execute(&f.acme)
+    .await
+    .expect("field");
+    sqlx::query(
+        "INSERT INTO asset_metadata (asset_id, values) VALUES ($1, '{\"campaign\": \"spring, 2026\"}'::jsonb) \
+         ON CONFLICT (asset_id) DO UPDATE SET values = excluded.values",
+    )
+    .bind(open)
+    .execute(&f.acme)
+    .await
+    .expect("values");
+
+    let (_, placed) = call(f, "POST", "/orders", &f.reader_key, Some(ask(&[open]))).await;
+    let id = placed["id"].as_str().expect("id").to_owned();
+
+    let request = Request::builder()
+        .method("GET")
+        .uri(format!("/orders/{id}/metadata.csv"))
+        .header(header::AUTHORIZATION, format!("Bearer {}", f.reader_key))
+        .body(Body::empty())
+        .expect("request");
+    let response = f.app.clone().oneshot(request).await.expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    // A CSV, named after the order, and offered as a download rather than rendered in a tab.
+    assert_eq!(
+        response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("text/csv; charset=utf-8")
+    );
+    assert!(
+        response
+            .headers()
+            .get(header::CONTENT_DISPOSITION)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|disposition| disposition.contains("ORD-")),
+        "the export is not named after the order"
+    );
+
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .expect("body");
+    let csv = String::from_utf8(bytes.to_vec()).expect("utf-8");
+    let mut lines = csv.lines();
+    let header_row = lines.next().expect("a header");
+    assert!(
+        header_row.starts_with("filename,mime,bytes,width,height"),
+        "{csv}"
+    );
+    // The tenant's own field, as a column.
+    assert!(header_row.contains("campaign"), "{csv}");
+    let row = lines.next().expect("a row");
+    assert!(row.contains("harbour.jpg"), "{csv}");
+    // A value containing a comma is quoted, so it cannot end the record early — the bug that makes an export
+    // open with everything one column to the right.
+    assert!(row.contains("\"spring, 2026\""), "{csv}");
+
+    // Somebody with no authority over the order gets the same 404 that reading it gives, for the same reason:
+    // references are sequential.
+    let stranger = Request::builder()
+        .method("GET")
+        .uri(format!("/orders/{id}/metadata.csv"))
+        .header(header::AUTHORIZATION, format!("Bearer {}", f.stranger_key))
+        .body(Body::empty())
+        .expect("request");
+    let refused = f.app.clone().oneshot(stranger).await.expect("response");
+    assert_eq!(refused.status(), StatusCode::NOT_FOUND);
 }
 
 async fn a_reader_may_ask(f: &Fixture, open: Uuid) {
@@ -500,10 +749,10 @@ async fn an_approval_opens_a_window_without_handing_anything_over(f: &Fixture, o
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    // Approved, with a window — and *nothing to collect yet*. The gap between `approved` and `ready` is the
-    // difference between a decision having been made and the bytes being reachable, which is what stops an
-    // approval from being a grant.
-    assert_eq!(body["state"], json!("approved"), "{body}");
+    // Approved *and* fulfilled: the decision commits, then the pickup is made, so the ordinary outcome is
+    // `ready`. `approved` remains reachable — and meaningful — when the second write fails, which is what
+    // `/fulfil` retries; that is asserted in `an_approval_makes_a_pickup`.
+    assert_eq!(body["state"], json!("ready"), "{body}");
     assert!(body["expires_at"].is_string(), "{body}");
     assert_eq!(body["expired"], json!(false), "{body}");
     assert_eq!(body["decision_note"], json!("Print only."), "{body}");

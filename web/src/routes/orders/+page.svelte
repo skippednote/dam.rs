@@ -21,7 +21,14 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { resolve } from '$app/paths';
-	import { ApiError, decideOrder, loadMyOrders, loadOrderQueue, type Order } from '$lib/api/client';
+	import {
+		ApiError,
+		decideOrder,
+		loadMyOrders,
+		loadOrderQueue,
+		reissuePickup,
+		type Order
+	} from '$lib/api/client';
 	import { session } from '$lib/api/session.svelte';
 
 	let mine = $state<Order[]>([]);
@@ -32,6 +39,14 @@
 	/** The order being decided, so one row at a time carries the note field. */
 	let deciding = $state<string | null>(null);
 	let note = $state('');
+	/**
+	 * Pickup links, by order id, for the ones minted in this session.
+	 *
+	 * Held in memory and nowhere else: a share token is stored as a digest, so this is the only readable copy and
+	 * writing it to storage would turn a lost link into a leaked one. Gone on reload, which is what re-issuing is
+	 * for.
+	 */
+	let pickups = $state<Record<string, string>>({});
 
 	async function load() {
 		if (!session.connected) {
@@ -57,6 +72,7 @@
 		void (async () => {
 			try {
 				const updated = await decideOrder(order.id, decision, note || undefined);
+				if (updated.pickup_url) pickups[updated.id] = updated.pickup_url;
 				notice = `${updated.reference} is ${updated.state}.`;
 				deciding = null;
 				note = '';
@@ -65,6 +81,31 @@
 				// The server's own sentence: "already approved", or how many assets are outside your scope. Both
 				// are things the person can act on.
 				error = caught instanceof ApiError ? caught.message : 'That decision did not go through.';
+			}
+		})();
+	}
+
+	/**
+	 * Where the metadata export lives.
+	 *
+	 * A plain authenticated GET the browser can follow, rather than a `fetch` that would pull a spreadsheet
+	 * through the page only to hand it back. The base comes from the session, as every other call's does.
+	 */
+	function metadataHref(order: Order): string {
+		return `${session.base}/orders/${order.id}/metadata.csv`;
+	}
+
+	function reissue(order: Order) {
+		error = '';
+		notice = '';
+		void (async () => {
+			try {
+				const updated = await reissuePickup(order.id);
+				if (updated.pickup_url) pickups[updated.id] = updated.pickup_url;
+				notice = `${updated.reference} has a new pickup link. The previous one no longer works.`;
+				await load();
+			} catch (caught) {
+				error = caught instanceof ApiError ? caught.message : 'That link could not be re-issued.';
 			}
 		})();
 	}
@@ -234,12 +275,62 @@
 							{/if}
 							{#if order.state === 'approved'}
 								<!--
-									Approved and not yet collectable. Said plainly, because an interface that implied
-									the files were ready would be promising something the system has not done.
+									Approved, and the pickup failed to be made. Not the ordinary path — approval makes
+									the pickup in the same request — so this is the retryable case, and saying so beats
+									a row that looks stuck for a reason nobody can see.
 								-->
 								<p class="mt-1 text-xs text-muted">
-									Approved. The pickup is being prepared and will appear here.
+									Approved. The pickup could not be prepared; an administrator can retry it.
 								</p>
+							{/if}
+							{#if (order.state === 'ready' || order.state === 'collected') && !order.expired}
+								<!--
+									Three things a requester needs once it is ready: that it is, the metadata if they
+									asked for it, and the pickup link — which exists in readable form only in the
+									response that minted it, so it is shown once and kept nowhere.
+								-->
+								<p class="mt-1 text-xs">
+									Ready to collect.
+									{#if order.include_metadata}
+										<!--
+											`rel="external"` because it is: the export lives on the API origin, not on a
+											SvelteKit route, so the client router must hand it to the browser rather than
+											try to resolve it. The lint that asked for this was right about the substance.
+										-->
+										<a class="underline" href={metadataHref(order)} rel="external" download>
+											Download the metadata (CSV)
+										</a>
+									{/if}
+								</p>
+								{#if pickups[order.id]}
+									<!--
+										Shown once, because this is the only time it exists in readable form: a share
+										token is stored as a digest. Held in memory and nowhere else — writing it to
+										storage would turn a lost link into a leaked one — so it is gone on reload,
+										which is what re-issuing is for.
+									-->
+									<p class="mt-1 text-xs break-all">
+										Send this to {order.recipients.length > 0
+											? order.recipients.join(', ')
+											: 'the recipients'}:
+										<code class="rounded bg-raised px-1 py-0.5">{pickups[order.id]}</code>
+									</p>
+								{:else}
+									<p class="mt-1 text-xs text-muted">
+										The pickup link was shown once when it was made. An administrator can issue a
+										new one, which stops the old link working.
+									</p>
+								{/if}
+							{/if}
+							{#if queue && (order.state === 'ready' || order.state === 'collected')}
+								<!--
+									Offered only to somebody who can decide — the server refuses it otherwise, and a
+									button that always 403s teaches people to ignore errors. Whether the queue loaded
+									is how this page already knows.
+								-->
+								<button type="button" class="mt-2 text-xs underline" onclick={() => reissue(order)}>
+									Issue a new pickup link
+								</button>
 							{/if}
 							{#if order.state === 'submitted'}
 								<button

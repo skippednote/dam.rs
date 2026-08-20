@@ -100,6 +100,9 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
         ))
         .merge(crate::orders::router(crate::orders::OrderState {
             global: deps.global.clone(),
+            // The same origin the delivery URLs use: a pickup link and a delivery link are both things somebody
+            // pastes into a browser, and two sources for "where are we reachable" would disagree eventually.
+            public_url: cfg.server.public_url.clone(),
         }))
         .merge(crate::downloads::router(crate::downloads::DownloadState {
             global: deps.global.clone(),

@@ -2125,3 +2125,22 @@ tenant. Reversible: yes.
 **An order's `expired` is derived, never stored.** An expiry is a timestamp passing rather than an event anybody
 performs, and a stored state would need a sweeper to keep it true — wrong between sweeps, and a second source of
 truth. Reversible: no.
+
+**An order's pickup is a share of kind `order`.** Pointing at the order rather than at a collection built from
+its items: an order is already a named list of assets with an owner, an expiry and a reason, so a synthetic
+collection per order would be a shadow object with nothing to add and one more thing in a tenant's list.
+Reversible: yes.
+
+**A pickup lists refused items rather than refusing the pickup.** Rights are evaluated per item, so an order of
+forty where two are unlicensed is a pickup of thirty-eight, and the two are listed by name with their reason. The
+order is a record of what was asked for; hiding the items would lose that, and refusing the whole pickup would
+deny the recipient what they were entitled to because of somebody else's paperwork. Reversible: yes.
+
+**A pickup download is attributed to the requester.** They named the intended use and an approver agreed to it;
+the recipient collecting has no identity, so recording them is impossible and recording nobody would lose the
+only accountable party. Reversible: no.
+
+**A pickup link is shown once and re-issuable.** A share token is stored as a digest, so the response that mints
+it is the only readable copy — storing the plaintext to show again would turn a lost link into a leaked one. Any
+re-issue revokes the previous share, so an order never has two live pickups; revoking the pickup is how an order
+is closed, and two links would make that a half-measure. Reversible: no.
