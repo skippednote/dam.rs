@@ -29,11 +29,18 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **Q** Acquia parity, 20 slices | Q.1–Q.13 done; Q.14–Q.20 open |
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
-| **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | schema exists, behaviour unwritten |
+| **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | M5a+M5b done: two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue. M5c batch and M5d MCP outstanding |
 | **M6** Workflow/proofing, annotations, analytics | not started |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** M5 hosted-model enrichment (re-prioritised ahead of Q.14 and M4 — see below)
+**Next up, in order:** M5c batch backfill → M5b·4 the disclosure on the asset itself → M5d NL→query and MCP
+→ then Q.14 portals and the search set. M5a and M5b are done and verified against the running stack: both
+hosted clients reach their real vendor endpoints, and a full enrichment ran end to end through the worker against
+a local OpenAI-compatible endpoint — values written with provenance, a disclosure row, tags suggested, 0.75¢
+charged as a sub-cent remainder, `used_original` false, and a tag confirmed from the review screen with its
+feedback row.
+
+**Earlier plan, kept for the record:** M5 hosted-model enrichment (re-prioritised ahead of Q.14 and M4 — see below)
 → Q.6 comments → Q.7 activity feed → Q.8 versions → Q.9 attachments → Q.10 history → Q.11 conversions →
 Q.12 intended use → Q.13 orders → **M5 hosted-model enrichment** → Q.14 portals → Q.15–Q.19 search →
 Q.20 sundries → M4 local AI → M6 → M3d → Pre-GA → Entries.
