@@ -152,6 +152,15 @@ impl DeliveryState {
         }
     }
 
+    /// The deployment's public origin, when it has one.
+    ///
+    /// For a caller building a URL that is *not* a delivery URL — a portal's own address, say. Kept here because
+    /// this is where the origin already lives, and a second copy in another state would be the pair that
+    /// disagrees after a config change.
+    pub fn public_origin(&self) -> Option<&str> {
+        self.public_url.as_deref()
+    }
+
     /// Signs an internal-preview token, without touching the database.
     ///
     /// Synchronous, and that is the point: a page of sixty assets mints sixty of these, and each is an HMAC
@@ -431,6 +440,13 @@ async fn issue_with_purpose(
                 codes,
             });
         }
+        // Rights first, then the bytes, and the order matters: a caller with no licence must not learn from the
+        // refusal whether a rendition exists. A missing rendition is `NotDeliverable`, which is what the share
+        // portal and a Q.14 portal already say out loud — "no preview has been rendered yet" — and could not
+        // reach until this check existed.
+        if !rendition_exists(state, asset_id, transform).await? {
+            return Err(Refusal::NotDeliverable);
+        }
     } else if !preview_is_permitted(transform, identity_id, share_link_id) {
         // `NotDeliverable`, not a distinct variant: the caller asking for this is our own code, and a
         // programming mistake here should look like a dead URL rather than produce a hint that a preview of
@@ -567,6 +583,65 @@ async fn reason_codes(
 /// The transform is looked up against `derivatives` rather than trusted as a path. A transform that reached
 /// the key builder directly would be a path-traversal parameter signed by us — the signature would make it
 /// *harder* to notice, not safer.
+/// The `op_hash` a transform name resolves to.
+///
+/// Resolved name -> profile -> op_hash -> row, never name -> row.
+///
+/// This shipped as `WHERE profile = $2` and that was a bug. `op_hash` covers the size, format, quality, fit,
+/// background, colour profile and rendering intent (§18.1), so a profile that has been *redefined* has a
+/// different hash — and a name lookup would keep serving the bytes rendered under the old definition forever,
+/// with no error anywhere and a customer seeing yesterday's quality setting indefinitely.
+///
+/// Built-in profile first, then the tenant's own conversions (Q.11). Two sources, one derivation, so the mint
+/// and the fetch cannot disagree about what a name means.
+///
+/// The tenant half was missing when the download endpoint shipped, and *only* following a real URL found it: the
+/// endpoint returned a perfectly good signed URL for `web-1600`, and the fetch 404'd it because the name was not
+/// a built-in. An API test that asserted a URL was returned could not see that, which is what "verify by running
+/// the real thing" means in practice.
+async fn op_hash_for(state: &DeliveryState, transform: &str) -> Result<String, Refusal> {
+    match dam_media::profiles::by_name(transform) {
+        Some(profile) => Ok(profile.op_hash()),
+        None => dam_db::conversions::by_key(
+            &mut *state.global.acquire().await.map_err(dam_db::Error::from)?,
+            transform,
+        )
+        .await?
+        // Withdrawn conversions resolve: the token carries the key, and a link issued while a format was
+        // offered must keep working. `by_key` includes them for exactly this caller.
+        .and_then(|conversion| conversion.op_hash())
+        // An unknown transform is not deliverable rather than approximated: rendering something plausible
+        // would silently hand back a different size than the caller integrated against.
+        .ok_or(Refusal::NotDeliverable),
+    }
+}
+
+/// Whether the bytes a transform names exist for this asset.
+///
+/// Checked *before* a distribution token is minted, which is the fix for something only a real browser found: a
+/// portal listed eight assets, minted a preview URL for the one its licence allowed, and the URL 404'd — the
+/// derivative row had been rendered under an older definition of the profile, so the fetch resolved a different
+/// `op_hash` than the render had. Nothing was wrong with the token, and every test that asserted "a URL came
+/// back" passed.
+///
+/// `original` needs no check: it is derived from the asset's own content hash, and an asset with no bytes is not
+/// a state this system has.
+async fn rendition_exists(
+    state: &DeliveryState,
+    asset_id: Uuid,
+    transform: &str,
+) -> Result<bool, Refusal> {
+    if transform == "original" {
+        return Ok(true);
+    }
+    let op_hash = op_hash_for(state, transform).await?;
+    Ok(
+        dam_db::derivatives::by_op_hash(&state.global, asset_id, &op_hash)
+            .await?
+            .is_some(),
+    )
+}
+
 async fn object_key(
     state: &DeliveryState,
     claim: &DeliveryClaim,
@@ -592,34 +667,7 @@ async fn object_key(
         });
     }
 
-    // Resolved name -> profile -> op_hash -> row, never name -> row.
-    //
-    // This shipped as `WHERE profile = $2` and that was a bug. `op_hash` covers the size, format, quality,
-    // fit, background, colour profile and rendering intent (§18.1), so a profile that has been *redefined*
-    // has a different hash — and a name lookup would keep serving the bytes rendered under the old
-    // definition forever, with no error anywhere and a customer seeing yesterday's quality setting
-    // indefinitely.
-    // Built-in profile first, then the tenant's own conversions (Q.11). Two sources, one derivation: both end
-    // at an `op_hash`, and the lookup below is the same either way.
-    //
-    // The tenant half was missing when the download endpoint shipped, and *only* following a real URL found it:
-    // the endpoint returned a perfectly good signed URL for `web-1600`, and this function 404'd it because the
-    // name was not a built-in. An API test that asserted a URL was returned could not see that, which is what
-    // "verify by running the real thing" means in practice.
-    let op_hash = match dam_media::profiles::by_name(&claim.transform) {
-        Some(profile) => profile.op_hash(),
-        None => dam_db::conversions::by_key(
-            &mut *state.global.acquire().await.map_err(dam_db::Error::from)?,
-            &claim.transform,
-        )
-        .await?
-        // Withdrawn conversions resolve: the token carries the key, and a link issued while a format was
-        // offered must keep working. `by_key` includes them for exactly this caller.
-        .and_then(|conversion| conversion.op_hash())
-        // An unknown transform is not deliverable rather than approximated: rendering something plausible
-        // would silently hand back a different size than the caller integrated against.
-        .ok_or(Refusal::NotDeliverable)?,
-    };
+    let op_hash = op_hash_for(state, &claim.transform).await?;
 
     let derivative = dam_db::derivatives::by_op_hash(&state.global, claim.asset_id, &op_hash)
         .await?

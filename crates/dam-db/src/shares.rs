@@ -387,6 +387,87 @@ pub async fn is_live(
     Ok(live.unwrap_or(false))
 }
 
+/// One share by id.
+///
+/// For a caller that has already resolved *which* share it wants by another route — a portal found by its slug,
+/// for instance — and still has to ask the share machinery whether it is usable. Returning the row rather than a
+/// verdict is deliberate: the caller then runs the same `is_live` and `check_passcode` pair every other path
+/// runs, instead of a second copy of those rules.
+pub async fn by_id(pool: &sqlx::PgPool, id: Uuid) -> Result<Option<Share>, Error> {
+    let row = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            String,
+            Option<Uuid>,
+            Option<DateTime<Utc>>,
+            Option<i32>,
+            i32,
+            bool,
+            bool,
+            Option<String>,
+            Option<DateTime<Utc>>,
+        ),
+    >(
+        "SELECT id, kind, target_id, expires_at, max_downloads, download_count, allow_original, \
+                requires_eula, passcode_hash, revoked_at \
+         FROM share_links WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(
+        |(
+            id,
+            kind,
+            target_id,
+            expires_at,
+            max_downloads,
+            download_count,
+            allow_original,
+            requires_eula,
+            passcode_hash,
+            revoked_at,
+        )| Share {
+            id,
+            kind,
+            target_id,
+            expires_at,
+            max_downloads,
+            download_count,
+            allow_original,
+            requires_eula,
+            has_passcode: passcode_hash.is_some(),
+            revoked_at,
+        },
+    ))
+}
+
+impl ShareRefusal {
+    /// Which refusal a share that is not live has earned.
+    ///
+    /// The order is `resolve`'s, deliberately: revocation is the most absolute reason and the one a recipient
+    /// most needs stated plainly, then expiry, then exhaustion. A caller that reached a share by some other
+    /// route gets the same words as one that resolved a token.
+    pub fn from_share(share: &Share, now: DateTime<Utc>) -> Self {
+        if share.revoked_at.is_some() {
+            Self::Revoked
+        } else if share.expires_at.is_some_and(|at| now >= at) {
+            Self::Expired
+        } else if share
+            .max_downloads
+            .is_some_and(|max| share.download_count >= max)
+        {
+            Self::Exhausted
+        } else {
+            // Not live for a reason this function does not know about. The flat answer rather than a cheerful
+            // one: the caller asked because `is_live` said no.
+            Self::NotFound
+        }
+    }
+}
+
 /// Loads a share by its presented token.
 async fn load_by_token(pool: &sqlx::PgPool, token: &str) -> Result<Option<Share>, Error> {
     let row = sqlx::query_as::<

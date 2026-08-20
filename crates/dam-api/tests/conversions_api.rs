@@ -319,6 +319,7 @@ async fn the_conversion_http_contract_holds() {
     administration_is_manage(&f).await;
     a_taken_key_is_a_conflict(&f).await;
     an_unrenderable_recipe_names_the_constraint(&f).await;
+    a_key_that_shadows_a_built_in_is_refused(&f).await;
     the_options_are_download_not_read(&f, photograph).await;
     a_restricted_format_is_absent_rather_than_refused(&f, photograph).await;
     a_class_with_no_formats_says_so(&f, document).await;
@@ -340,9 +341,9 @@ async fn administration_is_manage(f: &Fixture) {
         "somebody who may download may administer the format list"
     );
 
-    let (created, body) = call(f, "POST", "/conversions", &f.key, Some(recipe("web-2048"))).await;
+    let (created, body) = call(f, "POST", "/conversions", &f.key, Some(recipe("site-2048"))).await;
     assert_eq!(created, StatusCode::CREATED, "{body}");
-    assert_eq!(body["key"], json!("web-2048"), "{body}");
+    assert_eq!(body["key"], json!("site-2048"), "{body}");
     assert_eq!(body["is_active"], json!(true), "{body}");
 
     let (listed, list) = call(f, "GET", "/conversions", &f.key, None).await;
@@ -364,12 +365,12 @@ async fn administration_is_manage(f: &Fixture) {
 async fn a_taken_key_is_a_conflict(f: &Fixture) {
     // 409, not 422: the request is well formed and the world already contains that name. The distinction tells
     // a client whether to show a field error or to say "that name is in use".
-    let (status, body) = call(f, "POST", "/conversions", &f.key, Some(recipe("web-2048"))).await;
+    let (status, body) = call(f, "POST", "/conversions", &f.key, Some(recipe("site-2048"))).await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert!(
         body["reason"]
             .as_str()
-            .is_some_and(|reason| reason.contains("web-2048")),
+            .is_some_and(|reason| reason.contains("site-2048")),
         "the conflict does not say which name: {body}"
     );
 }
@@ -394,6 +395,21 @@ async fn an_unrenderable_recipe_names_the_constraint(f: &Fixture) {
     anonymous["key"] = Value::Null;
     let (missing, body) = call(f, "POST", "/conversions", &f.key, Some(anonymous)).await;
     assert_eq!(missing, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+}
+
+async fn a_key_that_shadows_a_built_in_is_refused(f: &Fixture) {
+    // `web-2048` is a built-in rendition, and delivery resolves a name against the built-ins before the
+    // tenant's own list. A conversion under that name would be queued and rendered under its recipe's hash and
+    // then served under the built-in's — a format that reports ready and hands back a URL nobody can fetch. So
+    // the name is refused where somebody can still choose another one.
+    let (status, body) = call(f, "POST", "/conversions", &f.key, Some(recipe("web-2048"))).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(
+        body["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("built-in")),
+        "the refusal does not say why: {body}"
+    );
 }
 
 async fn the_options_are_download_not_read(f: &Fixture, photograph: Uuid) {
@@ -441,7 +457,7 @@ async fn a_restricted_format_is_absent_rather_than_refused(f: &Fixture, photogra
     let keys = offered_keys(&privileged);
     assert_eq!(
         keys,
-        vec!["web-2048".to_owned(), "print-full".to_owned()],
+        vec!["site-2048".to_owned(), "print-full".to_owned()],
         "{privileged}"
     );
 
@@ -579,7 +595,7 @@ async fn a_redefinition_keeps_the_key(f: &Fixture) {
         .as_array()
         .expect("array")
         .iter()
-        .find(|row| row["key"] == json!("web-2048"))
+        .find(|row| row["key"] == json!("site-2048"))
         .expect("present")["id"]
         .as_str()
         .expect("id")
@@ -600,7 +616,7 @@ async fn a_redefinition_keeps_the_key(f: &Fixture) {
     // A delivery token carries the key, so a link sent last week must keep resolving. The body's key field is
     // ignored rather than refused: one request type serves create and redefine, and two nearly identical bodies
     // is how they drift.
-    assert_eq!(body["key"], json!("web-2048"), "{body}");
+    assert_eq!(body["key"], json!("site-2048"), "{body}");
     assert_eq!(body["max_width"], json!(1024), "{body}");
 
     // And an unknown id is 404 rather than a silent no-op: an administrator whose request quietly did nothing

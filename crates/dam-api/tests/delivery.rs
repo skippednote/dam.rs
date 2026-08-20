@@ -340,13 +340,14 @@ async fn a_serve_is_recorded_at_most_once_an_hour(f: &Fixture) {
 }
 
 async fn an_unknown_transform_is_not_deliverable(f: &Fixture) {
-    // Signed by us, so the signature verifies — and `print-a3` is not a built-in profile at all. It answers
-    // 404, the same as an unsigned token, so a caller cannot enumerate which profiles exist by watching the
-    // status change.
+    // `print-a3` is not a built-in profile and not one of this tenant's conversions, so there is nothing for a
+    // token to name. It is refused at the *mint*, which is the change a live portal forced: a URL that cannot
+    // resolve is a broken image on somebody's page, and issuing one and letting the fetch 404 put the discovery
+    // in a browser rather than in the call that asked.
     let id = asset_with_bytes(f, "no-such-profile").await;
     licence(f, id, None).await;
 
-    let token = delivery::issue(
+    let refused = delivery::issue(
         &f.state,
         id,
         "print-a3",
@@ -355,9 +356,62 @@ async fn an_unknown_transform_is_not_deliverable(f: &Fixture) {
         Duration::minutes(10),
         now(),
     )
+    .await;
+    assert!(
+        matches!(refused, Err(delivery::Refusal::NotDeliverable)),
+        "an unknown transform must not mint a URL: {refused:?}"
+    );
+
+    // And the fetch still refuses a name that stopped resolving *after* a token was issued — a stale URL, which
+    // is the only way this branch is now reachable. A deleted conversion is that: `by_key` covers a withdrawn
+    // one on purpose, but a row that is gone resolves to nothing.
+    sqlx::query(
+        "INSERT INTO conversions \
+         (id, key, label, description, media_class, max_width, max_height, format, quality, fit) \
+         VALUES (gen_random_uuid(), 'poster-a2', 'Poster', 'For a wall.', 'image', 3000, 3000, \
+                 'jpeg', 90, 'contain')",
+    )
+    .execute(&f.pool)
+    .await
+    .expect("conversion");
+    let conversion =
+        dam_db::conversions::by_key(&mut f.pool.acquire().await.expect("conn"), "poster-a2")
+            .await
+            .expect("read")
+            .expect("present");
+    sqlx::query(
+        "INSERT INTO derivatives (id, asset_id, role, profile, op_hash, object_key, mime, bytes) \
+         VALUES (gen_random_uuid(), $1, 'rendition', 'poster-a2', $2, $3, 'image/jpeg', 5)",
+    )
+    .bind(id)
+    .bind(conversion.op_hash().expect("renderable"))
+    .bind("acme/p/no-such-profile-a2")
+    .execute(&f.pool)
+    .await
+    .expect("derivative");
+
+    let token = delivery::issue(
+        &f.state,
+        id,
+        "poster-a2",
+        &web(),
+        None,
+        Duration::minutes(10),
+        now(),
+    )
     .await
     .expect("issue");
-    assert_eq!(get(&f.app, &token).await.status(), StatusCode::NOT_FOUND);
+    assert_eq!(get(&f.app, &token).await.status(), StatusCode::FOUND);
+
+    sqlx::query("DELETE FROM conversions WHERE key = 'poster-a2'")
+        .execute(&f.pool)
+        .await
+        .expect("delete");
+    assert_eq!(
+        get(&f.app, &token).await.status(),
+        StatusCode::NOT_FOUND,
+        "a token naming a transform that no longer resolves must answer like an unsigned one"
+    );
 }
 
 async fn a_tenant_conversion_resolves_like_a_built_in(f: &Fixture) {
@@ -447,7 +501,33 @@ async fn a_valid_signature_over_an_unlicensed_asset_is_still_refused(f: &Fixture
         now(),
     )
     .await;
-    assert!(refused.is_err(), "issuing must refuse an unlicensed asset");
+    assert!(
+        matches!(refused, Err(delivery::Refusal::RightsDenied { .. })),
+        "issuing must refuse an unlicensed asset: {refused:?}"
+    );
+
+    // And it refuses the same way when the rendition is missing too. Rights are checked first on purpose: a
+    // caller with no licence must not be able to tell from the refusal whether the bytes exist, which is what
+    // they would learn if the cheaper check ran first.
+    sqlx::query("DELETE FROM derivatives WHERE asset_id = $1")
+        .bind(id)
+        .execute(&f.pool)
+        .await
+        .expect("delete the rendition");
+    let still_rights = delivery::issue(
+        &f.state,
+        id,
+        "web-2048",
+        &web(),
+        None,
+        Duration::minutes(10),
+        now(),
+    )
+    .await;
+    assert!(
+        matches!(still_rights, Err(delivery::Refusal::RightsDenied { .. })),
+        "a missing rendition must not shadow the rights refusal: {still_rights:?}"
+    );
 
     // And a token minted directly — as one issued before the licence was removed would be — is refused at
     // delivery. This is the half that matters.

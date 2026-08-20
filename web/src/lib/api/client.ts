@@ -48,6 +48,9 @@ export type SuggestedTag = components['schemas']['SuggestedTagView'];
 export type MachineField = components['schemas']['MachineFieldView'];
 export type BackfillView = components['schemas']['BackfillView'];
 export type AskResult = components['schemas']['AskResult'];
+export type PortalPage = components['schemas']['PortalPage'];
+export type PortalRow = components['schemas']['PortalView'];
+export type CreatedPortal = components['schemas']['CreatedPortal'];
 
 /** A failed request, with whatever the server said about it. */
 export class ApiError extends Error {
@@ -997,4 +1000,82 @@ export async function askQuery(question: string): Promise<AskResult> {
 		method: 'POST',
 		body: JSON.stringify({ question })
 	});
+}
+
+/**
+ * A public portal, by name.
+ *
+ * Unauthenticated, like the share portal's calls and for the same reason: the visitor has no account, and the
+ * page is either public or it is not. `portalCall`'s passcode goes in the query here rather than a body, because
+ * a public portal is a page a browser opens with a GET.
+ */
+export async function portalByKey(key: string, options: { q?: string; passcode?: string } = {}) {
+	const url = new URL(`${session.base}/portal/${encodeURIComponent(key)}`);
+	if (options.q) url.searchParams.set('q', options.q);
+	if (options.passcode) url.searchParams.set('passcode', options.passcode);
+	const response = await fetch(url);
+	if (!response.ok) {
+		let body: unknown;
+		try {
+			body = await response.json();
+		} catch {
+			body = null;
+		}
+		const reason = (body as { reason?: string } | null)?.reason;
+		throw new ApiError(response.status, reason ?? 'This portal could not be opened.', body);
+	}
+	return (await response.json()) as PortalPage;
+}
+
+/** A portal by its share token — how a private one is reached. */
+export async function portalByToken(
+	token: string,
+	options: { q?: string; passcode?: string } = {}
+): Promise<PortalPage> {
+	const response = await fetch(`${session.base}/share/${token}/portal`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ passcode: options.passcode, q: options.q })
+	});
+	if (!response.ok) {
+		let body: unknown;
+		try {
+			body = await response.json();
+		} catch {
+			body = null;
+		}
+		const reason = (body as { reason?: string } | null)?.reason;
+		throw new ApiError(response.status, reason ?? 'This portal could not be opened.', body);
+	}
+	return (await response.json()) as PortalPage;
+}
+
+/** Every portal, retired ones included. Administration, so this one carries the key. */
+export async function listPortals(): Promise<PortalRow[]> {
+	return request<PortalRow[]>('/portals');
+}
+
+export async function createPortal(body: {
+	key: string;
+	title: string;
+	intro?: string;
+	kind?: string;
+	collection_id: string;
+	logo_asset_id?: string | null;
+	accent?: string;
+	is_public?: boolean;
+	allow_search?: boolean;
+	passcode?: string;
+	expires_in_days?: number;
+	max_downloads?: number;
+	allow_original?: boolean;
+}): Promise<CreatedPortal> {
+	return request<CreatedPortal>('/portals', {
+		method: 'POST',
+		body: JSON.stringify(body)
+	});
+}
+
+export async function retirePortal(id: string): Promise<PortalRow> {
+	return request<PortalRow>(`/portals/${id}`, { method: 'DELETE' });
 }

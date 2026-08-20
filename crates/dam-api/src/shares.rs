@@ -319,8 +319,12 @@ pub struct PortalSetView {
     pub expires_at: Option<DateTime<Utc>>,
 }
 
-/// One asset in a pickup.
-#[derive(Debug, Clone, Serialize, ToSchema)]
+/// One asset in a pickup — or in a portal (Q.14), which shows the same facts for the same reasons.
+///
+/// `Deserialize` and `PartialEq` as well, because it now travels inside another response type: a portal page is
+/// a list of these plus its branding, and one item shape means a client renders a pickup and a portal with the
+/// same component.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct PortalItem {
     pub asset_id: Uuid,
     pub filename: String,

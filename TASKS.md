@@ -26,14 +26,14 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M0–M3c** Foundation, ingest, metadata/search/rights, delivery/sharing/restore | complete |
 | **F** The UI: browse, detail, upload, filter rail, lightbox, bulk bar, design pass | complete |
 | **F.11b** Share/portal UI, schema administration, metadata types | complete except restore UX |
-| **Q** Acquia parity, 20 slices | Q.1–Q.13 done; Q.14–Q.20 open |
+| **Q** Acquia parity, 20 slices | Q.1–Q.14 done; Q.14b and Q.15–Q.20 open |
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | **done** — two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query, the MCP server |
 | **M6** Workflow/proofing, annotations, analytics | not started |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** Q.14 portals → the Q.15–Q.19 search set → Q.20 sundries → M4 local AI → M6 → M3d → Pre-GA.
+**Next up, in order:** the Q.15–Q.19 search set → Q.14b collections in the app → Q.20 sundries → M4 local AI → M6 → M3d → Pre-GA.
 M5 is complete. M5a and M5b are done and verified against the running stack: both
 hosted clients reach their real vendor endpoints, and a full enrichment ran end to end through the worker against
 a local OpenAI-compatible endpoint — values written with provenance, a disclosure row, tags suggested, 0.75¢
@@ -2052,7 +2052,66 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
       **Not done:** a zip. The pickup is a list with a rights-checked download per item, which needs no worker, no
       archive storage and no second expiry. A single-file archive is a convenience, and `bulk_operations` already
       reserves `download_zip` for it.
-- [ ] **Q.14 Portals.** Standard, Brand, Video and Channel, branded, over the share-portal foundation.
+- [x] **Q.14 Portals.** Standard, Brand, Video and Channel, branded, over the share-portal foundation.
+
+      **A portal is a share with a name.** `share_links.kind` gained `'portal'`, and every question about access
+      — the passcode, the expiry, the download cap, revocation, and the rights re-evaluated per delivery — is
+      answered by the share machinery that already existed. The portal row carries what it *looks like*: a slug,
+      a title, an intro, one of the four kinds, a logo asset, an accent. Two addresses, one page: the public slug
+      and the share token both land in one `render`, so a check cannot hold on one route and not the other.
+
+      **Presentation never changes permission**, with one exception that is stated rather than hidden: a Video
+      portal narrows the set to `video/*`, because a video portal showing stills is a video portal in name only.
+      Standard, Brand and Channel show whatever the collection holds. Nothing in the four kinds grants anything.
+
+      **The slug resolves only when public and live.** The narrow lookup, so a private portal is not even a 403
+      by name; a retired one is nothing at all. Retiring revokes the link in the same transaction — the portal
+      alone would leave a live token rendering a retired page, and the link alone would leave a page nobody can
+      reach and nothing saying why. Presentation can be edited; the *source* cannot, because a portal that
+      swapped its set would show a different library to everyone holding the old URL.
+
+      **The set is refused rather than guessed.** The schema anticipates three sources and this build shows one —
+      a collection, where a person put each asset there on purpose. A saved search or a media class is a live
+      query, so the portal would publish every future asset that happens to match: nobody decides, a rule does.
+      Both are named in the request shape and answered 422 with the reason, so asking gets the decision back
+      rather than "missing field `collection_id`". Written up in NEEDS-REVIEW.md with the three ways to make them
+      safe, because what becomes visible to the public internet is not a default I wanted to pick.
+
+      **Search inside a portal is `ILIKE` over the collection, not Tantivy.** The set is small and bounded, and
+      routing an anonymous visitor's query through the index would put it against documents carrying group ids
+      they have no predicate for. The count and the rows share one `member_query`, so a portal cannot say two
+      hundred and show twelve for a reason other than the cap.
+
+      **The accent is data, so the contrast is derived.** White on a tenant's `#ff6600` is 3.1:1 and the browser
+      suite failed on it. `web/src/lib/portal-colour.ts` picks the ink by contrast and then shifts the background
+      away from it in 6% steps until the pair clears 4.5:1 — the brand colour still reads as the brand, and the
+      button is legible. Swept over every hue and the whole lightness range.
+
+      Eleven mutations caught in the model and the API, seven more in the colour maths. Three of the eleven
+      survived the first sweep and were real gaps: nothing tested that a *retired* portal refuses an edit, that
+      the token's own liveness check holds when the link is un-revoked by hand, or that `LIBRARY_ROWS` keeps
+      superseded versions and attached paperwork off the page.
+
+      **Two bugs the browser found that no test could.** The portal minted a preview URL for the one asset its
+      licence allowed, and the URL 404'd: `issue_for_share` checked rights and never checked that the rendition
+      existed, so a derivative rendered under an older definition of the profile produced a signed URL pointing
+      at bytes the current recipe has no row for. Every test asserting "a URL came back" passed. The check now
+      happens at the mint, after rights and before signing — which also makes the "no preview has been rendered
+      yet" sentence the share portal and this one both carry reachable for the first time.
+
+      That check then failed the download suite, which is how the second one surfaced: a tenant conversion may
+      be named `web-2048`, delivery resolves a name against the *built-ins* first, and the format was therefore
+      queued and rendered under its own recipe's hash and served under the built-in's. A download that reports
+      ready and hands back a URL nobody can fetch. A key that shadows a built-in rendition is now refused where
+      an administrator can still pick another one, and the fixture that carried the collision was renamed.
+
+      **Not done:** the tenant-facing screen for *making* one — see Q.14b, which is the slice that makes a
+      collection something a person can create and curate. Until then a portal is created through the API.
+- [ ] **Q.14b Collections in the application.** Q.14 exposed the gap: `dam_db::collections` has been done since
+  2.3 — membership, dense ordering, `pin_hot` — and there is no way to make or fill one outside a test. A portal
+  publishes a collection, so a portal cannot be created by the person who would want one. Needs a small API
+  (list, create, rename, add and remove members, reorder), the bulk-bar action that puts a selection into one,
+  and the portal administration screen on top of it.
 - [ ] **Q.15 The built-in facets:** asset status, orientation, average rating, has-attachment. Orientation is
   free — it is a function of dimensions already stored.
 - [ ] **Q.16 Search-within, substring, advanced search, multiple-asset search.**

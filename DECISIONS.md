@@ -2396,3 +2396,58 @@ Reversible: yes.
 has no one pinned pool to hand to a pool-taking function, and the tenant's `search_path` lives in a
 `TenantConn`'s transaction. `evaluate_on` and `inputs_for_on` are that, with the pool versions delegating so
 there is one implementation. Reversible: yes.
+
+**A portal is a share with a name.** `share_links.kind` gained `'portal'` and the portal row holds only
+presentation — slug, title, intro, kind, logo, accent. Every question about access is the share's: passcode,
+expiry, download cap, revocation, and rights re-evaluated at each delivery. A portal with its own permission
+model would be a second answer to "who may take this", and the second answer is the one that drifts. Reversible:
+no.
+
+**The four portal kinds are presentation, and Video is the stated exception.** Standard, Brand and Channel change
+layout and nothing else. Video narrows the set to `video/*`, because a video portal showing stills is a video
+portal in name only — a filter, not a permission, and the only kind that touches what is listed. Reversible: yes.
+
+**A portal's source cannot be edited; its presentation can.** Changing the set behind a live URL shows a
+different library to everyone holding it, which is a new portal wearing an old name. Retire and make another.
+Reversible: no.
+
+**Retiring a portal revokes its link in the same transaction.** Either half alone is a broken state: a live token
+rendering a retired page, or a page nobody can reach with nothing saying why. Reversible: no.
+
+**A portal's slug resolves only when the portal is public and live.** The lookup is deliberately narrower than
+the one administration uses, so a private portal is not a 403 that confirms it exists and a retired one is
+nothing at all. Returning the row and refusing later would put the decision in two places. Reversible: no.
+
+**Only a collection can back a portal in this build, and the other two sources are refused by name.** A saved
+search or a media class is a live query, so the portal would publish every future asset that happens to match —
+nobody decides, a rule does. Both are fields in the request and both answer 422 with the reason, because a
+tenant asking for "every video" deserves the decision rather than a complaint about a missing field. The three
+ways to make it safe are in NEEDS-REVIEW.md. Reversible: yes.
+
+**A visitor's search runs as `ILIKE` over the collection rather than through Tantivy.** The set is small and
+bounded, and the index's documents carry group ids an anonymous visitor has no predicate for; sending their query
+there would mean maintaining a second, narrower way to ask the index the same question. The count and the rows
+share one query builder so the page cannot report a total the list disagrees with. Reversible: yes.
+
+**A portal item that rights refuse is listed and named, not hidden.** The same rule the order pickup follows: a
+collection of forty where two are unlicensed is a portal of thirty-eight, and the two still appear with a
+sentence. Hiding them would make a curated set silently incomplete, and the curator is the person who can fix it.
+Reversible: yes.
+
+**The portal button's colours are derived from the accent at render time.** The accent is tenant data, and white
+text on a tenant's orange is 3.1:1. `portal-colour.ts` picks the ink by contrast and shifts the background away
+from it until the pair clears AA, so the brand colour survives and the button is legible. Refusing the colour, or
+rendering it and failing the audit, were the two alternatives. Reversible: yes.
+
+**A distribution token is not minted for a rendition that does not exist.** Rights first, then the bytes: the
+mint resolves the transform's `op_hash` the same way the fetch does and refuses when no derivative carries it.
+Before this, a portal could hand a visitor a signed URL that 404'd — the derivative had been rendered under an
+earlier definition of the profile — and no test could see it, because they asserted a URL came back rather than
+following one. The order matters as much as the check: a caller with no licence must not learn from the refusal
+whether a rendition exists. Reversible: yes.
+
+**A tenant conversion may not be named after a built-in rendition.** Delivery resolves a name against the
+built-in profiles before the tenant's list, so a conversion called `web-2048` would be rendered under its own
+recipe's hash and served under the built-in's — ready, with a URL nobody can fetch. Refusing the name at
+creation is the cheap half of the fix; the alternative, letting a tenant shadow a built-in, would also change
+what `web-2048` means for internal previews, which nobody asked for. Reversible: yes.

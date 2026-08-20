@@ -32,10 +32,15 @@
 		return page.url.pathname === href || page.url.pathname.startsWith(`${href}/`);
 	}
 	/**
-	 * The portal has no nav: its visitor is an external recipient with no account, and an app chrome saying
-	 * "Not connected" invites them to try to connect to something that was never theirs.
+	 * A portal has no nav: its visitor is an external recipient with no account, and an app chrome saying "Not
+	 * connected" invites them to try to connect to something that was never theirs.
+	 *
+	 * Both addresses, which the browser suite caught: Q.14's named portals live under `/portal/`, and adding the
+	 * page without adding it here put the application's own navigation on a page meant for a tenant's customers.
 	 */
-	const portal = $derived(page.url.pathname.startsWith('/share/'));
+	const portal = $derived(
+		page.url.pathname.startsWith('/share/') || page.url.pathname.startsWith('/portal/')
+	);
 </script>
 
 {#if !portal}

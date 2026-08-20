@@ -228,6 +228,18 @@ pub async fn create(
             "a conversion needs a key: it is the name a download request carries".to_owned(),
         ));
     };
+    // A key that shadows a built-in profile is refused, because the shadow never wins. Delivery resolves a name
+    // against the built-in set first (see `delivery::op_hash_for`), so a conversion called `web-2048` would be
+    // queued and rendered under its own recipe's hash and then *served* under the built-in's — a format that
+    // reports ready and hands back a URL nobody can fetch. Found by adding the mint-time rendition check in
+    // Q.14: the download suite had exactly this collision in its fixture and could not see it, because it
+    // asserted a URL came back rather than following one.
+    if dam_media::profiles::by_name(key.trim()).is_some() {
+        return Err(Failure::Unprocessable(format!(
+            "`{}` is the name of a built-in rendition; pick another key",
+            key.trim()
+        )));
+    }
     let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
     let created = conversions::create(conn.executor(), &request.into_new(key), caller.identity_id)
         .await

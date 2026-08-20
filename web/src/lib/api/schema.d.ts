@@ -1006,6 +1006,63 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/portal/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A public portal, by name. */
+        get: operations["by_key"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/portals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every portal, retired ones included. */
+        get: operations["list"];
+        put?: never;
+        /** Creates a portal and the link that reaches it. */
+        post: operations["create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/portals/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Retires a portal and revokes the link that reaches it. */
+        delete: operations["retire"];
+        options?: never;
+        head?: never;
+        /**
+         * Changes how a portal looks and reads.
+         * @description Not what it shows: a portal that swapped its collection would show a different library to everyone holding
+         *     the old URL, which is a new portal wearing an old name.
+         */
+        patch: operations["present"];
+        trace?: never;
+    };
     "/schema/fields": {
         parameters: {
             query?: never;
@@ -1214,6 +1271,23 @@ export interface paths {
          *     not an option; recording the requester is the honest answer to "who is accountable for this copy".
          */
         post: operations["download_item"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/share/{token}/portal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** A portal by its share token — the way a private one is reached. */
+        post: operations["by_token"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1964,6 +2038,17 @@ export interface components {
             key: string;
             label: string;
         };
+        /** @description What creation produced. */
+        CreatedPortal: {
+            portal: components["schemas"]["PortalView"];
+            /**
+             * @description The public URL, when the portal is public. `null` otherwise, rather than a URL that would 404 — a link
+             *     that does not work is worse than no link.
+             */
+            public_url?: string | null;
+            /** @description The token URL, readable exactly once: the token is stored as a digest, so this response is the only copy. */
+            url: string;
+        };
         /** @description A created share. The token appears here and nowhere else, exactly like an issued API key. */
         CreatedShare: {
             /** Format: uuid */
@@ -2319,6 +2404,42 @@ export interface components {
             /** @description `anthropic` or `openai_compatible`. */
             provider: string;
         };
+        /** @description A portal to create. */
+        NewPortalRequest: {
+            accent?: string;
+            allow_original?: boolean;
+            allow_search?: boolean;
+            /**
+             * Format: uuid
+             * @description The collection whose members the portal shows.
+             */
+            collection_id?: string | null;
+            /** Format: int64 */
+            expires_in_days?: number | null;
+            intro?: string;
+            /** @description Whether the slug resolves. False means the portal is reachable only by its token. */
+            is_public?: boolean;
+            /** @description The URL name: lower-case letters, digits and hyphens. */
+            key: string;
+            /** @description `standard`, `brand`, `video` or `channel`. Presentation only. */
+            kind?: string;
+            /** Format: uuid */
+            logo_asset_id?: string | null;
+            /** Format: int32 */
+            max_downloads?: number | null;
+            /** @description A media class ("every video") as the source. Refused for the same reason. */
+            media_class?: string | null;
+            /** @description The access half, handed straight to the share machinery. */
+            passcode?: string | null;
+            /**
+             * Format: uuid
+             * @description A saved search as the source. Accepted by the schema, refused by this build — see the module note and
+             *     NEEDS-REVIEW.md. Named in the request rather than absent from it, so asking gets an answer about the
+             *     decision instead of "missing field `collection_id`".
+             */
+            saved_search_id?: string | null;
+            title: string;
+        };
         /** @description One node, with the count of assets the caller can see at or beneath it. */
         NodeRow: {
             /**
@@ -2440,7 +2561,13 @@ export interface components {
             /** @description A short-lived delivery URL. Fetch it promptly; the token, not this URL, is what the recipient keeps. */
             url: string;
         };
-        /** @description One asset in a pickup. */
+        /**
+         * @description One asset in a pickup — or in a portal (Q.14), which shows the same facts for the same reasons.
+         *
+         *     `Deserialize` and `PartialEq` as well, because it now travels inside another response type: a portal page is
+         *     a list of these plus its branding, and one item shape means a client renders a pickup and a portal with the
+         *     same component.
+         */
         PortalItem: {
             /** Format: uuid */
             asset_id: string;
@@ -2451,6 +2578,31 @@ export interface components {
             preview_unavailable?: string | null;
             /** @description A short-lived, rights-checked preview URL, or nothing with a reason. */
             preview_url?: string | null;
+        };
+        /** @description What a visitor sees. */
+        PortalPage: {
+            accent: string;
+            allow_search: boolean;
+            /** Format: int32 */
+            downloads_remaining?: number | null;
+            /** Format: date-time */
+            expires_at?: string | null;
+            intro: string;
+            items: components["schemas"]["PortalItem"][];
+            kind: string;
+            /**
+             * @description A preview URL for the logo, minted like any other: a logo is an asset, and an asset is delivered through
+             *     the chokepoint even when it is decoration.
+             */
+            logo_url?: string | null;
+            /** @description What the visitor searched for, echoed so the page can show it. */
+            query?: string | null;
+            title: string;
+            /**
+             * Format: int64
+             * @description How many assets the set holds after the search, which is not `items.len()` when the page is capped.
+             */
+            total: number;
         };
         /**
          * @description What a recipient sends. POST rather than GET even for the first look, so the passcode travels in a body —
@@ -2512,6 +2664,17 @@ export interface components {
             recipients?: string[];
             /** @description Defaults to public. Private is the deliberate choice, so it is the one you have to name. */
             visibility?: string;
+        };
+        /** @description Changes to how a portal looks and reads. */
+        PresentRequest: {
+            accent: string;
+            allow_search: boolean;
+            intro?: string;
+            is_public: boolean;
+            kind: string;
+            /** Format: uuid */
+            logo_asset_id?: string | null;
+            title: string;
         };
         /** @description A profile as a client sees it. */
         ProfileRow: {
@@ -2795,6 +2958,12 @@ export interface components {
             uploaded_by?: null | components["schemas"]["PersonView"];
             /** Format: int32 */
             version_no: number;
+        };
+        /** @description A visitor's request. */
+        VisitRequest: {
+            passcode?: string | null;
+            /** @description A term to narrow the set by. Ignored when the portal does not allow searching. */
+            q?: string | null;
         };
         /** @description How many assets are in no category, and some of them. */
         Worklist: {
@@ -5240,6 +5409,160 @@ export interface operations {
             };
         };
     };
+    by_key: {
+        parameters: {
+            query?: {
+                q?: string | null;
+                passcode?: string | null;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PortalPage"];
+                };
+            };
+            /** @description A passcode is required or wrong */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such portal — or private, retired, expired or exhausted */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PortalView"][];
+                };
+            };
+        };
+    };
+    create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewPortalRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreatedPortal"];
+                };
+            };
+            /** @description That name is taken */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A field the portal cannot hold, or a source this build does not accept */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    retire: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PortalView"];
+                };
+            };
+            /** @description No such portal, or it is already retired */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    present: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PresentRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PortalView"];
+                };
+            };
+            /** @description No such portal, or it is retired */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     list: {
         parameters: {
             query?: never;
@@ -5823,6 +6146,45 @@ export interface operations {
                 content?: never;
             };
             /** @description No such share, or that asset is not in this pickup */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    by_token: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VisitRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PortalPage"];
+                };
+            };
+            /** @description A passcode is required or wrong */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such link, or it is not a portal */
             404: {
                 headers: {
                     [name: string]: unknown;

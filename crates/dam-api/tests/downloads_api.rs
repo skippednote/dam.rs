@@ -295,9 +295,13 @@ async fn the_download_http_contract_holds() {
     let document = asset(&f, "brochure", "application/pdf").await;
     licence(&f, document).await;
 
-    conversion(&f, "web-2048", 2048, "jpeg", None).await;
+    // `site-2048` rather than `web-2048`: a key that shadows a built-in rendition is refused now, because
+    // delivery resolves a name against the built-ins first and the tenant's format would be rendered under one
+    // hash and served under another. This fixture had that collision and could not see it — it asserted a URL
+    // came back rather than following one.
+    conversion(&f, "site-2048", 2048, "jpeg", None).await;
     conversion(&f, "print-full", 4096, "png", Some("conversion:print")).await;
-    // Defined identically to `web-2048` — a second name for the same recipe, which a tenant does when one
+    // Defined identically to `site-2048` — a second name for the same recipe, which a tenant does when one
     // audience calls it "web" and another calls it "email".
     conversion(&f, "email-2048", 2048, "jpeg", None).await;
 
@@ -558,13 +562,13 @@ async fn the_original_is_a_signed_url(f: &Fixture, photograph: Uuid) {
 }
 
 async fn an_unrendered_format_is_accepted_and_queued(f: &Fixture, photograph: Uuid) {
-    assert_eq!(queued(f, photograph, "web-2048").await, 0, "nothing yet");
+    assert_eq!(queued(f, photograph, "site-2048").await, 0, "nothing yet");
 
     let (status, body) = call(
         f,
         &format!("/assets/{photograph}/download"),
         &f.downloader_key,
-        json!({ "format": "web-2048" }),
+        json!({ "format": "site-2048" }),
     )
     .await;
     // 202, not 404: the format exists and its bytes do not exist *yet*. A dead URL would be the alternative,
@@ -573,7 +577,7 @@ async fn an_unrendered_format_is_accepted_and_queued(f: &Fixture, photograph: Uu
     assert_eq!(body["status"], json!("rendering"), "{body}");
     assert_eq!(body["url"], Value::Null, "{body}");
     assert_eq!(
-        queued(f, photograph, "web-2048").await,
+        queued(f, photograph, "site-2048").await,
         1,
         "the render was not queued, so the client would poll forever"
     );
@@ -586,30 +590,30 @@ async fn a_second_request_does_not_queue_a_second_render(f: &Fixture, photograph
         f,
         &format!("/assets/{photograph}/download"),
         &f.printer_key,
-        json!({ "format": "web-2048" }),
+        json!({ "format": "site-2048" }),
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED);
     assert_eq!(
-        queued(f, photograph, "web-2048").await,
+        queued(f, photograph, "site-2048").await,
         1,
         "a second request queued a second render of the same thing"
     );
 }
 
 async fn a_rendered_format_is_a_url(f: &Fixture, photograph: Uuid) {
-    rendered(f, photograph, "web-2048").await;
+    rendered(f, photograph, "site-2048").await;
 
     let (status, body) = call(
         f,
         &format!("/assets/{photograph}/download"),
         &f.downloader_key,
-        json!({ "format": "web-2048" }),
+        json!({ "format": "site-2048" }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["status"], json!("ready"), "{body}");
-    assert_eq!(body["format"], json!("web-2048"), "{body}");
+    assert_eq!(body["format"], json!("site-2048"), "{body}");
     assert!(
         body["url"].as_str().is_some_and(|url| url.contains("/d/")),
         "{body}"
@@ -618,7 +622,7 @@ async fn a_rendered_format_is_a_url(f: &Fixture, photograph: Uuid) {
 
 async fn two_names_for_one_recipe_share_the_render(f: &Fixture, photograph: Uuid) {
     // `email-2048` has never been rendered and is immediately ready, because the cache key is the recipe and
-    // `web-2048` already produced those exact bytes. This is what the shared `tenant_op_hash` buys: a tenant
+    // `site-2048` already produced those exact bytes. This is what the shared `tenant_op_hash` buys: a tenant
     // with four names for one size stores one object rather than four.
     let (status, body) = call(
         f,
@@ -685,7 +689,7 @@ async fn an_unknown_format_is_absent(f: &Fixture, photograph: Uuid) {
         f,
         &format!("/assets/{}/download", Uuid::new_v4()),
         &f.printer_key,
-        json!({ "format": "web-2048" }),
+        json!({ "format": "site-2048" }),
     )
     .await;
     assert_eq!(nowhere, StatusCode::NOT_FOUND);
@@ -698,7 +702,7 @@ async fn a_format_for_another_class_is_refused(f: &Fixture, document: Uuid) {
         f,
         &format!("/assets/{document}/download"),
         &f.printer_key,
-        json!({ "format": "web-2048" }),
+        json!({ "format": "site-2048" }),
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
@@ -709,7 +713,7 @@ async fn a_format_for_another_class_is_refused(f: &Fixture, document: Uuid) {
         "{body}"
     );
     assert_eq!(
-        queued(f, document, "web-2048").await,
+        queued(f, document, "site-2048").await,
         0,
         "a render was queued for a class it cannot apply to"
     );

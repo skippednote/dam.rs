@@ -189,6 +189,12 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
             global: deps.global.clone(),
             delivery: Arc::clone(&delivery),
         }))
+        // The *same* delivery state as the share portal: a portal's previews are minted here and verified
+        // there, and two keyrings would mean tokens that fail verification — the bug 3.x already paid for once.
+        .merge(crate::portals::router(crate::portals::PortalState {
+            global: deps.global.clone(),
+            delivery: Arc::clone(&delivery),
+        }))
         .layer(DefaultBodyLimit::max(MAX_JSON_BODY));
 
     Router::new()

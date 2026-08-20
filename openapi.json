@@ -2828,6 +2828,203 @@
         }
       }
     },
+    "/portal/{key}": {
+      "get": {
+        "tags": [
+          "portals"
+        ],
+        "summary": "A public portal, by name.",
+        "operationId": "by_key",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "passcode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalPage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A passcode is required or wrong"
+          },
+          "404": {
+            "description": "No such portal — or private, retired, expired or exhausted"
+          }
+        }
+      }
+    },
+    "/portals": {
+      "get": {
+        "tags": [
+          "portals"
+        ],
+        "summary": "Every portal, retired ones included.",
+        "operationId": "list",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PortalView"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "portals"
+        ],
+        "summary": "Creates a portal and the link that reaches it.",
+        "operationId": "create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewPortalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedPortal"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "That name is taken"
+          },
+          "422": {
+            "description": "A field the portal cannot hold, or a source this build does not accept"
+          }
+        }
+      }
+    },
+    "/portals/{id}": {
+      "delete": {
+        "tags": [
+          "portals"
+        ],
+        "summary": "Retires a portal and revokes the link that reaches it.",
+        "operationId": "retire",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such portal, or it is already retired"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "portals"
+        ],
+        "summary": "Changes how a portal looks and reads.",
+        "description": "Not what it shows: a portal that swapped its collection would show a different library to everyone holding\nthe old URL, which is a new portal wearing an old name.",
+        "operationId": "present",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PresentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such portal, or it is retired"
+          }
+        }
+      }
+    },
     "/schema/fields": {
       "get": {
         "tags": [
@@ -3480,6 +3677,53 @@
           },
           "404": {
             "description": "No such share, or that asset is not in this pickup"
+          }
+        }
+      }
+    },
+    "/share/{token}/portal": {
+      "post": {
+        "tags": [
+          "portals"
+        ],
+        "summary": "A portal by its share token — the way a private one is reached.",
+        "operationId": "by_token",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VisitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalPage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "A passcode is required or wrong"
+          },
+          "404": {
+            "description": "No such link, or it is not a portal"
           }
         }
       }
@@ -5140,6 +5384,30 @@
           }
         }
       },
+      "CreatedPortal": {
+        "type": "object",
+        "description": "What creation produced.",
+        "required": [
+          "portal",
+          "url"
+        ],
+        "properties": {
+          "portal": {
+            "$ref": "#/components/schemas/PortalView"
+          },
+          "public_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The public URL, when the portal is public. `null` otherwise, rather than a URL that would 404 — a link\nthat does not work is worse than no link."
+          },
+          "url": {
+            "type": "string",
+            "description": "The token URL, readable exactly once: the token is stored as a digest, so this response is the only copy."
+          }
+        }
+      },
       "CreatedShare": {
         "type": "object",
         "description": "A created share. The token appears here and nowhere else, exactly like an issued API key.",
@@ -5848,6 +6116,94 @@
           }
         }
       },
+      "NewPortalRequest": {
+        "type": "object",
+        "description": "A portal to create.",
+        "required": [
+          "key",
+          "title"
+        ],
+        "properties": {
+          "accent": {
+            "type": "string"
+          },
+          "allow_original": {
+            "type": "boolean"
+          },
+          "allow_search": {
+            "type": "boolean"
+          },
+          "collection_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The collection whose members the portal shows."
+          },
+          "expires_in_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "intro": {
+            "type": "string"
+          },
+          "is_public": {
+            "type": "boolean",
+            "description": "Whether the slug resolves. False means the portal is reachable only by its token."
+          },
+          "key": {
+            "type": "string",
+            "description": "The URL name: lower-case letters, digits and hyphens."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`standard`, `brand`, `video` or `channel`. Presentation only."
+          },
+          "logo_asset_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "max_downloads": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "media_class": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A media class (\"every video\") as the source. Refused for the same reason."
+          },
+          "passcode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The access half, handed straight to the share machinery."
+          },
+          "saved_search_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "A saved search as the source. Accepted by the schema, refused by this build — see the module note and\nNEEDS-REVIEW.md. Named in the request rather than absent from it, so asking gets an answer about the\ndecision instead of \"missing field `collection_id`\"."
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
       "NodeRow": {
         "type": "object",
         "description": "One node, with the count of assets the caller can see at or beneath it.",
@@ -6164,7 +6520,7 @@
       },
       "PortalItem": {
         "type": "object",
-        "description": "One asset in a pickup.",
+        "description": "One asset in a pickup — or in a portal (Q.14), which shows the same facts for the same reasons.\n\n`Deserialize` and `PartialEq` as well, because it now travels inside another response type: a portal page is\na list of these plus its branding, and one item shape means a client renders a pickup and a portal with the\nsame component.",
         "required": [
           "asset_id",
           "filename"
@@ -6202,6 +6558,75 @@
               "null"
             ],
             "description": "A short-lived, rights-checked preview URL, or nothing with a reason."
+          }
+        }
+      },
+      "PortalPage": {
+        "type": "object",
+        "description": "What a visitor sees.",
+        "required": [
+          "title",
+          "intro",
+          "kind",
+          "accent",
+          "allow_search",
+          "items",
+          "total"
+        ],
+        "properties": {
+          "accent": {
+            "type": "string"
+          },
+          "allow_search": {
+            "type": "boolean"
+          },
+          "downloads_remaining": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "intro": {
+            "type": "string"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PortalItem"
+            }
+          },
+          "kind": {
+            "type": "string"
+          },
+          "logo_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A preview URL for the logo, minted like any other: a logo is an asset, and an asset is delivered through\nthe chokepoint even when it is decoration."
+          },
+          "query": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What the visitor searched for, echoed so the page can show it."
+          },
+          "title": {
+            "type": "string"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many assets the set holds after the search, which is not `items.len()` when the page is capped."
           }
         }
       },
@@ -6351,6 +6776,44 @@
           "visibility": {
             "type": "string",
             "description": "Defaults to public. Private is the deliberate choice, so it is the one you have to name."
+          }
+        }
+      },
+      "PresentRequest": {
+        "type": "object",
+        "description": "Changes to how a portal looks and reads.",
+        "required": [
+          "title",
+          "kind",
+          "accent",
+          "is_public",
+          "allow_search"
+        ],
+        "properties": {
+          "accent": {
+            "type": "string"
+          },
+          "allow_search": {
+            "type": "boolean"
+          },
+          "intro": {
+            "type": "string"
+          },
+          "is_public": {
+            "type": "boolean"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "logo_asset_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string"
           }
         }
       },
@@ -7037,6 +7500,25 @@
           "version_no": {
             "type": "integer",
             "format": "int32"
+          }
+        }
+      },
+      "VisitRequest": {
+        "type": "object",
+        "description": "A visitor's request.",
+        "properties": {
+          "passcode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "q": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A term to narrow the set by. Ignored when the portal does not allow searching."
           }
         }
       },

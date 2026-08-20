@@ -216,6 +216,6 @@ mod tests {
         // stale build: the macro embeds at compile time, so a mismatch means the
         // binary and the repository disagree.
         assert_eq!(global_migration_count(), 3);
-        assert_eq!(tenant_migration_count(), 29);
+        assert_eq!(tenant_migration_count(), 30);
     }
 }

@@ -29,6 +29,7 @@ pub mod metadata_types;
 pub mod migrate;
 pub mod orders;
 pub mod paths;
+pub mod portals;
 pub mod provenance;
 pub mod provision;
 pub mod query_sql;

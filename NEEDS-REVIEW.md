@@ -472,3 +472,40 @@ changed nothing and added no matcher.
 My recommendation is (1) plus (3)'s validation *inverted*: make wildcards real, and document that a wildcard
 confers future permissions in its namespace, because that is what an administrator role is for. But it widens
 access, so it waits for you.
+
+---
+
+## A portal backed by a live query would publish assets nobody decided to publish (Q.14)
+
+**Blocking one source, not the feature.** Portals ship: `migrations/tenant/0030_portals.sql` has the table, the API
+creates them, and the four Acquia kinds (Standard, Brand, Video, Channel) are there as presentations. What is
+refused is one of the three sources the schema anticipates, and the reason is an access-control question
+ARCHITECTURE does not settle.
+
+A portal is visible to people with **no account**. Its set can come from three places:
+
+1. **A collection** — implemented. Somebody with Manage put each asset in it. That act *is* the publication
+   decision, and it is made per asset by a person.
+2. **A saved search** — refused. A saved search is a live query, so a portal backed by one publishes every future
+   asset that happens to match. Nobody decides; a rule does. An asset uploaded next month with `brand:acme` in
+   its metadata would appear on a public page because a query written in March said so.
+3. **A media class** ("every video") — refused, for the same reason and more broadly.
+
+Rights still bite: every preview and download is evaluated at the delivery chokepoint, so an unlicensed asset is
+listed and cannot be taken. That is a real mitigation and not a sufficient one — an unreleased campaign under
+embargo is often *licensed*, and the harm is the exposure rather than the download.
+
+Three ways to make the live sources safe, and they are different products:
+
+1. **A publication flag per asset.** `assets.published_at`, set by a person, and a live-query portal shows only
+   assets that carry it. The query then narrows an explicitly published set rather than defining one. This is the
+   version I would build, and it is a migration plus a bulk action plus a column on the grid.
+2. **A rights floor.** Only assets whose `rights_state = 'allowed'` for `web`/`WORLD` appear. Cheap, and wrong in
+   both directions: it publishes anything with a broad licence, and hides cleared assets whose evaluation is stale.
+3. **Accept it, and say so loudly.** The tenant chose a live query; the portal screen warns that new matching
+   assets will appear publicly, and the audit log records each first appearance. Fastest, and it makes an
+   irreversible disclosure depend on somebody reading a warning.
+
+Both are fields on the create request and both answer 422 with a sentence naming this note — asking gets the
+decision back rather than a complaint about a missing field. Tell me which of the three you want and it is a
+slice; I did not want to pick a default for what becomes visible to the public internet.
