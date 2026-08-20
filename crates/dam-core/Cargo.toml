@@ -19,6 +19,11 @@ chrono = { workspace = true }
 url = { workspace = true }
 regex = { workspace = true }
 base64 = { workspace = true }
+chacha20poly1305 = { workspace = true }
+# Key derivation for sealing, and already the workspace's content-addressing hash.
+blake3 = { workspace = true }
+# The nonce. ChaCha20-Poly1305's nonce must not repeat under one key, so it comes from the CSPRNG.
+rand = { workspace = true }
 subtle = { workspace = true }
 sha2 = { workspace = true }
 hmac = { workspace = true }

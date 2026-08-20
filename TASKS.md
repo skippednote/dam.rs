@@ -2077,9 +2077,20 @@ regression — and does not claim a fix nobody made.
   parsed!` from `aws-smithy-http-client`'s rustls provider. Passes in isolation, twice in a row, immediately
   after. The message comes from reading the *OS* trust store, which this test does not need — the endpoint under
   test is plain HTTP — so the likely cause is the macOS keychain being briefly unreadable while a dozen test
-  binaries and containers start at once. If it recurs often enough to matter, the fix is to build that client
-  with an explicit empty trust store rather than native roots, since the case is *"no TLS at all"* and native
-  roots are irrelevant to it.
+  binaries and containers start at once.
+
+  **Reproduced a second time** later the same day, again only under a full-workspace run and again passing in
+  isolation (twelve consecutive runs). Frequent enough to plan for, then. The test's own comment already
+  documents the mechanism: `aws-smithy-http-client` loads the platform root store **once per process** into a
+  `LazyLock`, and if that single load comes back empty — which a concurrent macOS keychain read can cause — every
+  later client construction in the process trips a `debug_assert!`. The production code already avoids that path
+  for plain HTTP; what trips it is another test in the same binary building a TLS client.
+
+  Not a damrs defect, and no fix taken yet because each candidate has a cost worth choosing deliberately:
+  (a) run `dam-store`'s suite with `--test-threads=1`, which slows the gate's slowest crate; (b) give the TLS
+  client an explicit webpki trust store instead of the platform one, which changes production behaviour for
+  customers with private CAs and is not a change to make in order to quiet a flake; (c) pin a newer
+  `aws-smithy-http-client` if it stops asserting on an empty store.
 
 - **Docker vanishing mid-run.** Twice on 2026-08-20 OrbStack stopped during a full suite, which surfaces as
   `postgres did not accept connections` or `Socket not found: /var/run/docker.sock`. After an OrbStack restart

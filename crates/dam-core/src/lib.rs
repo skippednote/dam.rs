@@ -20,6 +20,7 @@ pub mod query;
 pub mod restore;
 pub mod rights;
 pub mod rights_eval;
+pub mod sealed;
 pub mod secret;
 pub mod shorthand;
 pub mod signed_url;
