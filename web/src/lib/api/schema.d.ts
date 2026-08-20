@@ -4,6 +4,110 @@
  */
 
 export interface paths {
+    "/ai/budget": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The AI spend cap and what has been used against it. */
+        get: operations["read_budget"];
+        /** Sets the AI spend cap. */
+        put: operations["set_budget"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ai/credentials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every credential, withdrawn ones included. */
+        get: operations["list"];
+        put?: never;
+        /** Stores a credential. The one route that accepts a plaintext key. */
+        post: operations["add"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ai/credentials/{id}/active": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Withdraws a credential, or restores one. */
+        patch: operations["set_active"];
+        trace?: never;
+    };
+    "/ai/credentials/{id}/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Makes one credential the one enrichment uses. */
+        patch: operations["make_default"];
+        trace?: never;
+    };
+    "/ai/credentials/{id}/key": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Replaces a credential's key. */
+        put: operations["replace_key"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ai/credentials/{id}/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Asks the provider one short question, to find out whether the credential works. */
+        post: operations["verify"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/assets": {
         parameters: {
             query?: never;
@@ -1431,6 +1535,42 @@ export interface components {
              */
             value: string;
         };
+        /** @description A cap to set. */
+        BudgetRequest: {
+            /** @description `true` to refuse enrichment past the limit rather than only warning. */
+            hard?: boolean;
+            /** Format: int64 */
+            limit_cents: number;
+            /**
+             * Format: float
+             * @description Where the warning fires. 0.8 gives a customer time to react rather than discovering the cap by hitting it.
+             */
+            warn_at_fraction?: number;
+        };
+        /** @description The cap, and what has been spent against it. */
+        BudgetView: {
+            /** @description `soft` warns and keeps working; `hard` refuses new enrichment. */
+            enforcement: string;
+            /**
+             * Format: int64
+             * @description `null` when no cap is configured, which is not a cap of zero — enrichment runs unmetered.
+             */
+            limit_cents?: number | null;
+            /**
+             * Format: date
+             * @description The first day of the calendar month the spend is counted in, in UTC.
+             */
+            period_start: string;
+            /** @description What state the tenant is in right now: `allowed`, `warned` or `refused`. */
+            state: string;
+            /**
+             * Format: int64
+             * @description Whole cents charged this period.
+             */
+            used_cents: number;
+            /** Format: float */
+            warn_at_fraction: number;
+        };
         /** @description One failed row, for the report. */
         BulkFailure: {
             /** Format: uuid */
@@ -1636,6 +1776,46 @@ export interface components {
              *     re-create, which is the same posture as an API key and for the same reason.
              */
             token: string;
+        };
+        /**
+         * @description Whether a credential is withdrawn or in use.
+         *
+         *     Named for the credential rather than reusing `conversions::ActiveRequest`: utoipa keys components by type
+         *     name, and two `ActiveRequest`s in one document would silently be one schema.
+         */
+        CredentialActiveRequest: {
+            is_active: boolean;
+        };
+        /** @description One credential, as an administrator sees it. No key, sealed or otherwise. */
+        CredentialView: {
+            /** @description `null` for Anthropic's own endpoint. Required for everything else. */
+            base_url?: string | null;
+            /** Format: date-time */
+            created_at: string;
+            default_model: string;
+            /**
+             * @description The last four characters of the key. Enough to recognise which of two keys a row holds, useless to
+             *     anybody who steals the response.
+             */
+            hint: string;
+            /** Format: uuid */
+            id: string;
+            is_active: boolean;
+            is_default: boolean;
+            label: string;
+            /**
+             * @description Whether this row is still sealed under a retired key.
+             *
+             *     The rotation worklist, computed without opening anything. An operator who has rotated the sealing key
+             *     needs to know which credentials still need re-sealing, and the answer must not require decrypting them
+             *     to find out.
+             */
+            needs_resealing: boolean;
+            /**
+             * @description `anthropic` or `openai_compatible` — the wire format, not the vendor. See
+             *     `dam_db::ai_credentials::Provider`.
+             */
+            provider: string;
         };
         /** @description Everything the landing page draws. */
         Dashboard: {
@@ -1881,6 +2061,25 @@ export interface components {
             is_default: boolean;
             key: string;
             label: string;
+        };
+        /** @description A credential to store. The only shape in this API that carries a plaintext key. */
+        NewCredentialRequest: {
+            /** @description The provider's key. Sealed before the response is written and never readable again. */
+            api_key: string;
+            /**
+             * @description Required for `openai_compatible`, including the version segment —
+             *     `https://api.moonshot.ai/v1`, `https://api.groq.com/openai/v1`. Optional for Anthropic, where it
+             *     overrides the vendor endpoint with a gateway.
+             */
+            base_url?: string | null;
+            /** @description The model to use when a pipeline stage does not name one. */
+            default_model: string;
+            /** @description What to call it in a list. A person's name for the key, not the vendor's. */
+            label: string;
+            /** @description Whether enrichment should use this one. */
+            make_default?: boolean;
+            /** @description `anthropic` or `openai_compatible`. */
+            provider: string;
         };
         /** @description One node, with the count of assets the caller can see at or beneath it. */
         NodeRow: {
@@ -2142,6 +2341,10 @@ export interface components {
             key: string;
             reindex_required: boolean;
         };
+        /** @description A replacement key for an existing credential. */
+        ReplaceKeyRequest: {
+            api_key: string;
+        };
         /**
          * @description Where a restore has got to, matching `object_placements.restore_state`.
          * @enum {string}
@@ -2290,6 +2493,16 @@ export interface components {
             /** @description The payload key, or the field key for a missing required field. */
             key: string;
         };
+        /** @description What a verification call found out. */
+        VerifyResult: {
+            /** @description What the provider said, or what went wrong, in one sentence somebody can act on. */
+            detail: string;
+            /** @description The model that actually answered, which is not always the one asked for. */
+            model?: string | null;
+            ok: boolean;
+            /** @description Whether trying again might help. A rejected key never will; a throttle will. */
+            worth_retrying: boolean;
+        };
         /** @description One version in a history. */
         VersionView: {
             /** Format: uuid */
@@ -2327,6 +2540,253 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    read_budget: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BudgetView"];
+                };
+            };
+            /** @description The caller holds no manage scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    set_budget: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BudgetRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BudgetView"];
+                };
+            };
+            /** @description A limit or fraction the cap cannot use */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CredentialView"][];
+                };
+            };
+            /** @description The caller holds no manage scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    add: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewCredentialRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CredentialView"];
+                };
+            };
+            /** @description An unusable provider, endpoint or model; the body says which */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    set_active: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CredentialActiveRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CredentialView"];
+                };
+            };
+            /** @description No such credential */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    make_default: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CredentialView"];
+                };
+            };
+            /** @description No such credential */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A withdrawn credential cannot be the default */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    replace_key: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReplaceKeyRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CredentialView"];
+                };
+            };
+            /** @description No such credential */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    verify: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The attempt was made; `ok` says how it went */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VerifyResult"];
+                };
+            };
+            /** @description No such credential */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential cannot be used at all — see the body */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     list: {
         parameters: {
             query?: {

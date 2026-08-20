@@ -428,3 +428,47 @@ fields — and `field_defs` has no notion of which fields an outsider may see. T
 
 If you want (1), say so and it is a slice: a column, an admin toggle beside the existing field settings, and the
 portal gaining the export. I did not want to pick a default for what an outsider may read.
+
+---
+
+## The built-in `admin` role's permissions are decorative (found while designing M5a·4)
+
+**Blocking a decision, not a slice.** Nothing is broken today in a way that grants too much — the failure is the
+safe direction — but a built-in role that confers nothing is a bug somebody will hit, and the fix widens access,
+which is not mine to choose.
+
+`provision.rs` seeds three roles. The administrator's permissions are written as wildcards:
+
+```
+("admin", "Administrator", vec!["asset:*", "metadata:*", "tenant:*", "rights:*"], true)
+```
+
+Nothing expands them. `Grant::permits` is exact string equality (`crates/dam-core/src/policy.rs:93`), and so is
+the narrowing check a feature does against `caller.permissions` (`dam_db::conversions::permitted_for`). So a
+person assigned the built-in `admin` role, and *not* flagged `is_tenant_admin` on their membership, holds no asset
+permissions at all: `asset:*` never matches `asset:read`.
+
+Why it has not shown up: `auth.rs` synthesises `asset:read`/`asset:download`/`asset:manage` for
+`is_tenant_admin` members directly, which is the path every test and every live check has taken. The role row is
+only consulted for members who are *not* tenant admins, which is exactly the case the wildcards were written for.
+
+Three ways out, and they mean different things:
+
+1. **A wildcard matcher** — one `holds(held, wanted)` helper used by both `Grant::permits` and every
+   `caller.permissions` check, matching `asset:read` against a held `asset:*`. This makes wildcards a real
+   feature of the roles table, available to a tenant's own roles, and it means a role written today
+   automatically confers permissions invented next year. That is what a wildcard means; it is also a widening
+   that nobody has agreed to.
+2. **Enumerate the seed** — replace `asset:*` with the three strings that exist. Smallest change, no new
+   semantics, and every future permission has to be added to the seed by hand. A tenant who wrote `metadata:*`
+   into their own role still gets nothing, silently.
+3. **Refuse wildcards at the edge** — a CHECK or an API validation that rejects a `*` in `roles.permissions`, so
+   the table cannot promise what the code does not honour, and fix the seed as in (2).
+
+ARCHITECTURE §7 and §12 do not settle this: they specify one compiled predicate and the coarse `Action` axis,
+and say the fine-grained strings are for narrowing — neither says whether a string may be a pattern. I have
+changed nothing and added no matcher.
+
+My recommendation is (1) plus (3)'s validation *inverted*: make wildcards real, and document that a wildcard
+confers future permissions in its namespace, because that is what an administrator role is for. But it widens
+access, so it waits for you.

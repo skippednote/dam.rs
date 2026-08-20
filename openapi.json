@@ -9,6 +9,287 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/ai/budget": {
+      "get": {
+        "tags": [
+          "ai"
+        ],
+        "summary": "The AI spend cap and what has been used against it.",
+        "operationId": "read_budget",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BudgetView"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller holds no manage scope"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "ai"
+        ],
+        "summary": "Sets the AI spend cap.",
+        "operationId": "set_budget",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BudgetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BudgetView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A limit or fraction the cap cannot use"
+          }
+        }
+      }
+    },
+    "/ai/credentials": {
+      "get": {
+        "tags": [
+          "ai"
+        ],
+        "summary": "Every credential, withdrawn ones included.",
+        "operationId": "list",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CredentialView"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller holds no manage scope"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "ai"
+        ],
+        "summary": "Stores a credential. The one route that accepts a plaintext key.",
+        "operationId": "add",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewCredentialRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "An unusable provider, endpoint or model; the body says which"
+          }
+        }
+      }
+    },
+    "/ai/credentials/{id}/active": {
+      "patch": {
+        "tags": [
+          "ai"
+        ],
+        "summary": "Withdraws a credential, or restores one.",
+        "operationId": "set_active",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CredentialActiveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such credential"
+          }
+        }
+      }
+    },
+    "/ai/credentials/{id}/default": {
+      "patch": {
+        "tags": [
+          "ai"
+        ],
+        "summary": "Makes one credential the one enrichment uses.",
+        "operationId": "make_default",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such credential"
+          },
+          "409": {
+            "description": "A withdrawn credential cannot be the default"
+          }
+        }
+      }
+    },
+    "/ai/credentials/{id}/key": {
+      "put": {
+        "tags": [
+          "ai"
+        ],
+        "summary": "Replaces a credential's key.",
+        "operationId": "replace_key",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplaceKeyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such credential"
+          }
+        }
+      }
+    },
+    "/ai/credentials/{id}/verify": {
+      "post": {
+        "tags": [
+          "ai"
+        ],
+        "summary": "Asks the provider one short question, to find out whether the credential works.",
+        "operationId": "verify",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The attempt was made; `ok` says how it went",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VerifyResult"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such credential"
+          },
+          "422": {
+            "description": "The credential cannot be used at all — see the body"
+          }
+        }
+      }
+    },
     "/assets": {
       "get": {
         "tags": [
@@ -3883,6 +4164,71 @@
           }
         }
       },
+      "BudgetRequest": {
+        "type": "object",
+        "description": "A cap to set.",
+        "required": [
+          "limit_cents"
+        ],
+        "properties": {
+          "hard": {
+            "type": "boolean",
+            "description": "`true` to refuse enrichment past the limit rather than only warning."
+          },
+          "limit_cents": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "warn_at_fraction": {
+            "type": "number",
+            "format": "float",
+            "description": "Where the warning fires. 0.8 gives a customer time to react rather than discovering the cap by hitting it."
+          }
+        }
+      },
+      "BudgetView": {
+        "type": "object",
+        "description": "The cap, and what has been spent against it.",
+        "required": [
+          "enforcement",
+          "warn_at_fraction",
+          "used_cents",
+          "period_start",
+          "state"
+        ],
+        "properties": {
+          "enforcement": {
+            "type": "string",
+            "description": "`soft` warns and keeps working; `hard` refuses new enrichment."
+          },
+          "limit_cents": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "`null` when no cap is configured, which is not a cap of zero — enrichment runs unmetered."
+          },
+          "period_start": {
+            "type": "string",
+            "format": "date",
+            "description": "The first day of the calendar month the spend is counted in, in UTC."
+          },
+          "state": {
+            "type": "string",
+            "description": "What state the tenant is in right now: `allowed`, `warned` or `refused`."
+          },
+          "used_cents": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Whole cents charged this period."
+          },
+          "warn_at_fraction": {
+            "type": "number",
+            "format": "float"
+          }
+        }
+      },
       "BulkFailure": {
         "type": "object",
         "description": "One failed row, for the report.",
@@ -4381,6 +4727,74 @@
           }
         }
       },
+      "CredentialActiveRequest": {
+        "type": "object",
+        "description": "Whether a credential is withdrawn or in use.\n\nNamed for the credential rather than reusing `conversions::ActiveRequest`: utoipa keys components by type\nname, and two `ActiveRequest`s in one document would silently be one schema.",
+        "required": [
+          "is_active"
+        ],
+        "properties": {
+          "is_active": {
+            "type": "boolean"
+          }
+        }
+      },
+      "CredentialView": {
+        "type": "object",
+        "description": "One credential, as an administrator sees it. No key, sealed or otherwise.",
+        "required": [
+          "id",
+          "provider",
+          "label",
+          "hint",
+          "default_model",
+          "is_active",
+          "is_default",
+          "needs_resealing",
+          "created_at"
+        ],
+        "properties": {
+          "base_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`null` for Anthropic's own endpoint. Required for everything else."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "default_model": {
+            "type": "string"
+          },
+          "hint": {
+            "type": "string",
+            "description": "The last four characters of the key. Enough to recognise which of two keys a row holds, useless to\nanybody who steals the response."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "is_active": {
+            "type": "boolean"
+          },
+          "is_default": {
+            "type": "boolean"
+          },
+          "label": {
+            "type": "string"
+          },
+          "needs_resealing": {
+            "type": "boolean",
+            "description": "Whether this row is still sealed under a retired key.\n\nThe rotation worklist, computed without opening anything. An operator who has rotated the sealing key\nneeds to know which credentials still need re-sealing, and the answer must not require decrypting them\nto find out."
+          },
+          "provider": {
+            "type": "string",
+            "description": "`anthropic` or `openai_compatible` — the wire format, not the vendor. See\n`dam_db::ai_credentials::Provider`."
+          }
+        }
+      },
       "Dashboard": {
         "type": "object",
         "description": "Everything the landing page draws.",
@@ -4858,6 +5272,45 @@
           },
           "label": {
             "type": "string"
+          }
+        }
+      },
+      "NewCredentialRequest": {
+        "type": "object",
+        "description": "A credential to store. The only shape in this API that carries a plaintext key.",
+        "required": [
+          "provider",
+          "label",
+          "default_model",
+          "api_key"
+        ],
+        "properties": {
+          "api_key": {
+            "type": "string",
+            "description": "The provider's key. Sealed before the response is written and never readable again."
+          },
+          "base_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Required for `openai_compatible`, including the version segment —\n`https://api.moonshot.ai/v1`, `https://api.groq.com/openai/v1`. Optional for Anthropic, where it\noverrides the vendor endpoint with a gateway."
+          },
+          "default_model": {
+            "type": "string",
+            "description": "The model to use when a pipeline stage does not name one."
+          },
+          "label": {
+            "type": "string",
+            "description": "What to call it in a list. A person's name for the key, not the vendor's."
+          },
+          "make_default": {
+            "type": "boolean",
+            "description": "Whether enrichment should use this one."
+          },
+          "provider": {
+            "type": "string",
+            "description": "`anthropic` or `openai_compatible`."
           }
         }
       },
@@ -5486,6 +5939,18 @@
           }
         }
       },
+      "ReplaceKeyRequest": {
+        "type": "object",
+        "description": "A replacement key for an existing credential.",
+        "required": [
+          "api_key"
+        ],
+        "properties": {
+          "api_key": {
+            "type": "string"
+          }
+        }
+      },
       "RestoreState": {
         "type": "string",
         "description": "Where a restore has got to, matching `object_placements.restore_state`.",
@@ -5864,6 +6329,35 @@
           "key": {
             "type": "string",
             "description": "The payload key, or the field key for a missing required field."
+          }
+        }
+      },
+      "VerifyResult": {
+        "type": "object",
+        "description": "What a verification call found out.",
+        "required": [
+          "ok",
+          "detail",
+          "worth_retrying"
+        ],
+        "properties": {
+          "detail": {
+            "type": "string",
+            "description": "What the provider said, or what went wrong, in one sentence somebody can act on."
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The model that actually answered, which is not always the one asked for."
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "worth_retrying": {
+            "type": "boolean",
+            "description": "Whether trying again might help. A rejected key never will; a throttle will."
           }
         }
       },

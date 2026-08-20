@@ -15,6 +15,7 @@ dam-store = { path = "../../crates/dam-store" }
 dam-api = { path = "../../crates/dam-api" }
 dam-search = { path = "../../crates/dam-search" }
 dam-mcp = { path = "../../crates/dam-mcp" }
+dam-ai = { path = "../../crates/dam-ai" }
 anyhow = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

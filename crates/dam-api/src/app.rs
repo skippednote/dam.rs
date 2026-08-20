@@ -46,6 +46,12 @@ pub struct AppDeps {
     /// Only the delivery routes need this, and only until 3.x makes delivery tenant-resolved from the token
     /// rather than from configuration.
     pub delivery_tenant: uuid::Uuid,
+    /// How a hosted-model call leaves the process.
+    ///
+    /// Injected rather than constructed here so the credential-verify route can be driven against a recorded
+    /// transport — the same seam `dam_ai::model::Transport` exists for. `dam_ai::http::HttpTransport` is what a
+    /// binary passes.
+    pub model_transport: Arc<dyn dam_ai::model::Transport>,
 }
 
 impl std::fmt::Debug for AppDeps {
@@ -142,6 +148,14 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
         ))
         .merge(crate::schema::router(crate::schema::SchemaState {
             global: deps.global.clone(),
+        }))
+        .merge(crate::ai::router(crate::ai::AiState {
+            global: deps.global.clone(),
+            // Built once here rather than per request: it derives a key per entry, and doing that on the path of
+            // every credential read would be a cost paid for nothing.
+            keyring: cfg.ai.keyring(),
+            prices: dam_ai::pricing::Prices::with_overrides(&cfg.ai.prices),
+            transport: Arc::clone(&deps.model_transport),
         }))
         .merge(crate::shares::router(crate::shares::ShareState {
             global: deps.global.clone(),

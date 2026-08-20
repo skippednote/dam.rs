@@ -11,6 +11,7 @@
 	 * on the first grid load, several screens away from where it was entered — so this page proves the key
 	 * works before letting the user leave it.
 	 */
+	import { resolve } from '$app/paths';
 	import { health, listAssets, ApiError } from '$lib/api/client';
 	import { DEFAULT_BASE, session } from '$lib/api/session.svelte';
 
@@ -72,6 +73,14 @@
 			>. It is printed once and only its hash is stored, so it cannot be recovered afterwards.
 		</p>
 	</div>
+
+	<nav aria-label="Settings" class="flex gap-3 text-sm">
+		<span aria-current="page" class="rounded-md bg-surface px-2.5 py-1 font-medium">Connection</span
+		>
+		<a class="rounded-md px-2.5 py-1 text-muted hover:text-fg" href={resolve('/settings/ai')}>
+			AI models
+		</a>
+	</nav>
 
 	<form class="space-y-4" onsubmit={connect}>
 		<div class="space-y-1">

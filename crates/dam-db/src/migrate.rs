@@ -215,7 +215,7 @@ mod tests {
         // Guards against a migration file that was added but not committed, or a
         // stale build: the macro embeds at compile time, so a mismatch means the
         // binary and the repository disagree.
-        assert_eq!(global_migration_count(), 2);
+        assert_eq!(global_migration_count(), 3);
         assert_eq!(tenant_migration_count(), 27);
     }
 }

@@ -15,6 +15,7 @@ dam-media = { path = "../dam-media" }
 dam-pipeline = { path = "../dam-pipeline" }
 dam-search = { path = "../dam-search" }
 dam-connect = { path = "../dam-connect" }
+dam-ai = { path = "../dam-ai" }
 thiserror = { workspace = true }
 axum = { workspace = true }
 axum-extra = { workspace = true }
@@ -41,6 +42,8 @@ blake3 = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 dam-db = { path = "../dam-db", features = ["testing"] }
+# The recorded transport, so the credential-verify route can be driven without a key or a network.
+dam-ai = { path = "../dam-ai", features = ["testing"] }
 dam-store = { path = "../dam-store" }
 # The search router needs an index directory, and a category query is only interesting if `/search` answers it.
 tempfile = { workspace = true }

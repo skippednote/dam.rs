@@ -14,6 +14,7 @@ use figment::{
     providers::{Env, Format, Toml},
 };
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 /// Which deployment this is. Gates the production sanity checks in
@@ -39,6 +40,11 @@ impl Environment {
 /// guessing at what looks insecure.
 pub const DEV_SIGNING_KEY: &str = "dev-insecure-signing-key";
 
+/// The dev-only default for the credential sealing key. Rejected in production by [`Config::validate`], for a
+/// blunter reason than the signing key: this one encrypts tenants' own API keys, and a placeholder here means a
+/// database dump is a list of usable credentials belonging to somebody else.
+pub const DEV_SEALING_KEY: &str = "dev-insecure-sealing-key";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -48,6 +54,7 @@ pub struct Config {
     pub storage: StorageConfig,
     pub search: SearchConfig,
     pub telemetry: TelemetryConfig,
+    pub ai: AiConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,6 +135,58 @@ pub struct SearchConfig {
     pub writer_memory_mib: usize,
 }
 
+/// Hosted-model enrichment (§8.3, M5).
+///
+/// Two unrelated things live here because both are deployment-level and neither belongs to a tenant: the key
+/// that seals tenants' provider credentials, and what a model call costs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AiConfig {
+    /// The key credentials are sealed under. Never a provider's key — this is the key that encrypts *those*.
+    pub sealing_key: Secret<String>,
+    /// Names the key in every ciphertext, so a rotation can tell which rows still need re-sealing.
+    ///
+    /// Short and stable: it is written into every sealed value and matching it is how [`Self::keyring`] decides
+    /// which secret opens which row.
+    pub sealing_key_id: String,
+    /// Keys that no longer seal but must still open.
+    ///
+    /// A rotation is a deploy, not a migration: the new key goes in `sealing_key`, the old one moves here, and
+    /// every existing row keeps opening while `sealed_under_other_keys` works through them. Removing an entry
+    /// before that finishes makes those credentials unreadable — which is a recoverable mistake only if the
+    /// tenant still has the original key to paste in again.
+    pub retired_sealing_keys: BTreeMap<String, Secret<String>>,
+    /// Price overrides, keyed by model name or a prefix of one, in dollars per million tokens.
+    ///
+    /// Merged over the built-in table rather than replacing it, so correcting one model's price does not silently
+    /// unprice every other. A vendor's announcement should not need a release, which is the whole reason this is
+    /// configuration — see `dam_ai::pricing`.
+    pub prices: BTreeMap<String, ModelPrice>,
+}
+
+/// What one model costs, as vendors publish it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelPrice {
+    pub input_dollars_per_mtok: f64,
+    pub output_dollars_per_mtok: f64,
+}
+
+impl AiConfig {
+    /// The keyring: the current key first, every retired key after.
+    ///
+    /// Order is the contract — `dam_core::sealed` seals with the first entry and opens with any — so a rotation
+    /// takes effect for new writes the moment this is rebuilt, with no window in which old rows cannot be read.
+    pub fn keyring(&self) -> crate::sealed::SealingKeyring {
+        let mut keyring =
+            crate::sealed::SealingKeyring::single(&self.sealing_key_id, &self.sealing_key);
+        for (key_id, secret) in &self.retired_sealing_keys {
+            keyring = keyring.with_retired(key_id, secret);
+        }
+        keyring
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TelemetryConfig {
@@ -153,6 +212,20 @@ impl Default for Config {
             storage: StorageConfig::default(),
             search: SearchConfig::default(),
             telemetry: TelemetryConfig::default(),
+            ai: AiConfig::default(),
+        }
+    }
+}
+
+impl Default for AiConfig {
+    fn default() -> Self {
+        Self {
+            sealing_key: Secret::new(DEV_SEALING_KEY.into()),
+            sealing_key_id: "dev".into(),
+            retired_sealing_keys: BTreeMap::new(),
+            // Empty, not a copy of the built-in table: an override that shipped as a default would be a price
+            // list nobody edited, going stale in a file rather than visibly in one place.
+            prices: BTreeMap::new(),
         }
     }
 }
@@ -308,6 +381,33 @@ impl Config {
                     "telemetry.log_format must be `json` in production".into(),
                 ));
             }
+            if self.ai.sealing_key.expose() == DEV_SEALING_KEY {
+                return Err(Error::Config(
+                    "ai.sealing_key is still the development placeholder; every tenant's model \
+                     credential would be readable by anyone who has read the source"
+                        .into(),
+                ));
+            }
+        }
+
+        // Not production-only. A retired key sharing the current id makes the keyring ambiguous — which of two
+        // secrets opens a row named `dev`? — and the failure would arrive as a credential that cannot be
+        // decrypted long after the deploy that caused it.
+        if self
+            .ai
+            .retired_sealing_keys
+            .contains_key(&self.ai.sealing_key_id)
+        {
+            return Err(Error::Config(format!(
+                "ai.sealing_key_id `{}` also appears in ai.retired_sealing_keys; \
+                 a key id must name one secret",
+                self.ai.sealing_key_id
+            )));
+        }
+        if self.ai.sealing_key_id.trim().is_empty() {
+            return Err(Error::Config(
+                "ai.sealing_key_id must not be empty: it is written into every sealed value".into(),
+            ));
         }
 
         Ok(())
@@ -385,9 +485,87 @@ mod tests {
             jail.set_env("DAMRS_ENVIRONMENT", "production");
             jail.set_env("DAMRS_SERVER__URL_SIGNING_KEY", "a-real-key");
             jail.set_env("DAMRS_TELEMETRY__LOG_FORMAT", "json");
+            jail.set_env("DAMRS_AI__SEALING_KEY", "a-real-sealing-key");
             let cfg = Config::load(None::<&str>).expect("valid production config");
             assert!(cfg.environment.is_production());
             Ok(())
         });
+    }
+
+    #[test]
+    fn production_refuses_the_placeholder_sealing_key() {
+        // Blunter than the signing-key check it sits beside: this key encrypts tenants' own provider
+        // credentials, so a placeholder means a database dump is a list of usable keys belonging to somebody
+        // else.
+        Jail::expect_with(|jail| {
+            jail.set_env("DAMRS_ENVIRONMENT", "production");
+            jail.set_env("DAMRS_SERVER__URL_SIGNING_KEY", "a-real-key");
+            jail.set_env("DAMRS_TELEMETRY__LOG_FORMAT", "json");
+            let err = Config::load(None::<&str>).expect_err("the dev sealing key in production");
+            assert!(err.to_string().contains("sealing_key"), "{err}");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn a_key_id_may_not_name_two_secrets() {
+        // Not production-only: an ambiguous keyring surfaces as a credential that cannot be decrypted, long
+        // after the deploy that caused it.
+        Jail::expect_with(|jail| {
+            jail.set_env("DAMRS_AI__SEALING_KEY_ID", "k1");
+            jail.set_env(
+                "DAMRS_AI__RETIRED_SEALING_KEYS",
+                r#"{k1="an older passphrase"}"#,
+            );
+            let err = Config::load(None::<&str>).expect_err("an ambiguous keyring");
+            assert!(err.to_string().contains("retired_sealing_keys"), "{err}");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn the_keyring_seals_with_the_current_key_and_opens_with_a_retired_one() {
+        // The rotation contract, asserted through config rather than through `sealed` alone: what an operator
+        // writes in a file has to produce a keyring that can still read what the previous deploy wrote.
+        let old = AiConfig {
+            sealing_key: Secret::new("first passphrase".into()),
+            sealing_key_id: "k1".into(),
+            ..AiConfig::default()
+        };
+        let sealed = old
+            .keyring()
+            .seal(&Secret::new("a provider key".into()), "aad")
+            .expect("seal");
+
+        let mut rotated = AiConfig {
+            sealing_key: Secret::new("second passphrase".into()),
+            sealing_key_id: "k2".into(),
+            ..AiConfig::default()
+        };
+        rotated
+            .retired_sealing_keys
+            .insert("k1".into(), Secret::new("first passphrase".into()));
+
+        let ring = rotated.keyring();
+        assert_eq!(
+            ring.current_key_id(),
+            "k2",
+            "new values seal under the new key"
+        );
+        assert_eq!(
+            ring.open(&sealed, "aad")
+                .expect("opens under the retired key")
+                .expose(),
+            "a provider key"
+        );
+
+        // And without the retired key it cannot: which is why removing one before a re-seal pass finishes is
+        // the mistake the config docs warn about.
+        let alone = AiConfig {
+            sealing_key: Secret::new("second passphrase".into()),
+            sealing_key_id: "k2".into(),
+            ..AiConfig::default()
+        };
+        assert!(alone.keyring().open(&sealed, "aad").is_err());
     }
 }

@@ -2144,3 +2144,109 @@ only accountable party. Reversible: no.
 it is the only readable copy — storing the plaintext to show again would turn a lost link into a leaked one. Any
 re-issue revokes the previous share, so an order never has two live pickups; revoking the pickup is how an order
 is closed, and two links would make that a half-measure. Reversible: no.
+
+**Two hosted clients, not one per vendor.** §8.3 specifies Anthropic and builds the enrichment cost model on two
+Anthropic-specific features (batch at half price, prompt caching at ~90% off a shared prefix), so Anthropic keeps
+its own client. Everything else the request named — ChatGPT, Kimi, and "etc" — speaks OpenAI's
+`/chat/completions`, and so do DeepSeek, Together, Groq, OpenRouter, vLLM and Ollama. One client for that format
+makes a vendor two strings in a row of `ai_credentials` rather than a module. Reversible: yes.
+
+**The transport is a trait, and the fake is the primary test surface.** Enrichment costs money per call, and
+there is no key in this repository. A suite that could reach the network would be skipped everywhere, and — more
+to the point — a live call proves only that the provider answered. Every feature the cost model assumes is a
+*shape in the request*: the `cache_control` breakpoint at the end of the stable prefix, `output_config.format`
+under its current name, the absence of `budget_tokens`, an image block in Anthropic's spelling rather than
+OpenAI's. All of those are visible before the bytes leave, and all of them are asserted. Reversible: yes.
+
+**Nothing in M5a has spoken to a real provider.** Fixtures are transcribed from the vendors' documented examples,
+so this suite cannot notice a vendor changing a field: it would keep passing while production broke. The
+mitigation is one smoke test against a real key, which is open as M5a·4 and has not been run. Until it has, the
+integration should be read as "the request shape is pinned", not "it works". Reversible: n/a — a statement of
+fact, not a choice.
+
+**A provider's refusal is its own error, not a transport failure.** `stop_reason: "refusal"` arrives with HTTP
+200 and OpenAI's equivalent arrives as `message.refusal` or `finish_reason: "content_filter"`. A DAM enriching a
+customer's whole library will meet these — somebody's asset trips a classifier — and classing them as failures
+would retry a refusal to the queue's attempt limit and then dead-letter an asset that was never going to work.
+`ModelError::Declined` is not transient, and the check happens before the content is read: reading first would
+produce an empty completion that looks like success. Reversible: no.
+
+**`Usage.input_tokens` excludes the cached prefix on both providers.** Anthropic reports `input_tokens` net of
+the cache read; the OpenAI format reports `prompt_tokens` inclusive of it. Subtracting on one side keeps the type
+meaning one thing, so a cost estimate written against it does not overstate one provider by the size of its cache
+hit — which, for a tenant's shared taxonomy prefix, is most of the prompt. Reversible: yes.
+
+**`Transport` returns a status, a body and `Retry-After` — no general header map.** It is the only response
+header either client reads and the only one that cannot be recovered from the body: a 429 carries its wait there,
+and a client that dropped it either hammers a throttled provider or invents a backoff the provider already
+supplied. Seconds only; the header's HTTP-date form needs a clock and a timezone to get wrong, so an unparsed
+date means the queue uses its own backoff, which is a worse wait and never an incorrect one. Reversible: yes.
+
+**A non-2xx is a normal return from the transport, not an `Err`.** Both providers put the reason in the body of a
+400 and both clients read it; a transport that turned status into an error would leave a caller with "400" and no
+idea which field was wrong. The one exception is a non-2xx that is not JSON at all — an overloaded gateway
+answering 502 with an HTML page — whose text is folded into the error shape both clients already read, so the
+gateway's own words reach the log instead of a parse failure. Reversible: yes.
+
+**One ask is one HTTP call.** Retries and backoff belong to the queue, which already counts attempts and owns the
+dead-letter policy. A client that also retried would multiply the two budgets together and bill a tenant for it,
+and the queue would have no way to see that it had happened. Reversible: yes.
+
+**`strict: true` is claimed only for a schema that can satisfy it.** OpenAI's strict mode accepts a subset of
+JSON Schema, and a schema outside that subset is a 400 rather than a graceful downgrade. One `Ask` has to work
+against both providers, so the flag follows the schema's own `additionalProperties: false` rather than being
+asserted for everything. Reversible: yes.
+
+**`reasoning_effort` is opt-in per credential.** OpenAI ignores unknown fields; several servers in the compatible
+family answer 400. Always sending it would mean a tenant discovering the incompatibility through failed
+enrichment runs, which is worse than a slightly dearer default. Reversible: yes.
+
+**`budget_tokens` is absent rather than set.** It is rejected with a 400 on this model family — thinking is
+adaptive and on by default — so the request simply does not carry it, and a test asserts the absence. Reversible:
+no.
+
+**Spend accumulates in micro-units, with the remainder on the row.** `tenant_spend.used_value` is a bigint of
+whole units, which fits every quota global 0002 anticipated and not the one it was written for: an enrichment
+call costs a fraction of a cent, so charging in cents either rounds a million calls to nothing or overstates a
+cheap model twofold. Migration global 0003 adds `spend_remainder_micro`, charges arrive in millionths, and the
+sub-unit part is carried forward. `used_value` keeps exactly the meaning it had, which is what lets one column
+serve every quota key. Reversible: no.
+
+**A spend cap is checked before a call and charged after it.** A model call's cost is reported, not predicted, so
+there is no amount to reserve. The consequence is that a cap can be overshot by the calls already in flight when
+the limit is crossed — bounded by concurrency, not by library size. The alternative is a reservation ledger with
+a compensating write on every failure, bought for precision nobody needs: what matters is that the *next* call is
+refused. Reversible: yes.
+
+**The warning line rounds down.** `warn_at_fraction` is a `real`, so a configured 0.8 is stored as slightly more
+than 0.8; rounding up put the warning for a 100-cent cap at 101 cents of spend — late, and on a small limit
+never. Down, it can fire one unit early, which is the direction a warning exists for: the point is time to
+react. Found by an integration test with a limit of 100, after a unit test with a limit of 1000 had passed.
+Reversible: yes.
+
+**An unpriced model is charged at the most expensive rate on the list.** A model name nobody configured is a
+configuration gap, and the safe direction for a cap is to overstate: an overstated estimate stops work early and
+somebody notices, where an understated one lets a cap be blown through silently. The counts are recorded as
+reported either way, so a correction is arithmetic rather than archaeology. Reversible: yes.
+
+**A provider key can be written and never read.** One route accepts plaintext; no route returns it, sealed or
+otherwise. An admin surface that could show a key would turn every session into a credential exfiltration path,
+and nobody needs it — the key is already wherever it came from. Rotation is a replacement; recognising a row is
+a four-character hint. Reversible: no.
+
+**Credential verification is a real call, and its result separates three outcomes.** "Stored" and "works" are
+different facts, and after a recorded-transport suite only a live call can tell them apart. The result
+distinguishes a rejected credential, a transient failure, and a refusal — the last of which means the credential
+is *fine*, and somebody told only "failed" would re-issue a key that was never the problem. Reversible: yes.
+
+**Model credentials are gated on `Action::Manage`, not on a narrower permission.** A money-bearing secret argues
+for something narrower — `tenant:ai` — and the fine-grained permission strings exist for exactly that. It is not
+used because the built-in administrator role's permissions are wildcards that nothing expands, so a new
+permission string would be a gate no existing role could pass. Written up in NEEDS-REVIEW.md; this surface
+follows the existing convention until that is decided. Reversible: yes.
+
+**The sealing keyring is built from configuration, and a key id may name only one secret.** The current key
+seals, every retired key opens, and a retired entry sharing the current id is refused at startup in every
+environment — an ambiguous keyring surfaces as a credential that cannot be decrypted, long after the deploy that
+caused it. The dev placeholder is refused in production for a blunter reason than the signing key's: it encrypts
+tenants' own credentials. Reversible: no.

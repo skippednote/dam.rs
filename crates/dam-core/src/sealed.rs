@@ -95,6 +95,15 @@ impl SealingKeyring {
         }
     }
 
+    /// The id of the key new values are sealed under.
+    ///
+    /// Written into every ciphertext this keyring produces, and the value a rotation compares a stored row
+    /// against to decide whether it still needs re-sealing — see `dam_db::ai_credentials::sealed_under_other_keys`.
+    /// Empty only for a keyring with no keys, which `seal` and `open` both refuse anyway.
+    pub fn current_key_id(&self) -> &str {
+        self.keys.first().map_or("", |(key_id, _)| key_id.as_str())
+    }
+
     /// Adds a key that may open but will not seal.
     #[must_use]
     pub fn with_retired(mut self, key_id: impl Into<String>, secret: &Secret<String>) -> Self {

@@ -39,6 +39,9 @@ export type CategoryNode = components['schemas']['NodeRow'];
 export type CategoryWorklist = components['schemas']['Worklist'];
 export type UploadProfile = components['schemas']['ProfileRow'];
 export type AutoImportMapping = components['schemas']['MappingRow'];
+export type AiCredential = components['schemas']['CredentialView'];
+export type AiBudget = components['schemas']['BudgetView'];
+export type AiVerifyResult = components['schemas']['VerifyResult'];
 
 /** A failed request, with whatever the server said about it. */
 export class ApiError extends Error {
@@ -846,4 +849,66 @@ export async function health(base: string): Promise<boolean> {
 	} catch {
 		return false;
 	}
+}
+
+/**
+ * The hosted-model credentials and the spend cap.
+ *
+ * `addAiCredential` is the only call in this client that sends a provider key. Nothing reads one back — there is
+ * no endpoint that could — so a screen holding one has it only until this promise resolves.
+ */
+export async function listAiCredentials(): Promise<AiCredential[]> {
+	return request<AiCredential[]>('/ai/credentials');
+}
+
+export async function addAiCredential(body: {
+	provider: string;
+	label: string;
+	base_url?: string | null;
+	default_model: string;
+	api_key: string;
+	make_default?: boolean;
+}): Promise<AiCredential> {
+	return request<AiCredential>('/ai/credentials', {
+		method: 'POST',
+		body: JSON.stringify(body)
+	});
+}
+
+export async function replaceAiCredentialKey(id: string, apiKey: string): Promise<AiCredential> {
+	return request<AiCredential>(`/ai/credentials/${id}/key`, {
+		method: 'PUT',
+		body: JSON.stringify({ api_key: apiKey })
+	});
+}
+
+export async function makeAiCredentialDefault(id: string): Promise<AiCredential> {
+	return request<AiCredential>(`/ai/credentials/${id}/default`, { method: 'PATCH' });
+}
+
+export async function setAiCredentialActive(id: string, isActive: boolean): Promise<AiCredential> {
+	return request<AiCredential>(`/ai/credentials/${id}/active`, {
+		method: 'PATCH',
+		body: JSON.stringify({ is_active: isActive })
+	});
+}
+
+/** Asks the provider one short question. Costs a few tokens and is the only real call this app makes. */
+export async function verifyAiCredential(id: string): Promise<AiVerifyResult> {
+	return request<AiVerifyResult>(`/ai/credentials/${id}/verify`, { method: 'POST' });
+}
+
+export async function readAiBudget(): Promise<AiBudget> {
+	return request<AiBudget>('/ai/budget');
+}
+
+export async function setAiBudget(body: {
+	limit_cents: number;
+	hard?: boolean;
+	warn_at_fraction?: number;
+}): Promise<AiBudget> {
+	return request<AiBudget>('/ai/budget', {
+		method: 'PUT',
+		body: JSON.stringify(body)
+	});
 }

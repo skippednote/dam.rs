@@ -2064,6 +2064,113 @@ Not building: Hootsuite, Mobile, Templates, Video Creator, Syndicate, Digimarc, 
 third-party or separate products, reached through the API and webhooks, which are on the list.
 
 
+## M5 — Hosted-model enrichment
+
+Re-prioritised ahead of M4 and the rest of the Q slices on 2026-08-20, at your request: "claude/chatgpt/kimi/etc
+and other over local ai". Three decisions you made when I asked, and they shape every slice below: **both
+clients in the first slice** (Anthropic and OpenAI-compatible, per-tenant provider choice from the start),
+**built against a fake with a key added later**, and **per-tenant BYO keys from the start** rather than one
+platform key.
+
+- [x] **M5a·1 Sealed credentials.** A tenant's API key has to be readable by the worker and unreadable in a dump,
+      which is encryption at rest with a key the database does not hold. `dam_core::sealed`: ChaCha20-Poly1305,
+      a per-purpose subkey from BLAKE3's `new_derive_key`, and the associated data bound to
+      `tenant:provider:credential_id` so a ciphertext moved between rows or tenants fails to open rather than
+      decrypting into the wrong context. A keyring, not a key: the first entry seals, every entry opens, which is
+      what makes rotation a deploy rather than a migration.
+
+      *Surprise:* my tamper test was flaky. Flipping the last base64 character can produce a non-canonical
+      encoding, so the failure arrived as `Malformed` rather than `Refused` — the right refusal for the wrong
+      reason. Tampering at the byte level and re-encoding fixed it; twelve consecutive passes.
+
+      Two "caught" mutations were real survivors on a clean re-run: the version prefix was not actually checked,
+      and the derivation was not domain-separated. Both are now.
+
+- [x] **M5a·2 The credential table.** `ai_credentials` (migration 0027) stores the sealed key, a `…1234` hint for
+      an admin to recognise it by, the provider, the base URL and the model. `dam_db::ai_credentials` never sees
+      plaintext — it takes and returns sealed strings — so there is no path from a query to a key. One default
+      per tenant per provider, enforced by a partial unique index rather than by application code.
+      `sealed_under_other_keys` exists for the rotation case: it answers "what still needs re-sealing" without
+      opening anything.
+
+- [x] **M5a·3 The two clients.** `dam_ai::model` is the seam — `Ask`/`Part`/`Effort` in, `Completion`/`Usage`
+      out, `ModelError` classified into what a queue can act on. `dam_ai::anthropic` speaks
+      `POST /v1/messages`; `dam_ai::openai_compatible` speaks `/chat/completions` and therefore speaks ChatGPT,
+      Kimi, DeepSeek, Together, Groq and every local server imitating them. `dam_ai::http` is the reqwest
+      transport, kept to the three decisions that need making (status is not an error, `Retry-After` is lifted
+      out, always a timeout). `dam_ai::testing` is the recorded transport, behind a feature so it cannot reach a
+      production build.
+
+      **The request is the part that can be wrong**, so that is what the suite reads. A live call would prove the
+      provider answered; it would not prove the cache breakpoint sits at the end of the stable prefix, or that
+      `output_config.format` is used rather than the deprecated `output_format`, or that `budget_tokens` — a 400
+      on this model family — is absent, or that an image goes to Anthropic as `source` and to the other family as
+      an `image_url` data URI. Seventeen tests, most of them reading JSON that was never sent.
+
+      **A refusal is a 200.** Both providers say no in the body of a successful response, and the check happens
+      before the content is read — otherwise a refusal returns an empty completion that looks like success, and
+      the queue retries it to the attempt limit before dead-lettering an asset that was never going to work.
+
+      **The two vendors disagree about what `prompt_tokens` means** — Anthropic's `input_tokens` excludes the
+      cache read, OpenAI's includes it — so `Usage` normalises, or a cost estimate overstates one provider by the
+      size of the cache hit, which for a shared taxonomy prefix is most of the prompt.
+
+      *Surprise:* the `Transport` trait as first written returned `(status, body)`, which silently made
+      `Retry-After` unreachable — a 429's wait is a header, and the client was left inventing one. It returns an
+      `Answer` now, with that one header lifted out and no general header map, because nothing else reads one.
+
+      **Nothing here has spoken to a real provider.** Fixtures are transcribed from the vendors' documented
+      examples, so this suite cannot notice a vendor changing a field. That is the honest limit of a recorded
+      transport and the reason M5a·4 carries a smoke test.
+
+- [x] **M5a·4 Provider selection, the admin surface, and the spend cap.** `dam_ai::credential::open` turns a
+      stored row into a client, refusing three things separately because the fixes differ: a provider this build
+      has no client for (an older binary against a newer row), a key the keyring cannot open (a rotation that
+      dropped a retired key), and an OpenAI-compatible credential with no endpoint (never usable, and refused on
+      the way in rather than at enrichment time). `GET/POST/PUT/PATCH /ai/credentials` is the admin surface, and
+      `POST /ai/credentials/{id}/verify` asks the provider one short question — the only real call in the
+      codebase, and the only thing that can tell a pinned request shape from a working integration.
+
+      **A key goes in and never comes out.** One route accepts plaintext; none returns it. The suite reads the
+      raw response body looking for the key it just sent, because an admin surface that could show a key turns
+      every session into an exfiltration path. Rotation is a replacement, and `needs_resealing` is computed from
+      the sealing key id without opening anything.
+
+      **Budget caps (G20), which the schema has had since global 0002 and nothing had ever read.** `tenant_quotas`
+      and `tenant_spend` now have a reader: check before a call, charge after it, because a call's cost is not
+      known until it returns. The cap can be overshot by the calls in flight when the limit is crossed — bounded
+      by concurrency rather than by library size, which is the trade a reservation ledger would buy back at the
+      price of a compensating write on every failure.
+
+      *Surprise, and it would have made the cap decoration:* `used_value` is a bigint of whole units and one
+      enrichment call costs a fraction of a cent, so charging in cents rounds every small-model call to nothing.
+      Migration global 0003 adds `spend_remainder_micro`, charges arrive in millionths, and the sub-unit part is
+      carried into the next charge. There is a test that a hundred charges of a third of a cent are thirty-three
+      cents.
+
+      *Second surprise, found by the integration test and not the unit test:* `warn_at_fraction` is a `real`, so
+      a configured 0.8 is stored as 0.800000011920929, and rounding the warning line *up* put it at 81 cents of a
+      100-cent cap — the warning fired late, and on a small enough limit never at all. It rounds down now, which
+      can fire a unit early; that is the direction a warning exists for.
+
+      Prices are configuration (`ai.prices`), merged over a built-in table, and an unpriced model is charged at
+      the most expensive rate in it — an understated estimate lets a cap be blown through silently, where an
+      overstated one stops work and somebody notices.
+
+      The screen is `/settings/ai`: the cap in dollars, the credential list with its hint and its rotation
+      worklist, and a verify button that distinguishes "the key is wrong" from "the model declined", because the
+      second means the key is fine and somebody told only "failed" would re-issue it.
+- [ ] **M5b The enrichment job.** Alt text, description and tag candidates, writing `asset_metadata.provenance`
+      `{source, model, model_version, confidence, at, reviewed_by}` and an `enrichment_runs` row per call with
+      the token counts as reported. AI Act marking (G2) comes from that provenance, not from a flag somebody
+      remembers to set. A review queue turns candidates into `tag_feedback`, because a suggestion a person never
+      confirmed is not a tag.
+- [ ] **M5c Batch backfill.** `POST /v1/messages/batches` at half price for a whole library, polled to `ended`
+      and matched back by `custom_id` — which is why `enrichment_runs` already has `llm_batch_id` and
+      `llm_custom_id`.
+- [ ] **M5d Conversational access.** Natural language to a query, and the MCP server — both of which run through
+      the §7 predicate like every other consumer, so "find me" can never widen what a caller may see.
+
 ## A mutation sweep killed mid-run used to leave the source mutated
 
 Recorded because it cost real time twice and looks exactly like a code failure.
