@@ -2005,15 +2005,24 @@ dependencies = [
 name = "dam-mcp"
 version = "0.1.0"
 dependencies = [
+ "axum",
+ "blake3",
+ "chrono",
+ "dam-api",
  "dam-core",
  "dam-db",
  "dam-search",
+ "dam-store",
+ "http 1.5.0",
  "rmcp",
  "serde",
  "serde_json",
+ "sqlx 0.9.0",
  "thiserror 2.0.20",
  "tokio",
+ "tower",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

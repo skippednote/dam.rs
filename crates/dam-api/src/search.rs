@@ -102,10 +102,15 @@ pub struct QueryProblem {
 
 /// The search routes.
 pub fn router(state: SearchState) -> Router {
+    router_from(Arc::new(state))
+}
+
+/// The same routes, over a state somebody else is also holding — see `downloads::router_from`.
+pub fn router_from(state: Arc<SearchState>) -> Router {
     Router::new()
         .route("/search", get(search))
         .route("/search/facets", get(facets))
-        .with_state(Arc::new(state))
+        .with_state(state)
 }
 
 /// Ranked results for a shorthand query.
@@ -128,11 +133,26 @@ pub async fn search(
     Query(params): Query<SearchParams>,
 ) -> Result<Json<AssetPage>, Failure> {
     let caller = caller::authorize(&state.global, &headers, Action::Read).await?;
+    Ok(Json(run(&state, &caller, &params).await?))
+}
+
+/// Runs a search for a caller who has already been authorised.
+///
+/// Split out from the route for the MCP server (§8.5: "over the **same ABAC layer**"), and that sharing is
+/// the point rather than a convenience. This function is where the query is parsed, the predicate is
+/// composed into the plan, the relational clauses are routed to SQL and the index results are re-checked
+/// against Postgres. A second implementation for agents would be a second chance to get any of those wrong,
+/// and the one that matters — the predicate — would fail silently by returning *more*.
+pub async fn run(
+    state: &SearchState,
+    caller: &Caller,
+    params: &SearchParams,
+) -> Result<AssetPage, Failure> {
     let offset = params.offset.clamp(0, MAX_SEARCH_DEPTH);
     let limit = params.limit.clamp(1, 200);
 
     let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
-    let (planned, defs) = plan(conn.executor(), &caller, &params.q).await?;
+    let (planned, defs) = plan(conn.executor(), caller, &params.q).await?;
 
     // Some clauses are joins, not index terms: category and collection membership. `dam_search` refuses them
     // by name rather than dropping them, because a dropped filter returns *more* than the caller asked for —
@@ -152,11 +172,11 @@ pub async fn search(
         // does (Q.5b·3). Without this a favourited asset appears unfavourited the moment somebody searches for
         // it, and the star flips back when they clear the query — which reads as data loss.
         let ids: Vec<uuid::Uuid> = page.items.iter().map(|item| item.id).collect();
-        let engagement = crate::assets::page_engagement(&caller, conn.executor(), &ids)
+        let engagement = crate::assets::page_engagement(caller, conn.executor(), &ids)
             .await
             .map_err(|_| Failure::Internal)?;
         conn.commit().await?;
-        return Ok(Json(AssetPage {
+        return Ok(AssetPage {
             items: page
                 .items
                 .iter()
@@ -165,7 +185,7 @@ pub async fn search(
             total: page.total,
             offset,
             ranked: false,
-        }));
+        });
     }
 
     let index_schema = IndexSchema::new(defs);
@@ -198,7 +218,7 @@ pub async fn search(
         .take(usize::try_from(limit).unwrap_or(usize::MAX))
         .collect();
 
-    let engagement = crate::assets::page_engagement(&caller, conn.executor(), &window)
+    let engagement = crate::assets::page_engagement(caller, conn.executor(), &window)
         .await
         .map_err(|_| Failure::Internal)?;
 
@@ -215,7 +235,7 @@ pub async fn search(
     }
     conn.commit().await?;
 
-    Ok(Json(AssetPage {
+    Ok(AssetPage {
         items,
         // The number of *ranked and visible* results, which is not the library total and is capped by the
         // overfetch depth. A grid uses it for `aria-rowcount`; it is honest about being a ranked-result count
@@ -223,7 +243,7 @@ pub async fn search(
         total,
         offset,
         ranked: true,
-    }))
+    })
 }
 
 /// Whether a query contains a clause the index cannot answer.

@@ -11,12 +11,26 @@ publish.workspace = true
 dam-core = { path = "../dam-core" }
 dam-db = { path = "../dam-db" }
 dam-search = { path = "../dam-search" }
+# The REST layer, on purpose: §8.5 says the MCP server runs over the *same* ABAC layer, and the strongest form
+# of that is calling the same functions the HTTP routes call rather than reimplementing them.
+dam-api = { path = "../dam-api" }
 thiserror = { workspace = true }
 rmcp = { workspace = true }
+axum = { workspace = true }
+chrono = { workspace = true }
+http = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+dam-db = { path = "../dam-db", features = ["testing"] }
+dam-store = { path = "../dam-store", features = ["testing"] }
+blake3 = { workspace = true }
+tower = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"

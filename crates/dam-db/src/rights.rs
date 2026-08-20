@@ -42,10 +42,20 @@ pub const DEFAULT_TERRITORY: &str = "WORLD";
 /// usage aggregates) and a single query would return the cross product — a licence with three scopes and
 /// an asset with four releases becomes twelve rows to de-duplicate in Rust.
 pub async fn inputs_for(pool: &sqlx::PgPool, asset_id: Uuid) -> Result<Inputs, Error> {
+    let mut conn = pool.acquire().await?;
+    inputs_for_on(&mut conn, asset_id).await
+}
+
+/// The same read, on a connection.
+///
+/// A caller inside a `TenantConn` transaction cannot hand over a pool — the pool's `search_path` is not the
+/// transaction's — so every pool-taking function here has this variant. The MCP server is the caller that made
+/// it necessary: it serves whichever tenant the key belongs to, so there is no one pinned pool to pass.
+pub async fn inputs_for_on(conn: &mut sqlx::PgConnection, asset_id: Uuid) -> Result<Inputs, Error> {
     let legal_hold: Option<bool> =
         sqlx::query_scalar("SELECT legal_hold FROM assets WHERE id = $1")
             .bind(asset_id)
-            .fetch_optional(pool)
+            .fetch_optional(&mut *conn)
             .await?;
     let Some(legal_hold) = legal_hold else {
         return Err(Error::Core(dam_core::Error::NotFound {
@@ -75,7 +85,7 @@ pub async fn inputs_for(pool: &sqlx::PgPool, asset_id: Uuid) -> Result<Inputs, E
          WHERE al.asset_id = $1 ORDER BY l.id",
     )
     .bind(asset_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
 
     let scope_rows = sqlx::query_as::<
@@ -103,7 +113,7 @@ pub async fn inputs_for(pool: &sqlx::PgPool, asset_id: Uuid) -> Result<Inputs, E
          WHERE al.asset_id = $1 ORDER BY s.id",
     )
     .bind(asset_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
 
     let licenses: Vec<License> = license_rows
@@ -173,7 +183,7 @@ pub async fn inputs_for(pool: &sqlx::PgPool, asset_id: Uuid) -> Result<Inputs, E
          WHERE ar.asset_id = $1 ORDER BY r.id",
     )
     .bind(asset_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
 
     let releases = release_rows
@@ -202,7 +212,7 @@ pub async fn inputs_for(pool: &sqlx::PgPool, asset_id: Uuid) -> Result<Inputs, E
          GROUP BY license_scope_id",
     )
     .bind(asset_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
 
     Ok(Inputs {
@@ -231,9 +241,24 @@ pub async fn evaluate(
     usage: &Usage,
     now: DateTime<Utc>,
 ) -> Result<Evaluation, Error> {
-    let inputs = inputs_for(pool, asset_id).await?;
+    let mut conn = pool.acquire().await?;
+    evaluate_on(&mut conn, asset_id, usage, now).await
+}
+
+/// The same evaluation, on a connection — see [`inputs_for_on`] for why every one of these has a pair.
+///
+/// Note what it still does: it *writes* the verdict to the cache. A read-only-looking call that stores is
+/// deliberate — the cache is what delivery reads on the hot path — and inside a caller's transaction that write
+/// is theirs to commit or roll back.
+pub async fn evaluate_on(
+    conn: &mut sqlx::PgConnection,
+    asset_id: Uuid,
+    usage: &Usage,
+    now: DateTime<Utc>,
+) -> Result<Evaluation, Error> {
+    let inputs = inputs_for_on(&mut *conn, asset_id).await?;
     let evaluation = rights_eval::evaluate(&inputs, usage, now);
-    store(pool, asset_id, usage, &evaluation).await?;
+    store_on(&mut *conn, asset_id, usage, &evaluation).await?;
     Ok(evaluation)
 }
 
@@ -306,8 +331,8 @@ pub async fn effective(
 }
 
 /// Writes a verdict into the cache, and mirrors the default usage onto the asset.
-async fn store(
-    pool: &sqlx::PgPool,
+async fn store_on(
+    conn: &mut sqlx::PgConnection,
     asset_id: Uuid,
     usage: &Usage,
     evaluation: &Evaluation,
@@ -327,7 +352,8 @@ async fn store(
     )
     .unwrap_or_else(|_| serde_json::json!([]));
 
-    let mut tx = pool.begin().await?;
+    // No transaction of its own: the caller owns one. Two rows written here have to land or not land together,
+    // and on a connection that is the caller's transaction rather than a nested one.
     sqlx::query(
         "INSERT INTO rights_evaluations \
          (asset_id, channel, territory, verdict, reasons, impressions_remaining, computed_at, expires_at) \
@@ -344,7 +370,7 @@ async fn store(
     .bind(&reasons)
     .bind(evaluation.impressions_remaining)
     .bind(evaluation.expires_at)
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?;
 
     // Only the default usage is mirrored. Mirroring every channel would make the last evaluated one win,
@@ -358,11 +384,10 @@ async fn store(
         .bind(evaluation.verdict.as_str())
         .bind(evaluation.ai_processing_allowed)
         .bind(evaluation.expires_at)
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await?;
     }
 
-    tx.commit().await?;
     Ok(())
 }
 

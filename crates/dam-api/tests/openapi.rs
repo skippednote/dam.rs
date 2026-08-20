@@ -234,5 +234,8 @@ fn route_inspection_deps() -> dam_api::app::AppDeps {
             200,
             serde_json::json!({}),
         )),
+        // No protocol routers: this suite inspects the REST surface, and MCP frames its own requests rather
+        // than answering OPTIONS.
+        protocols: None,
     }
 }

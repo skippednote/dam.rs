@@ -39,6 +39,7 @@
 
 use crate::assets::Failure;
 use crate::caller;
+use crate::caller::Caller;
 use crate::delivery::{self, DeliveryState};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -69,11 +70,19 @@ impl std::fmt::Debug for DownloadState {
 
 /// The download routes.
 pub fn router(state: DownloadState) -> Router {
+    router_from(Arc::new(state))
+}
+
+/// The same routes, over a state somebody else is also holding.
+///
+/// The MCP server calls `issue` with this state, and one state is the point: two would be two pools and,
+/// eventually, two answers about the same download.
+pub fn router_from(state: Arc<DownloadState>) -> Router {
     Router::new()
         .route("/assets/{asset_id}/download", post(download))
         .route("/assets/{asset_id}/usage", get(ledger))
         .route("/usage-options", get(options))
-        .with_state(Arc::new(state))
+        .with_state(state)
 }
 
 /// What a person may declare a download as.
@@ -282,7 +291,23 @@ pub async fn download(
     Json(request): Json<DownloadRequest>,
 ) -> Result<(StatusCode, Json<DownloadIssued>), Failure> {
     let caller = caller::authorize(&state.global, &headers, Action::Download).await?;
+    let (status, issued) = issue(&state, &caller, asset_id, &request).await?;
+    Ok((status, Json(issued)))
+}
 
+/// Issues a download, for a caller who has already been authorised.
+///
+/// Split out from the route so the MCP server can reach it (§8.5: "over the **same ABAC layer**"). That is
+/// not a convenience — it is the whole property. A second implementation of this path would be a second
+/// place where rights are evaluated, the ledger is written and the token is minted, and the three would
+/// drift in exactly the way a governed library cannot afford. The caller is passed in rather than derived,
+/// so every entry point has to have authorised one first.
+pub async fn issue(
+    state: &DownloadState,
+    caller: &Caller,
+    asset_id: Uuid,
+    request: &DownloadRequest,
+) -> Result<(StatusCode, DownloadIssued), Failure> {
     // The asset gate first, and by the same read the options endpoint uses: an asset outside the caller's scope
     // is absent before any question about formats is asked.
     let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
@@ -359,11 +384,11 @@ pub async fn download(
 
             return Ok((
                 StatusCode::ACCEPTED,
-                Json(DownloadIssued {
+                DownloadIssued {
                     url: None,
                     status: "rendering".to_owned(),
                     format: conversion.key,
-                }),
+                },
             ));
         }
 
@@ -432,11 +457,11 @@ pub async fn download(
 
     Ok((
         StatusCode::OK,
-        Json(DownloadIssued {
+        DownloadIssued {
             url: Some(delivery.url_for(&token)),
             status: "ready".to_owned(),
             format: transform,
-        }),
+        },
     ))
 }
 

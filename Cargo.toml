@@ -37,6 +37,9 @@ publish = false
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "process", "signal", "time", "sync"] }
 tokio-util = { version = "0.7", features = ["io"] }
 axum = { version = "0.8", features = ["macros", "multipart"] }
+# The bare HTTP types, for a crate that reads request parts without owning a server: rmcp hands the parts to a
+# tool handler, which is where the MCP server's API key comes from.
+http = "1"
 axum-extra = { version = "0.10", features = ["typed-header"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors", "compression-br", "limit", "timeout", "set-header"] }

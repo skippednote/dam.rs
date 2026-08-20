@@ -29,11 +29,12 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **Q** Acquia parity, 20 slices | Q.1–Q.13 done; Q.14–Q.20 open |
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
-| **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | M5a–M5c and M5d·1 done: two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query. The MCP server is what remains |
+| **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | **done** — two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query, the MCP server |
 | **M6** Workflow/proofing, annotations, analytics | not started |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** M5d·2 the MCP server → then Q.14 portals and the Q.15–Q.19 search set. M5a and M5b are done and verified against the running stack: both
+**Next up, in order:** Q.14 portals → the Q.15–Q.19 search set → Q.20 sundries → M4 local AI → M6 → M3d → Pre-GA.
+M5 is complete. M5a and M5b are done and verified against the running stack: both
 hosted clients reach their real vendor endpoints, and a full enrichment ran end to end through the worker against
 a local OpenAI-compatible endpoint — values written with provenance, a disclosure row, tags suggested, 0.75¢
 charged as a sub-cent remainder, `used_original` false, and a tag confirmed from the review screen with its
@@ -2268,9 +2269,34 @@ platform key.
       Verified live: the prompt carried the tenant's fields and categories, the answer parsed, and running the
       returned shorthand through `/search` found the asset.
 
-- [ ] **M5d·2 The MCP server.** `dam-mcp` is still one doc line. §8.5: `search_assets`, `get_asset`,
-      `get_brand_guidelines`, `check_rights`, `get_download_url` over the same ABAC layer, so an external agent
-      can never see more than the acting user.
+- [x] **M5d·2 The MCP server.** Five tools at `POST /mcp`, over rmcp's streamable-HTTP transport, and the whole
+      design is what the crate does *not* contain: `search_assets` **is** `dam_api::search::run`,
+      `get_download_url` **is** `dam_api::downloads::issue`. Both were split out of their route handlers for
+      this. §8.5 says "over the same ABAC layer", and the strongest form of that is calling the same functions —
+      a second implementation would be a second place where the predicate is composed, rights are evaluated and
+      the ledger is written, and the drift would be invisible until an agent saw something it should not.
+
+      **Authorisation is per call, from the HTTP request.** rmcp injects the request parts into each tool call,
+      so every call re-reads the bearer token and re-authorises. A key revoked mid-session stops working on the
+      next call rather than at the end of the session — there is a test that revokes one and calls again.
+
+      **Absence is the refusal.** An asset out of scope is "no such asset, or not one this key may see", the
+      same sentence a nonexistent id gets, on both paths that can produce it. The gap between "you may not see
+      it" and "it does not exist" is an existence oracle, and an agent is exactly the caller that would map it.
+
+      **Refusals are tool errors, not protocol errors.** A refusal, a missing asset, a query that does not parse:
+      all come back as `isError` with a sentence, because a protocol error tells an agent's *client* that the
+      server is broken — a different and usually false claim. A tool name that is not in `tools/list` is the one
+      genuine protocol error.
+
+      Off by default (`server.mcp_enabled`), like every other switch here that opens something: it grants nothing
+      a key does not already grant, but it is a second protocol surface with its own framing and rebinding
+      checks. `dam_db::rights` gained `evaluate_on`/`inputs_for_on` along the way, because a server that serves
+      whichever tenant the key belongs to has no one pinned pool to hand over.
+
+      Fifteen mutations caught, seventeen tests. Verified live against the running stack: initialize, tools/list,
+      all five tools, and both refusals — an unauthenticated call and a bad key get the same sentence and leak
+      nothing about the library.
 
 ## A mutation sweep killed mid-run used to leave the source mutated
 

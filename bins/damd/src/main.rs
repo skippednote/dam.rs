@@ -60,6 +60,9 @@ async fn main() -> anyhow::Result<()> {
     .await
     .context("connecting to the delivery tenant's schema")?;
 
+    // Cloned before the closure below takes it: the public origin is also what the delivery URLs use, and the
+    // MCP transport validates `Host` against it.
+    let public_url = cfg.server.public_url.clone();
     let app = dam_api::app::router(
         &cfg,
         dam_api::app::AppDeps {
@@ -79,6 +82,17 @@ async fn main() -> anyhow::Result<()> {
             model_transport: Arc::new(
                 dam_ai::http::HttpTransport::new().context("building the model http client")?,
             ),
+            // The MCP server, wired here because `dam-mcp` depends on `dam-api` — it calls the REST handlers
+            // rather than reimplementing them, which is what §8.5's "the same ABAC layer" means in practice.
+            protocols: cfg.server.mcp_enabled.then(|| {
+                let build: Box<dyn FnOnce(_, _) -> _> = Box::new(move |search, downloads| {
+                    dam_mcp::router(
+                        Arc::new(dam_mcp::McpState { search, downloads }),
+                        public_url.as_deref(),
+                    )
+                });
+                build
+            }),
         },
     );
 

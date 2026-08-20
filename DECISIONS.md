@@ -2364,3 +2364,35 @@ questions. Reversible: no.
 **Today's date travels with the question, not in the instructions.** "Photos from last week" needs a date, and a
 date in the cached prefix invalidates it every midnight — the commonest silent cache invalidator there is. The
 prefix is the vocabulary, which changes when the schema does. Reversible: no.
+
+**The MCP tools call the REST handlers rather than reimplementing them.** §8.5 says the server runs "over the
+same ABAC layer", and the strongest form of that is not a shared helper — it is the same function. So
+`dam_api::search::run` and `dam_api::downloads::issue` were split out of their route handlers, and `dam-mcp`
+depends on `dam-api` (the binary inverts the wiring, since `dam-api` cannot depend back). A second implementation
+would be a second place where the predicate is composed, rights are evaluated and the download ledger is written,
+and the drift would be invisible until an agent saw something it should not. Reversible: yes.
+
+**An MCP call is authorised per call, not per session.** A session is long-lived and a DAM's authorisation is
+not: rmcp injects the HTTP request parts into each tool call, so the bearer token is re-read and re-authorised
+every time. A key revoked mid-session stops working on the next call, and a session cannot outlive the
+permissions it was opened with. Reversible: no.
+
+**A refused MCP call is a tool error with a sentence, not a JSON-RPC error.** A protocol error tells the agent's
+client that the *server* is broken, which is a different claim and almost never the true one. The exception is a
+tool name that is not in `tools/list`: that is a fault in the conversation rather than in the library. Reversible:
+yes.
+
+**"No such asset" is the answer for an asset out of scope, on every MCP path.** The same collapse the REST layer
+makes, and it has to hold on both paths that can produce it — the inline check and the one that comes back
+through the handler's own failure type. Reporting them differently would reintroduce through MCP the existence
+oracle the REST layer closes, and an agent is precisely the caller that would enumerate it. Reversible: no.
+
+**The MCP endpoint is off by default.** It grants nothing a key does not already grant — same tools, same
+predicate, same rights — but it is a second protocol surface with its own framing, session handling and
+DNS-rebinding checks. Every other switch in this system that opens something starts closed; this one matches.
+Reversible: yes.
+
+**`dam_db::rights` gained connection-taking variants.** A server that serves whichever tenant the key belongs to
+has no one pinned pool to hand to a pool-taking function, and the tenant's `search_path` lives in a
+`TenantConn`'s transaction. `evaluate_on` and `inputs_for_on` are that, with the pool versions delegating so
+there is one implementation. Reversible: yes.

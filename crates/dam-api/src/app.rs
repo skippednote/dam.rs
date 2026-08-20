@@ -46,6 +46,25 @@ pub struct AppDeps {
     /// Only the delivery routes need this, and only until 3.x makes delivery tenant-resolved from the token
     /// rather than from configuration.
     pub delivery_tenant: uuid::Uuid,
+    /// Builds a protocol router over the states this module assembles — today, the MCP server.
+    ///
+    /// A closure rather than a `Router` or a flag, and the reason is the dependency graph: `dam-mcp` calls the
+    /// REST handlers on purpose (§8.5's "the same ABAC layer"), so it depends on `dam-api` and `dam-api` cannot
+    /// depend on it. Inverting it here lets the binary wire the crate while this module still owns the states —
+    /// which is what keeps the MCP tools and the HTTP routes reading the same pools and the same index pool
+    /// rather than two of each.
+    ///
+    /// `None` mounts nothing: an MCP endpoint is a second front door, and a deployment that does not want agents
+    /// talking to its library should not have to trust that nobody has a key.
+    #[allow(clippy::type_complexity)]
+    pub protocols: Option<
+        Box<
+            dyn FnOnce(
+                Arc<crate::search::SearchState>,
+                Arc<crate::downloads::DownloadState>,
+            ) -> Router,
+        >,
+    >,
     /// How a hosted-model call leaves the process.
     ///
     /// Injected rather than constructed here so the credential-verify route can be driven against a recorded
@@ -82,15 +101,27 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
         .with_public_url(cfg.server.public_url.clone()),
     );
 
+    // Built before the API router so the two share one `SearchState` and one `DownloadState` — the MCP tools
+    // *are* the REST handlers (§8.5), and two states would be two pools, two index pools and eventually two
+    // answers to the same question.
+    let search_state = Arc::new(crate::search::SearchState {
+        global: deps.global.clone(),
+        indexes: Arc::clone(&deps.indexes),
+    });
+    let download_state = Arc::new(crate::downloads::DownloadState {
+        global: deps.global.clone(),
+        delivery: Some(Arc::clone(&delivery)),
+    });
+    let protocols = deps
+        .protocols
+        .map(|build| build(Arc::clone(&search_state), Arc::clone(&download_state)));
+
     let api = Router::new()
         .merge(crate::assets::router(crate::assets::AssetState {
             global: deps.global.clone(),
             delivery: Some(Arc::clone(&delivery)),
         }))
-        .merge(crate::search::router(crate::search::SearchState {
-            global: deps.global.clone(),
-            indexes: Arc::clone(&deps.indexes),
-        }))
+        .merge(crate::search::router_from(Arc::clone(&search_state)))
         .merge(crate::bulk::router(crate::bulk::BulkState {
             global: deps.global.clone(),
         }))
@@ -110,10 +141,7 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
             // pastes into a browser, and two sources for "where are we reachable" would disagree eventually.
             public_url: cfg.server.public_url.clone(),
         }))
-        .merge(crate::downloads::router(crate::downloads::DownloadState {
-            global: deps.global.clone(),
-            delivery: Some(Arc::clone(&delivery)),
-        }))
+        .merge(crate::downloads::router_from(Arc::clone(&download_state)))
         .merge(crate::conversions::router(
             crate::conversions::ConversionState {
                 global: deps.global.clone(),
@@ -176,6 +204,9 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
         // does not exist` while the mint side worked perfectly — and two keyrings would have been the next
         // failure once one rotated.
         .merge(crate::delivery::router_from(delivery))
+        // Outside the JSON body limit above, because a protocol router frames its own requests and enforces its
+        // own maximum. Mounted here rather than inside `api` for the same reason `tus` is.
+        .merge(protocols.unwrap_or_default())
         // Applied to every route above, including the ones a later change adds.
         // `with_status_code` rather than the deprecated `new`, and 504 rather than 408: the request did not
         // time out on the client's side, the server gave up on it, and a client retrying a 408 forever is the

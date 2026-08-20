@@ -91,6 +91,14 @@ pub struct ServerConfig {
     /// without configuration. In production an empty list means no cross-origin browser client can reach the
     /// API at all — fail-closed, and loud, rather than a wildcard nobody remembers setting.
     pub allowed_origins: Vec<String>,
+    /// Whether to mount the MCP server at `/mcp` (§8.5).
+    ///
+    /// **Off by default**, like every other switch in this system that opens something: an MCP endpoint grants
+    /// nothing a key does not already grant — the tools call the REST handlers, under the same predicate — but
+    /// it is a second protocol surface with its own framing, session handling and rebinding checks. A deployment
+    /// that wants agents talking to its library says so; one that does not should not have to reason about
+    /// whether anybody holds a key.
+    pub mcp_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -253,6 +261,7 @@ impl Default for ServerConfig {
             public_url: None,
             delivery_tenant: None,
             allowed_origins: Vec::new(),
+            mcp_enabled: false,
         }
     }
 }
@@ -488,6 +497,19 @@ mod tests {
             jail.set_env("DAMRS_AI__SEALING_KEY", "a-real-sealing-key");
             let cfg = Config::load(None::<&str>).expect("valid production config");
             assert!(cfg.environment.is_production());
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn the_mcp_server_is_off_until_a_deployment_says_otherwise() {
+        // The same posture as every other switch that opens something: a second protocol surface is a decision,
+        // not a default.
+        assert!(!Config::default().server.mcp_enabled);
+        Jail::expect_with(|jail| {
+            jail.set_env("DAMRS_SERVER__MCP_ENABLED", "true");
+            let cfg = Config::load(None::<&str>).expect("valid config");
+            assert!(cfg.server.mcp_enabled);
             Ok(())
         });
     }
