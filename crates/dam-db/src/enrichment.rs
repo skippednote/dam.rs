@@ -446,6 +446,11 @@ pub struct Settings {
     pub alt_text_field: Option<String>,
     pub description_field: Option<String>,
     pub suggest_tags: bool,
+    /// Whether a question in the search box may be turned into a query by a model (0029).
+    ///
+    /// Separate from [`Self::is_enabled`] because they are different decisions: one describes the library at a
+    /// cost per asset, the other answers questions at a cost per question, and a tenant may want either alone.
+    pub natural_language_search: bool,
 }
 
 impl Default for Settings {
@@ -459,6 +464,7 @@ impl Default for Settings {
             alt_text_field: Some("alt_text".to_owned()),
             description_field: Some("description".to_owned()),
             suggest_tags: true,
+            natural_language_search: false,
         }
     }
 }
@@ -473,6 +479,7 @@ type SettingsRow = (
     Option<String>,
     Option<String>,
     bool,
+    bool,
 );
 
 /// Reads the settings.
@@ -481,7 +488,9 @@ type SettingsRow = (
 /// deleted, must not silently start spending; failing closed here is the only default that cannot cost money.
 pub async fn settings(conn: &mut sqlx::PgConnection) -> Result<Settings, Error> {
     let row: Option<SettingsRow> = sqlx::query_as(
-        "SELECT is_enabled, guidance, language, model, alt_text_field, description_field, suggest_tags            FROM enrichment_settings WHERE id",
+        "SELECT is_enabled, guidance, language, model, alt_text_field, description_field, suggest_tags, \
+                natural_language_search \
+           FROM enrichment_settings WHERE id",
     )
     .fetch_optional(&mut *conn)
     .await?;
@@ -494,6 +503,7 @@ pub async fn settings(conn: &mut sqlx::PgConnection) -> Result<Settings, Error> 
         alt_text_field: row.4,
         description_field: row.5,
         suggest_tags: row.6,
+        natural_language_search: row.7,
     }))
 }
 
@@ -503,7 +513,17 @@ pub async fn save_settings(
     wanted: &Settings,
 ) -> Result<Settings, Error> {
     sqlx::query(
-        "INSERT INTO enrichment_settings             (id, is_enabled, guidance, language, model, alt_text_field, description_field,              suggest_tags, updated_at)          VALUES (true, $1, $2, $3, $4, $5, $6, $7, now())          ON CONFLICT (id) DO UPDATE             SET is_enabled = excluded.is_enabled, guidance = excluded.guidance,                 language = excluded.language, model = excluded.model,                 alt_text_field = excluded.alt_text_field,                 description_field = excluded.description_field,                 suggest_tags = excluded.suggest_tags, updated_at = now()",
+        "INSERT INTO enrichment_settings \
+            (id, is_enabled, guidance, language, model, alt_text_field, description_field, \
+             suggest_tags, natural_language_search, updated_at) \
+         VALUES (true, $1, $2, $3, $4, $5, $6, $7, $8, now()) \
+         ON CONFLICT (id) DO UPDATE \
+            SET is_enabled = excluded.is_enabled, guidance = excluded.guidance, \
+                language = excluded.language, model = excluded.model, \
+                alt_text_field = excluded.alt_text_field, \
+                description_field = excluded.description_field, \
+                suggest_tags = excluded.suggest_tags, \
+                natural_language_search = excluded.natural_language_search, updated_at = now()",
     )
     .bind(wanted.is_enabled)
     .bind(&wanted.guidance)
@@ -512,6 +532,7 @@ pub async fn save_settings(
     .bind(wanted.alt_text_field.as_deref().map(str::trim))
     .bind(wanted.description_field.as_deref().map(str::trim))
     .bind(wanted.suggest_tags)
+    .bind(wanted.natural_language_search)
     .execute(&mut *conn)
     .await?;
     // Read back rather than echoed: the trims and the column constraints are the specification, and a caller

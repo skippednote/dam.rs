@@ -429,6 +429,24 @@
 						Suggest tags from the taxonomy
 					</label>
 
+					<label class="flex items-start gap-2 text-sm">
+						<input
+							type="checkbox"
+							class="mt-0.5"
+							checked={enrichment.natural_language_search ?? false}
+							onchange={(event) => {
+								if (enrichment) enrichment.natural_language_search = event.currentTarget.checked;
+							}}
+						/>
+						<span>
+							Let people ask questions in the search box
+							<span class="block text-xs text-muted">
+								A separate cost from describing the library: one call per question, made by whoever
+								is searching. The spend cap above is what bounds it.
+							</span>
+						</span>
+					</label>
+
 					<div class="flex items-center gap-3">
 						<button
 							type="submit"

@@ -531,6 +531,12 @@ pub enum Failure {
     /// a licence verdict or a piece of tenant configuration. A person refused for a reason they can act on
     /// deserves to be told which one. See DECISIONS.md.
     Forbidden(String),
+    /// Come back later: a hard spend cap reached, or a provider rate limiting us.
+    ///
+    /// The first genuine 429 in this API, and it earns its own variant rather than borrowing 409: a conflict is
+    /// something in the way that the caller could clear, and this is a limit that clears itself. A client
+    /// distinguishing them decides between "fix something" and "retry".
+    Throttled(String),
     Internal,
 }
 
@@ -556,6 +562,11 @@ impl IntoResponse for Failure {
                 .into_response(),
             Self::Forbidden(reason) => (
                 StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "reason": reason })),
+            )
+                .into_response(),
+            Self::Throttled(reason) => (
+                StatusCode::TOO_MANY_REQUESTS,
                 Json(serde_json::json!({ "reason": reason })),
             )
                 .into_response(),

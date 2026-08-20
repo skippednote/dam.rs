@@ -85,7 +85,8 @@ async function connect(
 		model: null,
 		alt_text_field: 'alt_text',
 		description_field: 'description',
-		suggest_tags: true
+		suggest_tags: true,
+		natural_language_search: false
 	};
 	let backfill = options.backfill ?? {
 		outstanding: 0,
@@ -422,7 +423,8 @@ test('enrichment is off until somebody turns it on, and says what turning it on 
 			model: null,
 			alt_text_field: 'alt_text',
 			description_field: 'description',
-			suggest_tags: true
+			suggest_tags: true,
+			natural_language_search: false
 		}
 	]);
 });
@@ -470,7 +472,8 @@ test('the library backfill appears only once enrichment is on, and says what it 
 			model: null,
 			alt_text_field: 'alt_text',
 			description_field: 'description',
-			suggest_tags: true
+			suggest_tags: true,
+			natural_language_search: false
 		},
 		backfill: { outstanding: 1200, described: 300, in_flight: 0, running: false }
 	});
@@ -524,4 +527,33 @@ test('a batch still in flight is reported rather than hidden', async ({ page }) 
 	await page.goto('/settings/ai');
 	await expect(page.getByText('200 sitting in a batch that has not landed yet.')).toBeVisible();
 	await expect(page.getByRole('button', { name: 'Describe everything' })).toBeDisabled();
+});
+
+test('asking questions is a separate switch with its own cost note', async ({ page }) => {
+	const recorder = await connect(page, {
+		credentials: [credential()],
+		enrichment: {
+			is_enabled: true,
+			guidance: '',
+			language: 'English',
+			model: null,
+			alt_text_field: 'alt_text',
+			description_field: 'description',
+			suggest_tags: true,
+			natural_language_search: false
+		}
+	});
+	await page.goto('/settings/ai');
+
+	const asking = page.getByLabel('Let people ask questions in the search box');
+	await expect(asking).not.toBeChecked();
+	await expect(page.getByText('one call per question')).toBeVisible();
+
+	await asking.check();
+	await page.getByRole('button', { name: 'Save description settings' }).click();
+	await expect(page.getByRole('status')).toBeVisible();
+	expect(recorder.enrichments[0]).toMatchObject({
+		is_enabled: true,
+		natural_language_search: true
+	});
 });

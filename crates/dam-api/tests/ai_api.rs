@@ -1235,3 +1235,276 @@ async fn a_backfill_queues_one_slice_and_counts_the_work() {
     let (_, view) = json_call(&f, "GET", "/ai/backfill", &f.key, None).await;
     assert_eq!(view["running"], true);
 }
+
+/// The settings body, with every field the API expects.
+fn enrichment_body(overrides: serde_json::Value) -> Value {
+    let mut body = json!({
+        "is_enabled": true,
+        "guidance": "",
+        "language": "English",
+        "model": null,
+        "alt_text_field": "alt_text",
+        "description_field": "description",
+        "suggest_tags": true,
+        "natural_language_search": false,
+    });
+    if let (Some(base), Some(extra)) = (body.as_object_mut(), overrides.as_object()) {
+        for (key, value) in extra {
+            base.insert(key.clone(), value.clone());
+        }
+    }
+    body
+}
+
+/// A stored credential, so the paid endpoints have something to open.
+async fn with_credential(f: &Fixture) {
+    json_call(
+        f,
+        "POST",
+        "/ai/credentials",
+        &f.key,
+        Some(anthropic_credential()),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn natural_language_search_is_its_own_switch_and_starts_off() {
+    let f = fixture().await;
+    let (_, settings) = json_call(&f, "GET", "/ai/enrichment", &f.key, None).await;
+    assert_eq!(settings["natural_language_search"], false);
+
+    with_credential(&f).await;
+    // Describing the library on does not turn asking on: two costs, two decisions.
+    let (status, saved) = json_call(
+        &f,
+        "PUT",
+        "/ai/enrichment",
+        &f.key,
+        Some(enrichment_body(json!({"is_enabled": true}))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["is_enabled"], true);
+    assert_eq!(saved["natural_language_search"], false);
+
+    // And asking is refused while it is off, with the reason.
+    let (status, body) = json_call(
+        &f,
+        "POST",
+        "/search/ask",
+        &f.key,
+        Some(json!({"question": "harbour photos from last week"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body.to_string().contains("switched off"), "{body}");
+}
+
+#[tokio::test]
+async fn a_question_becomes_a_query_that_the_real_parser_accepted() {
+    let f = fixture_with(Arc::new(Recorded::always(
+        200,
+        anthropic_answer(
+            r#"{"shorthand":"harbour dawn","explanation":"Assets mentioning both words.","confidence":0.8}"#,
+            "claude-opus-5",
+            (400, 30, 350, 0),
+        ),
+    )))
+    .await;
+    with_credential(&f).await;
+    json_call(
+        &f,
+        "PUT",
+        "/ai/enrichment",
+        &f.key,
+        Some(enrichment_body(json!({"natural_language_search": true}))),
+    )
+    .await;
+
+    let (status, result) = json_call(
+        &f,
+        "POST",
+        "/search/ask",
+        &f.key,
+        Some(json!({"question": "photos of the harbour at dawn"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["shorthand"], "harbour dawn");
+    assert_eq!(result["parses"], true);
+    assert!(result["problem"].is_null());
+    assert_eq!(result["model"], "claude-opus-5");
+    // Read is enough: searching is what a reader does, and gating this behind Manage would put it where it is
+    // not needed. The spend cap is the control.
+    let (status, _) = call(
+        &f,
+        "POST",
+        "/search/ask",
+        &f.read_only_key,
+        Some(json!({"question": "harbour"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // And the call was charged, twice — once per question, whoever asked.
+    let mut conn = f.global.acquire().await.expect("connection");
+    let period = dam_db::quotas::month_start(chrono::Utc::now());
+    let used = dam_db::quotas::used(&mut conn, f.tenant_id, dam_db::quotas::AI_SPEND, period)
+        .await
+        .expect("used");
+    let remainder: i64 = sqlx::query_scalar(
+        "SELECT spend_remainder_micro FROM dam_global.tenant_spend WHERE tenant_id = $1",
+    )
+    .bind(f.tenant_id)
+    .fetch_one(&f.global)
+    .await
+    .expect("remainder");
+    assert!(
+        used * dam_db::quotas::MICRO + remainder > 0,
+        "a paid call was not charged"
+    );
+}
+
+#[tokio::test]
+async fn a_query_the_parser_refuses_is_reported_rather_than_returned_as_usable() {
+    // The failure that matters: a model naming a field this library does not have. The answer is not a query,
+    // and saying so with the parser's own message and column is what lets a client fall back honestly.
+    let f = fixture_with(Arc::new(Recorded::always(
+        200,
+        anthropic_answer(
+            r#"{"shorthand":"campaign:spring","explanation":"Assets in the spring campaign.","confidence":0.9}"#,
+            "claude-opus-5",
+            (400, 30, 0, 0),
+        ),
+    )))
+    .await;
+    with_credential(&f).await;
+    json_call(
+        &f,
+        "PUT",
+        "/ai/enrichment",
+        &f.key,
+        Some(enrichment_body(json!({"natural_language_search": true}))),
+    )
+    .await;
+
+    let (status, result) = json_call(
+        &f,
+        "POST",
+        "/search/ask",
+        &f.key,
+        Some(json!({"question": "spring campaign assets"})),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the attempt was made; it is unusable"
+    );
+    assert_eq!(result["parses"], false);
+    assert_eq!(
+        result["shorthand"], "campaign:spring",
+        "shown, so it is correctable"
+    );
+    assert!(result["problem"]["message"].is_string(), "{result}");
+    assert!(
+        result["problem"]["at"].is_number(),
+        "and a column to point at"
+    );
+}
+
+#[tokio::test]
+async fn a_hard_cap_refuses_a_question_before_the_call() {
+    let transport = Arc::new(Recorded::always(
+        200,
+        anthropic_answer(
+            r#"{"shorthand":"harbour","explanation":"x","confidence":0.5}"#,
+            "claude-opus-5",
+            (10, 5, 0, 0),
+        ),
+    ));
+    let f = fixture_with(Arc::clone(&transport)).await;
+    with_credential(&f).await;
+    json_call(
+        &f,
+        "PUT",
+        "/ai/enrichment",
+        &f.key,
+        Some(enrichment_body(json!({"natural_language_search": true}))),
+    )
+    .await;
+
+    let mut conn = f.global.acquire().await.expect("connection");
+    dam_db::quotas::set(
+        &mut conn,
+        f.tenant_id,
+        dam_db::quotas::AI_SPEND,
+        &dam_db::quotas::Quota {
+            limit_value: 10,
+            warn_at_fraction: 0.8,
+            enforcement: dam_db::quotas::Enforcement::Hard,
+        },
+    )
+    .await
+    .expect("cap");
+    let period = dam_db::quotas::month_start(chrono::Utc::now());
+    dam_db::quotas::charge(
+        &mut conn,
+        f.tenant_id,
+        dam_db::quotas::AI_SPEND,
+        period,
+        50 * dam_db::quotas::MICRO,
+    )
+    .await
+    .expect("spend");
+
+    let before = transport.sent().len();
+    let (status, _) = call(
+        &f,
+        "POST",
+        "/search/ask",
+        &f.key,
+        Some(json!({"question": "harbour"})),
+    )
+    .await;
+    // 429 rather than 409: a cap clears itself, and a client can tell "retry later" from "fix something".
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(transport.sent().len(), before, "no paid call was made");
+}
+
+#[tokio::test]
+async fn an_empty_or_enormous_question_never_reaches_the_provider() {
+    let transport = Arc::new(Recorded::always(
+        200,
+        anthropic_answer(
+            r#"{"shorthand":"x","explanation":"x","confidence":0.5}"#,
+            "claude-opus-5",
+            (10, 5, 0, 0),
+        ),
+    ));
+    let f = fixture_with(Arc::clone(&transport)).await;
+    with_credential(&f).await;
+    json_call(
+        &f,
+        "PUT",
+        "/ai/enrichment",
+        &f.key,
+        Some(enrichment_body(json!({"natural_language_search": true}))),
+    )
+    .await;
+
+    for question in [String::from("   "), "a".repeat(2_000)] {
+        let (status, _) = call(
+            &f,
+            "POST",
+            "/search/ask",
+            &f.key,
+            Some(json!({"question": question})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    // Everything past the bound is paid for by the tenant, so it is checked here rather than by the provider.
+    assert!(transport.sent().is_empty());
+}

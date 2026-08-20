@@ -1112,6 +1112,37 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/search/ask": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Turns a question into a query.
+         * @description ## Why this returns a query rather than results
+         *
+         *     Because the answer belongs in the search box. Somebody can see what was understood, correct it, and keep it —
+         *     and the results then come from the ordinary search path, under the ordinary predicate, with no second code
+         *     path that could filter differently. A model that answered with *assets* would be a second retrieval route
+         *     into a governed library, which is exactly what §12 argues against.
+         *
+         *     ## Read, and paid
+         *
+         *     Searching is what a reader does, so gating this behind Manage would put it where it is not needed. It costs a
+         *     call per question, which is why it has its own switch (`enrichment_settings.natural_language_search`, off by
+         *     default) and why the AI spend cap applies. The cap is the control.
+         */
+        post: operations["ask_query"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/search/facets": {
         parameters: {
             query?: never;
@@ -1417,6 +1448,31 @@ export interface components {
             assets_now_incomplete: number;
             /** @description Whether the search index is now stale and needs rebuilding. */
             reindex_required: boolean;
+        };
+        /** @description A question to translate. */
+        AskRequest: {
+            /** @description What somebody typed. "Harbour photos from last week", not a query. */
+            question: string;
+        };
+        /** @description What the model made of it. */
+        AskResult: {
+            /**
+             * Format: float
+             * @description As claimed by the model. Shown, never used as a gate.
+             */
+            confidence: number;
+            /** @description One sentence for the person who asked, so a wrong query is correctable rather than mysterious. */
+            explanation: string;
+            model: string;
+            /**
+             * @description Whether the query parses. **A caller must check this**: a query that does not parse is not a query, and
+             *     the honest fallback is to search the question as plain text — which is what the box would have done for
+             *     free.
+             */
+            parses: boolean;
+            problem?: null | components["schemas"]["QueryProblem"];
+            /** @description The query, in the same syntax a person types. Put it in the search box and search. */
+            shorthand: string;
         };
         /** @description One asset in full, as the detail panel draws it. */
         AssetDetail: components["schemas"]["AssetSummary"] & {
@@ -2102,6 +2158,14 @@ export interface components {
             language: string;
             /** @description Overrides the credential's default model for this pipeline. */
             model?: string | null;
+            /**
+             * @description Whether a question in the search box may be turned into a query by a model.
+             *
+             *     Its own switch, not part of `is_enabled`: describing the library costs per asset and answering questions
+             *     costs per question, and a tenant may want either alone. Adding a key to describe a library should not
+             *     silently make every reader's search box a paid endpoint.
+             */
+            natural_language_search?: boolean;
             suggest_tags: boolean;
         };
         /** @description One facetable field and its buckets. */
@@ -2482,7 +2546,12 @@ export interface components {
          * @enum {string}
          */
         ProvenanceState: "none" | "valid" | "invalid" | "untrusted";
-        /** @description Where a query was refused, so a UI can point at the character. */
+        /**
+         * @description Where a query was refused, so a UI can point at the character.
+         *
+         *     `Deserialize` as well as `Serialize` because it travels *inside* another response now — a translated
+         *     question reports the parser's own refusal rather than inventing a second vocabulary for the same failure.
+         */
         QueryProblem: {
             /**
              * @description One-based column the parser stopped at, when it has one. A filter rail underlines from here; without it
@@ -5541,6 +5610,44 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["QueryProblem"];
                 };
+            };
+        };
+    };
+    ask_query: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AskRequest"];
+            };
+        };
+        responses: {
+            /** @description The translation; check `parses` before using it */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AskResult"];
+                };
+            };
+            /** @description Natural-language search is off, there is no credential, or the question is empty */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The tenant is over its hard AI spend cap for this month */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

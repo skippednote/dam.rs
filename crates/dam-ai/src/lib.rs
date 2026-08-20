@@ -5,6 +5,7 @@
 //! the other half and is deliberately later — see TASKS.md on why hosted models came first.
 
 pub mod anthropic;
+pub mod ask;
 pub mod batch;
 pub mod credential;
 pub mod enrich;

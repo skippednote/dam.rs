@@ -47,6 +47,7 @@ export type ReviewRow = components['schemas']['ReviewRow'];
 export type SuggestedTag = components['schemas']['SuggestedTagView'];
 export type MachineField = components['schemas']['MachineFieldView'];
 export type BackfillView = components['schemas']['BackfillView'];
+export type AskResult = components['schemas']['AskResult'];
 
 /** A failed request, with whatever the server said about it. */
 export class ApiError extends Error {
@@ -980,5 +981,20 @@ export async function startBackfill(
 	return request<{ job_id: string; outstanding: number }>('/ai/backfill', {
 		method: 'POST',
 		body: JSON.stringify(slice === undefined ? {} : { slice })
+	});
+}
+
+/**
+ * Turns a question into the library's own search syntax.
+ *
+ * Returns a *query*, not results — the answer goes in the search box, where somebody can see what was
+ * understood, correct it and keep it, and where the results then come from the ordinary search path. Check
+ * `parses` before using it: a query that does not parse is not a query, and the honest fallback is to search the
+ * question as plain text, which is what the box would have done for free.
+ */
+export async function askQuery(question: string): Promise<AskResult> {
+	return request<AskResult>('/search/ask', {
+		method: 'POST',
+		body: JSON.stringify({ question })
 	});
 }

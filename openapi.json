@@ -3220,6 +3220,44 @@
         }
       }
     },
+    "/search/ask": {
+      "post": {
+        "tags": [
+          "ai"
+        ],
+        "summary": "Turns a question into a query.",
+        "description": "## Why this returns a query rather than results\n\nBecause the answer belongs in the search box. Somebody can see what was understood, correct it, and keep it —\nand the results then come from the ordinary search path, under the ordinary predicate, with no second code\npath that could filter differently. A model that answered with *assets* would be a second retrieval route\ninto a governed library, which is exactly what §12 argues against.\n\n## Read, and paid\n\nSearching is what a reader does, so gating this behind Manage would put it where it is not needed. It costs a\ncall per question, which is why it has its own switch (`enrichment_settings.natural_language_search`, off by\ndefault) and why the AI spend cap applies. The cap is the control.",
+        "operationId": "ask_query",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The translation; check `parses` before using it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Natural-language search is off, there is no credential, or the question is empty"
+          },
+          "429": {
+            "description": "The tenant is over its hard AI spend cap for this month"
+          }
+        }
+      }
+    },
     "/search/facets": {
       "get": {
         "tags": [
@@ -4076,6 +4114,63 @@
           }
         ],
         "description": "An amended field, with the consequences of the amendment."
+      },
+      "AskRequest": {
+        "type": "object",
+        "description": "A question to translate.",
+        "required": [
+          "question"
+        ],
+        "properties": {
+          "question": {
+            "type": "string",
+            "description": "What somebody typed. \"Harbour photos from last week\", not a query."
+          }
+        }
+      },
+      "AskResult": {
+        "type": "object",
+        "description": "What the model made of it.",
+        "required": [
+          "shorthand",
+          "explanation",
+          "confidence",
+          "parses",
+          "model"
+        ],
+        "properties": {
+          "confidence": {
+            "type": "number",
+            "format": "float",
+            "description": "As claimed by the model. Shown, never used as a gate."
+          },
+          "explanation": {
+            "type": "string",
+            "description": "One sentence for the person who asked, so a wrong query is correctable rather than mysterious."
+          },
+          "model": {
+            "type": "string"
+          },
+          "parses": {
+            "type": "boolean",
+            "description": "Whether the query parses. **A caller must check this**: a query that does not parse is not a query, and\nthe honest fallback is to search the question as plain text — which is what the box would have done for\nfree."
+          },
+          "problem": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/QueryProblem",
+                "description": "Why it does not parse, when it does not: the parser's own message and column."
+              }
+            ]
+          },
+          "shorthand": {
+            "type": "string",
+            "description": "The query, in the same syntax a person types. Put it in the search box and search."
+          }
+        }
       },
       "AssetDetail": {
         "allOf": [
@@ -5440,6 +5535,10 @@
             ],
             "description": "Overrides the credential's default model for this pipeline."
           },
+          "natural_language_search": {
+            "type": "boolean",
+            "description": "Whether a question in the search box may be turned into a query by a model.\n\nIts own switch, not part of `is_enabled`: describing the library costs per asset and answering questions\ncosts per question, and a tenant may want either alone. Adding a key to describe a library should not\nsilently make every reader's search box a paid endpoint."
+          },
           "suggest_tags": {
             "type": "boolean"
           }
@@ -6313,7 +6412,7 @@
       },
       "QueryProblem": {
         "type": "object",
-        "description": "Where a query was refused, so a UI can point at the character.",
+        "description": "Where a query was refused, so a UI can point at the character.\n\n`Deserialize` as well as `Serialize` because it travels *inside* another response now — a translated\nquestion reports the parser's own refusal rather than inventing a second vocabulary for the same failure.",
         "required": [
           "message"
         ],

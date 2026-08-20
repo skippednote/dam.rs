@@ -102,6 +102,25 @@ impl Schema {
         &self.fields
     }
 
+    /// Every category path this schema can resolve, sorted.
+    ///
+    /// For a caller that has to *describe* the vocabulary rather than parse with it — M5d gives the list to a
+    /// model so it can only produce paths that exist. Sorted because that description is a cached prompt prefix,
+    /// and a set iterated in a different order is a different prefix.
+    pub fn category_paths(&self) -> Vec<String> {
+        let mut paths: Vec<String> = self.categories.keys().cloned().collect();
+        paths.sort();
+        paths
+    }
+
+    /// Every alias, as `key -> alias`. Same purpose as [`Self::category_paths`].
+    pub fn aliases_by_key(&self) -> std::collections::HashMap<String, String> {
+        self.aliases
+            .iter()
+            .map(|(alias, key)| (key.clone(), alias.clone()))
+            .collect()
+    }
+
     /// Resolves a category path to its term id.
     fn resolve_category(&self, path: &str) -> Option<Uuid> {
         // Case-folded, like every other selector value: a path typed `Exterior.Yellow` is the same category,

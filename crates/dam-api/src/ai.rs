@@ -81,6 +81,9 @@ pub fn router(state: AiState) -> Router {
         .route("/ai/enrichment", get(read_enrichment).put(set_enrichment))
         .route("/ai/review", get(review))
         .route("/ai/backfill", get(read_backfill).post(start_backfill))
+        // Pathed under `/search` because that is what it is for — the answer goes in the search box — and
+        // defined here because this is where the credential, the price list and the transport live.
+        .route("/search/ask", post(ask_query))
         .route("/assets/{id}/enrich", post(enrich))
         .route("/assets/{id}/ai", get(asset_disclosure))
         .route("/assets/{asset_id}/tags/{term_id}", patch(decide_tag))
@@ -608,6 +611,13 @@ pub struct EnrichmentSettings {
     pub alt_text_field: Option<String>,
     pub description_field: Option<String>,
     pub suggest_tags: bool,
+    /// Whether a question in the search box may be turned into a query by a model.
+    ///
+    /// Its own switch, not part of `is_enabled`: describing the library costs per asset and answering questions
+    /// costs per question, and a tenant may want either alone. Adding a key to describe a library should not
+    /// silently make every reader's search box a paid endpoint.
+    #[serde(default)]
+    pub natural_language_search: bool,
 }
 
 impl From<dam_db::enrichment::Settings> for EnrichmentSettings {
@@ -620,6 +630,7 @@ impl From<dam_db::enrichment::Settings> for EnrichmentSettings {
             alt_text_field: row.alt_text_field,
             description_field: row.description_field,
             suggest_tags: row.suggest_tags,
+            natural_language_search: row.natural_language_search,
         }
     }
 }
@@ -634,6 +645,7 @@ impl From<EnrichmentSettings> for dam_db::enrichment::Settings {
             alt_text_field: request.alt_text_field,
             description_field: request.description_field,
             suggest_tags: request.suggest_tags,
+            natural_language_search: request.natural_language_search,
         }
     }
 }
@@ -1094,3 +1106,202 @@ pub async fn start_backfill(
         }),
     ))
 }
+
+// ───────────────────────────────────────────────────────────────────────────────────────────────
+// A question, turned into the library's own search syntax (M5d)
+// ───────────────────────────────────────────────────────────────────────────────────────────────
+
+/// A question to translate.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct AskRequest {
+    /// What somebody typed. "Harbour photos from last week", not a query.
+    pub question: String,
+}
+
+/// What the model made of it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct AskResult {
+    /// The query, in the same syntax a person types. Put it in the search box and search.
+    pub shorthand: String,
+    /// One sentence for the person who asked, so a wrong query is correctable rather than mysterious.
+    pub explanation: String,
+    /// As claimed by the model. Shown, never used as a gate.
+    pub confidence: f32,
+    /// Whether the query parses. **A caller must check this**: a query that does not parse is not a query, and
+    /// the honest fallback is to search the question as plain text — which is what the box would have done for
+    /// free.
+    pub parses: bool,
+    /// Why it does not parse, when it does not: the parser's own message and column.
+    pub problem: Option<crate::search::QueryProblem>,
+    pub model: String,
+}
+
+/// Turns a question into a query.
+///
+/// ## Why this returns a query rather than results
+///
+/// Because the answer belongs in the search box. Somebody can see what was understood, correct it, and keep it —
+/// and the results then come from the ordinary search path, under the ordinary predicate, with no second code
+/// path that could filter differently. A model that answered with *assets* would be a second retrieval route
+/// into a governed library, which is exactly what §12 argues against.
+///
+/// ## Read, and paid
+///
+/// Searching is what a reader does, so gating this behind Manage would put it where it is not needed. It costs a
+/// call per question, which is why it has its own switch (`enrichment_settings.natural_language_search`, off by
+/// default) and why the AI spend cap applies. The cap is the control.
+#[utoipa::path(
+    post,
+    path = "/search/ask",
+    request_body = AskRequest,
+    responses(
+        (status = 200, body = AskResult, description = "The translation; check `parses` before using it"),
+        (status = 422, description = "Natural-language search is off, there is no credential, or the question is empty"),
+        (status = 429, description = "The tenant is over its hard AI spend cap for this month"),
+    ),
+    tag = "ai",
+)]
+pub async fn ask_query(
+    State(state): State<Arc<AiState>>,
+    headers: HeaderMap,
+    Json(request): Json<AskRequest>,
+) -> Result<Json<AskResult>, Failure> {
+    let caller = caller::authorize(&state.global, &headers, Action::Read).await?;
+    let question = request.question.trim().to_owned();
+    if question.is_empty() {
+        return Err(Failure::Unprocessable(
+            "there is no question to translate".to_owned(),
+        ));
+    }
+    // Bounded before it reaches a paid endpoint: a question is a sentence, and a megabyte of prose in the box
+    // is either a mistake or an attempt to spend somebody else's money.
+    if question.chars().count() > MAX_QUESTION_CHARS {
+        return Err(Failure::Unprocessable(format!(
+            "a question is a sentence; this one is {} characters and the limit is {MAX_QUESTION_CHARS}",
+            question.chars().count()
+        )));
+    }
+
+    let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
+    let settings = dam_db::enrichment::settings(conn.executor()).await?;
+    let credential = dam_db::ai_credentials::current(conn.executor()).await?;
+    // One loader, so the vocabulary the model is given and the parser the answer goes through are the same
+    // object. Loading them separately is how a model gets told about a field the parser has never heard of.
+    let parse_schema = dam_db::fields::search_schema_on(conn.executor()).await?;
+    conn.commit().await?;
+
+    if !settings.natural_language_search {
+        return Err(Failure::Unprocessable(
+            "natural-language search is switched off for this tenant".to_owned(),
+        ));
+    }
+    let Some(credential) = credential else {
+        return Err(Failure::Unprocessable(
+            "no model credential is configured, so there is nothing to ask".to_owned(),
+        ));
+    };
+
+    // Before the call. A reader can spend here, so the cap is the only thing standing between a paid endpoint
+    // and a script in a loop.
+    let period = dam_db::quotas::month_start(chrono::Utc::now());
+    let verdict = {
+        let mut global = state.global.acquire().await.map_err(dam_db::Error::from)?;
+        dam_db::quotas::check(
+            &mut global,
+            caller.tenant_id,
+            dam_db::quotas::AI_SPEND,
+            period,
+        )
+        .await?
+    };
+    if !verdict.allowed() {
+        return Err(Failure::Throttled(
+            "the tenant is over its hard AI spend cap for this month".to_owned(),
+        ));
+    }
+
+    // The vocabulary the model may use: the tenant's own fields with their kinds and aliases, and the category
+    // paths. Sorted, because the instructions are the cached prefix and a different order is a different prefix.
+    let by_key = parse_schema.aliases_by_key();
+    let mut fields: Vec<dam_ai::ask::FieldHint> = parse_schema
+        .fields()
+        .iter()
+        .map(|def| dam_ai::ask::FieldHint {
+            key: def.key.clone(),
+            kind: def.kind.as_str().to_owned(),
+            alias: by_key.get(&def.key).cloned(),
+        })
+        .collect();
+    fields.sort_by(|left, right| left.key.cmp(&right.key));
+    let paths = parse_schema.category_paths();
+
+    let model = dam_ai::credential::open(
+        &credential,
+        caller.tenant_slug.as_str(),
+        &state.keyring,
+        Arc::clone(&state.transport),
+        settings.model.as_deref(),
+    )
+    .map_err(|error| Failure::Unprocessable(error.to_string()))?;
+
+    let asked = dam_ai::ask::translate(
+        model.as_ref(),
+        &dam_ai::ask::Vocabulary {
+            fields,
+            categories: paths,
+        },
+        &question,
+        &chrono::Utc::now().date_naive().to_string(),
+    )
+    .await
+    .map_err(|error| match error {
+        ModelError::Declined(_) => {
+            Failure::Unprocessable("the model declined to answer that question".to_owned())
+        }
+        ModelError::RateLimited(_) => {
+            Failure::Throttled("the provider is rate limiting; try again shortly".to_owned())
+        }
+        other => Failure::Unprocessable(other.to_string()),
+    })?;
+
+    // Charged whatever the answer was: the call was made. Failing to charge for an unusable answer would make
+    // the cap easy to evade with bad questions.
+    {
+        let mut global = state.global.acquire().await.map_err(dam_db::Error::from)?;
+        let micro = state.prices.estimate(&asked.model, &asked.usage);
+        dam_db::quotas::charge(
+            &mut global,
+            caller.tenant_id,
+            dam_db::quotas::AI_SPEND,
+            period,
+            micro,
+        )
+        .await?;
+    }
+
+    // The real parser, the same one a typed query goes through. This is what makes the feature safe: whatever
+    // the model produced is either a query this library understands or an error with a column.
+    let problem = match dam_core::shorthand::parse(&asked.shorthand, &parse_schema) {
+        Ok(_) => None,
+        Err(error) => Some(crate::search::QueryProblem {
+            message: error.detail.clone(),
+            code: Some(error.code.to_owned()),
+            at: Some(error.column),
+        }),
+    };
+
+    Ok(Json(AskResult {
+        shorthand: asked.shorthand,
+        explanation: asked.explanation,
+        confidence: asked.confidence,
+        parses: problem.is_none(),
+        problem,
+        model: asked.model,
+    }))
+}
+
+/// Longest question accepted, in characters.
+///
+/// A question is a sentence. The shorthand parser has its own, larger bound for a *query*; this one exists
+/// because everything past it is paid for by the tenant.
+pub const MAX_QUESTION_CHARS: usize = 500;

@@ -86,7 +86,10 @@ pub struct Facet {
 }
 
 /// Where a query was refused, so a UI can point at the character.
-#[derive(Debug, Clone, Serialize, ToSchema)]
+///
+/// `Deserialize` as well as `Serialize` because it travels *inside* another response now — a translated
+/// question reports the parser's own refusal rather than inventing a second vocabulary for the same failure.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct QueryProblem {
     pub message: String,
     /// A stable machine-readable code, when the parser gave one. A UI maps it to a message in the user's

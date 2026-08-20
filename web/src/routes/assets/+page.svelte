@@ -41,7 +41,9 @@
 		type Engagement,
 		type Facet,
 		type FieldDefinition,
-		type SortOrder
+		type SortOrder,
+		askQuery,
+		readEnrichmentSettings
 	} from '$lib/api/client';
 	import { session } from '$lib/api/session.svelte';
 
@@ -58,6 +60,13 @@
 	let error = $state('');
 	let ranked = $state(false);
 	let showUpload = $state(false);
+	/** Whether the tenant has turned natural-language search on. Read once; the button is hidden until it is. */
+	let canAsk = $state(false);
+	let asking = $state(false);
+	/** What the model made of the last question: shown so a wrong query is correctable rather than mysterious. */
+	let understood = $state<{ explanation: string; parses: boolean; problem: string | null } | null>(
+		null
+	);
 	/** Whether the selected asset is open full-screen. Separate from `selected`, because the panel and the
 	    lightbox show the same asset and closing one must not close the other. */
 	let lightbox = $state(false);
@@ -228,7 +237,56 @@
 		void goto(url, { replaceState: true, keepFocus: true, noScroll: true });
 	}
 
-	onMount(load);
+	/**
+	 * Sends the box as a question and puts the answer back in the box.
+	 *
+	 * The query is what lands, not the results: somebody can see what was understood, edit it, and search again —
+	 * and the results come from the ordinary search path rather than a second retrieval route into the library.
+	 */
+	async function ask() {
+		asking = true;
+		understood = null;
+		error = '';
+		try {
+			const asked = await askQuery(query);
+			understood = {
+				explanation: asked.explanation,
+				parses: asked.parses,
+				problem: asked.problem?.message ?? null
+			};
+			if (asked.parses) {
+				query = asked.shorthand;
+				show(query);
+				await load();
+			}
+			// If it does not parse the question stays in the box, with the problem shown. Searching the question
+			// as text is one keystroke away and costs nothing, which is a better default than a query nobody can
+			// read replacing what they typed.
+		} catch (caught) {
+			error =
+				caught instanceof ApiError
+					? caught.status === 429
+						? 'The AI spend cap for this month has been reached.'
+						: caught.message
+					: 'Could not reach the API.';
+		} finally {
+			asking = false;
+		}
+	}
+
+	onMount(async () => {
+		await load();
+		try {
+			// Only to decide whether to offer the button. A tenant with it off should not see an affordance that
+			// answers 422, and a reader without manage access simply does not get the button — the endpoint is
+			// Read-gated, so this is about the offer rather than the permission.
+			// `?? false` because the field is optional in the generated types: a server that has not been
+			// upgraded yet simply does not offer the button.
+			canAsk = (await readEnrichmentSettings()).natural_language_search ?? false;
+		} catch {
+			canAsk = false;
+		}
+	});
 </script>
 
 <div class="flex h-[calc(100vh-3rem)] flex-col">
@@ -254,7 +312,38 @@
 			>
 				{loading ? 'Searching…' : 'Search'}
 			</button>
+			{#if canAsk}
+				<!--
+					A separate button rather than guessing which of the two the box holds. A heuristic that
+					sometimes sent a query to a paid endpoint, or a question to a parser that answers nothing,
+					would be wrong in a way nobody could predict — and this one costs money per press.
+				-->
+				<button
+					type="button"
+					class="rounded-md border border-line px-3 py-1.5 text-sm disabled:opacity-50"
+					disabled={asking || query.trim() === ''}
+					onclick={ask}
+					title="Turn a question into a query"
+				>
+					{asking ? 'Asking…' : 'Ask'}
+				</button>
+			{/if}
 		</form>
+
+		{#if understood}
+			<p
+				role="status"
+				class="w-full text-xs {understood.parses ? 'text-muted' : 'text-state-rights-denied-fg'}"
+			>
+				{#if understood.parses}
+					Understood as: {understood.explanation} — edit the query and search again if that is not it.
+				{:else}
+					That question did not become a query this library understands{understood.problem
+						? `: ${understood.problem}`
+						: ''}. Press Search to look for the words instead.
+				{/if}
+			</p>
+		{/if}
 
 		{#if !ranked}
 			<label class="sr-only" for="order">Sort order</label>

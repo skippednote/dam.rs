@@ -2333,3 +2333,34 @@ batch. Noted on `JobSpec::dedupe_key`, because any chained stage could fall into
 failure was a provider having a bad day, and a skip was a setting that has since changed. Only a succeeded,
 partial or still-running row takes an asset off the list — which is what makes running a backfill twice safe and
 useful rather than either a no-op or a second bill for the same work. Reversible: yes.
+
+**Natural-language search produces shorthand, not a query IR.** `dam_core::shorthand` is already the one
+validated entry point for a query, and §12's argument is that a second representation is a second place for the
+access filter and the field validation to be applied differently. Emitting the same syntax a person types means
+the model's answer goes through the same parser, is *visible and editable* in the search box, and can only ever
+narrow — the parsed query is composed with the caller's predicate like any other. An IR would be invisible, and a
+wrong one would look like a broken search. Reversible: yes.
+
+**Asking is a separate switch from describing.** Migration 0029 adds
+`enrichment_settings.natural_language_search`, off by default. Describing the library costs per asset and
+answering questions costs per question; they are different decisions, and conflating them would mean that adding
+a key to describe a library silently turns every reader's search box into a paid endpoint. Reversible: yes.
+
+**A question is Read-gated, and the spend cap is the control.** Searching is what a reader does, so gating this
+behind Manage would put the feature where it is not needed. The consequence — a reader can spend money — is
+bounded by the AI spend cap, which is what a cap is for, and by a 500-character limit on the question, because
+everything past that is paid for by the tenant. Reversible: yes.
+
+**A hard cap answers 429, not 409.** The first genuine 429 in this API, and it earns its own variant: a conflict
+is something in the way that the caller could clear, a cap is a limit that clears itself. A client distinguishing
+them decides between "fix something" and "retry later". Reversible: yes.
+
+**A translated query that does not parse is reported rather than returned as usable.** The parser's message and
+column travel back, and the question stays in the box: searching the words costs nothing and is what the box
+would have done anyway, where replacing what somebody typed with an unusable query loses their input. The call is
+charged regardless — it was made, and not charging for bad answers would make the cap evadable with bad
+questions. Reversible: no.
+
+**Today's date travels with the question, not in the instructions.** "Photos from last week" needs a date, and a
+date in the cached prefix invalidates it every midnight — the commonest silent cache invalidator there is. The
+prefix is the vocabulary, which changes when the schema does. Reversible: no.
