@@ -7,6 +7,7 @@
 )]
 
 pub mod access;
+pub mod ai_credentials;
 pub mod assets;
 pub mod attachments;
 pub mod auth;

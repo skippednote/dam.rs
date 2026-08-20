@@ -1,0 +1,400 @@
+//! A tenant's own model-provider credentials (M5).
+//!
+//! ## This module cannot see a key, by construction
+//!
+//! Everything here takes and returns *sealed* text. Sealing and opening need the deployment's sealing keyring,
+//! which lives in configuration and reaches the API layer — so plaintext exists in exactly one place, the handler
+//! that received it or the client about to sign a request with it. A `dam_db` function that took a plaintext key
+//! would be a second place, and the second place is the one that ends up in a log.
+//!
+//! That is why [`Credential::sealed_key`] is a `String` and not a `Secret<String>`: it is not a secret. It is the
+//! ciphertext, and typing it as a secret would make every honest handler call `.expose()` on something safe,
+//! which is exactly how `.expose()` stops meaning anything.
+//!
+//! ## The associated data is a rule, not a parameter
+//!
+//! A sealed credential is bound to `{tenant}:{provider}:{id}` — see [`associated_data`]. Reconstructed from the
+//! row rather than stored, so a row edited to claim another provider fails to open instead of opening as
+//! something it is not. It lives here, next to the table, because both the sealing and the opening side must
+//! agree and two spellings of it would be a bug nobody could see until a credential stopped working.
+//!
+//! ## Withdrawn, never deleted
+//!
+//! An enrichment run records which credential it used. Deleting one would leave an audit trail pointing at
+//! nothing, so [`set_active`] withdraws and nothing here removes a row.
+
+use crate::Error;
+use sqlx::{Postgres, QueryBuilder};
+use uuid::Uuid;
+
+/// Why a credential could not be written.
+#[derive(Debug, thiserror::Error)]
+pub enum CredentialRefusal {
+    /// No such credential.
+    #[error("no credential {0}")]
+    Unknown(Uuid),
+
+    /// A field the database refuses — an unusable provider, label, base URL or model.
+    ///
+    /// Carries the constraint's name. The CHECKs are the specification; restating them as Rust branches would be
+    /// a second copy to drift from the first.
+    #[error("{0}")]
+    Invalid(String),
+
+    #[error(transparent)]
+    Database(#[from] Error),
+}
+
+/// Which wire format a credential speaks.
+///
+/// Two, not one per vendor: `anthropic` has its own format and the batch and prompt-caching features §8.3's cost
+/// model rests on, and everything else worth using speaks `/chat/completions`. A vendor is a base URL and a model
+/// name rather than a branch in the code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Provider {
+    Anthropic,
+    OpenAiCompatible,
+}
+
+impl Provider {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Anthropic => "anthropic",
+            Self::OpenAiCompatible => "openai_compatible",
+        }
+    }
+
+    /// Parses a stored value.
+    ///
+    /// `None` for anything else, which a caller refuses rather than approximates: a row naming a provider this
+    /// build does not know is a newer migration seen by an older binary, and guessing which client to use would
+    /// send a tenant's key to the wrong vendor.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "anthropic" => Some(Self::Anthropic),
+            "openai_compatible" => Some(Self::OpenAiCompatible),
+            _ => None,
+        }
+    }
+}
+
+/// One credential, as everything but the sealing layer sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Credential {
+    pub id: Uuid,
+    pub provider: String,
+    pub label: String,
+    pub base_url: Option<String>,
+    /// The ciphertext. Not a secret — see the module docs on why it is not typed as one.
+    pub sealed_key: String,
+    pub sealing_key_id: String,
+    /// The last four characters of the key, or empty. For telling two rows apart in a list.
+    pub hint: String,
+    pub default_model: String,
+    pub is_active: bool,
+    pub is_default: bool,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl Credential {
+    /// The provider, when this build knows it.
+    pub fn provider(&self) -> Option<Provider> {
+        Provider::parse(&self.provider)
+    }
+
+    /// The associated data this row's key was sealed under.
+    pub fn associated_data(&self, tenant: &str) -> String {
+        associated_data(tenant, &self.provider, self.id)
+    }
+}
+
+/// The associated data a credential's key is sealed under.
+///
+/// `{tenant}:{provider}:{id}`. Every part is something a row cannot change without the key refusing to open:
+/// moved to another tenant, relabelled as another provider, or copied to a new row — each fails closed. See
+/// `dam_core::sealed` on why associated data is what makes that true.
+pub fn associated_data(tenant: &str, provider: &str, id: Uuid) -> String {
+    format!("{tenant}:{provider}:{id}")
+}
+
+/// A credential to store. The key is already sealed; this module never sees plaintext.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewCredential {
+    /// Generated by the caller, because the id is part of the associated data and so must be known before the
+    /// key is sealed. A database-generated id would force a seal-then-update, and a failure between the two
+    /// would leave a row whose ciphertext is bound to an id it does not have.
+    pub id: Uuid,
+    pub provider: Provider,
+    pub label: String,
+    pub base_url: Option<String>,
+    pub sealed_key: String,
+    pub sealing_key_id: String,
+    pub hint: String,
+    pub default_model: String,
+    /// Whether this becomes the tenant's default, displacing any current one.
+    pub make_default: bool,
+}
+
+/// Stores a credential.
+///
+/// Making it the default demotes the current one in the same transaction, because the partial unique index
+/// refuses two — an insert that set the flag without clearing the other would fail rather than take over, and a
+/// tenant would be told their new key was invalid when the real answer is "there is already a default".
+pub async fn add(
+    conn: &mut sqlx::PgConnection,
+    new: &NewCredential,
+) -> Result<Credential, CredentialRefusal> {
+    if new.make_default {
+        demote_current(&mut *conn).await?;
+    }
+
+    sqlx::query(
+        "INSERT INTO ai_credentials \
+         (id, provider, label, base_url, sealed_key, sealing_key_id, hint, default_model, is_default) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+    )
+    .bind(new.id)
+    .bind(new.provider.as_str())
+    .bind(new.label.trim())
+    .bind(new.base_url.as_deref())
+    .bind(&new.sealed_key)
+    .bind(&new.sealing_key_id)
+    .bind(&new.hint)
+    .bind(new.default_model.trim())
+    .bind(new.make_default)
+    .execute(&mut *conn)
+    .await
+    .map_err(constraint_or_database)?;
+
+    read(&mut *conn, new.id)
+        .await?
+        .ok_or(CredentialRefusal::Unknown(new.id))
+}
+
+/// Replaces a credential's key, keeping everything else.
+///
+/// The rotation path, and the re-seal path: a new provider key, or the same key sealed under a new sealing key.
+/// Not a delete-and-add, because the id is part of the associated data and a new row would need a new seal —
+/// which is the operation this *is*, done in one place.
+pub async fn replace_key(
+    conn: &mut sqlx::PgConnection,
+    id: Uuid,
+    sealed_key: &str,
+    sealing_key_id: &str,
+    hint: &str,
+) -> Result<Credential, CredentialRefusal> {
+    let updated = sqlx::query(
+        "UPDATE ai_credentials SET sealed_key = $2, sealing_key_id = $3, hint = $4, updated_at = now() \
+         WHERE id = $1",
+    )
+    .bind(id)
+    .bind(sealed_key)
+    .bind(sealing_key_id)
+    .bind(hint)
+    .execute(&mut *conn)
+    .await
+    .map_err(constraint_or_database)?;
+    if updated.rows_affected() == 0 {
+        return Err(CredentialRefusal::Unknown(id));
+    }
+    read(&mut *conn, id)
+        .await?
+        .ok_or(CredentialRefusal::Unknown(id))
+}
+
+/// Makes one credential the tenant's default.
+pub async fn make_default(
+    conn: &mut sqlx::PgConnection,
+    id: Uuid,
+) -> Result<Credential, CredentialRefusal> {
+    let existing = read(&mut *conn, id)
+        .await?
+        .ok_or(CredentialRefusal::Unknown(id))?;
+    if !existing.is_active {
+        // A withdrawn credential cannot be the default: the index only permits an active one, and setting it
+        // would fail with a constraint error rather than telling the operator what is actually wrong.
+        return Err(CredentialRefusal::Invalid(
+            "a withdrawn credential cannot be the default; restore it first".to_owned(),
+        ));
+    }
+    demote_current(&mut *conn).await?;
+    sqlx::query("UPDATE ai_credentials SET is_default = true, updated_at = now() WHERE id = $1")
+        .bind(id)
+        .execute(&mut *conn)
+        .await
+        .map_err(constraint_or_database)?;
+    read(&mut *conn, id)
+        .await?
+        .ok_or(CredentialRefusal::Unknown(id))
+}
+
+/// Withdraws a credential, or restores one.
+///
+/// Withdrawing the default clears the flag too, so a tenant is never left with a default they cannot use — the
+/// index would permit the row, and enrichment would pick a credential nobody meant to be live.
+pub async fn set_active(
+    conn: &mut sqlx::PgConnection,
+    id: Uuid,
+    active: bool,
+) -> Result<Credential, CredentialRefusal> {
+    let updated = sqlx::query(
+        "UPDATE ai_credentials \
+         SET is_active = $2, is_default = is_default AND $2, updated_at = now() WHERE id = $1",
+    )
+    .bind(id)
+    .bind(active)
+    .execute(&mut *conn)
+    .await
+    .map_err(constraint_or_database)?;
+    if updated.rows_affected() == 0 {
+        return Err(CredentialRefusal::Unknown(id));
+    }
+    read(&mut *conn, id)
+        .await?
+        .ok_or(CredentialRefusal::Unknown(id))
+}
+
+/// One credential.
+pub async fn read(conn: &mut sqlx::PgConnection, id: Uuid) -> Result<Option<Credential>, Error> {
+    let mut builder: QueryBuilder<Postgres> = QueryBuilder::new(SELECT);
+    builder.push(" WHERE id = ");
+    builder.push_bind(id);
+    let row: Option<Row> = builder.build_query_as().fetch_optional(&mut *conn).await?;
+    Ok(row.map(into_credential))
+}
+
+/// Every credential, withdrawn ones included, defaults first.
+pub async fn all(conn: &mut sqlx::PgConnection) -> Result<Vec<Credential>, Error> {
+    let mut builder: QueryBuilder<Postgres> = QueryBuilder::new(SELECT);
+    builder.push(" ORDER BY is_default DESC, is_active DESC, label");
+    let rows: Vec<Row> = builder.build_query_as().fetch_all(&mut *conn).await?;
+    Ok(rows.into_iter().map(into_credential).collect())
+}
+
+/// The credential enrichment uses, when there is one.
+pub async fn current(conn: &mut sqlx::PgConnection) -> Result<Option<Credential>, Error> {
+    let mut builder: QueryBuilder<Postgres> = QueryBuilder::new(SELECT);
+    builder.push(" WHERE is_default AND is_active");
+    let row: Option<Row> = builder.build_query_as().fetch_optional(&mut *conn).await?;
+    Ok(row.map(into_credential))
+}
+
+/// Credentials still sealed under a key other than `current_key_id`.
+///
+/// The rotation report: which rows a re-seal pass has left to do, answered *without opening any of them*, which
+/// is the point of keeping the sealing key id in a column of its own.
+pub async fn sealed_under_other_keys(
+    conn: &mut sqlx::PgConnection,
+    current_key_id: &str,
+) -> Result<Vec<Credential>, Error> {
+    let mut builder: QueryBuilder<Postgres> = QueryBuilder::new(SELECT);
+    builder.push(" WHERE sealing_key_id <> ");
+    builder.push_bind(current_key_id);
+    builder.push(" ORDER BY label");
+    let rows: Vec<Row> = builder.build_query_as().fetch_all(&mut *conn).await?;
+    Ok(rows.into_iter().map(into_credential).collect())
+}
+
+/// Clears whichever credential is currently the default.
+async fn demote_current(conn: &mut sqlx::PgConnection) -> Result<(), Error> {
+    sqlx::query(
+        "UPDATE ai_credentials SET is_default = false, updated_at = now() WHERE is_default",
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+type Row = (
+    Uuid,
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    String,
+    String,
+    bool,
+    bool,
+    chrono::DateTime<chrono::Utc>,
+);
+
+const SELECT: &str = "SELECT id, provider, label, base_url, sealed_key, sealing_key_id, hint, \
+                      default_model, is_active, is_default, created_at FROM ai_credentials";
+
+fn into_credential(row: Row) -> Credential {
+    let (
+        id,
+        provider,
+        label,
+        base_url,
+        sealed_key,
+        sealing_key_id,
+        hint,
+        default_model,
+        is_active,
+        is_default,
+        created_at,
+    ) = row;
+    Credential {
+        id,
+        provider,
+        label,
+        base_url,
+        sealed_key,
+        sealing_key_id,
+        hint,
+        default_model,
+        is_active,
+        is_default,
+        created_at,
+    }
+}
+
+/// Turns a CHECK violation into [`CredentialRefusal::Invalid`], carrying the constraint's name.
+fn constraint_or_database(error: sqlx::Error) -> CredentialRefusal {
+    if let sqlx::Error::Database(db) = &error {
+        // 23514 check_violation. Matched on the code rather than the message, which is localised.
+        if db.code().as_deref() == Some("23514") {
+            return CredentialRefusal::Invalid(
+                db.constraint()
+                    .unwrap_or("a value the database refuses")
+                    .to_owned(),
+            );
+        }
+    }
+    CredentialRefusal::Database(Error::from(error))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_provider_round_trips_and_an_unknown_one_is_not_guessed() {
+        assert_eq!(Provider::parse("anthropic"), Some(Provider::Anthropic));
+        assert_eq!(
+            Provider::parse("openai_compatible"),
+            Some(Provider::OpenAiCompatible)
+        );
+        assert_eq!(Provider::Anthropic.as_str(), "anthropic");
+        // A newer migration seen by an older binary. Guessing which client to use would send a tenant's key to
+        // the wrong vendor, so the answer is "I do not know this".
+        assert_eq!(Provider::parse("gemini"), None);
+        assert_eq!(Provider::parse(""), None);
+    }
+
+    #[test]
+    fn the_associated_data_changes_with_every_part_of_it() {
+        // What binds a sealed key to its row. If any of these collided, a row edited or copied would open as
+        // something it is not.
+        let id = Uuid::from_u128(1);
+        let other = Uuid::from_u128(2);
+        let base = associated_data("acme", "anthropic", id);
+        assert_ne!(base, associated_data("globex", "anthropic", id));
+        assert_ne!(base, associated_data("acme", "openai_compatible", id));
+        assert_ne!(base, associated_data("acme", "anthropic", other));
+        // Stable, because it is reconstructed at open time rather than stored.
+        assert_eq!(base, associated_data("acme", "anthropic", id));
+    }
+}

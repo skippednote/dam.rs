@@ -71,7 +71,8 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             // 70 since 0023: `conversions`, the tenant's named download formats.
             // 72 since 0025: `orders` and `order_items` — an order is a request plus the snapshotted set it was
             // for, and the snapshot is what stops an approver's agreement widening under them.
-            72,
+            // 73 since 0027: `ai_credentials`, a tenant's own sealed model-provider keys.
+            73,
         ),
         (
             "view count",
@@ -104,7 +105,10 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             // 254 since 0025: `orders` gains a primary key, the unique index behind its human-quotable
             // reference, a requester index and the partial queue index; `order_items` a composite primary key
             // and a by-asset index for "what has this been ordered for".
-            254,
+            //
+            // 257 since 0027: `ai_credentials` gains a primary key, the partial unique index that allows exactly
+            // one active default, and the by-sealing-key index a rotation reads to find rows it must re-seal.
+            257,
         ),
         (
             "check constraints",
@@ -126,6 +130,11 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             // both a decider and a moment or neither, and a `ready` pickup has a share to pick up from — the last
             // being what stops anything but fulfilment setting that state.
             //
+            // 123 since 0027: a credential's provider, label length, base-URL shape, the rule that an
+            // OpenAI-compatible one must carry a URL, the sealed-key version prefix and the model name are each
+            // constrained in the column — the sealed text in particular, because a row whose `sealed_key` is not
+            // a sealed value is one nothing can ever open and no code path would notice until somebody enriched.
+            //
             // 97 since 0021: the events default partition inherits its parent's `actor_kind` check, for the same
             // reason it inherits the indexes.
             //
@@ -137,7 +146,7 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             //
             // 92 since 0018: `auto_import_mappings.source` is shape-checked, because a mapping's left-hand side is
             // free text and a malformed one would silently never match.
-            117,
+            123,
         ),
         (
             "hnsw indexes",

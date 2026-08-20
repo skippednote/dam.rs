@@ -2064,6 +2064,20 @@ Not building: Hootsuite, Mobile, Templates, Video Creator, Syndicate, Digimarc, 
 third-party or separate products, reached through the API and webhooks, which are on the list.
 
 
+## A mutation sweep killed mid-run used to leave the source mutated
+
+Recorded because it cost real time twice and looks exactly like a code failure.
+
+`hunt.py` restored the file in a `finally`, which does not run when the process is killed — and a sweep that
+exceeds a command timeout *is* killed. The residue then reads as something else entirely: the next sweep reports
+`SKIP … text not found` (the original is gone), and a plain `cargo test` run passes or fails over code nobody
+wrote. One instance sat in `dam-api/src/orders.rs` as an `if false` that had silently disabled an audience check,
+and a test caught it only because that check had a test.
+
+The harness now snapshots each file before editing, handles `SIGTERM`/`SIGINT`, restores anything a previous run
+left behind on the way in, and takes `--restore` to clean up by hand. Two habits go with it: `git diff` before
+believing a test result during a sweep, and `rg "if false|if true|== \"never\""` over `src/` after one.
+
 ## Observed flakes
 
 Failures seen once that were not reproducible, recorded so a later session does not mistake one for a
