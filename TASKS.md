@@ -2202,9 +2202,18 @@ platform key.
 
       Twenty-eight mutations caught across the prompt, the writes, the queue and the stage.
 
-- [ ] **M5b·4 The disclosure on the asset itself.** `GET /assets/{id}/ai` exists and the review queue renders
-  it; the asset detail panel does not yet. Read-gated deliberately — a marking only administrators can see is
-  not a disclosure.
+- [x] **M5b·4 The disclosure on the asset itself.** A "Written by AI" panel on the detail view, listing each
+      machine-written field with the model that produced it, the confidence it claimed, and whether anybody has
+      checked it. Read-gated, because a marking only administrators can see is not a disclosure — that is the
+      whole obligation. Graded, too: it says the *words* are a model's and nothing about the picture, which is
+      the distinction 0006's `disclosure_kind` exists to draw.
+
+      Closed by default and fetched only when opened, like the history panel. An asset a model never touched says
+      so rather than hiding the panel — "no AI here" is an answer somebody may specifically be looking for — and
+      a failed read says only that, because a panel whose request failed knows nothing about what is on the asset.
+
+      Six browser cases including both themes; verified live against the dev tenant, where the description a
+      batched model wrote shows up under the asset with its model name and "not checked yet".
 - [x] **M5c Batch backfill.** §8.3: "all library backfill runs here, never synchronously", and its cost table is
       why — the same million assets are ~$23k synchronously and ~$6–8k batched with a cached prefix. `dam_ai::batch`
       speaks the three calls (submit, poll, results), `dam_pipeline::backfill` is the two stages, and the chain is

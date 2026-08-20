@@ -18,6 +18,7 @@
 	import TierBadge from '$lib/components/state/TierBadge.svelte';
 	import RightsBadge from '$lib/components/state/RightsBadge.svelte';
 	import ProvenanceBadge from '$lib/components/state/ProvenanceBadge.svelte';
+	import AiPanel from './AiPanel.svelte';
 	import AssetTypePicker from './AssetTypePicker.svelte';
 	import CategoryPanel from './CategoryPanel.svelte';
 	import CommentPanel from './CommentPanel.svelte';
@@ -233,6 +234,11 @@
 	<CommentPanel assetId={asset.id} />
 
 	<SharePanel assetId={asset.id} />
+
+	<!-- Before the history, and closed: which of these words a machine wrote is a question about the asset itself
+	     rather than about what has happened to it. Read-gated on the server, deliberately — a marking only
+	     administrators can see is not a disclosure (G2). -->
+	<AiPanel assetId={asset.id} />
 
 	<!-- Last, and closed: a history is what you consult when something looks wrong, not what you read first. Being a
 	     disclosure is also why it costs nothing to have here — it fetches only once somebody opens it. -->
