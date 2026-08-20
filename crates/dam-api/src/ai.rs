@@ -80,6 +80,7 @@ pub fn router(state: AiState) -> Router {
         .route("/ai/budget", get(read_budget).put(set_budget))
         .route("/ai/enrichment", get(read_enrichment).put(set_enrichment))
         .route("/ai/review", get(review))
+        .route("/ai/backfill", get(read_backfill).post(start_backfill))
         .route("/assets/{id}/enrich", post(enrich))
         .route("/assets/{id}/ai", get(asset_disclosure))
         .route("/assets/{asset_id}/tags/{term_id}", patch(decide_tag))
@@ -955,4 +956,141 @@ pub async fn decide_tag(
         // but it also did not do anything, and saying 200 would claim it had.
         Err(Failure::NotFound)
     }
+}
+
+/// How a library-wide description is getting on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct BackfillView {
+    /// Assets with a proxy that no model has described under the current prompt.
+    pub outstanding: i64,
+    /// Assets that have one.
+    pub described: i64,
+    /// Requests sitting in a batch that has not ended yet.
+    pub in_flight: i64,
+    /// Whether a slice is queued or in flight right now.
+    pub running: bool,
+}
+
+/// Starts, or nudges, a library-wide description.
+#[derive(Debug, Clone, Copy, Deserialize, ToSchema)]
+pub struct BackfillRequest {
+    /// How many assets per batch. Smaller slices land their first descriptions sooner; the default is what the
+    /// pipeline picks.
+    pub slice: Option<i64>,
+}
+
+/// What starting one produced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct BackfillQueued {
+    pub job_id: Uuid,
+    /// How many assets are waiting to be described, at the moment it was queued.
+    pub outstanding: i64,
+}
+
+/// How far a library-wide description has got.
+#[utoipa::path(
+    get,
+    path = "/ai/backfill",
+    responses(
+        (status = 200, body = BackfillView),
+        (status = 403, description = "The caller holds no manage scope"),
+    ),
+    tag = "ai",
+)]
+pub async fn read_backfill(
+    State(state): State<Arc<AiState>>,
+    headers: HeaderMap,
+) -> Result<Json<BackfillView>, Failure> {
+    let caller = caller::authorize(&state.global, &headers, Action::Manage).await?;
+    let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
+    let progress = dam_db::enrichment::backfill_progress(
+        conn.executor(),
+        dam_ai::enrich::PIPELINE,
+        dam_ai::enrich::PIPELINE_VERSION,
+    )
+    .await?;
+    conn.commit().await?;
+
+    // A queued slice counts as running even before a batch exists, or the button offers itself again while the
+    // first slice is still being packed.
+    let queued: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM dam_global.jobs \
+          WHERE tenant_id = $1 AND kind IN ('backfill_submit', 'backfill_collect') \
+            AND state IN ('queued', 'running')",
+    )
+    .bind(caller.tenant_id)
+    .fetch_one(&state.global)
+    .await
+    .map_err(dam_db::Error::from)?;
+
+    Ok(Json(BackfillView {
+        outstanding: progress.outstanding,
+        described: progress.described,
+        in_flight: progress.in_flight,
+        running: queued > 0 || progress.in_flight > 0,
+    }))
+}
+
+/// Describes the whole library, a batch at a time.
+#[utoipa::path(
+    post,
+    path = "/ai/backfill",
+    request_body = BackfillRequest,
+    responses(
+        (status = 202, body = BackfillQueued),
+        (status = 409, description = "A backfill is already running"),
+        (status = 422, description = "Enrichment is switched off, or there is nothing to describe"),
+    ),
+    tag = "ai",
+)]
+pub async fn start_backfill(
+    State(state): State<Arc<AiState>>,
+    headers: HeaderMap,
+    Json(request): Json<BackfillRequest>,
+) -> Result<(StatusCode, Json<BackfillQueued>), Failure> {
+    let caller = caller::authorize(&state.global, &headers, Action::Manage).await?;
+    let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
+    let settings = dam_db::enrichment::settings(conn.executor()).await?;
+    let progress = dam_db::enrichment::backfill_progress(
+        conn.executor(),
+        dam_ai::enrich::PIPELINE,
+        dam_ai::enrich::PIPELINE_VERSION,
+    )
+    .await?;
+    conn.commit().await?;
+
+    if !settings.is_enabled {
+        return Err(Failure::Unprocessable(
+            "enrichment is switched off for this tenant".to_owned(),
+        ));
+    }
+    if progress.outstanding == 0 {
+        // Not an error worth a 500 and not a silent success: a tenant clicking "describe everything" on a
+        // library that is already described should be told so.
+        return Err(Failure::Unprocessable(
+            "every asset with a proxy already has a description under the current prompt"
+                .to_owned(),
+        ));
+    }
+    if progress.in_flight > 0 {
+        return Err(Failure::Conflict(format!(
+            "a batch of {} requests is still in flight; the next slice starts when it lands",
+            progress.in_flight
+        )));
+    }
+
+    let slice = request
+        .slice
+        .unwrap_or(dam_pipeline::backfill::DEFAULT_SLICE)
+        .clamp(1, 10_000);
+    let job_id = dam_pipeline::worker::enqueue_backfill(&state.global, caller.tenant_id, slice)
+        .await
+        .map_err(|_| Failure::Internal)?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(BackfillQueued {
+            job_id,
+            outstanding: progress.outstanding,
+        }),
+    ))
 }

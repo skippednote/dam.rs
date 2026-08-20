@@ -280,6 +280,63 @@ pub async fn asset(
     };
 
     let micro_cents = ai.prices.estimate(&suggestion.model, &suggestion.usage);
+    let wrote = apply(
+        global,
+        slug,
+        asset_id,
+        run_id,
+        &suggestion,
+        &Writeback {
+            settings: &settings,
+            prompt_digest: &prompt_digest,
+            micro_cents,
+            vocabulary_offered: brief.vocabulary.len(),
+            vocabulary_total: term_count,
+        },
+    )
+    .await?;
+
+    // Charged after the call and after the writes, so a crash between them costs the tenant nothing they cannot
+    // see: the run row is what says the call happened.
+    charge(global, tenant_id, period, micro_cents).await?;
+
+    Ok(Enriched {
+        asset_id,
+        run_id,
+        outcome: wrote,
+    })
+}
+
+/// Everything the write-back needs that is not the suggestion itself.
+///
+/// A struct rather than eight parameters, because the synchronous stage and the batch collector both pass it and
+/// a positional mistake between two `usize`s would be a silently wrong `vocabulary_truncated`.
+#[derive(Debug, Clone, Copy)]
+pub struct Writeback<'a> {
+    pub settings: &'a Settings,
+    /// A hash of the instructions, for `ai_disclosures.prompt_digest`.
+    pub prompt_digest: &'a str,
+    /// What the call cost, in micro-cents. Halved already for a batched run — see
+    /// `dam_ai::pricing::Prices::estimate_batched`.
+    pub micro_cents: i64,
+    pub vocabulary_offered: usize,
+    pub vocabulary_total: i64,
+}
+
+/// Writes one suggestion onto one asset and closes its run.
+///
+/// Shared by the synchronous stage and the batch collector. Sharing it is the point: a backfill that wrote
+/// values a different way would drift from the live path in exactly the places that matter — which field a
+/// value lands in, whether provenance is attached, whether a person's edit survives — and the drift would only
+/// show up months later in somebody's audit.
+pub async fn apply(
+    global: &sqlx::PgPool,
+    slug: &dam_core::TenantSlug,
+    asset_id: Uuid,
+    run_id: Uuid,
+    suggestion: &dam_ai::enrich::Suggestion,
+    writeback: &Writeback<'_>,
+) -> Result<EnrichOutcome> {
     let attribution = Attribution {
         source: Source::Llm,
         model: suggestion.model.clone(),
@@ -290,6 +347,7 @@ pub async fn asset(
         ),
         confidence: suggestion.confidence,
     };
+    let settings = writeback.settings;
 
     let mut values: Vec<(String, serde_json::Value)> = Vec::with_capacity(2);
     // An empty answer is not written: a field set to "" would look like a description somebody had deleted,
@@ -326,8 +384,8 @@ pub async fn asset(
         "api",
         &serde_json::json!({
             "pipeline": dam_ai::enrich::PIPELINE,
-            "vocabulary_offered": brief.vocabulary.len(),
-            "vocabulary_total": term_count,
+            "vocabulary_offered": writeback.vocabulary_offered,
+            "vocabulary_total": writeback.vocabulary_total,
         }),
     )
     .await?;
@@ -340,7 +398,7 @@ pub async fn asset(
             field,
             model_id,
             &suggestion.model,
-            &prompt_digest,
+            writeback.prompt_digest,
         )
         .await?;
     }
@@ -372,7 +430,7 @@ pub async fn asset(
             input_tokens: i64::try_from(suggestion.usage.input_tokens).unwrap_or(i64::MAX),
             output_tokens: i64::try_from(suggestion.usage.output_tokens).unwrap_or(i64::MAX),
             cached_tokens: i64::try_from(suggestion.usage.cached_input_tokens).unwrap_or(i64::MAX),
-            micro_cents,
+            micro_cents: writeback.micro_cents,
         },
         &serde_json::json!({
             "describe": {"state": "ok"},
@@ -383,7 +441,7 @@ pub async fn asset(
             "tags_seconded": tagged.seconded.len(),
             "tags_already_decided": tagged.decided.len(),
             "unknown_tags": suggestion.unknown_tags,
-            "vocabulary_truncated": term_count > brief.vocabulary.len() as i64,
+            "vocabulary_truncated": writeback.vocabulary_total > writeback.vocabulary_offered as i64,
         }),
         None,
         // The proxy, always. A true here means some stage started reading masters.
@@ -392,30 +450,27 @@ pub async fn asset(
     .await?;
     conn.commit().await?;
 
-    // Charged after the call and after the writes, so a crash between them costs the tenant nothing they cannot
-    // see: the run row is what says the call happened.
-    {
-        let mut global_conn = global.acquire().await.map_err(dam_db::Error::from)?;
-        quotas::charge(
-            &mut global_conn,
-            tenant_id,
-            quotas::AI_SPEND,
-            period,
-            micro_cents,
-        )
-        .await?;
-    }
-
-    Ok(Enriched {
-        asset_id,
-        run_id,
-        outcome: EnrichOutcome::Wrote {
-            fields: written.written,
-            tags: tagged.suggested.len() + tagged.seconded.len(),
-            unknown_tags: suggestion.unknown_tags,
-            micro_cents,
-        },
+    Ok(EnrichOutcome::Wrote {
+        fields: written.written,
+        tags: tagged.suggested.len() + tagged.seconded.len(),
+        unknown_tags: suggestion.unknown_tags.clone(),
+        micro_cents: writeback.micro_cents,
     })
+}
+
+/// Adds a call's cost to the tenant's monthly spend.
+pub async fn charge(
+    global: &sqlx::PgPool,
+    tenant_id: Uuid,
+    period: chrono::NaiveDate,
+    micro_cents: i64,
+) -> Result<()> {
+    if micro_cents == 0 {
+        return Ok(());
+    }
+    let mut conn = global.acquire().await.map_err(dam_db::Error::from)?;
+    quotas::charge(&mut conn, tenant_id, quotas::AI_SPEND, period, micro_cents).await?;
+    Ok(())
 }
 
 /// Closes a run that never made a call.

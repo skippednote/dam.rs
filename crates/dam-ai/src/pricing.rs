@@ -144,6 +144,19 @@ impl Prices {
         cost(&self.for_model(model), usage)
     }
 
+    /// What a call cost when it went through the Batch API, in micro-cents.
+    ///
+    /// Half, which is the provider's published batch discount and the reason §8.3 sends all library backfill
+    /// that way. Halved here rather than by the caller so a batched run's `est_cost_cents` is the number that
+    /// will appear on the invoice — a backfill recorded at list price would make every spend cap and every
+    /// forecast wrong by a factor of two, in the direction that stops work early.
+    pub fn estimate_batched(&self, model: &str, usage: &Usage) -> i64 {
+        // Integer halving, rounding up: a fraction of a micro-cent is not worth losing, and rounding down would
+        // make a cheap call free.
+        let full = self.estimate(model, usage);
+        full / 2 + full % 2
+    }
+
     /// The built-in table with a deployment's overrides applied on top.
     ///
     /// Merged rather than replaced: a deployment correcting one model's price after a vendor announcement
@@ -294,6 +307,21 @@ mod tests {
             &usage(20_000_000_000, 0, 0, 0),
         );
         assert_eq!(huge, 20_000_000_000_000, "$200,000, in micro-cents");
+    }
+
+    #[test]
+    fn a_batched_call_is_half_price_and_never_free() {
+        let prices = Prices::default();
+        let asset = usage(3_000, 300, 0, 0);
+        let full = prices.estimate("claude-opus-5", &asset);
+        assert_eq!(prices.estimate_batched("claude-opus-5", &asset), full / 2);
+        // §8.3's table, batched: the naive $23k row becomes the $6–8k one once caching is in play too.
+        assert_eq!(prices.estimate_batched("claude-opus-5", &asset), 1_125_000);
+        // And an odd number rounds up rather than losing the last micro-cent.
+        let tiny = usage(1, 0, 0, 0);
+        let full = prices.estimate("claude-opus-5", &tiny);
+        assert_eq!(full, 500);
+        assert_eq!(prices.estimate_batched("claude-opus-5", &tiny), 250);
     }
 
     #[test]

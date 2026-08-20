@@ -53,6 +53,7 @@ type Recorder = {
 	budgets: Record<string, unknown>[];
 	verifies: string[];
 	enrichments: Record<string, unknown>[];
+	backfills: Record<string, unknown>[];
 };
 
 async function connect(
@@ -64,6 +65,8 @@ async function connect(
 		addReply?: { status: number; json: unknown };
 		enrichment?: Record<string, unknown>;
 		enrichmentReply?: { status: number; json: unknown };
+		backfill?: Record<string, unknown>;
+		backfillReply?: { status: number; json: unknown };
 	} = {}
 ): Promise<Recorder> {
 	const recorder: Recorder = {
@@ -71,7 +74,8 @@ async function connect(
 		rotated: [],
 		budgets: [],
 		verifies: [],
-		enrichments: []
+		enrichments: [],
+		backfills: []
 	};
 	let credentials = options.credentials ?? [];
 	let enrichment = options.enrichment ?? {
@@ -82,6 +86,12 @@ async function connect(
 		alt_text_field: 'alt_text',
 		description_field: 'description',
 		suggest_tags: true
+	};
+	let backfill = options.backfill ?? {
+		outstanding: 0,
+		described: 0,
+		in_flight: 0,
+		running: false
 	};
 	let budget = options.budget ?? {
 		limit_cents: null,
@@ -184,6 +194,19 @@ async function connect(
 			if (options.enrichmentReply) return route.fulfill(options.enrichmentReply);
 			enrichment = { ...enrichment, ...body };
 			return route.fulfill({ json: enrichment });
+		}
+		if (url.pathname === '/ai/backfill' && method === 'GET') {
+			return route.fulfill({ json: backfill });
+		}
+		if (url.pathname === '/ai/backfill' && method === 'POST') {
+			const body = route.request().postDataJSON() as Record<string, unknown>;
+			recorder.backfills.push(body);
+			if (options.backfillReply) return route.fulfill(options.backfillReply);
+			backfill = { ...backfill, running: true };
+			return route.fulfill({
+				status: 202,
+				json: { job_id: 'job-1', outstanding: backfill.outstanding }
+			});
 		}
 		if (url.pathname === '/health') {
 			return route.fulfill({ body: 'ok' });
@@ -428,4 +451,77 @@ test('a refused switch-on does not leave the box ticked', async ({ page }) => {
 
 	await expect(page.getByRole('alert')).toContainText('add a model credential');
 	await expect(page.getByLabel('Describe new uploads')).not.toBeChecked();
+});
+
+test('the library backfill appears only once enrichment is on, and says what it will cost less', async ({
+	page
+}) => {
+	// Hidden while enrichment is off: a button that would be refused is worse than no button.
+	await connect(page, { credentials: [credential()] });
+	await page.goto('/settings/ai');
+	await expect(page.getByRole('button', { name: 'Describe everything' })).toBeHidden();
+
+	const recorder = await connect(page, {
+		credentials: [credential()],
+		enrichment: {
+			is_enabled: true,
+			guidance: '',
+			language: 'English',
+			model: null,
+			alt_text_field: 'alt_text',
+			description_field: 'description',
+			suggest_tags: true
+		},
+		backfill: { outstanding: 1200, described: 300, in_flight: 0, running: false }
+	});
+	await page.goto('/settings/ai');
+	await expect(page.getByText('300 described, 1200 to go.')).toBeVisible();
+	await expect(page.getByText('batch API at half price')).toBeVisible();
+
+	await page.getByRole('button', { name: 'Describe everything' }).click();
+	await expect(page.getByRole('status')).toContainText('Describing 1200 assets');
+	expect(recorder.backfills).toEqual([{}]);
+	// And it does not offer itself twice: the chain is one batch at a time.
+	await expect(page.getByRole('button', { name: 'Describe everything' })).toBeDisabled();
+	await expect(page.getByText('It carries on without this page open')).toBeVisible();
+});
+
+test('a library with nothing left to describe says so instead of offering a button', async ({
+	page
+}) => {
+	await connect(page, {
+		credentials: [credential()],
+		enrichment: {
+			is_enabled: true,
+			guidance: '',
+			language: 'English',
+			model: null,
+			alt_text_field: 'alt_text',
+			description_field: 'description',
+			suggest_tags: true
+		},
+		backfill: { outstanding: 0, described: 1500, in_flight: 0, running: false }
+	});
+	await page.goto('/settings/ai');
+	await expect(page.getByText('Nothing left to describe.')).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Describe everything' })).toBeDisabled();
+});
+
+test('a batch still in flight is reported rather than hidden', async ({ page }) => {
+	await connect(page, {
+		credentials: [credential()],
+		enrichment: {
+			is_enabled: true,
+			guidance: '',
+			language: 'English',
+			model: null,
+			alt_text_field: 'alt_text',
+			description_field: 'description',
+			suggest_tags: true
+		},
+		backfill: { outstanding: 800, described: 200, in_flight: 200, running: true }
+	});
+	await page.goto('/settings/ai');
+	await expect(page.getByText('200 sitting in a batch that has not landed yet.')).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Describe everything' })).toBeDisabled();
 });

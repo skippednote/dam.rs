@@ -41,6 +41,8 @@ impl Sent {
 }
 
 /// What the transport should answer with.
+///
+/// [`Reply::Text`] is for the batch results endpoint, which answers JSONL rather than a JSON document.
 #[derive(Debug, Clone)]
 pub enum Reply {
     /// A status and a body — including the unhappy statuses, which is how the error mapping gets tested.
@@ -48,6 +50,8 @@ pub enum Reply {
     /// A throttle, with the wait the provider asked for. Its own variant because `Retry-After` is a header and
     /// a fixture body cannot express it.
     Throttled(u64, Value),
+    /// A status and a plain-text body, for `get_text`.
+    Text(u16, String),
     /// The request never arrived. Becomes [`ModelError::Transient`], because a connection that failed is a
     /// connection worth trying again.
     Broken(String),
@@ -101,6 +105,38 @@ impl Recorded {
         );
         sent.into_iter().next().unwrap_or_else(|| unreachable!())
     }
+
+    /// Notes a request. Shared by both transport methods, so a GET counts in `sent()` like anything else — a
+    /// test asserting "one call" should not be blind to half of them.
+    fn record(&self, url: &str, headers: &BTreeMap<String, String>, body: Value) {
+        self.sent
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(Sent {
+                url: url.to_owned(),
+                headers: headers.clone(),
+                body,
+            });
+    }
+
+    /// The next scripted reply, repeating the last when the script runs out.
+    fn next_reply(&self) -> Reply {
+        let next = self
+            .replies
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .pop_front();
+        let mut last = self.last.lock().unwrap_or_else(|error| error.into_inner());
+        match next {
+            Some(reply) => {
+                *last = Some(reply.clone());
+                reply
+            }
+            None => last
+                .clone()
+                .unwrap_or_else(|| Reply::Broken("the script was empty".to_owned())),
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -111,37 +147,33 @@ impl Transport for Recorded {
         headers: &BTreeMap<String, String>,
         body: Value,
     ) -> Result<Answer, ModelError> {
-        self.sent
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .push(Sent {
-                url: url.to_owned(),
-                headers: headers.clone(),
-                body,
-            });
-
-        let next = self
-            .replies
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .pop_front();
-        let mut last = self.last.lock().unwrap_or_else(|error| error.into_inner());
-        let reply = match next {
-            Some(reply) => {
-                *last = Some(reply.clone());
-                reply
-            }
-            None => last
-                .clone()
-                .unwrap_or_else(|| Reply::Broken("the script was empty".to_owned())),
-        };
-        match reply {
+        self.record(url, headers, body);
+        match self.next_reply() {
+            Reply::Text(status, text) => Err(ModelError::Unreadable(format!(
+                "the script offered a text reply ({status}) to a json request: {text}"
+            ))),
             Reply::Http(status, body) => Ok(Answer::new(status, body)),
             Reply::Throttled(seconds, body) => Ok(Answer {
                 status: 429,
                 body,
                 retry_after: Some(seconds),
             }),
+            Reply::Broken(why) => Err(ModelError::Transient(why)),
+        }
+    }
+
+    async fn get_text(
+        &self,
+        url: &str,
+        headers: &BTreeMap<String, String>,
+    ) -> Result<(u16, String), ModelError> {
+        self.record(url, headers, Value::Null);
+        match self.next_reply() {
+            Reply::Text(status, text) => Ok((status, text)),
+            // A JSON reply to a text call is fine — every JSON document is also text, and a fixture written as
+            // JSON is easier to read than one written as a string.
+            Reply::Http(status, body) => Ok((status, body.to_string())),
+            Reply::Throttled(_, body) => Ok((429, body.to_string())),
             Reply::Broken(why) => Err(ModelError::Transient(why)),
         }
     }

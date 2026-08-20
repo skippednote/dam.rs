@@ -84,41 +84,50 @@ impl AnthropicModel {
     /// features above is a specific shape in this object, and a test that only checked the *reply* would pass
     /// while caching silently never happened.
     pub fn body(&self, ask: &Ask) -> serde_json::Value {
-        let mut content = Vec::with_capacity(ask.parts.len());
-        for part in &ask.parts {
-            content.push(match part {
-                Part::Text(text) => serde_json::json!({"type": "text", "text": text}),
-                Part::Image { media_type, base64 } => serde_json::json!({
-                    "type": "image",
-                    "source": {"type": "base64", "media_type": media_type, "data": base64},
-                }),
-            });
-        }
-
-        let mut output_config = serde_json::Map::new();
-        output_config.insert("effort".to_owned(), ask.effort.as_str().into());
-        if let Some(schema) = &ask.schema {
-            output_config.insert(
-                "format".to_owned(),
-                serde_json::json!({"type": "json_schema", "schema": schema}),
-            );
-        }
-
-        serde_json::json!({
-            "model": self.model,
-            "max_tokens": ask.max_tokens,
-            // A block array rather than a bare string, because only the array form takes `cache_control`. The
-            // breakpoint is here, at the end of the stable prefix: everything after it is per-asset and would
-            // invalidate the cache on every call if it were inside.
-            "system": [{
-                "type": "text",
-                "text": ask.instructions,
-                "cache_control": {"type": "ephemeral"},
-            }],
-            "messages": [{"role": "user", "content": content}],
-            "output_config": output_config,
-        })
+        message_params(&self.model, ask)
     }
+}
+
+/// The `params` of a Messages request, for one model and one ask.
+///
+/// A free function because the Batch API needs exactly this object per request and must not build it a second
+/// way: a batch that asked a subtly different question would produce answers nobody could compare with the
+/// synchronous path, and the difference would be invisible until somebody diffed two descriptions.
+pub fn message_params(model: &str, ask: &Ask) -> serde_json::Value {
+    let mut content = Vec::with_capacity(ask.parts.len());
+    for part in &ask.parts {
+        content.push(match part {
+            Part::Text(text) => serde_json::json!({"type": "text", "text": text}),
+            Part::Image { media_type, base64 } => serde_json::json!({
+                "type": "image",
+                "source": {"type": "base64", "media_type": media_type, "data": base64},
+            }),
+        });
+    }
+
+    let mut output_config = serde_json::Map::new();
+    output_config.insert("effort".to_owned(), ask.effort.as_str().into());
+    if let Some(schema) = &ask.schema {
+        output_config.insert(
+            "format".to_owned(),
+            serde_json::json!({"type": "json_schema", "schema": schema}),
+        );
+    }
+
+    serde_json::json!({
+        "model": model,
+        "max_tokens": ask.max_tokens,
+        // A block array rather than a bare string, because only the array form takes `cache_control`. The
+        // breakpoint is here, at the end of the stable prefix: everything after it is per-asset and would
+        // invalidate the cache on every call if it were inside.
+        "system": [{
+            "type": "text",
+            "text": ask.instructions,
+            "cache_control": {"type": "ephemeral"},
+        }],
+        "messages": [{"role": "user", "content": content}],
+        "output_config": output_config,
+    })
 }
 
 #[async_trait::async_trait]

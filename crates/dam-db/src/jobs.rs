@@ -108,6 +108,13 @@ impl JobSpec {
     /// running, enqueueing again returns the existing id instead of creating a
     /// duplicate. Once it finishes, the key is free again — re-deriving a thumbnail
     /// after the first derive completed is legitimate work, not a duplicate.
+    ///
+    /// **A handler cannot re-queue itself under its own key.** The job doing the
+    /// enqueueing is `running`, so the insert conflicts with it and this returns
+    /// that job's own id — and when the handler then completes, nothing is left
+    /// queued. A chained stage that reschedules itself (the batch collector's poll,
+    /// say) has to leave the key off. Found the hard way: one poll, "still
+    /// working", and a batch nobody ever came back for.
     pub fn dedupe_key(mut self, key: impl Into<String>) -> Self {
         self.dedupe_key = Some(key.into());
         self

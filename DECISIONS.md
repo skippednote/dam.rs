@@ -2301,3 +2301,35 @@ decision is how a reviewer learns to ignore it. Reversible: no.
 it is a bill — and even at a tenth for a cached prefix, a tenth of something large is large. Past the cap the
 right answer is an embedding shortlist (M4), and the run records that the offer was truncated so the gap is
 visible rather than silent. Reversible: yes.
+
+**Library backfill goes through the Batch API, and only Anthropic's.** §8.3 routes all backfill there because the
+same million assets are ~$23k synchronously and ~$6–8k batched with a cached prefix. The OpenAI-compatible family
+has a batch API too, and it works differently enough — upload a file, reference it, poll a job, download an output
+file — that supporting it here would be a second implementation wearing the same name. Those credentials keep the
+synchronous path and the refusal says so, because a tenant who asked for a backfill and silently got full price
+would find out from the invoice. Reversible: yes.
+
+**A backfill is a chain of batches, one at a time.** Each slice is submitted only when the last has landed, and
+the submit job is deduped per tenant. A whole library in flight at once would put every description beyond reach
+until the end, and would make a hard spend cap unenforceable halfway through — the provider offers no partial
+result and no partial cancellation. Reversible: yes.
+
+**The `custom_id` is the run id, persisted before submission.** Results come back unordered and possibly
+incomplete, so the id has to be something a later process can resolve on its own. A mapping held in memory would
+not survive a restart, leaving a paid batch nobody could read. Reversible: no.
+
+**Expired and cancelled batch requests are skips, not failures.** They never ran and were never billed, so the
+run is `skipped` and the asset returns to the work list. Errored is a failure and stays one. A request *missing*
+from the results is also closed as failed rather than left open, because an open run hides its asset from the work
+list permanently — the one outcome a backfill must never produce. Reversible: no.
+
+**A job cannot re-queue itself under its own dedupe key.** The dedupe index covers `queued` and `running` jobs, so
+a handler enqueueing its own successor conflicts with itself: `enqueue` returns that job's own id and the chain
+ends silently when it completes. The batch collector's self-requeue therefore carries no key — the only caller is
+the collector, once per claimed job. Found by driving a real backfill, which polled once and then abandoned a
+batch. Noted on `JobSpec::dedupe_key`, because any chained stage could fall into it. Reversible: no.
+
+**The failed work list is not the "do not retry" list.** An asset with a `failed` run is a candidate again: a
+failure was a provider having a bad day, and a skip was a setting that has since changed. Only a succeeded,
+partial or still-running row takes an asset off the list — which is what makes running a backfill twice safe and
+useful rather than either a no-op or a second bill for the same work. Reversible: yes.

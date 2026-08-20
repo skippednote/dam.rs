@@ -45,6 +45,10 @@ pub mod kind {
     pub const RENDER_CONVERSION: &str = "render_conversion";
     /// One asset is described by a hosted model (M5b).
     pub const ENRICH: &str = "enrich";
+    /// The next slice of an undescribed library is submitted as one batch (M5c).
+    pub const BACKFILL_SUBMIT: &str = "backfill_submit";
+    /// A submitted batch is polled, and applied once it has ended (M5c).
+    pub const BACKFILL_COLLECT: &str = "backfill_collect";
 }
 
 /// How long to wait when the queue is empty.
@@ -299,6 +303,100 @@ pub async fn handle(context: &Context, job: &Job) -> Result<()> {
             Ok(())
         }
 
+        kind::BACKFILL_SUBMIT => {
+            let Some(ai) = context.ai.as_ref() else {
+                tracing::debug!("no ai context; backfill not configured");
+                return Ok(());
+            };
+            let slice = job
+                .payload
+                .get("slice")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(crate::backfill::DEFAULT_SLICE);
+            let submitted = crate::backfill::submit(
+                &context.global,
+                context.store.as_ref() as &dyn BlobStore,
+                ai,
+                &slug,
+                job.tenant_id,
+                slice,
+            )
+            .await?;
+
+            match &submitted {
+                crate::backfill::Submitted::Batch { batch_id, count } => {
+                    tracing::info!(%batch_id, count, "backfill batch submitted");
+                    // The collector, and then the next slice — but only after this batch is applied, which is
+                    // what chaining from `collect` rather than here achieves. Submitting every slice at once
+                    // would put a whole library in flight before the first description was checked.
+                    enqueue_backfill_collect(&context.global, job.tenant_id, batch_id, slice)
+                        .await?;
+                }
+                crate::backfill::Submitted::Nothing(why) => {
+                    tracing::info!(reason = %why, "backfill submitted nothing");
+                }
+            }
+            Ok(())
+        }
+
+        kind::BACKFILL_COLLECT => {
+            let Some(ai) = context.ai.as_ref() else {
+                tracing::debug!("no ai context; backfill not configured");
+                return Ok(());
+            };
+            let batch_id = string_field(job, "batch_id")?;
+            let slice = job
+                .payload
+                .get("slice")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(crate::backfill::DEFAULT_SLICE);
+            let collected =
+                crate::backfill::collect(&context.global, ai, &slug, job.tenant_id, &batch_id)
+                    .await?;
+
+            match collected {
+                crate::backfill::Collected::Waiting { finished, total } => {
+                    tracing::info!(%batch_id, finished, total, "backfill batch still working");
+                    // Re-queued rather than looped in place: a batch takes up to twenty-four hours, and a job
+                    // holding a lease for that long is a job nobody can take over.
+                    requeue_backfill_collect(
+                        &context.global,
+                        job.tenant_id,
+                        &batch_id,
+                        slice,
+                        POLL_INTERVAL,
+                    )
+                    .await?;
+                }
+                crate::backfill::Collected::Applied {
+                    wrote,
+                    declined,
+                    errored,
+                    expired,
+                    micro_cents,
+                } => {
+                    tracing::info!(
+                        %batch_id,
+                        wrote,
+                        declined,
+                        errored,
+                        expired,
+                        micro_cents,
+                        "backfill batch applied"
+                    );
+                    // Reindexed per asset, and the next slice queued: a backfill is a chain of batches, each
+                    // starting only once the last has landed.
+                    for asset_id in assets_in_batch(&context.global, &slug, &batch_id).await? {
+                        enqueue_index(&context.global, job.tenant_id, asset_id).await?;
+                    }
+                    if wrote + declined + errored + expired > 0 {
+                        enqueue_backfill(&context.global, job.tenant_id, slice).await?;
+                    }
+                }
+            }
+            Ok(())
+        }
+
         kind::INDEX => {
             let asset_id = uuid_field(job, "asset_id")?;
             index_one(context, &slug, job.tenant_id, asset_id).await
@@ -393,6 +491,96 @@ pub async fn enqueue_index(global: &sqlx::PgPool, tenant_id: Uuid, asset_id: Uui
             .dedupe_key(format!("index:{asset_id}")),
     )
     .await?)
+}
+
+/// How long to wait between polls of a batch.
+///
+/// Batches take minutes to hours, so a tight poll is a query per second that answers "not yet" for a day. Two
+/// minutes is short enough that a fast batch is not left sitting and long enough to be free.
+pub const POLL_INTERVAL: Duration = Duration::from_secs(120);
+
+/// Queues the next slice of a library backfill.
+///
+/// The dedupe key is per tenant, so asking twice does not put two slices in flight — the whole design of the
+/// chain is one batch at a time, and this is where that is enforced.
+pub async fn enqueue_backfill(global: &sqlx::PgPool, tenant_id: Uuid, slice: i64) -> Result<Uuid> {
+    Ok(jobs::enqueue(
+        global,
+        jobs::JobSpec::new(tenant_id, kind::BACKFILL_SUBMIT)
+            .payload(serde_json::json!({ "slice": slice }))
+            .priority(80)
+            .dedupe_key(format!("backfill:{tenant_id}")),
+    )
+    .await?)
+}
+
+/// Queues the collector for one batch, once.
+///
+/// Deduped per batch — not per tenant, because two batches may legitimately be open (somebody submitted one by
+/// hand) and a shared key would leave the second unpolled.
+pub async fn enqueue_backfill_collect(
+    global: &sqlx::PgPool,
+    tenant_id: Uuid,
+    batch_id: &str,
+    slice: i64,
+) -> Result<Uuid> {
+    Ok(jobs::enqueue(
+        global,
+        collect_spec(tenant_id, batch_id, slice, Duration::from_secs(0))
+            .dedupe_key(format!("backfill_collect:{batch_id}")),
+    )
+    .await?)
+}
+
+/// Queues the *next* poll of a batch, from inside the poll that just ran.
+///
+/// **Deliberately not deduped, and this is the subtle part.** The dedupe index covers jobs that are `queued` or
+/// `running`, and a handler re-queueing itself is still `running` — so an identical key conflicts with the job
+/// doing the enqueueing, `jobs::enqueue` returns that job's own id, and the chain ends silently the moment it
+/// completes. A live backfill did exactly that: one poll, "still working", and a batch nobody ever came back
+/// for. See the note on `JobSpec::dedupe_key`.
+///
+/// There is no duplicate to fear instead: the only caller is the collector itself, once per claimed job.
+pub async fn requeue_backfill_collect(
+    global: &sqlx::PgPool,
+    tenant_id: Uuid,
+    batch_id: &str,
+    slice: i64,
+    after: Duration,
+) -> Result<Uuid> {
+    Ok(jobs::enqueue(global, collect_spec(tenant_id, batch_id, slice, after)).await?)
+}
+
+/// The shape both collector enqueues share, minus the dedupe decision.
+fn collect_spec(tenant_id: Uuid, batch_id: &str, slice: i64, after: Duration) -> jobs::JobSpec {
+    jobs::JobSpec::new(tenant_id, kind::BACKFILL_COLLECT)
+        .payload(serde_json::json!({ "batch_id": batch_id, "slice": slice }))
+        .priority(80)
+        // A wall-clock time, because the queue's own `run_after` is a timestamp: the delay is expressed here so
+        // both callers say it the same way.
+        .run_after(
+            chrono::Utc::now()
+                + chrono::Duration::from_std(after).unwrap_or_else(|_| chrono::Duration::zero()),
+        )
+}
+
+/// The assets a batch touched, for reindexing.
+async fn assets_in_batch(
+    global: &sqlx::PgPool,
+    slug: &TenantSlug,
+    batch_id: &str,
+) -> Result<Vec<Uuid>> {
+    let mut conn = dam_db::TenantConn::begin(global, slug).await?;
+    let ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT DISTINCT asset_id FROM enrichment_runs \
+          WHERE llm_batch_id = $1 AND state IN ('succeeded', 'partial')",
+    )
+    .bind(batch_id)
+    .fetch_all(conn.executor())
+    .await
+    .map_err(dam_db::Error::from)?;
+    conn.commit().await?;
+    Ok(ids)
 }
 
 /// Whether this tenant wants its assets described.

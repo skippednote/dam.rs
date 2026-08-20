@@ -231,6 +231,17 @@ pub trait Transport: Send + Sync {
         headers: &BTreeMap<String, String>,
         body: serde_json::Value,
     ) -> Result<Answer, ModelError>;
+
+    /// GETs and returns the body as text.
+    ///
+    /// Text rather than JSON because of one endpoint: a batch's results arrive as JSONL — one JSON object per
+    /// line, not a JSON document — so a transport that parsed for you could not return them. Everything else
+    /// that uses this immediately parses the text, which is a small price for not having two GET methods.
+    async fn get_text(
+        &self,
+        url: &str,
+        headers: &BTreeMap<String, String>,
+    ) -> Result<(u16, String), ModelError>;
 }
 
 /// Maps an HTTP status onto the error a caller can act on.

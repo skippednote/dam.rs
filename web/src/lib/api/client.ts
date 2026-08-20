@@ -46,6 +46,7 @@ export type EnrichmentSettings = components['schemas']['EnrichmentSettings'];
 export type ReviewRow = components['schemas']['ReviewRow'];
 export type SuggestedTag = components['schemas']['SuggestedTagView'];
 export type MachineField = components['schemas']['MachineFieldView'];
+export type BackfillView = components['schemas']['BackfillView'];
 
 /** A failed request, with whatever the server said about it. */
 export class ApiError extends Error {
@@ -959,4 +960,25 @@ export async function enrichAsset(assetId: string): Promise<{ asset_id: string; 
 /** What a model wrote on one asset (the Article 50 disclosure). Readable by anybody who may see the asset. */
 export async function readAssetAi(assetId: string): Promise<MachineField[]> {
 	return request<MachineField[]>(`/assets/${assetId}/ai`);
+}
+
+/** How far a library-wide description has got. */
+export async function readBackfill(): Promise<BackfillView> {
+	return request<BackfillView>('/ai/backfill');
+}
+
+/**
+ * Describes the whole library, a batch at a time.
+ *
+ * One slice at a time by design: the server dedupes on the tenant, so clicking twice does not put two batches in
+ * flight. The screen still hides the button while it is running, because a button that appears to do nothing is
+ * worse than one that is not there.
+ */
+export async function startBackfill(
+	slice?: number
+): Promise<{ job_id: string; outstanding: number }> {
+	return request<{ job_id: string; outstanding: number }>('/ai/backfill', {
+		method: 'POST',
+		body: JSON.stringify(slice === undefined ? {} : { slice })
+	});
 }

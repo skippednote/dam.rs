@@ -831,6 +831,149 @@ pub async fn decide_tag(
     Ok(true)
 }
 
+/// One asset a backfill could describe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Candidate {
+    pub asset_id: Uuid,
+    pub filename: String,
+    /// The proxy's object key and mime — the bytes a describe reads, never the original.
+    pub object_key: String,
+    pub proxy_mime: String,
+}
+
+/// Assets with a proxy and nothing a model has written yet.
+///
+/// The backfill's work list, and the definition of "yet" is deliberate: an asset is a candidate when no
+/// `enrichment_runs` row for this pipeline version has *reached* it — succeeded, partial, or is still running.
+/// Failed and skipped rows do not disqualify an asset, because a failure was a provider having a bad day and a
+/// skip was a setting that has since changed. That is what makes running a backfill twice safe and useful
+/// rather than either a no-op or a second bill for the same work.
+///
+/// `pipeline_version` is part of the test, so bumping the prompt makes the whole library a candidate again —
+/// which is the operation §8.3's "re-run everything the old prompt touched" describes, and the reason the
+/// version is on the row at all.
+pub async fn needing_description(
+    conn: &mut sqlx::PgConnection,
+    pipeline: &str,
+    pipeline_version: i32,
+    limit: i64,
+) -> Result<Vec<Candidate>, Error> {
+    let rows: Vec<(Uuid, String, String, String)> = sqlx::query_as(
+        "SELECT assets.id, assets.filename, d.object_key, d.mime \
+           FROM assets \
+           JOIN derivatives d ON d.asset_id = assets.id AND d.role = 'proxy' \
+          WHERE assets.deleted_at IS NULL \
+            AND assets.is_current AND assets.attached_to IS NULL \
+            AND NOT EXISTS ( \
+                SELECT 1 FROM enrichment_runs r \
+                 WHERE r.asset_id = assets.id \
+                   AND r.pipeline = $1 AND r.pipeline_version = $2 \
+                   AND r.state IN ('succeeded', 'partial', 'running')) \
+          ORDER BY assets.created_at \
+          LIMIT $3",
+    )
+    .bind(pipeline)
+    .bind(pipeline_version)
+    .bind(limit)
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(asset_id, filename, object_key, proxy_mime)| Candidate {
+            asset_id,
+            filename,
+            object_key,
+            proxy_mime,
+        })
+        .collect())
+}
+
+/// How many assets a backfill still has to do, and how many it has done.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BackfillProgress {
+    pub outstanding: i64,
+    pub described: i64,
+    /// Runs waiting on a batch that has not ended.
+    pub in_flight: i64,
+}
+
+/// The counts a progress display needs, in one round trip.
+pub async fn backfill_progress(
+    conn: &mut sqlx::PgConnection,
+    pipeline: &str,
+    pipeline_version: i32,
+) -> Result<BackfillProgress, Error> {
+    let row: (i64, i64, i64) = sqlx::query_as(
+        "SELECT \
+            (SELECT count(*) FROM assets \
+               JOIN derivatives d ON d.asset_id = assets.id AND d.role = 'proxy' \
+              WHERE assets.deleted_at IS NULL AND assets.is_current AND assets.attached_to IS NULL \
+                AND NOT EXISTS (SELECT 1 FROM enrichment_runs r \
+                                 WHERE r.asset_id = assets.id AND r.pipeline = $1 \
+                                   AND r.pipeline_version = $2 \
+                                   AND r.state IN ('succeeded', 'partial', 'running'))), \
+            (SELECT count(DISTINCT asset_id) FROM enrichment_runs \
+              WHERE pipeline = $1 AND pipeline_version = $2 AND state IN ('succeeded', 'partial')), \
+            (SELECT count(*) FROM enrichment_runs \
+              WHERE pipeline = $1 AND pipeline_version = $2 AND state = 'running' \
+                AND llm_batch_id IS NOT NULL)",
+    )
+    .bind(pipeline)
+    .bind(pipeline_version)
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(BackfillProgress {
+        outstanding: row.0,
+        described: row.1,
+        in_flight: row.2,
+    })
+}
+
+/// Records that a run was submitted as part of a batch.
+///
+/// Written *before* the batch is submitted, because results come back keyed by `custom_id` and unordered: a
+/// mapping held only in memory would be lost to any restart, leaving a paid batch nobody could read.
+pub async fn mark_batched(
+    conn: &mut sqlx::PgConnection,
+    run_id: Uuid,
+    custom_id: &str,
+) -> Result<(), Error> {
+    sqlx::query("UPDATE enrichment_runs SET llm_custom_id = $2 WHERE id = $1")
+        .bind(run_id)
+        .bind(custom_id)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+/// Stamps the provider's batch id onto every run in a batch, once it has one.
+pub async fn attach_batch(
+    conn: &mut sqlx::PgConnection,
+    run_ids: &[Uuid],
+    batch_id: &str,
+) -> Result<(), Error> {
+    sqlx::query("UPDATE enrichment_runs SET llm_batch_id = $2 WHERE id = ANY($1)")
+        .bind(run_ids)
+        .bind(batch_id)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+/// The runs belonging to one batch that are still open, as `(run_id, asset_id, custom_id)`.
+pub async fn runs_in_batch(
+    conn: &mut sqlx::PgConnection,
+    batch_id: &str,
+) -> Result<Vec<(Uuid, Uuid, String)>, Error> {
+    Ok(sqlx::query_as(
+        "SELECT id, asset_id, COALESCE(llm_custom_id, id::text) FROM enrichment_runs \
+          WHERE llm_batch_id = $1 AND state = 'running'",
+    )
+    .bind(batch_id)
+    .fetch_all(&mut *conn)
+    .await?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

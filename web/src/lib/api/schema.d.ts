@@ -4,6 +4,24 @@
  */
 
 export interface paths {
+    "/ai/backfill": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** How far a library-wide description has got. */
+        get: operations["read_backfill"];
+        put?: never;
+        /** Describes the whole library, a batch at a time. */
+        post: operations["start_backfill"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/ai/budget": {
         parameters: {
             query?: never;
@@ -1605,6 +1623,45 @@ export interface components {
             mime: string;
             uploaded_by?: null | components["schemas"]["PersonView"];
         };
+        /** @description What starting one produced. */
+        BackfillQueued: {
+            /** Format: uuid */
+            job_id: string;
+            /**
+             * Format: int64
+             * @description How many assets are waiting to be described, at the moment it was queued.
+             */
+            outstanding: number;
+        };
+        /** @description Starts, or nudges, a library-wide description. */
+        BackfillRequest: {
+            /**
+             * Format: int64
+             * @description How many assets per batch. Smaller slices land their first descriptions sooner; the default is what the
+             *     pipeline picks.
+             */
+            slice?: number | null;
+        };
+        /** @description How a library-wide description is getting on. */
+        BackfillView: {
+            /**
+             * Format: int64
+             * @description Assets that have one.
+             */
+            described: number;
+            /**
+             * Format: int64
+             * @description Requests sitting in a batch that has not ended yet.
+             */
+            in_flight: number;
+            /**
+             * Format: int64
+             * @description Assets with a proxy that no model has described under the current prompt.
+             */
+            outstanding: number;
+            /** @description Whether a slice is queued or in flight right now. */
+            running: boolean;
+        };
         /** @description One facet bucket. */
         Bucket: {
             /** Format: int64 */
@@ -2689,6 +2746,69 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    read_backfill: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackfillView"];
+                };
+            };
+            /** @description The caller holds no manage scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    start_backfill: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BackfillRequest"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackfillQueued"];
+                };
+            };
+            /** @description A backfill is already running */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Enrichment is switched off, or there is nothing to describe */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     read_budget: {
         parameters: {
             query?: never;

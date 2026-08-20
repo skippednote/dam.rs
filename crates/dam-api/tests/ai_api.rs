@@ -1101,3 +1101,137 @@ async fn the_disclosure_is_visible_to_anybody_who_can_see_the_asset() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(disclosed.as_array().expect("rows").len(), 0);
 }
+
+#[tokio::test]
+async fn a_backfill_reports_what_is_left_and_refuses_when_there_is_nothing() {
+    let f = fixture().await;
+    let (status, view) = json_call(&f, "GET", "/ai/backfill", &f.key, None).await;
+    assert_eq!(status, StatusCode::OK, "{view}");
+    assert_eq!(view["outstanding"], 0);
+    assert_eq!(view["described"], 0);
+    assert_eq!(view["running"], false);
+
+    // Off: refused with the reason rather than a job that will skip.
+    let (status, body) = json_call(&f, "POST", "/ai/backfill", &f.key, Some(json!({}))).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+
+    json_call(
+        &f,
+        "POST",
+        "/ai/credentials",
+        &f.key,
+        Some(anthropic_credential()),
+    )
+    .await;
+    json_call(
+        &f,
+        "PUT",
+        "/ai/enrichment",
+        &f.key,
+        Some(json!({
+            "is_enabled": true,
+            "guidance": "",
+            "language": "English",
+            "model": null,
+            "alt_text_field": "alt_text",
+            "description_field": "description",
+            "suggest_tags": true,
+        })),
+    )
+    .await;
+
+    // On, but nothing has a proxy, so there is nothing to describe — said plainly rather than queued and
+    // silently doing nothing.
+    let (status, body) = json_call(&f, "POST", "/ai/backfill", &f.key, Some(json!({}))).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(
+        body.to_string().contains("already has a description"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn a_backfill_queues_one_slice_and_counts_the_work() {
+    let f = fixture().await;
+    json_call(
+        &f,
+        "POST",
+        "/ai/credentials",
+        &f.key,
+        Some(anthropic_credential()),
+    )
+    .await;
+    json_call(
+        &f,
+        "PUT",
+        "/ai/enrichment",
+        &f.key,
+        Some(json!({
+            "is_enabled": true,
+            "guidance": "",
+            "language": "English",
+            "model": null,
+            "alt_text_field": "alt_text",
+            "description_field": "description",
+            "suggest_tags": true,
+        })),
+    )
+    .await;
+
+    // Two assets with proxies, so there is something to do.
+    for name in ["one", "two"] {
+        let id = asset(&f, name, None).await;
+        sqlx::query(
+            "INSERT INTO derivatives \
+                (id, asset_id, role, profile, op_hash, object_key, mime, bytes, width, height) \
+             VALUES ($1, $2, 'proxy', 'proxy_2048', $3, $4, 'image/jpeg', 17, 2048, 1365)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(id)
+        .bind(blake3::hash(name.as_bytes()).to_hex().to_string())
+        .bind(format!("proxy/{name}.jpg"))
+        .execute(&f.acme)
+        .await
+        .expect("proxy row");
+    }
+
+    let (status, view) = json_call(&f, "GET", "/ai/backfill", &f.key, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(view["outstanding"], 2);
+
+    let (status, queued) = json_call(
+        &f,
+        "POST",
+        "/ai/backfill",
+        &f.key,
+        Some(json!({"slice": 50})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{queued}");
+    assert_eq!(queued["outstanding"], 2);
+
+    let jobs: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM dam_global.jobs WHERE kind = 'backfill_submit' AND dedupe_key = $1",
+    )
+    .bind(format!("backfill:{}", f.tenant_id))
+    .fetch_one(&f.global)
+    .await
+    .expect("count");
+    assert_eq!(jobs, 1);
+
+    // Asking twice is still one slice: the chain is one batch at a time, and the dedupe key is where that is
+    // enforced rather than in a screen that hides the button.
+    json_call(&f, "POST", "/ai/backfill", &f.key, Some(json!({}))).await;
+    let jobs: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM dam_global.jobs WHERE kind = 'backfill_submit' AND dedupe_key = $1",
+    )
+    .bind(format!("backfill:{}", f.tenant_id))
+    .fetch_one(&f.global)
+    .await
+    .expect("count");
+    assert_eq!(jobs, 1);
+
+    // And the view says it is running, so a screen can say so too.
+    let (_, view) = json_call(&f, "GET", "/ai/backfill", &f.key, None).await;
+    assert_eq!(view["running"], true);
+}

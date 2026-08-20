@@ -23,8 +23,10 @@
 	 */
 	import {
 		addAiCredential,
+		readBackfill,
 		readEnrichmentSettings,
 		saveEnrichmentSettings,
+		startBackfill,
 		listAiCredentials,
 		makeAiCredentialDefault,
 		readAiBudget,
@@ -36,6 +38,7 @@
 		type AiBudget,
 		type AiCredential,
 		type AiVerifyResult,
+		type BackfillView,
 		type EnrichmentSettings
 	} from '$lib/api/client';
 	import { resolve } from '$app/paths';
@@ -67,16 +70,19 @@
 
 	// What a model should do, once there is a key for it to do it with.
 	let enrichment = $state<EnrichmentSettings | null>(null);
+	// How far describing the existing library has got.
+	let backfill = $state<BackfillView | null>(null);
 
 	const endpointNeeded = $derived(provider === 'openai_compatible');
 
 	async function load() {
 		problem = null;
 		try {
-			[credentials, budget, enrichment] = await Promise.all([
+			[credentials, budget, enrichment, backfill] = await Promise.all([
 				listAiCredentials(),
 				readAiBudget(),
-				readEnrichmentSettings()
+				readEnrichmentSettings(),
+				readBackfill()
 			]);
 			// `== null` on purpose: the generated type is optional *and* nullable, and both mean "no cap".
 			limitDollars = budget.limit_cents == null ? '' : (budget.limit_cents / 100).toFixed(2);
@@ -199,6 +205,21 @@
 			} catch {
 				enrichment = null;
 			}
+		} finally {
+			busy = null;
+		}
+	}
+
+	async function describeLibrary() {
+		busy = 'backfill';
+		problem = null;
+		notice = null;
+		try {
+			const queued = await startBackfill();
+			notice = `Describing ${queued.outstanding} asset${queued.outstanding === 1 ? '' : 's'}, a batch at a time. Batches take up to a day; the first descriptions appear as soon as one lands.`;
+			backfill = await readBackfill();
+		} catch (caught) {
+			problem = describe(caught);
 		} finally {
 			busy = null;
 		}
@@ -421,6 +442,37 @@
 				</form>
 			{/if}
 		</section>
+
+		{#if enrichment?.is_enabled && backfill}
+			<section class="space-y-2" aria-labelledby="backfill-heading">
+				<h2 id="backfill-heading" class="text-lg font-medium">The existing library</h2>
+				<p class="text-sm text-muted">
+					{backfill.described} described, {backfill.outstanding} to go.
+					{#if backfill.in_flight > 0}
+						{backfill.in_flight} sitting in a batch that has not landed yet.
+					{/if}
+				</p>
+				<div class="flex items-center gap-3">
+					<button
+						type="button"
+						class="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg disabled:opacity-50"
+						disabled={busy === 'backfill' || backfill.running || backfill.outstanding === 0}
+						onclick={describeLibrary}
+					>
+						{busy === 'backfill' ? 'Starting…' : 'Describe everything'}
+					</button>
+					{#if backfill.running}
+						<span class="text-sm text-muted">Running. It carries on without this page open.</span>
+					{:else if backfill.outstanding === 0}
+						<span class="text-sm text-muted">Nothing left to describe.</span>
+					{/if}
+				</div>
+				<p class="text-xs text-muted">
+					Goes through the batch API at half price — the only way a large library is affordable. New
+					uploads are described as they arrive; this is for what was already here.
+				</p>
+			</section>
+		{/if}
 
 		<section class="space-y-3" aria-labelledby="credentials-heading">
 			<h2 id="credentials-heading" class="text-lg font-medium">Credentials</h2>

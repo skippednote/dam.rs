@@ -87,6 +87,25 @@ impl Transport for HttpTransport {
             retry_after,
         })
     }
+
+    async fn get_text(
+        &self,
+        url: &str,
+        headers: &BTreeMap<String, String>,
+    ) -> Result<(u16, String), ModelError> {
+        let mut request = self.client.get(url);
+        for (name, value) in headers {
+            request = request.header(name.as_str(), value.as_str());
+        }
+        let response = request.send().await.map_err(|error| {
+            ModelError::Transient(format!("the provider was unreachable: {error}"))
+        })?;
+        let status = response.status().as_u16();
+        let text = response.text().await.map_err(|error| {
+            ModelError::Transient(format!("the answer could not be read: {error}"))
+        })?;
+        Ok((status, text))
+    }
 }
 
 /// Reads `Retry-After`, seconds only.

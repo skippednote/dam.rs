@@ -9,6 +9,65 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/ai/backfill": {
+      "get": {
+        "tags": [
+          "ai"
+        ],
+        "summary": "How far a library-wide description has got.",
+        "operationId": "read_backfill",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackfillView"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller holds no manage scope"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "ai"
+        ],
+        "summary": "Describes the whole library, a batch at a time.",
+        "operationId": "start_backfill",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackfillRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackfillQueued"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A backfill is already running"
+          },
+          "422": {
+            "description": "Enrichment is switched off, or there is nothing to describe"
+          }
+        }
+      }
+    },
     "/ai/budget": {
       "get": {
         "tags": [
@@ -4353,6 +4412,70 @@
                 "$ref": "#/components/schemas/PersonView"
               }
             ]
+          }
+        }
+      },
+      "BackfillQueued": {
+        "type": "object",
+        "description": "What starting one produced.",
+        "required": [
+          "job_id",
+          "outstanding"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "outstanding": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many assets are waiting to be described, at the moment it was queued."
+          }
+        }
+      },
+      "BackfillRequest": {
+        "type": "object",
+        "description": "Starts, or nudges, a library-wide description.",
+        "properties": {
+          "slice": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many assets per batch. Smaller slices land their first descriptions sooner; the default is what the\npipeline picks."
+          }
+        }
+      },
+      "BackfillView": {
+        "type": "object",
+        "description": "How a library-wide description is getting on.",
+        "required": [
+          "outstanding",
+          "described",
+          "in_flight",
+          "running"
+        ],
+        "properties": {
+          "described": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Assets that have one."
+          },
+          "in_flight": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Requests sitting in a batch that has not ended yet."
+          },
+          "outstanding": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Assets with a proxy that no model has described under the current prompt."
+          },
+          "running": {
+            "type": "boolean",
+            "description": "Whether a slice is queued or in flight right now."
           }
         }
       },

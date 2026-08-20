@@ -33,8 +33,8 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M6** Workflow/proofing, annotations, analytics | not started |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** M5c batch backfill → M5b·4 the disclosure on the asset itself → M5d NL→query and MCP
-→ then Q.14 portals and the search set. M5a and M5b are done and verified against the running stack: both
+**Next up, in order:** M5b·4 the disclosure on the asset itself → M5d NL→query and MCP → then Q.14 portals and
+the search set. M5a and M5b are done and verified against the running stack: both
 hosted clients reach their real vendor endpoints, and a full enrichment ran end to end through the worker against
 a local OpenAI-compatible endpoint — values written with provenance, a disclosure row, tags suggested, 0.75¢
 charged as a sub-cent remainder, `used_original` false, and a tag confirmed from the review screen with its
@@ -2205,9 +2205,35 @@ platform key.
 - [ ] **M5b·4 The disclosure on the asset itself.** `GET /assets/{id}/ai` exists and the review queue renders
   it; the asset detail panel does not yet. Read-gated deliberately — a marking only administrators can see is
   not a disclosure.
-- [ ] **M5c Batch backfill.** `POST /v1/messages/batches` at half price for a whole library, polled to `ended`
-      and matched back by `custom_id` — which is why `enrichment_runs` already has `llm_batch_id` and
-      `llm_custom_id`.
+- [x] **M5c Batch backfill.** §8.3: "all library backfill runs here, never synchronously", and its cost table is
+      why — the same million assets are ~$23k synchronously and ~$6–8k batched with a cached prefix. `dam_ai::batch`
+      speaks the three calls (submit, poll, results), `dam_pipeline::backfill` is the two stages, and the chain is
+      driven by the queue: one batch at a time, the next slice starting only when the last lands.
+
+      **The run rows are the state, and there is no batch table.** `llm_batch_id` says which batch a run belongs
+      to, `llm_custom_id` says what its answer will be called, `state = 'running'` says it is open. A worker that
+      dies mid-batch loses nothing. The custom_id is the run id and is persisted *before* submission, because
+      results come back unordered and a mapping held in memory would not survive a restart.
+
+      **Every terminal state is handled, including the one that never arrives.** Errored is a failure; expired
+      and cancelled are not — those requests never ran and were never billed, so their assets go back on the work
+      list. A request missing from the results is closed as failed rather than left running, because an open run
+      hides its asset from the work list for good.
+
+      **Anthropic only, and it says so.** The OpenAI-compatible family batches through a file upload and a
+      different polling shape; a tenant on one of those keeps the synchronous path and is told that, rather than
+      quietly paying twice.
+
+      *Surprise, and it only showed up live:* the collector re-queued itself under its own dedupe key. The dedupe
+      index covers `queued` and `running` jobs — and a handler re-queueing itself *is* running, so the insert
+      conflicted with the job doing the enqueueing, `enqueue` returned that job's own id, and the chain ended the
+      moment it completed. One poll, "still working", and a batch nobody ever came back for. Fixed by leaving the
+      key off the self-requeue, written up on `JobSpec::dedupe_key` because any future chained stage could fall
+      into it, and covered by two tests that drive the chain through the queue rather than calling the stages.
+
+      Twenty mutations caught, including that one re-expressed as a mutation. Verified live: submit → "still
+      working" → re-queue → apply, with the batch charged at 0.375¢ against the 0.75¢ the synchronous path
+      charged for the same shape.
 - [ ] **M5d Conversational access.** Natural language to a query, and the MCP server — both of which run through
       the §7 predicate like every other consumer, so "find me" can never widen what a caller may see.
 

@@ -28,7 +28,7 @@
 //! written. The instructions say what alt text is *for*, and the length limit is in them rather than enforced
 //! afterwards: truncating a sentence mid-word produces exactly the artefact the limit was meant to prevent.
 
-use crate::model::{Ask, Effort, Model, ModelError, Part, Usage};
+use crate::model::{Ask, Completion, Effort, Model, ModelError, Part, Usage};
 use serde::{Deserialize, Serialize};
 
 /// The pipeline name written to `enrichment_runs.pipeline`.
@@ -198,7 +198,16 @@ pub async fn describe(
     image: Part,
     filename: &str,
 ) -> Result<Suggestion, ModelError> {
-    let ask = Ask {
+    read(model.ask(&ask_for(brief, image, filename)).await?, brief)
+}
+
+/// The ask one asset needs, for a caller that will send it later.
+///
+/// The Batch API submits the same params a synchronous call would (see `crate::batch`), so it needs the ask
+/// without making the call. Built here either way: a backfill that asked a subtly different question would
+/// produce descriptions nobody could compare with the live ones, and nothing would say so.
+pub fn ask_for(brief: &Brief, image: Part, filename: &str) -> Ask {
+    Ask {
         instructions: brief.instructions(),
         parts: vec![
             image,
@@ -211,9 +220,15 @@ pub async fn describe(
         // artefact and the cheap setting shows. Bulk classification that wants `Low` is a different pipeline.
         max_tokens: 1024,
         effort: Effort::High,
-    };
+    }
+}
 
-    let completion = model.ask(&ask).await?;
+/// Reads a completion against the vocabulary it was asked with.
+///
+/// Separate from [`describe`] because a batched answer arrives hours later, out of a different call, and has to
+/// go through exactly this: the same schema check, the same matching, the same clamp. Two readers would be two
+/// chances to disagree about what a model said.
+pub fn read(completion: Completion, brief: &Brief) -> Result<Suggestion, ModelError> {
     let structured = completion.structured.ok_or_else(|| {
         ModelError::Unreadable("the answer carried no structured output".to_owned())
     })?;

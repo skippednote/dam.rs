@@ -16,6 +16,7 @@
 //! is not idempotent turns that into duplicate assets or double-charged storage. So: finalisation is keyed on
 //! the upload session's own state, derivation on `(asset_id, op_hash)`, and both check before they write.
 
+pub mod backfill;
 pub mod bulk_exec;
 pub mod derive;
 pub mod enrich;
