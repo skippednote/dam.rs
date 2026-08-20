@@ -29,12 +29,11 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **Q** Acquia parity, 20 slices | Q.1–Q.13 done; Q.14–Q.20 open |
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
-| **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | M5a+M5b done: two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue. M5c batch and M5d MCP outstanding |
+| **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | M5a–M5c and M5d·1 done: two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query. The MCP server is what remains |
 | **M6** Workflow/proofing, annotations, analytics | not started |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** M5b·4 the disclosure on the asset itself → M5d NL→query and MCP → then Q.14 portals and
-the search set. M5a and M5b are done and verified against the running stack: both
+**Next up, in order:** M5d·2 the MCP server → then Q.14 portals and the Q.15–Q.19 search set. M5a and M5b are done and verified against the running stack: both
 hosted clients reach their real vendor endpoints, and a full enrichment ran end to end through the worker against
 a local OpenAI-compatible endpoint — values written with provenance, a disclosure row, tags suggested, 0.75¢
 charged as a sub-cent remainder, `used_original` false, and a tag confirmed from the review screen with its
@@ -2243,8 +2242,35 @@ platform key.
       Twenty mutations caught, including that one re-expressed as a mutation. Verified live: submit → "still
       working" → re-queue → apply, with the batch charged at 0.375¢ against the 0.75¢ the synchronous path
       charged for the same shape.
-- [ ] **M5d Conversational access.** Natural language to a query, and the MCP server — both of which run through
-      the §7 predicate like every other consumer, so "find me" can never widen what a caller may see.
+- [x] **M5d·1 Natural language to a query.** §8.3 calls it "NL search → structured query IR"; it produces
+      **shorthand** instead, and that is the design rather than a shortcut. `dam_core::shorthand` is already the
+      one validated entry point for a query, so a model emitting shorthand goes through the same parser a person
+      does — §12's argument, applied. It is also *visible and editable*: the answer lands in the search box, so a
+      wrong query is correctable rather than mysterious, and the results come from the ordinary search path
+      instead of a second retrieval route into a governed library. And it cannot widen anything: the parsed query
+      is composed with the caller's predicate like any other.
+
+      **Its own switch** (`enrichment_settings.natural_language_search`, migration 0029, off by default). Two
+      features, two costs, two decisions: describing the library bills per asset, answering questions bills per
+      question — and adding a key so the library can be described should not silently make every reader's search
+      box a paid endpoint. Gated on Read, because searching is what a reader does; the spend cap is the control,
+      and the endpoint answers **429** when it is reached, which is the first genuine 429 in the API.
+
+      **A query that does not parse is reported, not returned as usable.** The parser's own message and column
+      travel back, the question stays in the box, and the screen says to press Search to look for the words —
+      which costs nothing and is what the box would have done anyway.
+
+      The date goes in the *question*, not the instructions: a date in the cached prefix invalidates it every
+      midnight, and the vocabulary is what the prefix is for. Sixteen mutations caught; three survivors on the
+      first sweep were real gaps — an untested clamp, an untested wrong-shaped answer, and a vocabulary
+      assertion that only checked a heading.
+
+      Verified live: the prompt carried the tenant's fields and categories, the answer parsed, and running the
+      returned shorthand through `/search` found the asset.
+
+- [ ] **M5d·2 The MCP server.** `dam-mcp` is still one doc line. §8.5: `search_assets`, `get_asset`,
+      `get_brand_guidelines`, `check_rights`, `get_download_url` over the same ABAC layer, so an external agent
+      can never see more than the acting user.
 
 ## A mutation sweep killed mid-run used to leave the source mutated
 
