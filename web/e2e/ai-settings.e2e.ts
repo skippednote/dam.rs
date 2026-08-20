@@ -52,6 +52,7 @@ type Recorder = {
 	rotated: { id: string; body: Record<string, unknown> }[];
 	budgets: Record<string, unknown>[];
 	verifies: string[];
+	enrichments: Record<string, unknown>[];
 };
 
 async function connect(
@@ -61,10 +62,27 @@ async function connect(
 		budget?: Record<string, unknown>;
 		verify?: Record<string, unknown>;
 		addReply?: { status: number; json: unknown };
+		enrichment?: Record<string, unknown>;
+		enrichmentReply?: { status: number; json: unknown };
 	} = {}
 ): Promise<Recorder> {
-	const recorder: Recorder = { added: [], rotated: [], budgets: [], verifies: [] };
+	const recorder: Recorder = {
+		added: [],
+		rotated: [],
+		budgets: [],
+		verifies: [],
+		enrichments: []
+	};
 	let credentials = options.credentials ?? [];
+	let enrichment = options.enrichment ?? {
+		is_enabled: false,
+		guidance: '',
+		language: 'English',
+		model: null,
+		alt_text_field: 'alt_text',
+		description_field: 'description',
+		suggest_tags: true
+	};
 	let budget = options.budget ?? {
 		limit_cents: null,
 		enforcement: 'soft',
@@ -156,6 +174,16 @@ async function connect(
 				enforcement: body.hard === true ? 'hard' : 'soft'
 			};
 			return route.fulfill({ json: budget });
+		}
+		if (url.pathname === '/ai/enrichment' && method === 'GET') {
+			return route.fulfill({ json: enrichment });
+		}
+		if (url.pathname === '/ai/enrichment' && method === 'PUT') {
+			const body = route.request().postDataJSON() as Record<string, unknown>;
+			recorder.enrichments.push(body);
+			if (options.enrichmentReply) return route.fulfill(options.enrichmentReply);
+			enrichment = { ...enrichment, ...body };
+			return route.fulfill({ json: enrichment });
 		}
 		if (url.pathname === '/health') {
 			return route.fulfill({ body: 'ok' });
@@ -346,3 +374,58 @@ for (const theme of ['light', 'dark'] as const) {
 		expect(results.violations).toEqual([]);
 	});
 }
+
+test('enrichment is off until somebody turns it on, and says what turning it on means', async ({
+	page
+}) => {
+	const recorder = await connect(page, { credentials: [credential()] });
+	await page.goto('/settings/ai');
+
+	const describe = page.getByLabel('Describe new uploads');
+	await expect(describe).not.toBeChecked();
+	await expect(page.getByText('Off until you turn it on')).toBeVisible();
+
+	await describe.check();
+	await page.getByLabel('House guidance').fill("Say 'trainers', not 'sneakers'.");
+	await page.getByLabel('Language').fill('British English');
+	await page.getByRole('button', { name: 'Save description settings' }).click();
+
+	await expect(page.getByRole('status')).toContainText('Enrichment is on');
+	expect(recorder.enrichments).toEqual([
+		{
+			is_enabled: true,
+			guidance: "Say 'trainers', not 'sneakers'.",
+			language: 'British English',
+			model: null,
+			alt_text_field: 'alt_text',
+			description_field: 'description',
+			suggest_tags: true
+		}
+	]);
+});
+
+test('an empty field name means write none, not a field called nothing', async ({ page }) => {
+	const recorder = await connect(page, { credentials: [credential()] });
+	await page.goto('/settings/ai');
+	await page.getByLabel('Description goes in').fill('');
+	await page.getByRole('button', { name: 'Save description settings' }).click();
+	await expect(page.getByRole('status')).toBeVisible();
+	expect(recorder.enrichments[0]).toMatchObject({ description_field: null });
+});
+
+test('a refused switch-on does not leave the box ticked', async ({ page }) => {
+	// The commonest refusal: turning it on before there is a key for it to use. A checkbox left ticked would
+	// claim a state the server rejected.
+	await connect(page, {
+		enrichmentReply: {
+			status: 422,
+			json: { message: 'add a model credential before switching enrichment on' }
+		}
+	});
+	await page.goto('/settings/ai');
+	await page.getByLabel('Describe new uploads').check();
+	await page.getByRole('button', { name: 'Save description settings' }).click();
+
+	await expect(page.getByRole('alert')).toContainText('add a model credential');
+	await expect(page.getByLabel('Describe new uploads')).not.toBeChecked();
+});

@@ -6,6 +6,7 @@
 
 pub mod anthropic;
 pub mod credential;
+pub mod enrich;
 pub mod http;
 pub mod model;
 pub mod openai_compatible;

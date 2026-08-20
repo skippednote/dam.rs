@@ -23,6 +23,8 @@
 	 */
 	import {
 		addAiCredential,
+		readEnrichmentSettings,
+		saveEnrichmentSettings,
 		listAiCredentials,
 		makeAiCredentialDefault,
 		readAiBudget,
@@ -33,7 +35,8 @@
 		ApiError,
 		type AiBudget,
 		type AiCredential,
-		type AiVerifyResult
+		type AiVerifyResult,
+		type EnrichmentSettings
 	} from '$lib/api/client';
 	import { resolve } from '$app/paths';
 	import { session } from '$lib/api/session.svelte';
@@ -62,12 +65,19 @@
 	let limitDollars = $state('');
 	let hard = $state(true);
 
+	// What a model should do, once there is a key for it to do it with.
+	let enrichment = $state<EnrichmentSettings | null>(null);
+
 	const endpointNeeded = $derived(provider === 'openai_compatible');
 
 	async function load() {
 		problem = null;
 		try {
-			[credentials, budget] = await Promise.all([listAiCredentials(), readAiBudget()]);
+			[credentials, budget, enrichment] = await Promise.all([
+				listAiCredentials(),
+				readAiBudget(),
+				readEnrichmentSettings()
+			]);
 			// `== null` on purpose: the generated type is optional *and* nullable, and both mean "no cap".
 			limitDollars = budget.limit_cents == null ? '' : (budget.limit_cents / 100).toFixed(2);
 			// Only mirror the stored enforcement when there is something stored. With no cap configured the
@@ -169,6 +179,31 @@
 		}
 	}
 
+	async function saveEnrichment(event: SubmitEvent) {
+		event.preventDefault();
+		if (!enrichment) return;
+		busy = 'enrichment';
+		problem = null;
+		notice = null;
+		try {
+			enrichment = await saveEnrichmentSettings(enrichment);
+			notice = enrichment.is_enabled
+				? 'Enrichment is on. New uploads will be described.'
+				: 'Enrichment is off. Nothing will be described.';
+		} catch (caught) {
+			problem = describe(caught);
+			// Re-read rather than leaving the form showing a state the server refused — the commonest refusal
+			// here is "turn it on without a key", and the checkbox must not stay ticked afterwards.
+			try {
+				enrichment = await readEnrichmentSettings();
+			} catch {
+				enrichment = null;
+			}
+		} finally {
+			busy = null;
+		}
+	}
+
 	function money(cents: number): string {
 		return `$${(cents / 100).toFixed(2)}`;
 	}
@@ -256,6 +291,135 @@
 				Unticked, the cap warns and keeps working. A cap can be passed by the calls already in
 				flight when the limit is crossed — the cost of a call is only known once it has been made.
 			</p>
+		</section>
+
+		<section class="space-y-3" aria-labelledby="enrichment-heading">
+			<h2 id="enrichment-heading" class="text-lg font-medium">Description and tags</h2>
+			{#if enrichment}
+				<form class="space-y-4" onsubmit={saveEnrichment}>
+					<label class="flex items-start gap-2 text-sm">
+						<input type="checkbox" bind:checked={enrichment.is_enabled} class="mt-0.5" />
+						<span>
+							Describe new uploads
+							<span class="block text-xs text-muted">
+								Off until you turn it on, because each asset costs a fraction of a cent and a large
+								library adds up. A person reviews every tag before it counts.
+							</span>
+						</span>
+					</label>
+
+					<div class="space-y-1">
+						<label
+							class="block text-xs font-semibold tracking-wide text-muted uppercase"
+							for="guidance"
+						>
+							House guidance
+						</label>
+						<textarea
+							id="guidance"
+							rows="3"
+							class="w-full rounded-md border border-line bg-bg px-2 py-1.5 text-sm"
+							bind:value={enrichment.guidance}
+							placeholder="Say 'trainers', not 'sneakers'. Never guess a location."
+							aria-describedby="guidance-note"></textarea>
+						<p id="guidance-note" class="text-xs text-muted">
+							Sent with every request and cached by the provider, so it is nearly free to be
+							specific here.
+						</p>
+					</div>
+
+					<div class="grid gap-4 sm:grid-cols-2">
+						<div class="space-y-1">
+							<label
+								class="block text-xs font-semibold tracking-wide text-muted uppercase"
+								for="language"
+							>
+								Language
+							</label>
+							<input
+								id="language"
+								class="w-full rounded-md border border-line bg-bg px-2 py-1.5 text-sm"
+								bind:value={enrichment.language}
+							/>
+						</div>
+						<div class="space-y-1">
+							<label
+								class="block text-xs font-semibold tracking-wide text-muted uppercase"
+								for="enrichment-model"
+							>
+								Model (optional)
+							</label>
+							<input
+								id="enrichment-model"
+								class="w-full rounded-md border border-line bg-bg px-2 py-1.5 font-mono text-sm"
+								value={enrichment.model ?? ''}
+								oninput={(event) => {
+									if (!enrichment) return;
+									const next = event.currentTarget.value.trim();
+									// Empty means "use the credential's default" — an empty string would be a model
+									// name of nothing.
+									enrichment.model = next === '' ? null : next;
+								}}
+								placeholder="the credential's default"
+							/>
+						</div>
+						<div class="space-y-1">
+							<label
+								class="block text-xs font-semibold tracking-wide text-muted uppercase"
+								for="alt-field"
+							>
+								Alt text goes in
+							</label>
+							<input
+								id="alt-field"
+								class="w-full rounded-md border border-line bg-bg px-2 py-1.5 font-mono text-sm"
+								value={enrichment.alt_text_field ?? ''}
+								oninput={(event) => {
+									if (!enrichment) return;
+									const next = event.currentTarget.value.trim();
+									enrichment.alt_text_field = next === '' ? null : next;
+								}}
+								placeholder="leave empty to write none"
+							/>
+						</div>
+						<div class="space-y-1">
+							<label
+								class="block text-xs font-semibold tracking-wide text-muted uppercase"
+								for="description-field"
+							>
+								Description goes in
+							</label>
+							<input
+								id="description-field"
+								class="w-full rounded-md border border-line bg-bg px-2 py-1.5 font-mono text-sm"
+								value={enrichment.description_field ?? ''}
+								oninput={(event) => {
+									if (!enrichment) return;
+									const next = event.currentTarget.value.trim();
+									enrichment.description_field = next === '' ? null : next;
+								}}
+								placeholder="leave empty to write none"
+							/>
+						</div>
+					</div>
+
+					<label class="flex items-center gap-2 text-sm">
+						<input type="checkbox" bind:checked={enrichment.suggest_tags} />
+						Suggest tags from the taxonomy
+					</label>
+
+					<div class="flex items-center gap-3">
+						<button
+							type="submit"
+							class="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg disabled:opacity-50"
+							disabled={busy === 'enrichment'}
+						>
+							{busy === 'enrichment' ? 'Saving…' : 'Save description settings'}
+						</button>
+						<a class="text-sm underline" href={resolve('/review')}>Review what it wrote</a>
+					</div>
+				</form>
+			{/if}
 		</section>
 
 		<section class="space-y-3" aria-labelledby="credentials-heading">

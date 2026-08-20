@@ -41,10 +41,23 @@ async fn main() -> anyhow::Result<()> {
         std::process::id()
     );
 
+    // The hosted-model half. Built here so a worker that cannot construct an HTTP client says so at startup
+    // rather than at the first enrichment, and passed as `Some` unconditionally: whether anything actually runs
+    // is the tenant's `enrichment_settings.is_enabled`, not a deployment flag, because two ways to switch one
+    // feature off is one way too many.
+    let ai = dam_pipeline::enrich::AiContext {
+        keyring: cfg.ai.keyring(),
+        prices: dam_ai::pricing::Prices::with_overrides(&cfg.ai.prices),
+        transport: Arc::new(
+            dam_ai::http::HttpTransport::new().context("building the model http client")?,
+        ),
+    };
+
     let context = dam_pipeline::worker::Context {
         global,
         store,
         indexes,
+        ai: Some(ai),
         worker: worker.clone(),
     };
 

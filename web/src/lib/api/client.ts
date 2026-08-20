@@ -42,6 +42,10 @@ export type AutoImportMapping = components['schemas']['MappingRow'];
 export type AiCredential = components['schemas']['CredentialView'];
 export type AiBudget = components['schemas']['BudgetView'];
 export type AiVerifyResult = components['schemas']['VerifyResult'];
+export type EnrichmentSettings = components['schemas']['EnrichmentSettings'];
+export type ReviewRow = components['schemas']['ReviewRow'];
+export type SuggestedTag = components['schemas']['SuggestedTagView'];
+export type MachineField = components['schemas']['MachineFieldView'];
 
 /** A failed request, with whatever the server said about it. */
 export class ApiError extends Error {
@@ -911,4 +915,48 @@ export async function setAiBudget(body: {
 		method: 'PUT',
 		body: JSON.stringify(body)
 	});
+}
+
+/**
+ * The enrichment settings, the review queue, and what a model wrote.
+ *
+ * `readReviewQueue` is a *manage* surface and the server renders it under the caller's predicate, so what comes
+ * back is already only what this person may see — the client does no filtering of its own, deliberately: a
+ * filter here would be a second place for the rule to live.
+ */
+export async function readEnrichmentSettings(): Promise<EnrichmentSettings> {
+	return request<EnrichmentSettings>('/ai/enrichment');
+}
+
+export async function saveEnrichmentSettings(
+	body: EnrichmentSettings
+): Promise<EnrichmentSettings> {
+	return request<EnrichmentSettings>('/ai/enrichment', {
+		method: 'PUT',
+		body: JSON.stringify(body)
+	});
+}
+
+export async function readReviewQueue(limit = 50): Promise<ReviewRow[]> {
+	return request<ReviewRow[]>(`/ai/review?limit=${limit}`);
+}
+
+/** Confirms or rejects one suggested tag. Both are recorded; the rejections are the training signal. */
+export async function decideTag(assetId: string, termId: string, accept: boolean): Promise<void> {
+	await request<void>(`/assets/${assetId}/tags/${termId}`, {
+		method: 'PATCH',
+		body: JSON.stringify({ accept })
+	});
+}
+
+/** Queues one asset for description. Costs money, which is why it is a deliberate click. */
+export async function enrichAsset(assetId: string): Promise<{ asset_id: string; job_id: string }> {
+	return request<{ asset_id: string; job_id: string }>(`/assets/${assetId}/enrich`, {
+		method: 'POST'
+	});
+}
+
+/** What a model wrote on one asset (the Article 50 disclosure). Readable by anybody who may see the asset. */
+export async function readAssetAi(assetId: string): Promise<MachineField[]> {
+	return request<MachineField[]>(`/assets/${assetId}/ai`);
 }

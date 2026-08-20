@@ -2045,9 +2045,11 @@ name = "dam-pipeline"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "blake3",
  "bytes",
  "chrono",
+ "dam-ai",
  "dam-core",
  "dam-db",
  "dam-media",

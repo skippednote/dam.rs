@@ -72,7 +72,8 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             // 72 since 0025: `orders` and `order_items` — an order is a request plus the snapshotted set it was
             // for, and the snapshot is what stops an approver's agreement widening under them.
             // 73 since 0027: `ai_credentials`, a tenant's own sealed model-provider keys.
-            73,
+            // 74 since 0028: `enrichment_settings`, one row saying whether a model may run and what to tell it.
+            74,
         ),
         (
             "view count",
@@ -108,7 +109,9 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             //
             // 257 since 0027: `ai_credentials` gains a primary key, the partial unique index that allows exactly
             // one active default, and the by-sealing-key index a rotation reads to find rows it must re-seal.
-            257,
+            //
+            // 258 since 0028: `enrichment_settings` gains the primary key that is also its singleton lock.
+            258,
         ),
         (
             "check constraints",
@@ -135,6 +138,10 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             // constrained in the column — the sealed text in particular, because a row whose `sealed_key` is not
             // a sealed value is one nothing can ever open and no code path would notice until somebody enriched.
             //
+            // 128 since 0028: `enrichment_settings` constrains its singleton id, the language, the model
+            // override and the two field names — the field names in particular, because a value aimed at a key
+            // nothing defines would be refused by the writer with no way for a tenant to see why.
+            //
             // 97 since 0021: the events default partition inherits its parent's `actor_kind` check, for the same
             // reason it inherits the indexes.
             //
@@ -146,7 +153,7 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             //
             // 92 since 0018: `auto_import_mappings.source` is shape-checked, because a mapping's left-hand side is
             // free text and a malformed one would silently never match.
-            123,
+            128,
         ),
         (
             "hnsw indexes",

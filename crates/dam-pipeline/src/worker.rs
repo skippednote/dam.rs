@@ -43,6 +43,8 @@ pub mod kind {
     pub const BULK: &str = "bulk";
     /// One asset is rendered into one tenant-defined download format (Q.11).
     pub const RENDER_CONVERSION: &str = "render_conversion";
+    /// One asset is described by a hosted model (M5b).
+    pub const ENRICH: &str = "enrich";
 }
 
 /// How long to wait when the queue is empty.
@@ -63,6 +65,12 @@ pub struct Context {
     pub global: sqlx::PgPool,
     pub store: Arc<dyn ResumableStore>,
     pub indexes: Arc<dam_search::IndexPool>,
+    /// What a hosted-model call needs: the sealing keyring, the price list, and the transport.
+    ///
+    /// `None` disables the enrichment kind outright, which is what a deployment without a model configuration
+    /// gets — and it is a *skip*, not a failure: a queue full of dead letters is a worse way to say "not
+    /// configured" than a run row that says so.
+    pub ai: Option<crate::enrich::AiContext>,
     /// This worker's id, for the lease. Distinct per process, or two workers share a lease and both run the
     /// same job while each believes it holds it.
     pub worker: String,
@@ -229,6 +237,14 @@ pub async fn handle(context: &Context, job: &Job) -> Result<()> {
             // Indexed after the derivatives exist, so an asset appearing in search already has a thumbnail to
             // draw. The other order makes a result render as a placeholder for however long the derive takes.
             enqueue_index(&context.global, job.tenant_id, asset_id).await?;
+
+            // And described, if the tenant has switched that on. Checked *before* enqueueing rather than only
+            // inside the stage: this is the one queue where a job costs money, and a tenant with enrichment off
+            // should not accumulate a million rows that exist to say "off". The stage checks again anyway,
+            // because a setting can change between the two.
+            if context.ai.is_some() && enrichment_enabled(&context.global, &slug).await? {
+                enqueue_enrich(&context.global, job.tenant_id, asset_id).await?;
+            }
             Ok(())
         }
 
@@ -253,6 +269,33 @@ pub async fn handle(context: &Context, job: &Job) -> Result<()> {
             );
             // No index, no chained job. A conversion is a delivery format: it changes nothing searchable, and
             // enqueueing an index here would make every download somebody chooses rewrite a search document.
+            Ok(())
+        }
+
+        kind::ENRICH => {
+            let asset_id = uuid_field(job, "asset_id")?;
+            let Some(ai) = context.ai.as_ref() else {
+                // Deliberately not a failure. A deployment with no sealing key configured has not asked for
+                // enrichment, and failing every job would fill the dead-letter queue with its own absence.
+                tracing::debug!(%asset_id, "no ai context; enrichment not configured");
+                return Ok(());
+            };
+            let enriched = crate::enrich::asset(
+                &context.global,
+                context.store.as_ref() as &dyn BlobStore,
+                ai,
+                &slug,
+                job.tenant_id,
+                asset_id,
+            )
+            .await?;
+
+            tracing::info!(%asset_id, run_id = %enriched.run_id, outcome = ?enriched.outcome, "asset enriched");
+            // Reindexed, because a description and its tags are searchable and an asset whose metadata changed
+            // without an index write is one that cannot be found by what the model just wrote.
+            if matches!(enriched.outcome, crate::enrich::EnrichOutcome::Wrote { .. }) {
+                enqueue_index(&context.global, job.tenant_id, asset_id).await?;
+            }
             Ok(())
         }
 
@@ -348,6 +391,39 @@ pub async fn enqueue_index(global: &sqlx::PgPool, tenant_id: Uuid, asset_id: Uui
             .payload(serde_json::json!({ "asset_id": asset_id }))
             .priority(50)
             .dedupe_key(format!("index:{asset_id}")),
+    )
+    .await?)
+}
+
+/// Whether this tenant wants its assets described.
+///
+/// One small query on the derive path. The alternative — enqueueing unconditionally — is a queue that grows by
+/// one row per upload for every tenant that has never turned the feature on.
+async fn enrichment_enabled(global: &sqlx::PgPool, slug: &TenantSlug) -> Result<bool> {
+    let mut conn = dam_db::TenantConn::begin(global, slug).await?;
+    let settings = dam_db::enrichment::settings(conn.executor()).await?;
+    conn.commit().await?;
+    Ok(settings.is_enabled)
+}
+
+/// Queues one asset for description by a hosted model.
+///
+/// Priority 70 — behind derivatives and indexing, both of which a person is waiting on. Enrichment is worth
+/// having and nobody is watching the grid for it.
+///
+/// The dedupe key is per asset, so a hundred edits in a minute produce one call rather than a hundred: this is
+/// the one queue in damrs where a duplicate job costs money.
+pub async fn enqueue_enrich(
+    global: &sqlx::PgPool,
+    tenant_id: Uuid,
+    asset_id: Uuid,
+) -> Result<Uuid> {
+    Ok(jobs::enqueue(
+        global,
+        jobs::JobSpec::new(tenant_id, kind::ENRICH)
+            .payload(serde_json::json!({ "asset_id": asset_id }))
+            .priority(70)
+            .dedupe_key(format!("enrich:{asset_id}")),
     )
     .await?)
 }

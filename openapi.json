@@ -290,6 +290,101 @@
         }
       }
     },
+    "/ai/enrichment": {
+      "get": {
+        "tags": [
+          "ai"
+        ],
+        "summary": "The enrichment settings.",
+        "operationId": "read_enrichment",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnrichmentSettings"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller holds no manage scope"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "ai"
+        ],
+        "summary": "Replaces the enrichment settings.",
+        "operationId": "set_enrichment",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnrichmentSettings"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnrichmentSettings"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A language, model or field name the column will not hold"
+          }
+        }
+      }
+    },
+    "/ai/review": {
+      "get": {
+        "tags": [
+          "ai"
+        ],
+        "summary": "The review queue.",
+        "operationId": "review",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "How many assets to return; 50 by default",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ReviewRow"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller holds no manage scope"
+          }
+        }
+      }
+    },
     "/assets": {
       "get": {
         "tags": [
@@ -1014,6 +1109,53 @@
         }
       }
     },
+    "/assets/{asset_id}/tags/{term_id}": {
+      "patch": {
+        "tags": [
+          "ai"
+        ],
+        "summary": "Confirms or rejects a suggested tag.",
+        "operationId": "decide_tag",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "term_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TagDecision"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "The decision was recorded"
+          },
+          "404": {
+            "description": "No such asset, or nothing suggested to decide"
+          }
+        }
+      }
+    },
     "/assets/{asset_id}/usage": {
       "get": {
         "tags": [
@@ -1174,6 +1316,82 @@
           },
           "404": {
             "description": "No such asset, or not one this caller may manage"
+          }
+        }
+      }
+    },
+    "/assets/{id}/ai": {
+      "get": {
+        "tags": [
+          "ai"
+        ],
+        "summary": "What a model wrote on one asset (G2, Article 50).",
+        "operationId": "asset_disclosure",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MachineFieldView"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such asset, or not one this caller may see"
+          }
+        }
+      }
+    },
+    "/assets/{id}/enrich": {
+      "post": {
+        "tags": [
+          "ai"
+        ],
+        "summary": "Queues one asset for description.",
+        "operationId": "enrich",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnrichQueued"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such asset, or not one this caller may see"
+          },
+          "422": {
+            "description": "Enrichment is switched off for this tenant"
           }
         }
       }
@@ -5040,6 +5258,70 @@
           }
         }
       },
+      "EnrichQueued": {
+        "type": "object",
+        "description": "What enqueueing an enrichment produced.",
+        "required": [
+          "asset_id",
+          "job_id"
+        ],
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "job_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "EnrichmentSettings": {
+        "type": "object",
+        "description": "What a model should do for this tenant.",
+        "required": [
+          "is_enabled",
+          "guidance",
+          "language",
+          "suggest_tags"
+        ],
+        "properties": {
+          "alt_text_field": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the alt text lands. `null` writes none."
+          },
+          "description_field": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "guidance": {
+            "type": "string",
+            "description": "The tenant's own instructions, and the cacheable half of every request."
+          },
+          "is_enabled": {
+            "type": "boolean",
+            "description": "False until somebody turns it on. This is the pipeline that bills per asset."
+          },
+          "language": {
+            "type": "string"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Overrides the credential's default model for this pipeline."
+          },
+          "suggest_tags": {
+            "type": "boolean"
+          }
+        }
+      },
       "Facet": {
         "type": "object",
         "description": "One facetable field and its buckets.",
@@ -5160,6 +5442,36 @@
             "format": "int64",
             "description": "How many the caller has *and can still see* — the same predicate the page came from."
           }
+        }
+      },
+      "MachineFieldView": {
+        "type": "object",
+        "description": "A machine-written value, as the disclosure surface shows it (G2).",
+        "required": [
+          "key",
+          "value",
+          "model",
+          "reviewed"
+        ],
+        "properties": {
+          "confidence": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "key": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string",
+            "description": "The model that produced it, as it answered."
+          },
+          "reviewed": {
+            "type": "boolean"
+          },
+          "value": {}
         }
       },
       "MappingRow": {
@@ -5971,6 +6283,41 @@
           "bulk"
         ]
       },
+      "ReviewRow": {
+        "type": "object",
+        "description": "One asset in the review queue.",
+        "required": [
+          "asset_id",
+          "filename",
+          "mime",
+          "suggested",
+          "fields"
+        ],
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MachineFieldView"
+            }
+          },
+          "filename": {
+            "type": "string"
+          },
+          "mime": {
+            "type": "string"
+          },
+          "suggested": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SuggestedTagView"
+            }
+          }
+        }
+      },
       "RightsState": {
         "type": "string",
         "description": "Rights evaluation outcome for an asset. Mirrors the `assets.rights_state` CHECK.",
@@ -6210,6 +6557,58 @@
           "GLACIER",
           "DEEP_ARCHIVE"
         ]
+      },
+      "SuggestedTagView": {
+        "type": "object",
+        "description": "A tag waiting for a decision.",
+        "required": [
+          "term_id",
+          "slug",
+          "label",
+          "votes",
+          "source"
+        ],
+        "properties": {
+          "confidence": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "As the model claimed. Shown so a reviewer can sort, never as a reason to skip reviewing."
+          },
+          "label": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "term_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "votes": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many generators proposed it independently."
+          }
+        }
+      },
+      "TagDecision": {
+        "type": "object",
+        "description": "A decision about a suggested tag.",
+        "required": [
+          "accept"
+        ],
+        "properties": {
+          "accept": {
+            "type": "boolean",
+            "description": "`true` confirms the tag, `false` rejects it. Both are recorded: the rejections are the training signal."
+          }
+        }
       },
       "TreeRow": {
         "type": "object",

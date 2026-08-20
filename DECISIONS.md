@@ -2250,3 +2250,54 @@ seals, every retired key opens, and a retired entry sharing the current id is re
 environment — an ambiguous keyring surfaces as a credential that cannot be decrypted, long after the deploy that
 caused it. The dev placeholder is refused in production for a blunter reason than the signing key's: it encrypts
 tenants' own credentials. Reversible: no.
+
+**Enrichment is off until a tenant turns it on, and that is a column.** `enrichment_settings.is_enabled`
+defaults to false in migration 0028. This is the first pipeline in damrs that bills per asset, and §8.3's table
+puts a naive run over a large library in five figures; a feature that started enabled would produce an invoice
+before anybody had decided to spend. The stage checks it, and the derive path checks it before *enqueueing*, so a
+tenant with it off does not accumulate a row per upload saying so. Reversible: yes.
+
+**Every LLM tag lands as a suggestion, whatever confidence it claimed.** The number is self-reported and
+uncalibrated; `taxonomy_terms.ai_threshold` exists for the probe paths where confidence comes from a measured
+precision curve. Recording the claim and gating on nothing is what makes `tag_feedback` a training set rather
+than a log of what the model already did. Reversible: yes.
+
+**A machine never overwrites a human value, and a human edit removes the marking.** A value present with no
+provenance was typed by somebody, so a re-run keeps it and reports `kept_human`. The other direction is the one
+that matters for trust: when a person rewrites a field a model wrote, the provenance for that key goes, because a
+disclosure that marks a human sentence as machine output is wrong in the direction that teaches people to ignore
+the marking. Reversible: no.
+
+**Only `ai_writable` fields, enforced in the writer rather than at the call site.** There will be more than one
+caller — the stage, a batch backfill, a re-run — and a rule enforced in the writer cannot be forgotten by the
+next one. What was refused travels back, so a run can record that the model produced a `copyright` nobody would
+let it write. Reversible: no.
+
+**Words the model reached for that are not terms are kept, not dropped.** A model asking for a tag a tenant does
+not have is the clearest possible signal about a vocabulary with a hole in it, and it arrived in an answer that
+was paid for. They land in the run's `stages`. Reversible: yes.
+
+**A disclosure is a row per field, graded `metadata_only`.** 0006 draws the line where Article 50 does — at
+synthetic or manipulated content — so an authentic photograph with an AI-written description discloses the
+description, not the photograph. Marking the whole asset "AI generated" would be both wrong and commercially
+damaging. The prompt is stored as a digest because a tenant's guidance may be confidential. Reversible: no.
+
+**The enrichment job charges after the call and skips rather than fails for anything configuration-shaped.** No
+credential, enrichment switched off, over a hard cap, a proxy no image block accepts — each is a `skipped` run
+with a reason, not a dead letter: a queue full of failures is a worse way to say "not configured" than a row that
+says it. A provider *refusal* is also a skip, for the different reason that retrying it four more times would
+cost four more calls and dead-letter an asset that was never going to work. Reversible: yes.
+
+**`PATCH /assets/{id}/tags/{term}` answers 204, not an empty 200.** There is nothing to return, and a 200 with no
+body is a shape every client has to special-case — which the web client did not, and the browser suite is where
+that surfaced. Reversible: yes.
+
+**The review queue runs under the caller's predicate, like every other list.** §7 is explicit that counts
+disclose, and a review queue showing assets outside somebody's scope would be an enumeration of the library
+through a side door. It also excludes assets with nothing to decide: padding a queue with rows that need no
+decision is how a reviewer learns to ignore it. Reversible: no.
+
+**A vocabulary offered to a model is capped at 400 terms.** A taxonomy of fifty thousand terms is not a prompt,
+it is a bill — and even at a tenth for a cached prefix, a tenth of something large is large. Past the cap the
+right answer is an embedding shortlist (M4), and the run records that the offer was truncated so the gap is
+visible rather than silent. Reversible: yes.

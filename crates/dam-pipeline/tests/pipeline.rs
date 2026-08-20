@@ -1222,6 +1222,8 @@ async fn the_whole_chain_runs_through_the_worker() {
     let f = fixture().await;
     let dir = tempfile::tempdir().expect("tempdir");
     let context = dam_pipeline::worker::Context {
+        // No hosted-model context: these suites are about the queue and the render stages.
+        ai: None,
         global: f.global.clone(),
         store: Arc::clone(&f.store),
         indexes: Arc::new(dam_search::IndexPool::new(dam_search::PoolConfig::new(

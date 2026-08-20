@@ -108,6 +108,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/ai/enrichment": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The enrichment settings. */
+        get: operations["read_enrichment"];
+        /** Replaces the enrichment settings. */
+        put: operations["set_enrichment"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ai/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The review queue. */
+        get: operations["review"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/assets": {
         parameters: {
             query?: never;
@@ -316,6 +351,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/assets/{asset_id}/tags/{term_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Confirms or rejects a suggested tag. */
+        patch: operations["decide_tag"];
+        trace?: never;
+    };
     "/assets/{asset_id}/usage": {
         parameters: {
             query?: never;
@@ -367,6 +419,40 @@ export interface paths {
         put?: never;
         /** Makes an earlier version current again. */
         post: operations["make_current"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assets/{id}/ai": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** What a model wrote on one asset (G2, Article 50). */
+        get: operations["asset_disclosure"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assets/{id}/enrich": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Queues one asset for description. */
+        post: operations["enrich"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1940,6 +2026,27 @@ export interface components {
             /** Format: int64 */
             rating_count: number;
         };
+        /** @description What enqueueing an enrichment produced. */
+        EnrichQueued: {
+            /** Format: uuid */
+            asset_id: string;
+            /** Format: uuid */
+            job_id: string;
+        };
+        /** @description What a model should do for this tenant. */
+        EnrichmentSettings: {
+            /** @description Where the alt text lands. `null` writes none. */
+            alt_text_field?: string | null;
+            description_field?: string | null;
+            /** @description The tenant's own instructions, and the cacheable half of every request. */
+            guidance: string;
+            /** @description False until somebody turns it on. This is the pipeline that bills per asset. */
+            is_enabled: boolean;
+            language: string;
+            /** @description Overrides the credential's default model for this pipeline. */
+            model?: string | null;
+            suggest_tags: boolean;
+        };
         /** @description One facetable field and its buckets. */
         Facet: {
             buckets: components["schemas"]["Bucket"][];
@@ -2005,6 +2112,16 @@ export interface components {
              * @description How many the caller has *and can still see* — the same predicate the page came from.
              */
             total: number;
+        };
+        /** @description A machine-written value, as the disclosure surface shows it (G2). */
+        MachineFieldView: {
+            /** Format: double */
+            confidence?: number | null;
+            key: string;
+            /** @description The model that produced it, as it answered. */
+            model: string;
+            reviewed: boolean;
+            value: unknown;
         };
         /** @description A mapping as a client sees it. */
         MappingRow: {
@@ -2355,6 +2472,15 @@ export interface components {
          * @enum {string}
          */
         RestoreTier: "expedited" | "standard" | "bulk";
+        /** @description One asset in the review queue. */
+        ReviewRow: {
+            /** Format: uuid */
+            asset_id: string;
+            fields: components["schemas"]["MachineFieldView"][];
+            filename: string;
+            mime: string;
+            suggested: components["schemas"]["SuggestedTagView"][];
+        };
         /**
          * @description Rights evaluation outcome for an asset. Mirrors the `assets.rights_state` CHECK.
          * @enum {string}
@@ -2451,6 +2577,29 @@ export interface components {
          * @enum {string}
          */
         StorageClass: "STANDARD" | "STANDARD_IA" | "ONEZONE_IA" | "INTELLIGENT_TIERING" | "GLACIER_IR" | "GLACIER" | "DEEP_ARCHIVE";
+        /** @description A tag waiting for a decision. */
+        SuggestedTagView: {
+            /**
+             * Format: float
+             * @description As the model claimed. Shown so a reviewer can sort, never as a reason to skip reviewing.
+             */
+            confidence?: number | null;
+            label: string;
+            slug: string;
+            source: string;
+            /** Format: uuid */
+            term_id: string;
+            /**
+             * Format: int32
+             * @description How many generators proposed it independently.
+             */
+            votes: number;
+        };
+        /** @description A decision about a suggested tag. */
+        TagDecision: {
+            /** @description `true` confirms the tag, `false` rejects it. Both are recorded: the rejections are the training signal. */
+            accept: boolean;
+        };
         /** @description A category tree. */
         TreeRow: {
             /** Format: uuid */
@@ -2780,6 +2929,91 @@ export interface operations {
             };
             /** @description The credential cannot be used at all — see the body */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    read_enrichment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnrichmentSettings"];
+                };
+            };
+            /** @description The caller holds no manage scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    set_enrichment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EnrichmentSettings"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnrichmentSettings"];
+                };
+            };
+            /** @description A language, model or field name the column will not hold */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    review: {
+        parameters: {
+            query?: {
+                /** @description How many assets to return; 50 by default */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewRow"][];
+                };
+            };
+            /** @description The caller holds no manage scope */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3347,6 +3581,38 @@ export interface operations {
             };
         };
     };
+    decide_tag: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                asset_id: string;
+                term_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TagDecision"];
+            };
+        };
+        responses: {
+            /** @description The decision was recorded */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such asset, or nothing suggested to decide */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     ledger: {
         parameters: {
             query?: never;
@@ -3463,6 +3729,69 @@ export interface operations {
             };
             /** @description No such asset, or not one this caller may manage */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    asset_disclosure: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MachineFieldView"][];
+                };
+            };
+            /** @description No such asset, or not one this caller may see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    enrich: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnrichQueued"];
+                };
+            };
+            /** @description No such asset, or not one this caller may see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Enrichment is switched off for this tenant */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

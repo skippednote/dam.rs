@@ -2160,11 +2160,44 @@ platform key.
       The screen is `/settings/ai`: the cap in dollars, the credential list with its hint and its rotation
       worklist, and a verify button that distinguishes "the key is wrong" from "the model declined", because the
       second means the key is fine and somebody told only "failed" would re-issue it.
-- [ ] **M5b The enrichment job.** Alt text, description and tag candidates, writing `asset_metadata.provenance`
-      `{source, model, model_version, confidence, at, reviewed_by}` and an `enrichment_runs` row per call with
-      the token counts as reported. AI Act marking (G2) comes from that provenance, not from a flag somebody
-      remembers to set. A review queue turns candidates into `tag_feedback`, because a suggestion a person never
-      confirmed is not a tag.
+- [x] **M5b The enrichment job, end to end.** One asset, one model call, and the seven things that have to be
+      true around it — each of them a way for a paid pipeline to go wrong quietly. `dam_ai::enrich` builds the
+      ask, `dam_db::enrichment` writes the answer, `dam_pipeline::enrich` is the stage, and `/ai/*` plus
+      `/review` are how a person configures it and checks it.
+
+      **Off by default, and that is a migration not a comment.** `enrichment_settings` (0028) is a singleton row
+      whose `is_enabled` starts false. §8.3 puts a naive run over a million assets at $23k, so a feature that
+      billed per asset and started switched on would produce an invoice before a decision. Turning it on with no
+      credential is refused where the person who can fix it is looking, rather than becoming a queue of runs that
+      all say "no credential".
+
+      **A suggestion is not a tag.** Every LLM tag lands `suggested` whatever confidence the model claimed —
+      self-reported numbers are not calibrated, and `taxonomy_terms.ai_threshold` exists for the probe paths
+      where they are measured. So `/review` exists, and *No* is a first-class button there: `tag_feedback` is the
+      training set, and 0003's own note says losing the rejections loses the signal that matters most.
+
+      **A model never overwrites a person.** A value with no provenance was typed by somebody, so a re-run leaves
+      it and the run says `kept_human`. The converse matters more: a person's edit *removes* the marking, because
+      a disclosure that claims a human sentence is machine output teaches people to ignore the marking. The
+      metadata route now clears provenance for every key it touches.
+
+      **The vocabulary gap is kept.** A word the model reached for that the tenant has no term for is the most
+      useful thing in a paid answer, so it lands in the run's `stages` rather than being dropped.
+
+      **G2 marking is a row, not a flag.** One `ai_disclosures` row per written field, `metadata_only` because
+      the picture is untouched and only its description is machine-written — 0006's grading exists precisely so
+      an authentic photograph with an AI-written caption is not labelled "AI generated". The prompt is stored as
+      a digest; a tenant's guidance is its own business.
+
+      *Surprise:* `PATCH /assets/{id}/tags/{term}` returned 200 with an empty body, and the web client — which
+      tolerates a 204 and parses everything else — threw on it. The browser suite found it; the endpoint answers
+      204 now. A 200 with no body is a shape every client has to special-case.
+
+      Twenty-eight mutations caught across the prompt, the writes, the queue and the stage.
+
+- [ ] **M5b·4 The disclosure on the asset itself.** `GET /assets/{id}/ai` exists and the review queue renders
+  it; the asset detail panel does not yet. Read-gated deliberately — a marking only administrators can see is
+  not a disclosure.
 - [ ] **M5c Batch backfill.** `POST /v1/messages/batches` at half price for a whole library, polled to `ended`
       and matched back by `custom_id` — which is why `enrichment_runs` already has `llm_batch_id` and
       `llm_custom_id`.

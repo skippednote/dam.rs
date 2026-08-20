@@ -32,7 +32,7 @@
 
 use crate::assets::Failure;
 use crate::caller;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, patch, post, put};
 use axum::{Json, Router};
@@ -78,6 +78,11 @@ pub fn router(state: AiState) -> Router {
         .route("/ai/credentials/{id}/active", patch(set_active))
         .route("/ai/credentials/{id}/verify", post(verify))
         .route("/ai/budget", get(read_budget).put(set_budget))
+        .route("/ai/enrichment", get(read_enrichment).put(set_enrichment))
+        .route("/ai/review", get(review))
+        .route("/assets/{id}/enrich", post(enrich))
+        .route("/assets/{id}/ai", get(asset_disclosure))
+        .route("/assets/{asset_id}/tags/{term_id}", patch(decide_tag))
         .with_state(Arc::new(state))
 }
 
@@ -581,5 +586,373 @@ impl From<Refused> for Failure {
             CredentialRefusal::Invalid(what) => Self::Conflict(what),
             CredentialRefusal::Database(error) => Self::from(error),
         }
+    }
+}
+
+// ───────────────────────────────────────────────────────────────────────────────────────────────
+// Enrichment: the settings, the queue, and what a model wrote
+// ───────────────────────────────────────────────────────────────────────────────────────────────
+
+/// What a model should do for this tenant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct EnrichmentSettings {
+    /// False until somebody turns it on. This is the pipeline that bills per asset.
+    pub is_enabled: bool,
+    /// The tenant's own instructions, and the cacheable half of every request.
+    pub guidance: String,
+    pub language: String,
+    /// Overrides the credential's default model for this pipeline.
+    pub model: Option<String>,
+    /// Where the alt text lands. `null` writes none.
+    pub alt_text_field: Option<String>,
+    pub description_field: Option<String>,
+    pub suggest_tags: bool,
+}
+
+impl From<dam_db::enrichment::Settings> for EnrichmentSettings {
+    fn from(row: dam_db::enrichment::Settings) -> Self {
+        Self {
+            is_enabled: row.is_enabled,
+            guidance: row.guidance,
+            language: row.language,
+            model: row.model,
+            alt_text_field: row.alt_text_field,
+            description_field: row.description_field,
+            suggest_tags: row.suggest_tags,
+        }
+    }
+}
+
+impl From<EnrichmentSettings> for dam_db::enrichment::Settings {
+    fn from(request: EnrichmentSettings) -> Self {
+        Self {
+            is_enabled: request.is_enabled,
+            guidance: request.guidance,
+            language: request.language,
+            model: request.model,
+            alt_text_field: request.alt_text_field,
+            description_field: request.description_field,
+            suggest_tags: request.suggest_tags,
+        }
+    }
+}
+
+/// One asset in the review queue.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct ReviewRow {
+    pub asset_id: Uuid,
+    pub filename: String,
+    pub mime: String,
+    pub suggested: Vec<SuggestedTagView>,
+    pub fields: Vec<MachineFieldView>,
+}
+
+/// A tag waiting for a decision.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct SuggestedTagView {
+    pub term_id: Uuid,
+    pub slug: String,
+    pub label: String,
+    /// As the model claimed. Shown so a reviewer can sort, never as a reason to skip reviewing.
+    pub confidence: Option<f32>,
+    /// How many generators proposed it independently.
+    pub votes: i16,
+    pub source: String,
+}
+
+/// A machine-written value, as the disclosure surface shows it (G2).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct MachineFieldView {
+    pub key: String,
+    pub value: serde_json::Value,
+    /// The model that produced it, as it answered.
+    pub model: String,
+    pub confidence: Option<f64>,
+    pub reviewed: bool,
+}
+
+/// A decision about a suggested tag.
+#[derive(Debug, Clone, Copy, Deserialize, ToSchema)]
+pub struct TagDecision {
+    /// `true` confirms the tag, `false` rejects it. Both are recorded: the rejections are the training signal.
+    pub accept: bool,
+}
+
+/// What enqueueing an enrichment produced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct EnrichQueued {
+    pub asset_id: Uuid,
+    pub job_id: Uuid,
+}
+
+/// The enrichment settings.
+#[utoipa::path(
+    get,
+    path = "/ai/enrichment",
+    responses(
+        (status = 200, body = EnrichmentSettings),
+        (status = 403, description = "The caller holds no manage scope"),
+    ),
+    tag = "ai",
+)]
+pub async fn read_enrichment(
+    State(state): State<Arc<AiState>>,
+    headers: HeaderMap,
+) -> Result<Json<EnrichmentSettings>, Failure> {
+    let caller = caller::authorize(&state.global, &headers, Action::Manage).await?;
+    let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
+    let settings = dam_db::enrichment::settings(conn.executor()).await?;
+    conn.commit().await?;
+    Ok(Json(settings.into()))
+}
+
+/// Replaces the enrichment settings.
+#[utoipa::path(
+    put,
+    path = "/ai/enrichment",
+    request_body = EnrichmentSettings,
+    responses(
+        (status = 200, body = EnrichmentSettings),
+        (status = 422, description = "A language, model or field name the column will not hold"),
+    ),
+    tag = "ai",
+)]
+pub async fn set_enrichment(
+    State(state): State<Arc<AiState>>,
+    headers: HeaderMap,
+    Json(request): Json<EnrichmentSettings>,
+) -> Result<Json<EnrichmentSettings>, Failure> {
+    let caller = caller::authorize(&state.global, &headers, Action::Manage).await?;
+    // Turning it on with no credential would be a setting that cannot do anything, and the failure would arrive
+    // later as a queue of skipped runs. Refused here, where the person who can fix it is looking.
+    let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
+    if request.is_enabled
+        && dam_db::ai_credentials::current(conn.executor())
+            .await?
+            .is_none()
+    {
+        conn.commit().await?;
+        return Err(Failure::Unprocessable(
+            "add a model credential before switching enrichment on; there is nothing for it to call yet"
+                .to_owned(),
+        ));
+    }
+    let saved = dam_db::enrichment::save_settings(conn.executor(), &request.into()).await?;
+    conn.commit().await?;
+    Ok(Json(saved.into()))
+}
+
+/// Queues one asset for description.
+#[utoipa::path(
+    post,
+    path = "/assets/{id}/enrich",
+    responses(
+        (status = 202, body = EnrichQueued),
+        (status = 404, description = "No such asset, or not one this caller may see"),
+        (status = 422, description = "Enrichment is switched off for this tenant"),
+    ),
+    tag = "ai",
+)]
+pub async fn enrich(
+    State(state): State<Arc<AiState>>,
+    headers: HeaderMap,
+    Path(asset_id): Path<Uuid>,
+) -> Result<(StatusCode, Json<EnrichQueued>), Failure> {
+    // Manage, not Read: this spends money and writes metadata.
+    let caller = caller::authorize(&state.global, &headers, Action::Manage).await?;
+    let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
+    // Under the caller's predicate, so an asset outside their scope is 404 rather than a job they could not
+    // otherwise have caused — the same rule as everywhere else.
+    let visible = dam_db::assets::detail(conn.executor(), &caller.predicate, asset_id)
+        .await?
+        .is_some();
+    let settings = dam_db::enrichment::settings(conn.executor()).await?;
+    conn.commit().await?;
+    if !visible {
+        return Err(Failure::NotFound);
+    }
+    if !settings.is_enabled {
+        return Err(Failure::Unprocessable(
+            "enrichment is switched off for this tenant".to_owned(),
+        ));
+    }
+
+    let job_id = dam_pipeline::worker::enqueue_enrich(&state.global, caller.tenant_id, asset_id)
+        .await
+        .map_err(|_| Failure::Internal)?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(EnrichQueued { asset_id, job_id }),
+    ))
+}
+
+/// The review queue.
+#[utoipa::path(
+    get,
+    path = "/ai/review",
+    params(("limit" = Option<i64>, Query, description = "How many assets to return; 50 by default")),
+    responses(
+        (status = 200, body = Vec<ReviewRow>),
+        (status = 403, description = "The caller holds no manage scope"),
+    ),
+    tag = "ai",
+)]
+pub async fn review(
+    State(state): State<Arc<AiState>>,
+    headers: HeaderMap,
+    Query(params): Query<ReviewParams>,
+) -> Result<Json<Vec<ReviewRow>>, Failure> {
+    // Manage: deciding what a tag means for the whole library is an editorial act, not a reader's.
+    let caller = caller::authorize(&state.global, &headers, Action::Manage).await?;
+    let limit = params.limit.unwrap_or(50).clamp(1, 200);
+    let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
+    let items = dam_db::enrichment::review_queue(conn.executor(), &caller.predicate, limit).await?;
+    conn.commit().await?;
+    Ok(Json(items.into_iter().map(into_review_row).collect()))
+}
+
+/// How much of the queue to return.
+#[derive(Debug, Clone, Copy, Deserialize, ToSchema)]
+pub struct ReviewParams {
+    pub limit: Option<i64>,
+}
+
+fn into_review_row(item: dam_db::enrichment::ReviewItem) -> ReviewRow {
+    ReviewRow {
+        asset_id: item.asset_id,
+        filename: item.filename,
+        mime: item.mime,
+        suggested: item
+            .suggested
+            .into_iter()
+            .map(|tag| SuggestedTagView {
+                term_id: tag.term_id,
+                slug: tag.slug,
+                label: tag.label,
+                confidence: tag.confidence,
+                votes: tag.votes,
+                source: tag.source,
+            })
+            .collect(),
+        fields: item
+            .fields
+            .into_iter()
+            .map(|field| MachineFieldView {
+                key: field.key,
+                value: field.value,
+                model: field.model,
+                confidence: field.confidence,
+                reviewed: field.reviewed,
+            })
+            .collect(),
+    }
+}
+
+/// What a model wrote on one asset (G2, Article 50).
+#[utoipa::path(
+    get,
+    path = "/assets/{id}/ai",
+    responses(
+        (status = 200, body = Vec<MachineFieldView>),
+        (status = 404, description = "No such asset, or not one this caller may see"),
+    ),
+    tag = "ai",
+)]
+pub async fn asset_disclosure(
+    State(state): State<Arc<AiState>>,
+    headers: HeaderMap,
+    Path(asset_id): Path<Uuid>,
+) -> Result<Json<Vec<MachineFieldView>>, Failure> {
+    // Read, deliberately: this is a disclosure. Somebody who may see the asset may see that a model wrote its
+    // description — that is the whole point of marking it, and gating it behind Manage would make the marking
+    // invisible to the people it exists for.
+    let caller = caller::authorize(&state.global, &headers, Action::Read).await?;
+    let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
+    if dam_db::assets::detail(conn.executor(), &caller.predicate, asset_id)
+        .await?
+        .is_none()
+    {
+        conn.commit().await?;
+        return Err(Failure::NotFound);
+    }
+    let disclosed = dam_db::enrichment::machine_written(conn.executor(), asset_id).await?;
+    let values: Option<serde_json::Value> =
+        sqlx::query_scalar("SELECT values FROM asset_metadata WHERE asset_id = $1")
+            .bind(asset_id)
+            .fetch_optional(conn.executor())
+            .await
+            .map_err(dam_db::Error::from)?;
+    conn.commit().await?;
+
+    let values = values.unwrap_or_else(|| serde_json::json!({}));
+    Ok(Json(
+        disclosed
+            .into_iter()
+            .map(|(key, marking)| MachineFieldView {
+                value: values.get(&key).cloned().unwrap_or(serde_json::Value::Null),
+                key,
+                model: marking
+                    .get("model")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("unknown")
+                    .to_owned(),
+                confidence: marking
+                    .get("confidence")
+                    .and_then(serde_json::Value::as_f64),
+                reviewed: marking
+                    .get("reviewed_by")
+                    .is_some_and(|value| !value.is_null()),
+            })
+            .collect(),
+    ))
+}
+
+/// Confirms or rejects a suggested tag.
+#[utoipa::path(
+    patch,
+    path = "/assets/{asset_id}/tags/{term_id}",
+    request_body = TagDecision,
+    responses(
+        (status = 204, description = "The decision was recorded"),
+        (status = 404, description = "No such asset, or nothing suggested to decide"),
+    ),
+    tag = "ai",
+)]
+pub async fn decide_tag(
+    State(state): State<Arc<AiState>>,
+    headers: HeaderMap,
+    Path((asset_id, term_id)): Path<(Uuid, Uuid)>,
+    Json(request): Json<TagDecision>,
+) -> Result<StatusCode, Failure> {
+    let caller = caller::authorize(&state.global, &headers, Action::Manage).await?;
+    let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
+    if dam_db::assets::detail(conn.executor(), &caller.predicate, asset_id)
+        .await?
+        .is_none()
+    {
+        conn.commit().await?;
+        return Err(Failure::NotFound);
+    }
+    let decided = dam_db::enrichment::decide_tag(
+        conn.executor(),
+        asset_id,
+        term_id,
+        if request.accept {
+            dam_db::enrichment::Verdict::Accept
+        } else {
+            dam_db::enrichment::Verdict::Reject
+        },
+        caller.identity_id,
+    )
+    .await?;
+    conn.commit().await?;
+    if decided {
+        // No content, not an empty 200: there is nothing to return, and a 200 with no body is a shape every
+        // client has to special-case — which one of them did not, and the browser suite is where that surfaced.
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        // Two reviewers with the same queue open is an ordinary race, and the second click is not an error —
+        // but it also did not do anything, and saying 200 would claim it had.
+        Err(Failure::NotFound)
     }
 }

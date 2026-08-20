@@ -651,3 +651,453 @@ async fn a_nonsense_cap_is_refused() {
         );
     }
 }
+
+// ───────────────────────────────────────────────────────────────────────────────────────────────
+// Enrichment: the settings, the queue, and the disclosure
+// ───────────────────────────────────────────────────────────────────────────────────────────────
+
+/// An asset, optionally inside a group so a scoped key can be kept away from it.
+async fn asset(f: &Fixture, name: &str, group: Option<Uuid>) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO assets (id, content_hash, filename, mime, bytes, version_group_id) \
+         VALUES ($1, $2, $3, 'image/jpeg', 100, $1)",
+    )
+    .bind(id)
+    .bind(blake3::hash(name.as_bytes()).to_hex().to_string())
+    .bind(format!("{name}.jpg"))
+    .execute(&f.acme)
+    .await
+    .expect("asset");
+    if let Some(group) = group {
+        sqlx::query("INSERT INTO asset_group_members (group_id, asset_id) VALUES ($1, $2)")
+            .bind(group)
+            .bind(id)
+            .execute(&f.acme)
+            .await
+            .expect("membership");
+    }
+    id
+}
+
+/// A term, returning its id.
+async fn term(f: &Fixture, taxonomy: Uuid, slug: &str) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO taxonomy_terms (id, taxonomy_id, path, slug, label) \
+         VALUES ($1, $2, text2ltree($3), $3, initcap($3))",
+    )
+    .bind(id)
+    .bind(taxonomy)
+    .bind(slug)
+    .execute(&f.acme)
+    .await
+    .expect("term");
+    id
+}
+
+async fn taxonomy(f: &Fixture) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query("INSERT INTO taxonomies (id, key, label) VALUES ($1, 'subject', 'Subject')")
+        .bind(id)
+        .execute(&f.acme)
+        .await
+        .expect("taxonomy");
+    id
+}
+
+/// A suggested tag on an asset, as the pipeline would have left it.
+async fn suggest(f: &Fixture, asset_id: Uuid, term_id: Uuid, confidence: f32, votes: i16) {
+    sqlx::query(
+        "INSERT INTO asset_tags (asset_id, term_id, state, source, confidence, generator_votes) \
+         VALUES ($1, $2, 'suggested', 'llm', $3, $4)",
+    )
+    .bind(asset_id)
+    .bind(term_id)
+    .bind(confidence)
+    .bind(votes)
+    .execute(&f.acme)
+    .await
+    .expect("suggested tag");
+}
+
+/// A machine-written value with its provenance, as `dam_db::enrichment` would have left it.
+async fn machine_value(f: &Fixture, asset_id: Uuid, key: &str, value: &str) {
+    sqlx::query(
+        "INSERT INTO asset_metadata (asset_id, values, provenance) VALUES ($1, $2, $3) \
+         ON CONFLICT (asset_id) DO UPDATE SET values = excluded.values, provenance = excluded.provenance",
+    )
+    .bind(asset_id)
+    .bind(json!({key: value}))
+    .bind(json!({key: {
+        "source": "llm",
+        "model": "claude-opus-5",
+        "model_version": "llm_describe/1",
+        "confidence": 0.7,
+        "at": "2026-08-20T10:00:00Z",
+        "reviewed_by": null,
+    }}))
+    .execute(&f.acme)
+    .await
+    .expect("machine value");
+}
+
+#[tokio::test]
+async fn enrichment_is_off_until_somebody_turns_it_on() {
+    let f = fixture().await;
+    let (status, settings) = json_call(&f, "GET", "/ai/enrichment", &f.key, None).await;
+    assert_eq!(status, StatusCode::OK, "{settings}");
+    assert_eq!(
+        settings["is_enabled"], false,
+        "the pipeline that bills per asset"
+    );
+    assert_eq!(settings["language"], "English");
+    assert_eq!(settings["alt_text_field"], "alt_text");
+    assert_eq!(settings["suggest_tags"], true);
+}
+
+#[tokio::test]
+async fn switching_it_on_without_a_credential_is_refused_where_somebody_can_fix_it() {
+    let f = fixture().await;
+    let (status, body) = json_call(
+        &f,
+        "PUT",
+        "/ai/enrichment",
+        &f.key,
+        Some(json!({
+            "is_enabled": true,
+            "guidance": "",
+            "language": "English",
+            "model": null,
+            "alt_text_field": "alt_text",
+            "description_field": "description",
+            "suggest_tags": true,
+        })),
+    )
+    .await;
+    // Otherwise the failure arrives later as a queue of runs that all say "no credential".
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body.to_string().contains("credential"), "{body}");
+}
+
+#[tokio::test]
+async fn settings_are_saved_and_read_back_as_stored() {
+    let f = fixture().await;
+    json_call(
+        &f,
+        "POST",
+        "/ai/credentials",
+        &f.key,
+        Some(anthropic_credential()),
+    )
+    .await;
+    let (status, saved) = json_call(
+        &f,
+        "PUT",
+        "/ai/enrichment",
+        &f.key,
+        Some(json!({
+            "is_enabled": true,
+            "guidance": "  Say 'trainers', not 'sneakers'.  ",
+            "language": "  British English  ",
+            "model": "claude-haiku-4-5",
+            "alt_text_field": "alt_text",
+            "description_field": null,
+            "suggest_tags": false,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["is_enabled"], true);
+    // Trimmed by the store, and the response is the read-back rather than the echo — so a caller learns what
+    // was actually kept.
+    assert_eq!(saved["language"], "British English");
+    assert_eq!(saved["model"], "claude-haiku-4-5");
+    assert!(
+        saved["description_field"].is_null(),
+        "null means write none"
+    );
+    assert_eq!(saved["suggest_tags"], false);
+    // The guidance keeps its own whitespace: it is prose, and the prompt builder trims it where it matters.
+    assert!(
+        saved["guidance"]
+            .as_str()
+            .expect("guidance")
+            .contains("trainers"),
+        "{saved}"
+    );
+}
+
+#[tokio::test]
+async fn enrichment_can_be_asked_for_one_asset_and_only_by_somebody_who_can_see_it() {
+    let f = fixture().await;
+    let id = asset(&f, "one", None).await;
+
+    // Off: refused with the reason, rather than a job that will skip.
+    let (status, body) = json_call(&f, "POST", &format!("/assets/{id}/enrich"), &f.key, None).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+
+    json_call(
+        &f,
+        "POST",
+        "/ai/credentials",
+        &f.key,
+        Some(anthropic_credential()),
+    )
+    .await;
+    json_call(
+        &f,
+        "PUT",
+        "/ai/enrichment",
+        &f.key,
+        Some(json!({
+            "is_enabled": true,
+            "guidance": "",
+            "language": "English",
+            "model": null,
+            "alt_text_field": "alt_text",
+            "description_field": "description",
+            "suggest_tags": true,
+        })),
+    )
+    .await;
+
+    let (status, queued) =
+        json_call(&f, "POST", &format!("/assets/{id}/enrich"), &f.key, None).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{queued}");
+    assert_eq!(queued["asset_id"], id.to_string());
+    let jobs: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM dam_global.jobs WHERE kind = 'enrich' AND dedupe_key = $1",
+    )
+    .bind(format!("enrich:{id}"))
+    .fetch_one(&f.global)
+    .await
+    .expect("count");
+    assert_eq!(jobs, 1);
+
+    // Asking twice is one job: this is the only queue in damrs where a duplicate costs money.
+    json_call(&f, "POST", &format!("/assets/{id}/enrich"), &f.key, None).await;
+    let jobs: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM dam_global.jobs WHERE kind = 'enrich' AND dedupe_key = $1",
+    )
+    .bind(format!("enrich:{id}"))
+    .fetch_one(&f.global)
+    .await
+    .expect("count");
+    assert_eq!(jobs, 1);
+
+    // And an asset nobody may see cannot be enriched — 404, not 403: the same rule as everywhere else, because
+    // the difference between the two is an existence oracle.
+    let (status, _) = call(
+        &f,
+        "POST",
+        "/assets/00000000-0000-0000-0000-000000000000/enrich",
+        &f.key,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn the_review_queue_shows_what_a_model_did_and_nothing_outside_the_callers_scope() {
+    let f = fixture().await;
+    let taxonomy_id = taxonomy(&f).await;
+    let footwear = term(&f, taxonomy_id, "footwear").await;
+    let outdoor = term(&f, taxonomy_id, "outdoor").await;
+
+    let visible = asset(&f, "visible", None).await;
+    suggest(&f, visible, footwear, 0.9, 2).await;
+    suggest(&f, visible, outdoor, 0.4, 1).await;
+    machine_value(&f, visible, "alt_text", "A runner on a wet path").await;
+
+    // An asset in a group the scoped key cannot reach.
+    let hidden_group: Uuid = sqlx::query_scalar(
+        "INSERT INTO asset_groups (id, key, label) VALUES (gen_random_uuid(), 'locked', 'Locked') RETURNING id",
+    )
+    .fetch_one(&f.acme)
+    .await
+    .expect("group");
+    let hidden = asset(&f, "hidden", Some(hidden_group)).await;
+    suggest(&f, hidden, footwear, 0.95, 3).await;
+
+    // An asset nothing has been said about. It must not appear: a queue is a list of things to decide, and
+    // padding it with assets that need no decision is how a reviewer learns to ignore it.
+    let untouched = asset(&f, "untouched", None).await;
+
+    let (status, queue) = json_call(&f, "GET", "/ai/review", &f.key, None).await;
+    assert_eq!(status, StatusCode::OK, "{queue}");
+    let rows = queue.as_array().expect("rows");
+    assert_eq!(
+        rows.len(),
+        2,
+        "the admin sees both, and not the untouched one"
+    );
+    assert!(
+        !rows
+            .iter()
+            .any(|row| row["asset_id"] == untouched.to_string()),
+        "{queue}"
+    );
+
+    // Strongest evidence first: the three-vote suggestion leads.
+    assert_eq!(rows[0]["asset_id"], hidden.to_string());
+    let visible_row = rows
+        .iter()
+        .find(|row| row["asset_id"] == visible.to_string())
+        .expect("the visible asset");
+    let suggested = visible_row["suggested"].as_array().expect("suggested");
+    assert_eq!(suggested.len(), 2);
+    assert_eq!(suggested[0]["slug"], "footwear", "two votes before one");
+    assert_eq!(suggested[0]["votes"], 2);
+    assert_eq!(suggested[0]["source"], "llm");
+    let fields = visible_row["fields"].as_array().expect("fields");
+    assert_eq!(fields[0]["key"], "alt_text");
+    assert_eq!(fields[0]["model"], "claude-opus-5");
+    assert_eq!(fields[0]["reviewed"], false);
+
+    // A key scoped to a group that holds neither asset sees an empty queue — the predicate is in the query, so
+    // the queue cannot become a way to enumerate the library.
+    let scoped_group: Uuid = sqlx::query_scalar(
+        "INSERT INTO asset_groups (id, key, label) VALUES (gen_random_uuid(), 'mine', 'Mine') RETURNING id",
+    )
+    .fetch_one(&f.acme)
+    .await
+    .expect("group");
+    sqlx::query(
+        "INSERT INTO roles (id, key, label, permissions, asset_group_ids, all_asset_groups) \
+         VALUES (gen_random_uuid(), 'scoped_manager', 'Scoped', '{asset:read,asset:manage}', ARRAY[$1], false)",
+    )
+    .bind(scoped_group)
+    .execute(&f.acme)
+    .await
+    .expect("role");
+    let identity = identity(&f.global, "scoped@example.com").await;
+    sqlx::query(
+        "INSERT INTO dam_global.tenant_members (tenant_id, identity_id, role_names, is_tenant_admin) \
+         VALUES ($1, $2, '{scoped_manager}', false)",
+    )
+    .bind(f.tenant_id)
+    .bind(identity)
+    .execute(&f.global)
+    .await
+    .expect("membership");
+    let scoped_key = issue(&f.global, f.tenant_id, Some(identity), &[]).await;
+
+    let (status, queue) = json_call(&f, "GET", "/ai/review", &scoped_key, None).await;
+    assert_eq!(status, StatusCode::OK, "{queue}");
+    assert_eq!(queue.as_array().expect("rows").len(), 0);
+}
+
+#[tokio::test]
+async fn a_decision_about_a_tag_is_recorded_once_and_kept() {
+    let f = fixture().await;
+    let taxonomy_id = taxonomy(&f).await;
+    let footwear = term(&f, taxonomy_id, "footwear").await;
+    let outdoor = term(&f, taxonomy_id, "outdoor").await;
+    let id = asset(&f, "one", None).await;
+    suggest(&f, id, footwear, 0.9, 1).await;
+    suggest(&f, id, outdoor, 0.3, 1).await;
+
+    let (status, _) = call(
+        &f,
+        "PATCH",
+        &format!("/assets/{id}/tags/{footwear}"),
+        &f.key,
+        Some(json!({"accept": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = call(
+        &f,
+        "PATCH",
+        &format!("/assets/{id}/tags/{outdoor}"),
+        &f.key,
+        Some(json!({"accept": false})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let states: Vec<(String, Option<Uuid>)> = sqlx::query_as(
+        "SELECT state, reviewed_by FROM asset_tags WHERE asset_id = $1 ORDER BY state",
+    )
+    .bind(id)
+    .fetch_all(&f.acme)
+    .await
+    .expect("states");
+    assert_eq!(states[0].0, "confirmed");
+    assert_eq!(states[1].0, "rejected");
+    assert!(states[0].1.is_some(), "the decision names who made it");
+
+    // Both decisions in the training set, rejection included: 0003 says losing the rejections loses the signal
+    // that matters most.
+    let feedback: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT verdict, proposed_by FROM tag_feedback WHERE asset_id = $1 ORDER BY verdict",
+    )
+    .bind(id)
+    .fetch_all(&f.acme)
+    .await
+    .expect("feedback");
+    assert_eq!(feedback.len(), 2);
+    assert_eq!(feedback[0].0, "accept");
+    assert_eq!(feedback[0].1.as_deref(), Some("llm"));
+    assert_eq!(feedback[1].0, "reject");
+
+    // Clicking again decides nothing — two reviewers with the same queue open is an ordinary race, and saying
+    // 200 would claim the second click had done something.
+    let (status, _) = call(
+        &f,
+        "PATCH",
+        &format!("/assets/{id}/tags/{footwear}"),
+        &f.key,
+        Some(json!({"accept": false})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let state: String = sqlx::query_scalar("SELECT state FROM asset_tags WHERE term_id = $1")
+        .bind(footwear)
+        .fetch_one(&f.acme)
+        .await
+        .expect("state");
+    assert_eq!(
+        state, "confirmed",
+        "a decision is not overwritten by a stale click"
+    );
+}
+
+#[tokio::test]
+async fn the_disclosure_is_visible_to_anybody_who_can_see_the_asset() {
+    let f = fixture().await;
+    let id = asset(&f, "disclosed", None).await;
+    machine_value(&f, id, "description", "Two sentences a model wrote.").await;
+
+    // Read, not Manage: a marking that only administrators can see is not a disclosure.
+    let (status, disclosed) = json_call(
+        &f,
+        "GET",
+        &format!("/assets/{id}/ai"),
+        &f.read_only_key,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{disclosed}");
+    let rows = disclosed.as_array().expect("rows");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["key"], "description");
+    assert_eq!(rows[0]["value"], "Two sentences a model wrote.");
+    assert_eq!(rows[0]["model"], "claude-opus-5");
+    assert_eq!(rows[0]["reviewed"], false);
+
+    // An asset with nothing machine-written discloses nothing, rather than 404 — "no AI here" is an answer.
+    let plain = asset(&f, "plain", None).await;
+    let (status, disclosed) = json_call(
+        &f,
+        "GET",
+        &format!("/assets/{plain}/ai"),
+        &f.read_only_key,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(disclosed.as_array().expect("rows").len(), 0);
+}

@@ -468,7 +468,13 @@ pub async fn update_metadata(
     // Merged onto the stored document, using the *normalised* values rather than the ones that arrived — a
     // date reformatted or a number coerced has to be what lands, or the next read shows an unexplained diff.
     let mut merged = existing.values.as_object().cloned().unwrap_or_default();
+    // Every key this request touched is now a human's, whatever it was before. Collected here because the
+    // provenance for those keys has to go: leaving it would mark a person's sentence as machine output for as
+    // long as the asset exists, and a disclosure wrong in that direction teaches people to ignore the marking
+    // altogether. See `dam_db::enrichment`.
+    let mut edited: Vec<String> = Vec::with_capacity(accepted.values.len());
     for (key, value) in accepted.values {
+        edited.push(key.clone());
         if value.is_null() {
             merged.remove(&key);
         } else {
@@ -486,6 +492,8 @@ pub async fn update_metadata(
     .execute(conn.executor())
     .await
     .map_err(dam_db::Error::from)?;
+
+    dam_db::enrichment::forget_provenance(conn.executor(), asset_id, &edited).await?;
 
     // The asset's own `updated_at` moves too, or a metadata edit is invisible to anything watching the
     // asset — the reindex queue and the connector both key off it.

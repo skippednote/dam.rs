@@ -19,6 +19,7 @@ pub mod comments;
 pub mod conversions;
 pub mod derivatives;
 pub mod engagement;
+pub mod enrichment;
 pub mod events;
 pub mod facets;
 pub mod fields;
