@@ -152,6 +152,27 @@ fn render_query(query: &Query, schema: &IndexSchema) -> Result<Box<dyn TantivyQu
                 "a rating is an aggregate over `asset_ratings` and is not in the index".to_owned(),
             ));
         }
+        Query::Status(_) => {
+            // `assets.status` is not an index field, and making it one would mean reindexing an asset every
+            // time it was archived. Refused rather than dropped, like every other clause the index cannot
+            // answer: dropping it would return archived assets to somebody who asked for active ones.
+            return Err(Error::Unsupported(
+                "an asset's status is a column and is not in the index".to_owned(),
+            ));
+        }
+        Query::Orientation(_) => {
+            // Derivable from two stored numbers, which is exactly why it is not indexed: the index would hold
+            // a third value that has to agree with them.
+            return Err(Error::Unsupported(
+                "orientation is derived from the stored dimensions and is not in the index"
+                    .to_owned(),
+            ));
+        }
+        Query::HasAttachment => {
+            return Err(Error::Unsupported(
+                "what is attached to an asset is relational and is not in the index".to_owned(),
+            ));
+        }
         Query::Mine(state) => {
             // Per-caller by nature, so it could never be a shared index field: the index holds one document per
             // asset, and "is this a favourite" has a different answer for every person reading it.

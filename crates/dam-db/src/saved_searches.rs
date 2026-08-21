@@ -288,6 +288,11 @@ fn serialise(query: &Query) -> Result<serde_json::Value, Error> {
         }),
         Query::InCollection(id) => serde_json::json!({"kind": "collection", "id": id}),
         Query::Rating(op) => serde_json::json!({"kind": "rating", "op": serialise_op(op)?}),
+        Query::Status(status) => serde_json::json!({"kind": "status", "status": status}),
+        Query::Orientation(shape) => {
+            serde_json::json!({"kind": "orientation", "shape": shape.as_str()})
+        }
+        Query::HasAttachment => serde_json::json!({"kind": "has_attachment"}),
         // No identity, and that is the whole point. A saved search is shareable, so storing *who* "mine" meant
         // would make a colleague opening it see the author's favourites — the leak wearing the shape of a
         // bookmark this module's docs open with. Who is asking is resolved at evaluation time, from the caller.
@@ -388,6 +393,23 @@ fn deserialise(value: &serde_json::Value) -> Result<Query, Error> {
                 .map_err(|_| bad("collection without a uuid"))?,
         ),
         "rating" => Query::Rating(deserialise_op(&value["op"])?),
+        "status" => Query::Status(
+            value["status"]
+                .as_str()
+                .ok_or_else(|| bad("status without a value"))?
+                .to_owned(),
+        ),
+        "orientation" => Query::Orientation(
+            dam_core::query::Orientation::parse(
+                value["shape"]
+                    .as_str()
+                    .ok_or_else(|| bad("orientation without a shape"))?,
+            )
+            // Refused rather than defaulted: a stored shape this build does not know is a saved search from a
+            // newer schema, and picking landscape would quietly show somebody a different library.
+            .ok_or_else(|| bad("unknown orientation"))?,
+        ),
+        "has_attachment" => Query::HasAttachment,
         "mine" => Query::Mine(
             match value["state"]
                 .as_str()

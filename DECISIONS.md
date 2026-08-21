@@ -2451,3 +2451,21 @@ built-in profiles before the tenant's list, so a conversion called `web-2048` wo
 recipe's hash and served under the built-in's — ready, with a URL nobody can fetch. Refusing the name at
 creation is the cheap half of the fix; the alternative, letting a tenant shadow a built-in, would also change
 what `web-2048` means for internal previews, which nobody asked for. Reversible: yes.
+
+**The built-in facets are enumerated in code, not configured.** `facetable` is a flag on a metadata field, and
+none of status, orientation, rating or attachment is one — they are a column, a derivation, an aggregate and a
+back-reference. A tenant who does not want one hides it in the rail, which is presentation. Reversible: yes.
+
+**A facet key is the query selector its buckets compose with.** The rail writes the string it reads, so the
+rating facet is keyed `stars` (because `stars:4` is what the parser takes) and the attachment facet emits a
+bucket named `attachment` (so the rail writes `has:attachment`). Naming them `rating` and `true` would have read
+better in the response and produced checkboxes that do nothing. Reversible: no.
+
+**`status:`, `orientation:` and `has:` are reserved selectors.** Same reason as `in:`, `is:` and `stars:`: a
+tenant field with that key would shadow them and the rail's own links would break invisibly. `has:` rather than
+`is:attached`, because the two ask about different things — `is:` is the caller, `has:` is the asset.
+Reversible: no.
+
+**Orientation is derived at query time rather than stored.** `width` and `height` are already probed, so a
+column would be a third value that has to agree with two others, plus a backfill and a reindex. An asset with
+no dimensions matches no orientation rather than defaulting to one. Reversible: yes.

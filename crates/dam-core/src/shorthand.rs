@@ -30,7 +30,7 @@
 //! — a typo silently becoming free text returns nothing and explains nothing.
 
 use crate::fields::{FieldDef, FieldKind};
-use crate::query::{Comparison, Endpoint, Literal, Personal, Query};
+use crate::query::{Comparison, Endpoint, Literal, Orientation, Personal, Query};
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -56,6 +56,21 @@ pub const PERSONAL_SELECTOR: &str = "is";
 /// Reserved. Unlike `is:`, this one is about the asset rather than the caller — the library's shared judgement,
 /// which is what makes it a facet worth having.
 pub const RATING_SELECTOR: &str = "stars";
+
+/// The selector that filters by lifecycle status: `status:archived`.
+///
+/// Reserved, like the others here. `assets.status` is a column with a CHECK constraint behind it, so a tenant
+/// field of the same name would shadow something that is not theirs to redefine.
+pub const STATUS_SELECTOR: &str = "status";
+
+/// The selector that filters by the shape of the frame: `orientation:landscape`.
+pub const ORIENTATION_SELECTOR: &str = "orientation";
+
+/// The selector for what is attached to an asset: `has:attachment`.
+///
+/// One value today, and a selector rather than `is:attached` because the two read about different things:
+/// `is:` is the caller ("things I marked"), `has:` is the asset ("things it carries").
+pub const PRESENCE_SELECTOR: &str = "has";
 
 /// Deepest parenthesis nesting.
 ///
@@ -523,6 +538,55 @@ impl<'a> Parser<'a> {
                 column + name.chars().count() + 1,
             )?;
             return Ok(Query::Rating(op));
+        }
+
+        // `status:` is the asset's lifecycle column.
+        if name.eq_ignore_ascii_case(STATUS_SELECTOR) {
+            let value = rest.trim().trim_matches('"');
+            if value.is_empty() {
+                return Err(ParseError::new(
+                    "empty_status",
+                    column,
+                    format!("{STATUS_SELECTOR}: needs a value, like {STATUS_SELECTOR}:archived"),
+                ));
+            }
+            // Not checked against the CHECK constraint's list. A status this build has never heard of matches
+            // nothing, which is the honest answer for a query about something that does not exist — and the
+            // list is a migration's business, not a parser's.
+            return Ok(Query::Status(value.to_ascii_lowercase()));
+        }
+
+        // `orientation:` is derived from the stored dimensions.
+        if name.eq_ignore_ascii_case(ORIENTATION_SELECTOR) {
+            let value = rest.trim().trim_matches('"');
+            let Some(shape) = Orientation::parse(value) else {
+                return Err(ParseError::new(
+                    "unknown_orientation",
+                    column + name.chars().count() + 1,
+                    format!(
+                        "{ORIENTATION_SELECTOR}: takes landscape, portrait or square — {value:?} is none of \
+                         them"
+                    ),
+                ));
+            };
+            return Ok(Query::Orientation(shape));
+        }
+
+        // `has:` is what the asset carries.
+        if name.eq_ignore_ascii_case(PRESENCE_SELECTOR) {
+            let value = rest.trim().trim_matches('"').to_ascii_lowercase();
+            return match value.as_str() {
+                "attachment" | "attachments" => Ok(Query::HasAttachment),
+                // Named, so somebody typing `has:comments` learns what this selector does hold rather than
+                // getting a clause that silently matched everything.
+                _ => Err(ParseError::new(
+                    "unknown_presence",
+                    column + name.chars().count() + 1,
+                    format!(
+                        "{PRESENCE_SELECTOR}: takes attachment — {value:?} is not something it knows"
+                    ),
+                )),
+            };
         }
 
         // `in:` is the category selector, not a field. Checked before field resolution because `in` is a

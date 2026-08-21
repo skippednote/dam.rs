@@ -64,6 +64,37 @@ const FACETS = [
 		key: 'colours',
 		truncated: false,
 		buckets: [{ value: 'blue', id: null, count: 31 }]
+	},
+	// The built-ins (Q.15). Their keys are query selectors rather than field keys, which is why the rail has
+	// to name them: `has: attachment (9)` under a heading reading "Has" is a debug dump, not a filter.
+	{
+		key: 'status',
+		truncated: false,
+		buckets: [
+			{ value: 'active', id: null, count: 120 },
+			{ value: 'archived', id: null, count: 8 }
+		]
+	},
+	{
+		key: 'orientation',
+		truncated: false,
+		buckets: [
+			{ value: 'landscape', id: null, count: 88 },
+			{ value: 'portrait', id: null, count: 40 }
+		]
+	},
+	{
+		key: 'stars',
+		truncated: false,
+		buckets: [
+			{ value: '5', id: null, count: 4 },
+			{ value: '1', id: null, count: 1 }
+		]
+	},
+	{
+		key: 'has',
+		truncated: false,
+		buckets: [{ value: 'attachment', id: null, count: 9 }]
 	}
 ];
 
@@ -410,6 +441,32 @@ test('a facet value with a space is quoted, or it would become two terms', async
 	// `brand:Acme Corp` parses as a brand filter plus the free text "Corp": the wrong assets, and it looks
 	// like a search bug rather than a quoting one.
 	await expect(page.getByLabel('Search assets')).toHaveValue('brand:"Acme Corp"');
+});
+
+test('the built-in facets are named and their buckets filter', async ({ page }) => {
+	// Q.15. The server sends keys that double as query selectors — `stars`, `has` — because the rail writes
+	// the string it reads. Neither is a heading anybody would write, so both are named here, and a rating
+	// bucket says "5 stars" rather than sitting as a bare number beside its count.
+	const recorder = await connect(page);
+	await page.goto('/assets');
+
+	for (const heading of ['Status', 'Orientation', 'Rating', 'Attachments']) {
+		await expect(page.getByRole('group', { name: heading })).toBeVisible();
+	}
+	await expect(page.getByRole('checkbox', { name: 'Archived 8' })).toBeVisible();
+	await expect(page.getByRole('checkbox', { name: 'Landscape 88' })).toBeVisible();
+	await expect(page.getByRole('checkbox', { name: '5 stars 4' })).toBeVisible();
+	// Singular for one, because "1 stars" is the kind of detail that makes a page feel unfinished.
+	await expect(page.getByRole('checkbox', { name: '1 star 1' })).toBeVisible();
+	await expect(page.getByRole('checkbox', { name: 'Has attachments 9' })).toBeVisible();
+
+	// And the query each writes is the one the parser reads, not the label.
+	await page.getByRole('checkbox', { name: 'Has attachments 9' }).check();
+	await expect(page.getByLabel('Search assets')).toHaveValue('has:attachment');
+	expect(recorder.urls.some((url) => url.includes('q=has%3Aattachment'))).toBe(true);
+
+	await page.getByRole('checkbox', { name: '5 stars 4' }).check();
+	await expect(page.getByLabel('Search assets')).toHaveValue('has:attachment stars:5');
 });
 
 test('a truncated facet says so', async ({ page }) => {

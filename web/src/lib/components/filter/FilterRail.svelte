@@ -33,10 +33,38 @@
 	// reads as a loading state that never finishes.
 	const populated = $derived(facets.filter((facet) => facet.buckets.length > 0));
 
+	/**
+	 * Headings and bucket text for the built-in facets (Q.15).
+	 *
+	 * The server sends a facet key that doubles as the query selector — `stars`, `has` — because the rail
+	 * writes the string it reads. Neither is a heading anybody would write, and `has: attachment (12)` reads
+	 * like a debug dump, so both are named here. Presentation, like every other label in this component.
+	 */
+	const BUILTIN_HEADINGS: Record<string, string> = {
+		status: 'Status',
+		orientation: 'Orientation',
+		stars: 'Rating',
+		has: 'Attachments'
+	};
+
 	function label(key: string): string {
 		// The server sends the field key. Rendering `content_type` as "Content type" is presentation, and
 		// it belongs here rather than in the wire type — a tenant's own label is a schema-admin concern.
-		return key.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
+		return BUILTIN_HEADINGS[key] ?? key.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
+	}
+
+	/** A bucket's text. Only the built-ins need one; a metadata value is its own label. */
+	function bucketText(key: string, value: string): string {
+		if (key === 'stars') {
+			// "4 stars", not "4": the count beside it is a number too, and two bare numbers in a row read as a
+			// range. Singular for one, because "1 stars" is the kind of detail that makes a page feel unfinished.
+			return value === '1' ? '1 star' : `${value} stars`;
+		}
+		if (key === 'has') return value === 'attachment' ? 'Has attachments' : value;
+		if (key === 'status' || key === 'orientation') {
+			return value.replace(/^./, (c) => c.toUpperCase());
+		}
+		return value;
 	}
 </script>
 
@@ -69,7 +97,9 @@
 						{checked}
 						onchange={() => onquery(toggleTerm(query, term))}
 					/>
-					<span class="flex-1 truncate" title={bucket.value}>{bucket.value}</span>
+					<span class="flex-1 truncate" title={bucket.value}
+						>{bucketText(facet.key, bucket.value)}</span
+					>
 					<!--
 						`tabular-nums` so the counts line up as a column; without it the digits jitter and the
 						rail reads as ragged even though every row is aligned.

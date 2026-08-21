@@ -588,4 +588,205 @@ async fn the_facet_invariants_hold() {
     an_unknown_field_is_not_found(&pool).await;
 
     a_taxonomy_facet_rolls_up_without_double_counting(&pool).await;
+
+    the_builtin_facets_count_what_the_selectors_filter(&pool).await;
+    the_builtin_facets_are_access_filtered_too(&pool).await;
+}
+
+// ─── the built-in facets (Q.15) ─────────────────────────────────────────────
+
+/// Every built-in bucket, and the clause it composes into, over one set of assets.
+///
+/// Counted and then *filtered*, in the same test, because the property that matters is not "the count is 2" —
+/// it is that clicking the bucket returns the assets it counted. A rail whose numbers and results disagree is
+/// worse than no rail.
+async fn the_builtin_facets_count_what_the_selectors_filter(pool: &PgPool) {
+    let group = group(pool, "builtin").await;
+    let wide = shaped(pool, "wide", &[group], Some((4000, 3000)), "active").await;
+    let tall = shaped(pool, "tall", &[group], Some((1000, 2000)), "active").await;
+    let square = shaped(pool, "square", &[group], Some((800, 800)), "archived").await;
+    // No dimensions at all: a PDF has no orientation, and must land in no bucket rather than a default one.
+    let paper = shaped(pool, "paper", &[group], None, "active").await;
+
+    rate(pool, wide, 5).await;
+    rate(pool, tall, 4).await;
+    // Two ratings averaging 3.5, which rounds to 4 — the same rounding `stars:4` does, which is the whole
+    // reason the bucket and the filter agree.
+    rate(pool, square, 3).await;
+    rate(pool, square, 4).await;
+    // In the caller's group, both of them: the point of these two rows is `LIBRARY_ROWS`, and a row the
+    // access predicate already hides would prove nothing about it.
+    let release = attach(pool, "release", wide, &[group]).await;
+    let superseded = shaped(pool, "older", &[group], Some((4000, 3000)), "active").await;
+    sqlx::query(
+        "UPDATE assets SET is_current = false, version_group_id = $2, version_no = 2 WHERE id = $1",
+    )
+    .bind(superseded)
+    .bind(wide)
+    .execute(pool)
+    .await
+    .expect("supersede");
+
+    let planned = plan(Query::All, Some(&[group]));
+
+    assert_eq!(
+        builtin(pool, &planned, facets::Builtin::Status).await,
+        vec![("active".to_owned(), 3), ("archived".to_owned(), 1)],
+        "`LIBRARY_ROWS`: the release form and the superseded version are in the group and in the collection \
+         of things this caller may see, and neither is a library row"
+    );
+    assert_eq!(
+        builtin(pool, &planned, facets::Builtin::Orientation).await,
+        vec![
+            ("landscape".to_owned(), 1),
+            ("portrait".to_owned(), 1),
+            ("square".to_owned(), 1)
+        ],
+        "the asset with no dimensions is in no bucket"
+    );
+    assert_eq!(
+        builtin(pool, &planned, facets::Builtin::Rating).await,
+        vec![("5".to_owned(), 1), ("4".to_owned(), 2)],
+        "highest first, and the unrated asset is absent rather than zero stars"
+    );
+    assert_eq!(
+        builtin(pool, &planned, facets::Builtin::Attachment).await,
+        vec![("attachment".to_owned(), 1)],
+        "one bucket only: the complement is the rest of the grid"
+    );
+
+    // And now the filters, each one what the rail writes when its bucket is clicked.
+    assert_eq!(
+        matching(pool, Query::Status("archived".to_owned()), group).await,
+        vec![square]
+    );
+    assert_eq!(
+        matching(
+            pool,
+            Query::Orientation(dam_core::query::Orientation::Landscape),
+            group
+        )
+        .await,
+        vec![wide]
+    );
+    assert_eq!(
+        matching(
+            pool,
+            Query::Rating(Comparison::Equals(Literal::Int(4))),
+            group
+        )
+        .await
+        .len(),
+        2,
+        "the 4-star bucket counted two, so the filter must return two"
+    );
+    assert_eq!(
+        matching(pool, Query::HasAttachment, group).await,
+        vec![wide]
+    );
+    // The dimension-less asset is still in the library — it is active, it just has no shape. The release form
+    // attached to `wide` is not: `LIBRARY_ROWS` keeps paperwork out of both the buckets and the results, which
+    // is why the status facet counted three actives and not four.
+    let active = matching(pool, Query::Status("active".to_owned()), group).await;
+    assert!(active.contains(&paper), "{active:?}");
+    assert!(
+        !active.contains(&release),
+        "paperwork is not a library row: {active:?}"
+    );
+}
+
+/// The built-ins are counted over the same access-filtered set as everything else.
+///
+/// The disclosure this module opens with applies to them exactly as it does to `brand`: "Archived (12)" shown
+/// to somebody who may see two of them tells them ten exist.
+async fn the_builtin_facets_are_access_filtered_too(pool: &PgPool) {
+    let mine = group(pool, "mine-builtin").await;
+    let theirs = group(pool, "theirs-builtin").await;
+    shaped(pool, "ours", &[mine], Some((100, 50)), "active").await;
+    shaped(pool, "theirs", &[theirs], Some((100, 50)), "active").await;
+
+    let planned = plan(Query::All, Some(&[mine]));
+    let counted = builtin(pool, &planned, facets::Builtin::Orientation).await;
+    let landscape = counted
+        .iter()
+        .find(|(value, _)| value == "landscape")
+        .map(|(_, n)| *n)
+        .unwrap_or_default();
+    assert_eq!(
+        landscape, 1,
+        "the other group's landscape asset was counted: {counted:?}"
+    );
+}
+
+/// An asset with dimensions, a status, and no metadata to speak of.
+async fn shaped(
+    pool: &PgPool,
+    label: &str,
+    groups: &[Uuid],
+    size: Option<(i32, i32)>,
+    status: &str,
+) -> Uuid {
+    let id = asset(pool, label, serde_json::json!({}), groups, false).await;
+    sqlx::query("UPDATE assets SET width = $2, height = $3, status = $4 WHERE id = $1")
+        .bind(id)
+        .bind(size.map(|(w, _)| w))
+        .bind(size.map(|(_, h)| h))
+        .bind(status)
+        .execute(pool)
+        .await
+        .expect("shape");
+    id
+}
+
+async fn rate(pool: &PgPool, asset_id: Uuid, stars: i16) {
+    let identity = Uuid::new_v4();
+    sqlx::query("INSERT INTO asset_ratings (asset_id, identity_id, stars) VALUES ($1, $2, $3)")
+        .bind(asset_id)
+        .bind(identity)
+        .bind(stars)
+        .execute(pool)
+        .await
+        .expect("rating");
+}
+
+async fn attach(pool: &PgPool, label: &str, parent: Uuid, groups: &[Uuid]) -> Uuid {
+    let id = asset(pool, label, serde_json::json!({}), groups, false).await;
+    sqlx::query(
+        "UPDATE assets SET attached_to = $2, attachment_kind = 'release', mime = 'application/pdf' \
+          WHERE id = $1",
+    )
+    .bind(id)
+    .bind(parent)
+    .execute(pool)
+    .await
+    .expect("attach");
+    id
+}
+
+async fn builtin(pool: &PgPool, planned: &Planned, which: facets::Builtin) -> Vec<(String, i64)> {
+    let counted = facets::count(pool, planned, &defs(), &[FacetRequest::Builtin(which)])
+        .await
+        .expect("count");
+    assert_eq!(counted[0].key, which.key());
+    counted[0]
+        .buckets
+        .iter()
+        .map(|b| (b.value.clone(), b.count))
+        .collect()
+}
+
+/// The ids a query returns, for comparing a bucket's count against the filter it writes.
+async fn matching(pool: &PgPool, query: Query, group_id: Uuid) -> Vec<Uuid> {
+    let planned = plan(query, Some(&[group_id]));
+    let mut builder: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
+        "SELECT assets.id FROM assets \
+                                 LEFT JOIN asset_metadata ON asset_metadata.asset_id = assets.id WHERE ",
+    );
+    dam_db::query_sql::push_where(&mut builder, &planned).expect("render");
+    builder.push(" AND assets.is_current AND assets.attached_to IS NULL ORDER BY assets.filename");
+    builder
+        .build_query_scalar()
+        .fetch_all(pool)
+        .await
+        .expect("select")
 }

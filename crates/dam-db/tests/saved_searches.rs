@@ -302,6 +302,14 @@ async fn every_query_shape_survives_being_saved_and_loaded(pool: &PgPool) {
             }),
         ),
         ("unrated", Query::Rating(Comparison::Missing)),
+        // Q.15's clauses. A saved search written from the filter rail carries them, and the stored form is a
+        // wire format — a row written today has to load after the enum gains its next variant.
+        ("status", Query::Status("archived".to_owned())),
+        (
+            "orientation",
+            Query::Orientation(dam_core::query::Orientation::Portrait),
+        ),
+        ("has attachment", Query::HasAttachment),
         (
             "mine favourite",
             Query::Mine(dam_core::query::Personal::Favourite),
@@ -410,6 +418,26 @@ async fn an_unreadable_stored_query_is_refused_rather_than_matching_everything(p
     assert!(
         saved_searches::plan(&reloaded, access(None), &defs()).is_err(),
         "an unreadable query must refuse, not match everything"
+    );
+
+    // The same rule one level down, for a shape this build half-recognises: an orientation it has never heard
+    // of is refused rather than defaulted to landscape, which would quietly show somebody a different library
+    // than their bookmark named.
+    sqlx::query(
+        "UPDATE saved_searches SET query = '{\"kind\":\"orientation\",\"shape\":\"panoramic\"}'::jsonb \
+          WHERE id = $1",
+    )
+    .bind(saved.id)
+    .execute(pool)
+    .await
+    .expect("corrupt");
+    let future = saved_searches::load(pool, saved.id)
+        .await
+        .expect("load")
+        .expect("present");
+    assert!(
+        saved_searches::plan(&future, access(None), &defs()).is_err(),
+        "an unknown orientation must refuse rather than pick one"
     );
 }
 

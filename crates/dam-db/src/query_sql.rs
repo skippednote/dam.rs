@@ -65,6 +65,19 @@ fn push_query(
             include_descendants,
         } => push_term(builder, *term_id, *include_descendants),
         Query::Rating(op) => push_rating(builder, op)?,
+        Query::Status(status) => {
+            builder.push("assets.status = ");
+            builder.push_bind(status.clone());
+        }
+        Query::Orientation(shape) => push_orientation(builder, *shape),
+        Query::HasAttachment => {
+            // The attachment side of `assets.attached_to`, and soft-deleted paperwork does not count: a
+            // release form somebody deleted is not paperwork the asset has.
+            builder.push(
+                "EXISTS (SELECT 1 FROM assets att \
+                  WHERE att.attached_to = assets.id AND att.deleted_at IS NULL)",
+            );
+        }
         Query::Mine(state) => push_personal(builder, *state, planned)?,
         Query::InCollection(collection_id) => {
             builder
@@ -390,6 +403,24 @@ fn push_term(builder: &mut QueryBuilder<Postgres>, term_id: uuid::Uuid, descenda
 /// by their ratings and every count downstream would be wrong. Unrated assets have a null average, so they fall
 /// out of every comparison — which is what "3 stars and up" means and is not what `Missing` means, hence the two
 /// being separate branches.
+/// The frame's shape, from the dimensions already stored.
+///
+/// Both dimensions must be present and positive. An asset with none — a PDF, a WAV — matches no orientation
+/// rather than one: `NULL > NULL` is null and would be excluded anyway, but saying so here is what keeps the
+/// facet and the filter agreeing, since the facet has to make the same decision to produce its buckets.
+fn push_orientation(builder: &mut QueryBuilder<Postgres>, shape: dam_core::query::Orientation) {
+    use dam_core::query::Orientation;
+    let comparison = match shape {
+        Orientation::Landscape => "assets.width > assets.height",
+        Orientation::Portrait => "assets.width < assets.height",
+        Orientation::Square => "assets.width = assets.height",
+    };
+    builder.push(format!(
+        "(assets.width IS NOT NULL AND assets.height IS NOT NULL \
+          AND assets.width > 0 AND assets.height > 0 AND {comparison})"
+    ));
+}
+
 fn push_rating(builder: &mut QueryBuilder<Postgres>, op: &Comparison) -> Result<(), Error> {
     const AVERAGE: &str = "(SELECT avg(stars) FROM asset_ratings r WHERE r.asset_id = assets.id)";
     const RATED: &str = "EXISTS (SELECT 1 FROM asset_ratings r WHERE r.asset_id = assets.id)";

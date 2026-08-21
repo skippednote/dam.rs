@@ -51,6 +51,56 @@ pub enum FacetRequest {
     /// Rolled up because a filter rail shows "Outdoor (240)" rather than 40 leaf terms — and because the
     /// leaf counts do not sum to the ancestor's when an asset carries two leaves under it.
     Taxonomy { taxonomy_id: Uuid, limit: i64 },
+    /// One of the facets every library has, whatever its schema (Q.15).
+    Builtin(Builtin),
+}
+
+/// A facet over something the asset *is* rather than something a tenant said about it (Q.15).
+///
+/// These are not metadata fields and cannot be: `status` is a column with a CHECK behind it, orientation is
+/// derived from two other columns, a rating is an aggregate over another table, and an attachment is a row
+/// pointing back. None of them can be marked `facetable` on a field definition, so a rail that only reads
+/// field definitions is a rail that cannot offer them — which is why they are enumerated here instead.
+///
+/// Each one's bucket values are exactly what the matching query selector accepts, because the rail writes the
+/// query string it reads: a bucket the rail cannot turn into a filter is a bucket that does nothing when
+/// clicked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Builtin {
+    /// `assets.status` — `active`, `archived`, and the transient ones.
+    Status,
+    /// `landscape`, `portrait`, `square`, from the stored dimensions.
+    Orientation,
+    /// The rounded average of the library's ratings, as whole stars.
+    Rating,
+    /// One bucket, `attachment`, counting the assets that carry paperwork.
+    ///
+    /// No `false` bucket. The complement is the rest of the result set, which the grid already shows, and a
+    /// rail row reading "No attachments (1,204)" is a filter nobody clicks.
+    Attachment,
+}
+
+impl Builtin {
+    /// Every built-in, in the order a rail should show them.
+    pub const ALL: [Self; 4] = [
+        Self::Status,
+        Self::Orientation,
+        Self::Rating,
+        Self::Attachment,
+    ];
+
+    /// The facet key, which is also the query selector its buckets compose with.
+    #[must_use]
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Status => "status",
+            Self::Orientation => "orientation",
+            // `stars`, not `rating`: the selector is `stars:4`, and a key the rail cannot write a filter with
+            // is a rail that renders a dead checkbox.
+            Self::Rating => "stars",
+            Self::Attachment => "has",
+        }
+    }
 }
 
 /// One bucket.
@@ -115,6 +165,7 @@ pub async fn count_on(
             FacetRequest::Taxonomy { taxonomy_id, limit } => {
                 count_taxonomy(&mut *conn, planned, *taxonomy_id, *limit).await?
             }
+            FacetRequest::Builtin(builtin) => count_builtin(&mut *conn, planned, *builtin).await?,
         });
     }
     Ok(facets)
@@ -233,6 +284,65 @@ async fn count_taxonomy(
         bucket.id = id;
     }
     Ok(facet)
+}
+
+/// Counts one of the built-in facets (Q.15).
+///
+/// One statement each, over the same access-filtered `visible` set as every other facet, and with the same
+/// `LIBRARY_ROWS` restriction — a rail whose numbers count three versions of one photograph disagrees with the
+/// grid beside it.
+///
+/// No limit argument. Each of these has a bounded, known set of buckets — five statuses, three orientations,
+/// five stars, one presence — so there is nothing to truncate and no `+ 1` trick to detect it with.
+async fn count_builtin(
+    conn: &mut sqlx::PgConnection,
+    planned: &Planned,
+    builtin: Builtin,
+) -> Result<Facet, Error> {
+    // The bucket expression, and it must agree with `query_sql`'s clause for the same thing: the rail counts
+    // with this and then filters with that, so a difference between them is a bucket whose count does not
+    // match the result list it produces.
+    let bucket = match builtin {
+        Builtin::Status => "assets.status",
+        Builtin::Orientation => {
+            "CASE WHEN assets.width IS NULL OR assets.height IS NULL \
+                    OR assets.width <= 0 OR assets.height <= 0 THEN NULL \
+                  WHEN assets.width > assets.height THEN 'landscape' \
+                  WHEN assets.width < assets.height THEN 'portrait' \
+                  ELSE 'square' END"
+        }
+        // `round`, matching `stars:4`'s own rounding. Unrated assets produce NULL and are dropped below,
+        // rather than counted as zero stars — nobody rated them, which is not the same as a bad rating.
+        Builtin::Rating => {
+            "(SELECT round(avg(r.stars))::text FROM asset_ratings r WHERE r.asset_id = assets.id)"
+        }
+        Builtin::Attachment => {
+            "CASE WHEN EXISTS (SELECT 1 FROM assets att \
+                                WHERE att.attached_to = assets.id AND att.deleted_at IS NULL) \
+                  THEN 'attachment' ELSE NULL END"
+        }
+    };
+
+    let mut builder: QueryBuilder<Postgres> = QueryBuilder::new("SELECT ");
+    builder.push(bucket);
+    builder.push(
+        "::text AS value, count(*) AS n FROM assets \
+                  LEFT JOIN asset_metadata ON asset_metadata.asset_id = assets.id WHERE ",
+    );
+    crate::query_sql::push_where(&mut builder, planned)?;
+    builder.push(crate::versions::LIBRARY_ROWS);
+    builder.push(" AND ");
+    builder.push(bucket);
+    builder.push(" IS NOT NULL GROUP BY 1 ");
+    builder.push(match builtin {
+        // Highest first, because a rail of stars reads top-down. The others are ordered by how many, like
+        // every other facet in this module.
+        Builtin::Rating => "ORDER BY value DESC",
+        _ => "ORDER BY n DESC, value",
+    });
+
+    let rows: Vec<(String, i64)> = builder.build_query_as().fetch_all(&mut *conn).await?;
+    Ok(finish(builtin.key().to_owned(), rows, MAX_BUCKETS, None))
 }
 
 /// Trims to the limit and reports whether anything was dropped.

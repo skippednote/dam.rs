@@ -26,14 +26,14 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M0–M3c** Foundation, ingest, metadata/search/rights, delivery/sharing/restore | complete |
 | **F** The UI: browse, detail, upload, filter rail, lightbox, bulk bar, design pass | complete |
 | **F.11b** Share/portal UI, schema administration, metadata types | complete except restore UX |
-| **Q** Acquia parity, 20 slices | Q.1–Q.14 done; Q.14b and Q.15–Q.20 open |
+| **Q** Acquia parity, 20 slices | Q.1–Q.15 done; Q.14b and Q.16–Q.20 open |
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | **done** — two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query, the MCP server |
 | **M6** Workflow/proofing, annotations, analytics | not started |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** the Q.15–Q.19 search set → Q.14b collections in the app → Q.20 sundries → M4 local AI → M6 → M3d → Pre-GA.
+**Next up, in order:** Q.16–Q.19 search → Q.14b collections in the app → Q.20 sundries → M4 local AI → M6 → M3d → Pre-GA.
 M5 is complete. M5a and M5b are done and verified against the running stack: both
 hosted clients reach their real vendor endpoints, and a full enrichment ran end to end through the worker against
 a local OpenAI-compatible endpoint — values written with provenance, a disclosure row, tags suggested, 0.75¢
@@ -2112,8 +2112,41 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
   publishes a collection, so a portal cannot be created by the person who would want one. Needs a small API
   (list, create, rename, add and remove members, reorder), the bulk-bar action that puts a selection into one,
   and the portal administration screen on top of it.
-- [ ] **Q.15 The built-in facets:** asset status, orientation, average rating, has-attachment. Orientation is
-  free — it is a function of dimensions already stored.
+- [x] **Q.15 The built-in facets:** asset status, orientation, average rating, has-attachment.
+
+      **None of these can be a field definition**, which is the whole reason they needed building. `facetable`
+      is a flag on a *metadata field*, and a status is a column with a CHECK behind it, an orientation is
+      derived from two more columns, a rating is an aggregate over another table, and an attachment is a row
+      pointing back. A rail that reads only field definitions cannot offer any of them, so `facets::Builtin`
+      enumerates the four and the endpoint appends them to whatever the tenant marked.
+
+      **A facet key is a query selector.** The rail writes the string it reads, so a bucket that cannot be
+      turned into a filter is a checkbox that does nothing when clicked. That decided the spellings: the rating
+      facet's key is `stars`, not `rating`, because `stars:4` is what the parser accepts, and the attachment
+      facet emits one bucket named `attachment` so the rail composes `has:attachment`. Three new reserved
+      selectors — `status:`, `orientation:`, `has:` — reserved for the same reason as `in:` and `is:`: a tenant
+      field of that name would shadow something that is not theirs to redefine, and the rail's own links would
+      stop working for reasons nobody could see.
+
+      **The bucket expression and the filter clause have to agree**, and the test asserts that directly: it
+      counts, then filters, and compares. `stars:4` rounds the average, so the facet rounds it too — a bucket
+      labelled 4 that returned the 3.5s and the 4.4s while the filter returned only the 4s is a rail that lies
+      quietly. Both sides also apply `LIBRARY_ROWS`: a superseded version and an attached release form are
+      rows the caller may see, and neither is a library row.
+
+      **Absent rather than zero**, everywhere. An unrated asset is not a zero-star bucket, an audio file is in
+      no orientation bucket, and there is no "No attachments (1,204)" row — the complement is the rest of the
+      grid, and a rail row nobody clicks is a row that costs a query.
+
+      All three clauses are refused by the index rather than dropped, like every other relational clause: each
+      *could* be an index field, and each would then have to be kept in step with the column it duplicates —
+      a status change or a re-probe would have to reindex the asset, and until it did the index would answer
+      with yesterday's shape.
+
+      Seventeen mutations caught. One survivor was a test that could not see its own property: the release
+      form it created was outside the caller's group, so the access filter hid it and `LIBRARY_ROWS` had
+      nothing to do. Driven live against the dev stack — clicking Portrait in the rail wrote
+      `orientation:portrait`, narrowed the grid to one asset, and re-narrowed the rail's own counts with it.
 - [ ] **Q.16 Search-within, substring, advanced search, multiple-asset search.**
 - [ ] **Q.17 Predictive search and did-you-mean.**
 - [ ] **Q.18 Export search results to CSV.**

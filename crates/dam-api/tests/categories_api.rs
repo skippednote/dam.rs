@@ -255,6 +255,7 @@ async fn the_category_http_contract_holds() {
     a_caller_scoped_to_a_rule_based_group_is_refused_loudly(&f).await;
     a_category_query_is_answered_rather_than_refused(&f, tree, exterior, yellow).await;
     a_category_tree_is_not_also_a_flat_facet(&f, tree).await;
+    the_builtin_facets_are_offered_and_their_buckets_filter(&f).await;
 }
 
 async fn a_tree_is_built_over_http(f: &Fixture) -> (Uuid, Uuid, Uuid) {
@@ -681,6 +682,76 @@ async fn a_category_query_is_answered_rather_than_refused(
     );
 
     let _ = (tree, exterior);
+}
+
+/// The four facets every library has, and the queries their buckets write (Q.15).
+///
+/// Asserted through HTTP rather than against `dam_db::facets` alone, because the property is end to end: the
+/// rail reads a bucket from this response and hands the string straight back to `/search`. A key the search
+/// endpoint's parser does not accept is a checkbox that does nothing when clicked.
+async fn the_builtin_facets_are_offered_and_their_buckets_filter(f: &Fixture) {
+    let wide = asset(f, "wide-one", true).await;
+    let tall = asset(f, "tall-one", true).await;
+    sqlx::query("UPDATE assets SET width = 4000, height = 3000 WHERE id = $1")
+        .bind(wide)
+        .execute(&f.acme)
+        .await
+        .expect("landscape");
+    sqlx::query("UPDATE assets SET width = 1000, height = 2000, status = 'archived' WHERE id = $1")
+        .bind(tall)
+        .execute(&f.acme)
+        .await
+        .expect("portrait");
+
+    let (status, body) = call(f, "GET", "/search/facets", &f.key, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let facets = body.as_array().expect("facets");
+    for key in ["status", "orientation", "stars", "has"] {
+        assert!(
+            facets.iter().any(|facet| facet["key"] == key),
+            "{key} is not offered: {body}"
+        );
+    }
+
+    let bucket = |key: &str, value: &str| -> i64 {
+        facets
+            .iter()
+            .find(|facet| facet["key"] == key)
+            .and_then(|facet| facet["buckets"].as_array())
+            .and_then(|buckets| buckets.iter().find(|bucket| bucket["value"] == value))
+            .and_then(|bucket| bucket["count"].as_i64())
+            .unwrap_or_default()
+    };
+    assert_eq!(bucket("orientation", "landscape"), 1, "{body}");
+    assert_eq!(bucket("orientation", "portrait"), 1, "{body}");
+    assert_eq!(bucket("status", "archived"), 1, "{body}");
+
+    // And the same assets come back through the search endpoint, from the query string the rail composes.
+    for (query, expected) in [
+        ("orientation:landscape", vec![wide]),
+        ("orientation:portrait", vec![tall]),
+        ("status:archived", vec![tall]),
+        ("has:attachment", vec![]),
+    ] {
+        let (status, results) = call(f, "GET", &format!("/search?q={query}"), &f.key, None).await;
+        assert_eq!(status, StatusCode::OK, "{query}: {results}");
+        let ids: Vec<String> = results["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .filter_map(|item| item["id"].as_str())
+            .map(str::to_owned)
+            .collect();
+        for id in &expected {
+            assert!(
+                ids.contains(&id.to_string()),
+                "{query} did not return the asset its bucket counted: {results}"
+            );
+        }
+        if expected.is_empty() {
+            assert!(ids.is_empty(), "{query} returned something: {results}");
+        }
+    }
 }
 
 async fn a_category_tree_is_not_also_a_flat_facet(f: &Fixture, tree: Uuid) {

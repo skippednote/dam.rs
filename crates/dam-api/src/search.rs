@@ -261,7 +261,16 @@ fn is_relational(query: &dam_core::query::Query) -> bool {
     match query {
         // `Rating` is an aggregate over a table and `Mine` is per-caller: neither can be an index field, so both
         // route through SQL for the same reason taxonomy membership does.
-        Q::Term { .. } | Q::InCollection(_) | Q::Rating(_) | Q::Mine(_) => true,
+        // Q.15's three join the list for the same reason: a status is a column, an orientation is derived from
+        // two more, and an attachment is a row pointing back — none of them is in the index, and each would
+        // have to be kept in step with what it duplicates if it were.
+        Q::Term { .. }
+        | Q::InCollection(_)
+        | Q::Rating(_)
+        | Q::Mine(_)
+        | Q::Status(_)
+        | Q::Orientation(_)
+        | Q::HasAttachment => true,
         Q::And(children) | Q::Or(children) => children.iter().any(is_relational),
         Q::Not(inner) => is_relational(inner),
         Q::All | Q::Text(_) | Q::Field { .. } => false,
@@ -331,6 +340,15 @@ pub async fn facets(
             limit: FACET_BUCKETS,
         }
     }));
+    // The four every library has, whatever its schema (Q.15). Not configurable: none of them can be marked
+    // facetable on a field definition, because none of them is a field — status is a column, orientation is
+    // derived from two more, a rating is an aggregate over another table, and an attachment is a row pointing
+    // back. A tenant who does not want one hides it in the rail, which is presentation.
+    requests.extend(
+        dam_db::facets::Builtin::ALL
+            .into_iter()
+            .map(dam_db::facets::FacetRequest::Builtin),
+    );
 
     let counted = dam_db::facets::count_on(conn.executor(), &planned, &defs, &requests).await?;
     conn.commit().await?;

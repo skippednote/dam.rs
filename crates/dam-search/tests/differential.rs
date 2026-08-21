@@ -522,6 +522,15 @@ fn clauses_the_index_cannot_answer_are_refused_rather_than_dropped() {
                 op: Comparison::Contains("cme".to_owned()),
             },
         ),
+        // Q.15's three. Each one *could* be indexed and each would then have to be kept in step with the
+        // column it duplicates: a status change or a re-probe would have to reindex the asset, and until it
+        // did the index would answer with yesterday's shape.
+        ("status", Query::Status("archived".to_owned())),
+        (
+            "orientation",
+            Query::Orientation(dam_core::query::Orientation::Landscape),
+        ),
+        ("attachment", Query::HasAttachment),
     ] {
         let planned = Planned::new(shape, access(None), &defs()).expect("valid");
         let outcome = dam_search::query::render(&planned, &schema);

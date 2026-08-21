@@ -178,6 +178,25 @@ pub enum Query {
     InCollection(Uuid),
     /// The asset's *average* rating, compared. Caller-independent: it is the library's shared judgement.
     Rating(Comparison),
+    /// The asset's lifecycle status — `active`, `archived`, and the transient ones (Q.15).
+    ///
+    /// A column rather than a metadata field, so it is a clause of its own: a tenant field called `status`
+    /// would otherwise shadow it, and the filter rail's own links would stop working for reasons nobody could
+    /// see. The value is not validated against the CHECK here — an unknown one simply matches nothing, which
+    /// is what a query for a status that does not exist should do.
+    Status(String),
+    /// The shape of the frame, derived from the stored dimensions (Q.15).
+    ///
+    /// Free: `width` and `height` are already probed and stored, so this needs no column, no backfill and no
+    /// reindex. An asset with no dimensions — a PDF, an audio file — matches no orientation rather than
+    /// defaulting to one.
+    Orientation(Orientation),
+    /// Whether paperwork is attached to the asset (Q.15).
+    ///
+    /// `has:attachment`. Relational — it is an `EXISTS` over the assets that name this one as their parent —
+    /// and deliberately not "how many": a rail offers the distinction between some and none, and a count of
+    /// release forms is a detail panel's business.
+    HasAttachment,
     /// Something only the caller can answer about themselves.
     ///
     /// Deliberately holds no identity. A saved search stores the query IR, so an identity baked in here would
@@ -188,6 +207,41 @@ pub enum Query {
     And(Vec<Query>),
     Or(Vec<Query>),
     Not(Box<Query>),
+}
+
+/// The shape of a frame.
+///
+/// Three values and no "tall"/"wide" synonyms: the rail writes what the parser reads, and a fourth spelling is
+/// a fourth thing to keep in step. A square is its own bucket rather than being folded into landscape, because
+/// a square crop is a deliberate thing somebody filters *for*.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Orientation {
+    Landscape,
+    Portrait,
+    Square,
+}
+
+impl Orientation {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Landscape => "landscape",
+            Self::Portrait => "portrait",
+            Self::Square => "square",
+        }
+    }
+
+    /// The value a query string or a facet bucket names, or `None`.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "landscape" => Some(Self::Landscape),
+            "portrait" => Some(Self::Portrait),
+            "square" => Some(Self::Square),
+            _ => None,
+        }
+    }
 }
 
 /// A per-caller engagement state.
@@ -221,6 +275,9 @@ impl Query {
             | Self::Term { .. }
             | Self::InCollection(_)
             | Self::Rating(_)
+            | Self::Status(_)
+            | Self::Orientation(_)
+            | Self::HasAttachment
             | Self::Mine(_) => 1,
             Self::And(children) | Self::Or(children) => {
                 1 + children.iter().map(Self::node_count).sum::<usize>()
@@ -300,6 +357,8 @@ impl Query {
     fn check_fields(&self, defs: &[FieldDef], rejections: &mut Vec<Rejection>) {
         match self {
             Self::All | Self::Text(_) | Self::Term { .. } | Self::InCollection(_) => {}
+            // Columns on `assets`, not fields the tenant defined, so there is no definition to check against.
+            Self::Status(_) | Self::Orientation(_) | Self::HasAttachment => {}
             // Nothing to check against the schema: who "mine" refers to is caller context, not a field.
             Self::Mine(_) => {}
             Self::Rating(op) => check_rating(op, rejections),

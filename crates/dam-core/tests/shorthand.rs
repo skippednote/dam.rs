@@ -710,6 +710,77 @@ fn stars_filters_by_the_assets_average_rating() {
 }
 
 #[test]
+fn status_orientation_and_has_are_the_builtin_facet_selectors() {
+    use dam_core::query::Orientation;
+
+    // Q.15. Each one is what its facet bucket composes into, which is the constraint that decided the
+    // spellings: the rail writes the string the parser reads, so a bucket labelled `landscape` has to become
+    // `orientation:landscape` and nothing else.
+    assert_eq!(
+        parse("status:archived"),
+        Query::Status("archived".to_owned())
+    );
+    // The *value* is case-folded; the selector *name* is not, because `is_field_shaped` requires lower case
+    // and an upper-case name is free text throughout this parser. `Status:Archived` is a phrase somebody
+    // typed, not a filter, and that rule predates these three selectors.
+    assert_eq!(
+        parse("status:Archived"),
+        Query::Status("archived".to_owned())
+    );
+    assert_eq!(
+        parse("STATUS:Archived"),
+        Query::Text("STATUS:Archived".to_owned())
+    );
+    // Not validated against the CHECK constraint: an unknown status matches nothing, which is the honest
+    // answer, and the list of them belongs to a migration rather than to the parser.
+    assert_eq!(parse("status:banana"), Query::Status("banana".to_owned()));
+
+    assert_eq!(
+        parse("orientation:landscape"),
+        Query::Orientation(Orientation::Landscape)
+    );
+    assert_eq!(
+        parse("orientation:PORTRAIT"),
+        Query::Orientation(Orientation::Portrait)
+    );
+    assert_eq!(
+        parse("has:ATTACHMENT"),
+        Query::HasAttachment,
+        "the value folds even though the name may not"
+    );
+    assert_eq!(
+        parse("orientation:square"),
+        Query::Orientation(Orientation::Square)
+    );
+
+    assert_eq!(parse("has:attachment"), Query::HasAttachment);
+    // The plural too. Somebody typing this is describing a set of things, and refusing them over an `s` is
+    // the kind of pedantry that makes a search box feel hostile.
+    assert_eq!(parse("has:attachments"), Query::HasAttachment);
+}
+
+#[test]
+fn the_builtin_selectors_name_what_they_accept() {
+    // A refusal that says which values exist, pointing at the value rather than the selector: the selector is
+    // not the part to fix.
+    let orientation = parse_err("orientation:tall");
+    assert_eq!(orientation.code, "unknown_orientation");
+    assert_eq!(orientation.column, 13, "{orientation:?}");
+    assert!(orientation.detail.contains("landscape"), "{orientation:?}");
+
+    let presence = parse_err("has:comments");
+    assert_eq!(presence.code, "unknown_presence");
+    assert!(presence.detail.contains("attachment"), "{presence:?}");
+
+    assert_eq!(parse_err("status:").code, "empty_status");
+    // And quoted, they are text — the same rule the other selectors follow.
+    assert_eq!(
+        parse("\"status:archived\""),
+        Query::Text("status:archived".to_owned())
+    );
+}
+
+#[test]
 fn a_field_cannot_shadow_the_engagement_selectors() {
     // Same reservation as `in:`, for the same reason: a tenant field called `is` or `stars` would take over the
     // selector and the rail's own links would stop working.
@@ -717,6 +788,9 @@ fn a_field_cannot_shadow_the_engagement_selectors() {
         vec![
             def("is", FieldKind::Text, None),
             def("stars", FieldKind::Text, None),
+            def("status", FieldKind::Text, None),
+            def("orientation", FieldKind::Text, None),
+            def("has", FieldKind::Text, None),
         ],
         HashMap::new(),
     );
@@ -727,6 +801,20 @@ fn a_field_cannot_shadow_the_engagement_selectors() {
     assert_eq!(
         shorthand::parse("stars:3", &shadowing).expect("parses"),
         Query::Rating(Comparison::Equals(Literal::Int(3))),
+    );
+    // And the three Q.15 selectors, for the same reason: `status` is a column with a CHECK behind it, so a
+    // tenant field of that name would be redefining something that is not theirs.
+    assert_eq!(
+        shorthand::parse("status:active", &shadowing).expect("parses"),
+        Query::Status("active".to_owned()),
+    );
+    assert_eq!(
+        shorthand::parse("orientation:square", &shadowing).expect("parses"),
+        Query::Orientation(dam_core::query::Orientation::Square),
+    );
+    assert_eq!(
+        shorthand::parse("has:attachment", &shadowing).expect("parses"),
+        Query::HasAttachment,
     );
 }
 
