@@ -493,6 +493,34 @@ async fn the_metadata_export_is_the_tenants_own_columns(f: &Fixture, open: Uuid)
     // open with everything one column to the right.
     assert!(row.contains("\"spring, 2026\""), "{csv}");
 
+    // An approver whose scope does not cover an asset the order names gets the *order* and not that asset's
+    // metadata. The order is a list of ids somebody else assembled, so an export that trusted it would hand a
+    // narrowly-scoped approver rows they may not read — a disclosure wearing the shape of a spreadsheet.
+    let scoped = Request::builder()
+        .method("GET")
+        .uri(format!("/orders/{id}/metadata.csv"))
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {}", f.scoped_admin_key),
+        )
+        .body(Body::empty())
+        .expect("request");
+    let narrow = f.app.clone().oneshot(scoped).await.expect("response");
+    assert_eq!(narrow.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(narrow.into_body(), 1 << 20)
+        .await
+        .expect("body");
+    let narrow_csv = String::from_utf8(bytes.to_vec()).expect("utf-8");
+    assert!(
+        !narrow_csv.contains("harbour.jpg"),
+        "an approver outside the asset's group received its metadata: {narrow_csv}"
+    );
+    assert_eq!(
+        narrow_csv.lines().filter(|line| !line.is_empty()).count(),
+        1,
+        "the header alone: {narrow_csv}"
+    );
+
     // Somebody with no authority over the order gets the same 404 that reading it gives, for the same reason:
     // references are sequential.
     let stranger = Request::builder()

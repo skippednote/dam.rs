@@ -190,6 +190,41 @@ async fn issue(global: &PgPool, tenant: Uuid, identity: Uuid, scopes: &[&str]) -
     api_key.into_plaintext()
 }
 
+/// A response read as text, with the two headers that make a download a download.
+struct Raw {
+    text: String,
+    content_type: Option<String>,
+    disposition: Option<String>,
+}
+
+/// `GET` that does not assume JSON — for the CSV export (Q.18).
+async fn raw_call(f: &Fixture, path: &str, key: &str) -> Raw {
+    let request = Request::builder()
+        .method("GET")
+        .uri(path)
+        .header(header::AUTHORIZATION, format!("Bearer {key}"))
+        .body(Body::empty())
+        .expect("request");
+    let response = f.app.clone().oneshot(request).await.expect("response");
+    let header_value = |name: header::HeaderName| {
+        response
+            .headers()
+            .get(&name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+    };
+    let content_type = header_value(header::CONTENT_TYPE);
+    let disposition = header_value(header::CONTENT_DISPOSITION);
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 22)
+        .await
+        .expect("body");
+    Raw {
+        text: String::from_utf8_lossy(&bytes).into_owned(),
+        content_type,
+        disposition,
+    }
+}
+
 async fn call(
     f: &Fixture,
     method: &str,
@@ -258,6 +293,110 @@ async fn the_category_http_contract_holds() {
     the_builtin_facets_are_offered_and_their_buckets_filter(&f).await;
     a_typo_is_named_rather_than_guessed_at(&f).await;
     a_type_ahead_offers_what_the_caller_can_see(&f).await;
+    an_export_is_the_search_it_came_from(&f).await;
+    an_oversized_export_is_refused_with_its_size(&f).await;
+}
+
+/// The CSV export (Q.18): the same search, as a file.
+async fn an_export_is_the_search_it_came_from(f: &Fixture) {
+    let raw = raw_call(f, "/search/export.csv?q=caption:*arbour*", &f.key).await;
+    let mut lines = raw.text.lines();
+    let header = lines.next().expect("a header row");
+    assert!(
+        header.starts_with("filename,mime,bytes,width,height"),
+        "the fixed columns come first: {header}"
+    );
+    assert!(
+        header.contains("caption"),
+        "the tenant's own field is a column: {header}"
+    );
+    let rows: Vec<&str> = lines.filter(|line| !line.is_empty()).collect();
+    assert_eq!(rows.len(), 1, "one asset matched the search: {rows:?}");
+    assert!(
+        rows[0].starts_with("answers-a-category-query.jpg,image/jpeg"),
+        "{rows:?}"
+    );
+    assert!(
+        rows[0].contains("a harbour at dawn"),
+        "the stored value is in the row: {rows:?}"
+    );
+
+    // A file, named, rather than a wall of commas rendered in a tab.
+    assert_eq!(raw.content_type.as_deref(), Some("text/csv; charset=utf-8"));
+    assert_eq!(
+        raw.disposition.as_deref(),
+        Some("attachment; filename=\"search-results.csv\"")
+    );
+
+    // A search matching nothing is an empty file with its header, not a 404: a spreadsheet with no rows is a
+    // truthful answer to "export what I am looking at".
+    let empty = raw_call(f, "/search/export.csv?q=caption:zeppelin", &f.key).await;
+    assert_eq!(empty.text.lines().filter(|l| !l.is_empty()).count(), 1);
+
+    // A reader with no scope gets a file with no rows rather than somebody else's metadata.
+    let scoped = raw_call(f, "/search/export.csv?q=caption:*arbour*", &f.scoped_key).await;
+    assert_eq!(
+        scoped.text.lines().filter(|l| !l.is_empty()).count(),
+        1,
+        "an export must be access-filtered like every other read: {}",
+        scoped.text
+    );
+}
+
+/// An export larger than the cap is refused with its size, and one larger than a *page* is still complete
+/// (Q.18).
+///
+/// Two failure modes, both silent. A CSV that stops at the cap opens perfectly in a spreadsheet and the person
+/// who re-imports it never learns what was left out. A CSV that stops at `assets::MAX_LIMIT` does the same
+/// thing five hundred rows earlier — which is what the first version of this endpoint did, because it asked for
+/// ten thousand rows in one call and a page is capped.
+async fn an_oversized_export_is_refused_with_its_size(f: &Fixture) {
+    // More than one page, well under the cap. One statement rather than six hundred inserts.
+    sqlx::query(
+        "INSERT INTO assets (id, content_hash, filename, mime, bytes, version_group_id) \
+         SELECT gen_random_uuid(), lpad(i::text, 64, '0'), 'page-' || i || '.jpg', 'image/jpeg', 10, \
+                gen_random_uuid() \
+         FROM generate_series(1, 600) AS i",
+    )
+    .execute(&f.acme)
+    .await
+    .expect("seed a set larger than one page");
+
+    let paged = raw_call(f, "/search/export.csv?q=filename:page-*", &f.key).await;
+    assert_eq!(
+        paged.text.lines().filter(|line| !line.is_empty()).count(),
+        601,
+        "a set larger than one page must be exported whole, not to the page limit"
+    );
+
+    // And past the cap, the refusal carries the count — the only thing that makes "narrow the query"
+    // actionable.
+    sqlx::query(
+        "INSERT INTO assets (id, content_hash, filename, mime, bytes, version_group_id) \
+         SELECT gen_random_uuid(), lpad((i + 1000)::text, 64, '0'), 'bulk-' || i || '.jpg', 'image/jpeg', 10, \
+                gen_random_uuid() \
+         FROM generate_series(1, $1) AS i",
+    )
+    .bind(i32::try_from(dam_api::search::EXPORT_MAX + 1).expect("cap fits"))
+    .execute(&f.acme)
+    .await
+    .expect("seed past the cap");
+
+    let (status, body) = call(f, "GET", "/search/export.csv", &f.key, None).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let message = body["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains(&dam_api::search::EXPORT_MAX.to_string()),
+        "the refusal must carry the numbers: {message}"
+    );
+    assert!(message.contains("narrow"), "{message}");
+
+    // A narrower search over the same library is still a file.
+    let narrow = raw_call(f, "/search/export.csv?q=caption:*arbour*", &f.key).await;
+    assert_eq!(
+        narrow.text.lines().filter(|line| !line.is_empty()).count(),
+        2
+    );
 }
 
 /// Did-you-mean, in both places it can happen (Q.17).

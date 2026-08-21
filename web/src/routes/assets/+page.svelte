@@ -34,6 +34,7 @@
 		deliveryUrl,
 		getAsset,
 		listAssets,
+		exportSearchCsv,
 		loadFacets,
 		loadFields,
 		searchAssets,
@@ -64,6 +65,7 @@
 	let ranked = $state(false);
 	let showUpload = $state(false);
 	let showAdvanced = $state(false);
+	let exporting = $state(false);
 	/** The type-ahead beside the box (Q.17). The box stays here; the list is the component's. */
 	let typeAhead = $state<ReturnType<typeof TypeAhead> | undefined>();
 	/** A parse refusal's suggested name, and the column to apply it at. */
@@ -143,6 +145,32 @@
 			}
 		} finally {
 			if (mine === generation) loading = false;
+		}
+	}
+
+	/**
+	 * Downloads the current search as a CSV (Q.18).
+	 *
+	 * The anchor is created, clicked and revoked here rather than living in the markup: a `download` link needs a
+	 * blob URL that does not exist until the request has been answered, and a permanent one would be a URL that
+	 * either goes stale or keeps a file alive in memory for the life of the page.
+	 */
+	async function exportCsv() {
+		exporting = true;
+		error = '';
+		try {
+			const blob = await exportSearchCsv(query.trim());
+			const url = URL.createObjectURL(blob);
+			const link = document.createElement('a');
+			link.href = url;
+			link.download = 'search-results.csv';
+			link.click();
+			URL.revokeObjectURL(url);
+		} catch (caught) {
+			// The server's sentence, which for an oversized set carries the count and what to do about it.
+			error = caught instanceof Error ? caught.message : 'Could not export those results.';
+		} finally {
+			exporting = false;
 		}
 	}
 
@@ -354,6 +382,19 @@
 			>
 				{loading ? 'Searching…' : 'Search'}
 			</button>
+			<!--
+				Q.18. Beside Advanced because it is the same thought at the other end: build a set, then take it
+				away with you.
+			-->
+			<button
+				type="button"
+				class="rounded-md border border-line px-3 py-1.5 text-sm disabled:opacity-50"
+				disabled={exporting}
+				onclick={exportCsv}
+			>
+				{exporting ? 'Exporting…' : 'Export CSV'}
+			</button>
+
 			<!--
 				Q.16. A form beside the box rather than instead of it: the form writes the query, and what the
 				box shows is still what the server got.

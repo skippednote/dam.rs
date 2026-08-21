@@ -29,6 +29,7 @@ use utoipa::OpenApi;
         crate::search::search,
         crate::search::facets,
         crate::search::suggest,
+        crate::search::export,
         crate::bulk::preview,
         crate::bulk::create,
         crate::bulk::status,

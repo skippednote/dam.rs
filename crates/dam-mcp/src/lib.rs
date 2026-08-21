@@ -163,6 +163,11 @@ impl From<dam_api::search::Failure> for CallFailed {
                 "this library cannot answer that clause: {}",
                 problem.message
             )),
+            // Q.18's export cap. Unreachable through the MCP tools — none of them exports a CSV — and mapped
+            // rather than defaulted, because the sentence an agent gets when a limit is hit has to say what to
+            // do next, and a wildcard arm here would answer "the search failed" to something that is not a
+            // failure.
+            SearchFailure::TooLarge(message) => CallFailed(message),
             SearchFailure::Internal => CallFailed("the search failed".to_owned()),
         }
     }

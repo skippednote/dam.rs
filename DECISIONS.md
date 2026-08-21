@@ -2589,3 +2589,14 @@ screen (makes an irreversible disclosure depend on somebody reading it). Reversi
 this been public", which a restamp would erase. Unpublishing an asset that was never published is a success
 rather than a failure: "not on a public page" is what the caller asked for, and failing there makes an unpublish
 over a grid selection look broken for doing what it was told. Reversible: yes.
+
+**A CSV export is answered in SQL, not by the index.** An export is a set, not a ranking, and both of the ranked
+path's failure modes are silent omission: an eventually-consistent index can be missing a just-edited asset, and
+its total is capped by the overfetch depth so a large set cannot be measured there at all. A free-text export
+therefore matches substrings where the grid matched tokens; every structured query is identical in both. A file
+that quietly omits rows is worse than one that includes a near-miss. Reversible: yes.
+
+**An oversized export is refused with its count, never truncated.** A CSV that stops at a cap opens perfectly in
+a spreadsheet and the person who re-imports it never learns what was left out. The refusal carries the number,
+because "too many" without one is not actionable. The same reasoning made the export page to the cap rather than
+ask for it in one call, where `assets::MAX_LIMIT` had been silently cutting it to 500 rows. Reversible: yes.

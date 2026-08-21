@@ -1200,6 +1200,39 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/search/export.csv": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The caller's current search as a CSV (Q.18).
+         * @description **Answered in SQL, always, even for a query the index would rank.** An export is a *set*, not a ranking: it
+         *     is a file somebody re-imports, audits, or hands to a client, and the two failure modes of the ranked path
+         *     are both silent omission. The index is eventually consistent, so an asset edited a moment ago may not be in
+         *     it; and the ranked path's total is capped by the overfetch depth, so a large set cannot even be measured
+         *     there — which is how the first version of this endpoint came to export nothing at all from an index that had
+         *     never been built.
+         *
+         *     The cost is stated rather than hidden: for a free-text query, SQL matches substrings where the index matches
+         *     tokens, so a text export can differ slightly from the ranked grid it was taken from. Every structured query
+         *     — a field, a facet click, a category, a filename — is identical in both. Completeness is the property an
+         *     export needs, and a file that quietly omits rows is worse than one that includes a near-miss.
+         *
+         *     Read scope. An export of metadata somebody can already read is not a disclosure — see `orders::metadata_csv`
+         *     on why the same file is not offered to an unauthenticated recipient.
+         */
+        get: operations["export"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/search/facets": {
         parameters: {
             query?: never;
@@ -6034,6 +6067,61 @@ export interface operations {
             };
             /** @description The tenant is over its hard AI spend cap for this month */
             429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    export: {
+        parameters: {
+            query?: {
+                /** @description Shorthand: `bra:acme`, quoted phrases, ranges, negation. Empty matches everything the caller may see. */
+                q?: string;
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description text/csv */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": unknown;
+                };
+            };
+            /** @description The query does not parse */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueryProblem"];
+                };
+            };
+            /** @description No usable credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authenticated, and holds no read scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The result set is larger than an interactive export carries; the body says how large */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

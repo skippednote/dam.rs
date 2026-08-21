@@ -178,6 +178,34 @@ export async function loadFacets(q: string): Promise<Facet[]> {
 }
 
 /**
+ * The current search as a CSV file (Q.18).
+ *
+ * A `fetch` rather than a link, because the export is authenticated and an `<a href>` carries no header. The
+ * blob is handed back rather than saved here: what to do with a file is the page's decision, and a helper that
+ * clicked an invisible anchor would be a side effect hidden in a data function.
+ *
+ * The 422 the server answers for an oversized set arrives as an `ApiError` with the count in its message, which
+ * is the sentence worth showing — "too many" without a number is not something anybody can act on.
+ */
+export async function exportSearchCsv(q: string): Promise<Blob> {
+	if (!session.connected) {
+		throw new ApiError(401, 'Not connected. Add an API key in Settings.');
+	}
+	const response = await fetch(`${session.base}/search/export.csv?${new URLSearchParams({ q })}`, {
+		headers: { Authorization: `Bearer ${session.key}` }
+	});
+	if (!response.ok) {
+		const body = await response.json().catch(() => null);
+		const message =
+			body && typeof body === 'object' && 'message' in body
+				? String((body as { message: unknown }).message)
+				: `Export failed (${response.status}).`;
+		throw new ApiError(response.status, message, body);
+	}
+	return response.blob();
+}
+
+/**
  * What somebody is probably about to type (Q.17).
  *
  * `q` is the query already in the box, so suggestions narrow as the search narrows — the same reason the facet

@@ -117,6 +117,7 @@ pub fn router_from(state: Arc<SearchState>) -> Router {
         .route("/search", get(search))
         .route("/search/facets", get(facets))
         .route("/search/suggest", get(suggest))
+        .route("/search/export.csv", get(export))
         .with_state(state)
 }
 
@@ -551,6 +552,102 @@ pub async fn suggest(
     ))
 }
 
+/// How many rows an interactive export may carry (Q.18).
+///
+/// The same order of magnitude as the ranked search's own depth cap, because this export is "the results I am
+/// looking at" rather than "everything that matches". A set larger than this is refused with its size rather
+/// than truncated: a CSV that silently stops at ten thousand rows opens perfectly in a spreadsheet, and the
+/// person who re-imports it never learns that thirty thousand assets were left out.
+pub const EXPORT_MAX: i64 = 10_000;
+
+/// The caller's current search as a CSV (Q.18).
+///
+/// **Answered in SQL, always, even for a query the index would rank.** An export is a *set*, not a ranking: it
+/// is a file somebody re-imports, audits, or hands to a client, and the two failure modes of the ranked path
+/// are both silent omission. The index is eventually consistent, so an asset edited a moment ago may not be in
+/// it; and the ranked path's total is capped by the overfetch depth, so a large set cannot even be measured
+/// there — which is how the first version of this endpoint came to export nothing at all from an index that had
+/// never been built.
+///
+/// The cost is stated rather than hidden: for a free-text query, SQL matches substrings where the index matches
+/// tokens, so a text export can differ slightly from the ranked grid it was taken from. Every structured query
+/// — a field, a facet click, a category, a filename — is identical in both. Completeness is the property an
+/// export needs, and a file that quietly omits rows is worse than one that includes a near-miss.
+///
+/// Read scope. An export of metadata somebody can already read is not a disclosure — see `orders::metadata_csv`
+/// on why the same file is not offered to an unauthenticated recipient.
+#[utoipa::path(
+    get,
+    path = "/search/export.csv",
+    params(SearchParams),
+    responses(
+        (status = 200, description = "text/csv", content_type = "text/csv"),
+        (status = 400, description = "The query does not parse", body = QueryProblem),
+        (status = 401, description = "No usable credential"),
+        (status = 403, description = "Authenticated, and holds no read scope"),
+        (status = 422, description = "The result set is larger than an interactive export carries; the body says how large"),
+    ),
+    tag = "search",
+)]
+pub async fn export(
+    State(state): State<Arc<SearchState>>,
+    headers: HeaderMap,
+    Query(params): Query<SearchParams>,
+) -> Result<axum::response::Response, Failure> {
+    let caller = caller::authorize(&state.global, &headers, Action::Read).await?;
+    let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
+
+    // The same parse and the same predicate as `/search`, so a query that is refused there is refused here with
+    // the same sentence. `offset` is ignored: an export of "page 3" is a file nobody asked for.
+    let (planned, _defs) = plan(conn.executor(), &caller, &params.q).await?;
+
+    // Paged, because a page is capped at `assets::MAX_LIMIT` and asking for ten thousand rows in one call
+    // silently returns five hundred. That was the first version of this: a file of exactly 500 rows, which
+    // opens perfectly and is wrong in the one way an export must never be.
+    let mut ids: Vec<uuid::Uuid> = Vec::new();
+    let mut offset = 0i64;
+    loop {
+        let page = assets::page_matching(
+            conn.executor(),
+            &planned,
+            dam_db::assets::Order::Newest,
+            offset,
+            dam_db::assets::MAX_LIMIT,
+        )
+        .await?;
+        if offset == 0 && page.total > EXPORT_MAX {
+            conn.commit().await?;
+            return Err(Failure::TooLarge(format!(
+                "that search matches {} assets and an export carries {EXPORT_MAX}; narrow the query",
+                page.total
+            )));
+        }
+        let fetched = page.items.len();
+        ids.extend(page.items.iter().map(|item| item.id));
+        // A short page is the last page. The `>=` guard is the belt to that brace: a set that grows under the
+        // loop must not turn an export into an unbounded read.
+        if fetched < usize::try_from(dam_db::assets::MAX_LIMIT).unwrap_or(usize::MAX)
+            || i64::try_from(ids.len()).unwrap_or(i64::MAX) >= EXPORT_MAX
+        {
+            break;
+        }
+        offset += dam_db::assets::MAX_LIMIT;
+    }
+    let fields = dam_db::fields::load(conn.executor()).await?;
+    let rows: Vec<crate::csv_export::Row> = sqlx::query_as(crate::csv_export::SELECT)
+        .bind(&ids)
+        .fetch_all(conn.executor())
+        .await
+        .map_err(dam_db::Error::from)?;
+    conn.commit().await?;
+
+    // `ids` decides the row order, so the file reads in the same order as the grid's default. The rows were
+    // fetched over ids the access-filtered query produced, which is what makes a second check here unnecessary
+    // rather than forgotten.
+    let document = crate::csv_export::document(&fields, &rows, &ids);
+    Ok((crate::csv_export::headers("search-results.csv"), document).into_response())
+}
+
 /// How many buckets a facet returns.
 ///
 /// A rail shows a handful and a "more" affordance, and `truncated` says when there were others — a rail that
@@ -623,6 +720,9 @@ pub enum Failure {
     /// cannot answer it, which is a gap in the server rather than a mistake by the client — and a 400 would
     /// send somebody looking for a typo that is not there.
     Unsupported(QueryProblem),
+    /// A request this endpoint will not answer at this size — an export larger than `EXPORT_MAX` (Q.18). The
+    /// body carries the count, because "too many" without a number is not something a caller can act on.
+    TooLarge(String),
     Internal,
 }
 
@@ -634,6 +734,11 @@ impl IntoResponse for Failure {
             Self::Unsupported(problem) => {
                 (StatusCode::NOT_IMPLEMENTED, Json(problem)).into_response()
             }
+            Self::TooLarge(message) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({"message": message})),
+            )
+                .into_response(),
             Self::Internal => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         }
     }

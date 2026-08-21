@@ -26,14 +26,14 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M0–M3c** Foundation, ingest, metadata/search/rights, delivery/sharing/restore | complete |
 | **F** The UI: browse, detail, upload, filter rail, lightbox, bulk bar, design pass | complete |
 | **F.11b** Share/portal UI, schema administration, metadata types | complete except restore UX |
-| **Q** Acquia parity, 20 slices | Q.1–Q.17 done (Q.14 now includes all three portal sources); Q.14b and Q.18–Q.20 open |
+| **Q** Acquia parity, 20 slices | Q.1–Q.18 done (Q.14 includes all three portal sources); Q.14b, Q.19 and Q.20 open |
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | **done** — two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query, the MCP server |
 | **M6** Workflow/proofing, annotations, analytics | not started |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** Q.18–Q.19 search → Q.14b collections in the app → Q.20 sundries → M4 local AI → M6 → M3d → Pre-GA.
+**Next up, in order:** Q.19 refine-search → Q.14b collections in the app → Q.20 sundries → M4 local AI → M6 → M3d → Pre-GA.
 
 **`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
 note carried; `DECISIONS.md` records what was chosen. Two of them needed code: a portal may now be backed by a
@@ -2262,7 +2262,34 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
       last fix came from: an empty page was announcing "0 assets · ranked by relevance, capped at the first
       1,000", a sentence about the ordering of nothing, sitting between the count and the one thing worth
       clicking.
-- [ ] **Q.18 Export search results to CSV.**
+- [x] **Q.18 Export search results to CSV.**
+
+      `GET /search/export.csv`, taking the same parameters as `/search`. One CSV vocabulary shared with the
+      order export — field *keys* as columns, the fixed five first, a multivalued field flattened to `a; b`
+      rather than JSON — because two exports written separately drift, and the person who notices is the one
+      whose re-import fails against a file that opened fine in a spreadsheet.
+
+      **Answered in SQL, always, even for a query the index would rank.** An export is a set rather than a
+      ranking: it is a file somebody re-imports, audits or hands to a client. Both of the ranked path's failure
+      modes are silent omission — the index is eventually consistent, so a just-edited asset may be missing, and
+      its total is capped by the overfetch depth, so a large set cannot even be measured there. The cost is
+      stated rather than hidden: a free-text export matches substrings where the grid matched tokens, and every
+      structured query is identical in both.
+
+      **Two silent truncations, both found by a mutation that should have died and didn't.** The first version
+      asked the index for the count, so the cap never fired — an empty index reports zero and every set looked
+      small. The second asked for ten thousand rows in one call, and a page is capped at five hundred: a file of
+      exactly 500 rows, which opens perfectly and is wrong in the one way an export must never be. The export
+      now pages to the cap, and past it refuses with the count, because "too many" without a number is not
+      something anybody can act on.
+
+      The test that hid both was the giveaway: it asserted the constant and that a small set worked. Crossing
+      the boundary needed ten thousand rows, which one `generate_series` insert produces in a second — the
+      reason not to write it was imagined.
+
+      In the app: an Export CSV button beside Advanced, a `fetch` and a blob rather than a link because the
+      endpoint is authenticated and an `<a href>` carries no header, and the server's sentence shown verbatim
+      when a set is too large.
 - [ ] **Q.19 Refine-search configuration**, including dependent metadata fields.
 - [ ] **Q.20 Site branding, webhook delivery, the admin worklists, tag vocabulary administration.** The
   worklists are the cheapest real value on this list: they are queries over data damrs already holds.

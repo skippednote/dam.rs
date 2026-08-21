@@ -221,6 +221,27 @@ async function connect(page: Page): Promise<Recorder> {
 		if (path.pathname === '/search/facets') {
 			return route.fulfill({ json: FACETS });
 		}
+		if (path.pathname === '/search/export.csv') {
+			// Q.18. A file, not JSON — and the query travels, so a test can assert the export describes the
+			// search rather than the library.
+			recorder.urls.push(url);
+			const q = path.searchParams.get('q') ?? '';
+			if (q === 'brand:everything') {
+				return route.fulfill({
+					status: 422,
+					contentType: 'application/json',
+					body: JSON.stringify({
+						message:
+							'that search matches 40000 assets and an export carries 10000; narrow the query'
+					})
+				});
+			}
+			return route.fulfill({
+				contentType: 'text/csv; charset=utf-8',
+				headers: { 'content-disposition': 'attachment; filename="search-results.csv"' },
+				body: `filename,mime,bytes,width,height,brand\ncampaign-0000.jpg,image/jpeg,2400000,4000,3000,acme\n`
+			});
+		}
 		if (path.pathname === '/search/suggest') {
 			// Q.17. The server sends the fragment to insert; the client's job is to put a string in a box.
 			const typed = path.searchParams.get('typed') ?? '';
@@ -1203,6 +1224,30 @@ test('a published asset says so, and the bar can publish a selection', async ({ 
 	await expect(page.getByRole('button', { name: /^Publish 1 asset$/ })).toBeVisible();
 	await page.getByRole('button', { name: /^Publish 1 asset$/ }).click();
 	expect(recorder.bulk.some((call) => call.body.kind === 'publish')).toBe(true);
+});
+
+test('the current search downloads as a CSV, and an oversized one says how large', async ({
+	page
+}) => {
+	// Q.18. The export is authenticated, so it is a fetch and a blob rather than a link — and the failure worth
+	// showing is the one with a number in it.
+	const recorder = await connect(page);
+	await page.goto('/assets?q=brand:acme');
+
+	const download = page.waitForEvent('download');
+	await page.getByRole('button', { name: 'Export CSV' }).click();
+	const file = await download;
+	expect(file.suggestedFilename()).toBe('search-results.csv');
+	// The query travelled: an export of the whole library would be a different file from the one on screen.
+	expect(recorder.urls.some((url) => url.includes('export.csv?q=brand%3Aacme'))).toBe(true);
+
+	await page.goto('/assets?q=brand:everything');
+	await page.getByRole('button', { name: 'Export CSV' }).click();
+	// Filtered: the page carries more than one alert region, and the server's sentence is the one this case is
+	// about — the count and what to do about it.
+	const refusal = page.getByRole('alert').filter({ hasText: 'that search matches' });
+	await expect(refusal).toContainText('40000');
+	await expect(refusal).toContainText('narrow the query');
 });
 
 test('the bulk bar has no axe violations', async ({ page }) => {

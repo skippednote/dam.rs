@@ -559,104 +559,30 @@ pub async fn metadata_csv(
     }
 
     // The field definitions give the columns, so an export has the tenant's own vocabulary rather than whatever
-    // keys happen to appear in the first row's JSON.
+    // keys happen to appear in the first row's JSON. Shared with the search export (Q.18): one CSV vocabulary,
+    // because two would drift and the person who notices is the one whose re-import fails.
     let fields = dam_db::fields::load(conn.executor()).await?;
     let ids: Vec<Uuid> = order.items.iter().map(|item| item.asset_id).collect();
-    // Read under the *caller's* predicate: an approver exporting an order must not receive metadata for an asset
-    // they cannot see, even though the order names it.
-    /// One asset as the export reads it: id, filename, mime, bytes, width, height, stored values.
-    type ExportRow = (
-        Uuid,
-        String,
-        String,
-        i64,
-        Option<i32>,
-        Option<i32>,
-        serde_json::Value,
-    );
-    let rows: Vec<ExportRow> =
-        sqlx::query_as(
-            "SELECT assets.id, assets.filename, assets.mime, assets.bytes, assets.width,                     assets.height, coalesce(m.values, '{}'::jsonb)              FROM assets LEFT JOIN asset_metadata m ON m.asset_id = assets.id              WHERE assets.id = ANY($1) AND assets.deleted_at IS NULL                AND assets.id IN (SELECT id FROM assets WHERE id = ANY($1))              ORDER BY assets.filename",
-        )
+    let rows: Vec<crate::csv_export::Row> = sqlx::query_as(crate::csv_export::SELECT)
         .bind(&ids)
         .fetch_all(conn.executor())
         .await
         .map_err(dam_db::Error::from)?;
+    // Read under the *caller's* predicate: an approver exporting an order must not receive metadata for an
+    // asset they cannot see, even though the order names it.
     let visible = dam_db::assets::visible_among(conn.executor(), &caller.predicate, &ids).await?;
     conn.commit().await?;
 
-    let mut csv = String::new();
-    csv.push_str("filename,mime,bytes,width,height");
-    for field in &fields {
-        csv.push(',');
-        // The key, not a label: `FieldDef` carries the validation shape rather than the display name, and a
-        // column header that matched the API's own vocabulary is what somebody re-importing this would want.
-        csv.push_str(&escape_csv(&field.key));
-    }
-    csv.push('\n');
-
-    for (asset_id, filename, mime, bytes, width, height, values) in rows {
-        if !visible.contains(&asset_id) {
-            continue;
-        }
-        csv.push_str(&escape_csv(&filename));
-        csv.push(',');
-        csv.push_str(&escape_csv(&mime));
-        csv.push_str(&format!(
-            ",{bytes},{},{}",
-            width.map(|w| w.to_string()).unwrap_or_default(),
-            height.map(|h| h.to_string()).unwrap_or_default()
-        ));
-        for field in &fields {
-            csv.push(',');
-            // The stored value, flattened for a spreadsheet: a multivalued field becomes a semicolon-joined
-            // cell rather than a JSON array, because the point of a CSV is that somebody opens it.
-            csv.push_str(&escape_csv(&flatten(values.get(&field.key))));
-        }
-        csv.push('\n');
-    }
+    // The order's own sequence, narrowed to what this caller may see.
+    let order_of_rows: Vec<Uuid> = ids
+        .iter()
+        .copied()
+        .filter(|id| visible.contains(id))
+        .collect();
+    let document = crate::csv_export::document(&fields, &rows, &order_of_rows);
 
     let filename = format!("{}-metadata.csv", order.reference);
-    Ok((
-        [
-            (
-                axum::http::header::CONTENT_TYPE,
-                "text/csv; charset=utf-8".to_owned(),
-            ),
-            (
-                axum::http::header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{filename}\""),
-            ),
-        ],
-        csv,
-    )
-        .into_response())
-}
-
-/// A CSV cell: quoted when it has to be, and never able to end the record early.
-fn escape_csv(value: &str) -> String {
-    if value.contains([',', '"', '\n', '\r']) {
-        format!("\"{}\"", value.replace('"', "\"\""))
-    } else {
-        value.to_owned()
-    }
-}
-
-/// One stored metadata value as a cell.
-///
-/// A list becomes `a; b` rather than `["a","b"]`: the point of an export is that somebody opens it in a
-/// spreadsheet, and JSON in a cell is a thing they then have to undo.
-fn flatten(value: Option<&serde_json::Value>) -> String {
-    match value {
-        None | Some(serde_json::Value::Null) => String::new(),
-        Some(serde_json::Value::String(text)) => text.clone(),
-        Some(serde_json::Value::Array(items)) => items
-            .iter()
-            .map(|item| flatten(Some(item)))
-            .collect::<Vec<String>>()
-            .join("; "),
-        Some(other) => other.to_string(),
-    }
+    Ok((crate::csv_export::headers(&filename), document).into_response())
 }
 
 /// Resolves the people named on a set of orders in one lookup, and renders.

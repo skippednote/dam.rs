@@ -3455,6 +3455,72 @@
         }
       }
     },
+    "/search/export.csv": {
+      "get": {
+        "tags": [
+          "search"
+        ],
+        "summary": "The caller's current search as a CSV (Q.18).",
+        "description": "**Answered in SQL, always, even for a query the index would rank.** An export is a *set*, not a ranking: it\nis a file somebody re-imports, audits, or hands to a client, and the two failure modes of the ranked path\nare both silent omission. The index is eventually consistent, so an asset edited a moment ago may not be in\nit; and the ranked path's total is capped by the overfetch depth, so a large set cannot even be measured\nthere — which is how the first version of this endpoint came to export nothing at all from an index that had\nnever been built.\n\nThe cost is stated rather than hidden: for a free-text query, SQL matches substrings where the index matches\ntokens, so a text export can differ slightly from the ranked grid it was taken from. Every structured query\n— a field, a facet click, a category, a filename — is identical in both. Completeness is the property an\nexport needs, and a file that quietly omits rows is worse than one that includes a near-miss.\n\nRead scope. An export of metadata somebody can already read is not a disclosure — see `orders::metadata_csv`\non why the same file is not offered to an unauthenticated recipient.",
+        "operationId": "export",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Shorthand: `bra:acme`, quoted phrases, ranges, negation. Empty matches everything the caller may see.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "text/csv",
+            "content": {
+              "text/csv": {}
+            }
+          },
+          "400": {
+            "description": "The query does not parse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueryProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential"
+          },
+          "403": {
+            "description": "Authenticated, and holds no read scope"
+          },
+          "422": {
+            "description": "The result set is larger than an interactive export carries; the body says how large"
+          }
+        }
+      }
+    },
     "/search/facets": {
       "get": {
         "tags": [
