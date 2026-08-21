@@ -1063,6 +1063,30 @@ export interface paths {
         patch: operations["present"];
         trace?: never;
     };
+    "/schema/facets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Everything the rail could show, with the tenant's configuration applied (Q.19).
+         * @description The candidate list is derived rather than stored, for the same reason `rail` stores no defaults: a field
+         *     defined after somebody last touched this screen has to appear, and a stored list would have gone stale
+         *     silently. So this reads the schema, the vocabularies and the four built-ins every time, then answers with
+         *     each one's state.
+         */
+        get: operations["list_facets"];
+        /** Replaces the rail's configuration. */
+        put: operations["set_facets"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/schema/fields": {
         parameters: {
             query?: never;
@@ -2808,6 +2832,27 @@ export interface components {
              *     finish.
              */
             suggestion?: string | null;
+        };
+        /** @description One thing the refine-search rail can show, and whether it does (Q.19). */
+        RailEntry: {
+            /**
+             * @description `field:<key>`, `taxonomy:<uuid>` or `builtin:<name>` — the kind and the name, because a vocabulary
+             *     called `brand` and a field called `brand` are different entries.
+             */
+            entry: string;
+            is_enabled: boolean;
+            /** @description `field`, `taxonomy` or `builtin`, so a screen can group them. */
+            kind: string;
+            /** @description What to show an administrator. A field's own label, a vocabulary's, or the built-in's name. */
+            label: string;
+        };
+        /** @description The ordered list of entries the rail should offer. */
+        RailRequest: {
+            /**
+             * @description Enabled entries, in the order they should appear. Anything the rail could show and this list omits is
+             *     recorded as *disabled* rather than forgotten — see `dam_db::rail::replace`.
+             */
+            enabled: string[];
         };
         /** @description A rating to set. */
         RatingRequest: {
@@ -5656,6 +5701,69 @@ export interface operations {
             };
             /** @description No such portal, or it is retired */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_facets: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every entry the rail can show, in the order it will */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RailEntry"][];
+                };
+            };
+            /** @description The caller holds no manage scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    set_facets: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RailRequest"];
+            };
+        };
+        responses: {
+            /** @description Stored */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The caller holds no manage scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An entry names something the rail cannot show */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -3025,6 +3025,62 @@
         }
       }
     },
+    "/schema/facets": {
+      "get": {
+        "tags": [
+          "schema"
+        ],
+        "summary": "Everything the rail could show, with the tenant's configuration applied (Q.19).",
+        "description": "The candidate list is derived rather than stored, for the same reason `rail` stores no defaults: a field\ndefined after somebody last touched this screen has to appear, and a stored list would have gone stale\nsilently. So this reads the schema, the vocabularies and the four built-ins every time, then answers with\neach one's state.",
+        "operationId": "list_facets",
+        "responses": {
+          "200": {
+            "description": "Every entry the rail can show, in the order it will",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RailEntry"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller holds no manage scope"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "schema"
+        ],
+        "summary": "Replaces the rail's configuration.",
+        "operationId": "set_facets",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Stored"
+          },
+          "403": {
+            "description": "The caller holds no manage scope"
+          },
+          "422": {
+            "description": "An entry names something the rail cannot show"
+          }
+        }
+      }
+    },
     "/schema/fields": {
       "get": {
         "tags": [
@@ -7046,6 +7102,49 @@
               "null"
             ],
             "description": "The name the parser thinks was meant, when one is close enough (Q.17).\n\nA suggestion beside a refusal, not a correction of it: the query still failed. The client offers it as\na one-click fix, which is the difference between \"no field named `brnad`\" and a search somebody can\nfinish."
+          }
+        }
+      },
+      "RailEntry": {
+        "type": "object",
+        "description": "One thing the refine-search rail can show, and whether it does (Q.19).",
+        "required": [
+          "entry",
+          "label",
+          "kind",
+          "is_enabled"
+        ],
+        "properties": {
+          "entry": {
+            "type": "string",
+            "description": "`field:<key>`, `taxonomy:<uuid>` or `builtin:<name>` — the kind and the name, because a vocabulary\ncalled `brand` and a field called `brand` are different entries."
+          },
+          "is_enabled": {
+            "type": "boolean"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`field`, `taxonomy` or `builtin`, so a screen can group them."
+          },
+          "label": {
+            "type": "string",
+            "description": "What to show an administrator. A field's own label, a vocabulary's, or the built-in's name."
+          }
+        }
+      },
+      "RailRequest": {
+        "type": "object",
+        "description": "The ordered list of entries the rail should offer.",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Enabled entries, in the order they should appear. Anything the rail could show and this list omits is\nrecorded as *disabled* rather than forgotten — see `dam_db::rail::replace`."
           }
         }
       },

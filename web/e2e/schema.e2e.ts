@@ -60,6 +60,8 @@ type Recorder = {
 	amended: { key: string; body: Record<string, unknown> }[];
 	removed: string[];
 	orders: string[][];
+	/** Rail configurations, so a test can assert the whole ordered list travelled (Q.19). */
+	rails: string[][];
 	/** Type edits, so a test can assert the whole field list travelled rather than a delta. */
 	typeEdits: { id: string; body: Record<string, unknown> }[];
 	typesDefined: Record<string, unknown>[];
@@ -85,11 +87,27 @@ async function connect(
 		amended: [],
 		removed: [],
 		orders: [],
+		rails: [],
 		typeEdits: [],
 		typesDefined: [],
 		typesRemoved: []
 	};
 	let types: MetadataType[] = options.types ?? [];
+	// The rail's candidates. Mutated by a PUT, so the screen's re-read sees what a server would have stored.
+	let rail = [
+		{ entry: 'field:brand', label: 'brand', kind: 'field', is_enabled: true },
+		{ entry: 'field:campaign', label: 'campaign', kind: 'field', is_enabled: true },
+		{
+			entry: 'taxonomy:11111111-1111-4111-8111-111111111111',
+			label: 'Materials',
+			kind: 'taxonomy',
+			is_enabled: true
+		},
+		{ entry: 'builtin:status', label: 'status', kind: 'builtin', is_enabled: true },
+		{ entry: 'builtin:orientation', label: 'orientation', kind: 'builtin', is_enabled: true },
+		{ entry: 'builtin:stars', label: 'stars', kind: 'builtin', is_enabled: true },
+		{ entry: 'builtin:has', label: 'has', kind: 'builtin', is_enabled: true }
+	];
 	let fields = options.fields ?? [
 		field('brand', { facetable: true, search_alias: 'bra', assets_with_values: 12 }),
 		field('campaign', { assets_with_values: 0 })
@@ -115,6 +133,26 @@ async function connect(
 			const created = field(String(body.key), { label: String(body.label) });
 			fields = [...fields, created];
 			return route.fulfill({ status: 201, json: created });
+		}
+		if (url.pathname === '/schema/facets' && method === 'GET') {
+			// Q.19. Two fields, one vocabulary and the four built-ins — enough that ordering and switching off
+			// are both visible.
+			return route.fulfill({ json: rail });
+		}
+		if (url.pathname === '/schema/facets' && method === 'PUT') {
+			const body = route.request().postDataJSON() as { enabled: string[] };
+			recorder.rails.push(body.enabled);
+			// The server's answer, not the client's guess: enabled entries in the order given, then everything
+			// else marked off — which is what the screen re-reads after saving.
+			const named = body.enabled
+				.map((entry) => rail.find((one) => one.entry === entry))
+				.filter((one): one is (typeof rail)[number] => one !== undefined)
+				.map((one) => ({ ...one, is_enabled: true }));
+			const rest = rail
+				.filter((one) => !body.enabled.includes(one.entry))
+				.map((one) => ({ ...one, is_enabled: false }));
+			rail = [...named, ...rest];
+			return route.fulfill({ status: 204, body: '' });
 		}
 		if (url.pathname === '/schema/fields/order' && method === 'PUT') {
 			const body = route.request().postDataJSON() as { keys: string[] };
@@ -329,7 +367,12 @@ test('reordering sends the whole list, not the pair that moved', async ({ page }
 
 	// The server refuses a partial list — display order is a total order — so the client has to send all of
 	// it. Sending only the moved keys is the mistake this asserts against.
-	await page.getByRole('button', { name: 'Move Brand down' }).click();
+	//
+	// Scoped to the fields region: the refine-search rail below it has move buttons too (Q.19), and an
+	// accessible name matches case-insensitively — "Move brand down" there is the same name as "Move Brand
+	// down" here.
+	const fields = page.getByRole('region', { name: 'Metadata fields' });
+	await fields.getByRole('button', { name: 'Move Brand down' }).click();
 	await expect(page.getByRole('status')).toContainText('Field order saved');
 	expect(recorder.orders).toEqual([['campaign', 'brand']]);
 
@@ -504,4 +547,46 @@ test('the types section has no axe violations, including while editing', async (
 		.map((violation) => `${violation.id}: ${violation.nodes.map((n) => n.html).join(', ')}`)
 		.join('\n');
 	expect(results.violations, `axe violations while editing a type:\n${detail}`).toEqual([]);
+});
+
+test('the refine-search rail is ordered and switched off by the tenant', async ({ page }) => {
+	// Q.19. The rail *is* an order: a screen offering only on/off would leave the arrangement to whatever the
+	// schema implied, which is the state this exists to fix.
+	const recorder = await connect(page);
+	await page.goto('/schema');
+
+	const rail = page.getByRole('region', { name: 'Refine search' });
+	await expect(rail.getByRole('heading', { name: 'Refine search' })).toBeVisible();
+	// The built-ins are entries like any other, under their own words rather than their query selectors.
+	await expect(rail.getByText('Rating')).toBeVisible();
+	await expect(rail.getByText('Attachments')).toBeVisible();
+
+	// Move the second field above the first, switch ratings off, and save.
+	await rail.getByRole('button', { name: 'Move campaign up' }).click();
+	// `click`, not `uncheck`: switching an entry off moves its row to the "Not shown" list, so the element
+	// Playwright would re-assert on is a different one by then.
+	await rail.getByRole('checkbox', { name: 'Show Rating' }).click();
+	await rail.getByRole('button', { name: 'Save order' }).click();
+
+	await expect(rail.getByRole('status')).toContainText('The rail follows this order');
+	// The whole ordered list travelled, with the disabled entry absent from it rather than flagged.
+	const sent = recorder.rails.at(-1) ?? [];
+	expect(sent[0]).toBe('field:campaign');
+	expect(sent[1]).toBe('field:brand');
+	expect(sent).not.toContain('builtin:stars');
+
+	// And what was switched off is still on screen, so it can be switched back on.
+	await expect(rail.getByText('Not shown')).toBeVisible();
+	await expect(rail.getByRole('checkbox', { name: 'Show Rating' })).toHaveCount(0);
+});
+
+test('the refine-search rail has no axe violations', async ({ page }) => {
+	await connect(page);
+	await page.goto('/schema');
+	await expect(page.getByRole('heading', { name: 'Refine search' })).toBeVisible();
+	const results = await new AxeBuilder({ page }).withTags(WCAG_21_AA).analyze();
+	const detail = results.violations
+		.map((violation) => `${violation.id}: ${violation.nodes.map((n) => n.html).join(', ')}`)
+		.join('\n');
+	expect(results.violations, `axe violations on the rail:\n${detail}`).toEqual([]);
 });

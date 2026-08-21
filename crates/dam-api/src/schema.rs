@@ -60,6 +60,8 @@ pub fn router(state: SchemaState) -> Router {
             "/schema/fields/{key}",
             axum::routing::patch(amend).delete(remove),
         )
+        // The refine-search rail (Q.19): what the filter panel offers, and in what order.
+        .route("/schema/facets", get(list_facets).put(set_facets))
         .route("/schema/types", get(list_types).post(define_type))
         .route(
             "/schema/types/{id}",
@@ -72,6 +74,27 @@ pub fn router(state: SchemaState) -> Router {
             get(read_asset_type).put(set_asset_type),
         )
         .with_state(Arc::new(state))
+}
+
+/// One thing the refine-search rail can show, and whether it does (Q.19).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct RailEntry {
+    /// `field:<key>`, `taxonomy:<uuid>` or `builtin:<name>` — the kind and the name, because a vocabulary
+    /// called `brand` and a field called `brand` are different entries.
+    pub entry: String,
+    /// What to show an administrator. A field's own label, a vocabulary's, or the built-in's name.
+    pub label: String,
+    /// `field`, `taxonomy` or `builtin`, so a screen can group them.
+    pub kind: String,
+    pub is_enabled: bool,
+}
+
+/// The ordered list of entries the rail should offer.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct RailRequest {
+    /// Enabled entries, in the order they should appear. Anything the rail could show and this list omits is
+    /// recorded as *disabled* rather than forgotten — see `dam_db::rail::replace`.
+    pub enabled: Vec<String>,
 }
 
 /// A field definition with the numbers an administrator needs before touching it.
@@ -382,6 +405,128 @@ pub async fn reorder(
         .map_err(Refusal)?;
     conn.commit().await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Everything the rail could show, with the tenant's configuration applied (Q.19).
+///
+/// The candidate list is derived rather than stored, for the same reason `rail` stores no defaults: a field
+/// defined after somebody last touched this screen has to appear, and a stored list would have gone stale
+/// silently. So this reads the schema, the vocabularies and the four built-ins every time, then answers with
+/// each one's state.
+#[utoipa::path(
+    get,
+    path = "/schema/facets",
+    responses(
+        (status = 200, description = "Every entry the rail can show, in the order it will", body = Vec<RailEntry>),
+        (status = 403, description = "The caller holds no manage scope"),
+    ),
+    tag = "schema",
+)]
+pub async fn list_facets(
+    State(state): State<Arc<SchemaState>>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<RailEntry>>, Failure> {
+    let caller = caller::authorize(&state.global, &headers, Action::Manage).await?;
+    let mut conn = TenantConn::begin(&state.global, &caller.tenant_slug).await?;
+    let entries = rail_candidates(&mut conn).await?;
+    let configured = dam_db::rail::read(conn.executor()).await?;
+    conn.commit().await?;
+
+    // Ordered as the rail will order it, so this screen is a preview rather than a list to cross-reference.
+    let pairs: Vec<(String, RailEntry)> = entries
+        .into_iter()
+        .map(|entry| (entry.entry.clone(), entry))
+        .collect();
+    let mut arranged = dam_db::rail::arrange(&pairs, &configured);
+    // `arrange` drops what is disabled, because that is what the rail wants. This screen needs the disabled
+    // ones too — you cannot re-enable what you cannot see — so they come back at the end, marked.
+    let shown: Vec<String> = arranged.iter().map(|entry| entry.entry.clone()).collect();
+    for (entry, mut candidate) in pairs {
+        if !shown.contains(&entry) {
+            candidate.is_enabled = false;
+            arranged.push(candidate);
+        }
+    }
+    Ok(Json(arranged))
+}
+
+/// Replaces the rail's configuration.
+#[utoipa::path(
+    put,
+    path = "/schema/facets",
+    request_body = RailRequest,
+    responses(
+        (status = 204, description = "Stored"),
+        (status = 403, description = "The caller holds no manage scope"),
+        (status = 422, description = "An entry names something the rail cannot show"),
+    ),
+    tag = "schema",
+)]
+pub async fn set_facets(
+    State(state): State<Arc<SchemaState>>,
+    headers: HeaderMap,
+    Json(request): Json<RailRequest>,
+) -> Result<StatusCode, Failure> {
+    let caller = caller::authorize(&state.global, &headers, Action::Manage).await?;
+    let mut conn = TenantConn::begin(&state.global, &caller.tenant_slug).await?;
+    let candidates = rail_candidates(&mut conn).await?;
+    let known: Vec<String> = candidates.iter().map(|entry| entry.entry.clone()).collect();
+
+    // An entry the rail cannot show is refused rather than stored. A typo'd key written to the table would be
+    // a row that matches nothing — invisible, and it would silently take the position an administrator meant
+    // for something real.
+    if let Some(unknown) = request.enabled.iter().find(|one| !known.contains(one)) {
+        conn.commit().await?;
+        return Err(Failure::Unprocessable(format!(
+            "`{unknown}` is not something the rail can show; ask GET /schema/facets for the list"
+        )));
+    }
+
+    dam_db::rail::replace(conn.executor(), &request.enabled, &known).await?;
+    conn.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Everything the rail could show, before configuration.
+async fn rail_candidates(conn: &mut TenantConn<'_>) -> Result<Vec<RailEntry>, Failure> {
+    // The *catalogue* rather than the definitions, because this screen is for a person: `FieldDef` carries the
+    // validation shape and no display name, so a rail built from it reads `colours` where the tenant wrote
+    // "Colours". Found by looking at the screen.
+    let catalogued = dam_db::fields::catalog(conn.executor()).await?;
+    let mut entries: Vec<RailEntry> = catalogued
+        .iter()
+        .filter(|def| def.facetable)
+        .map(|def| RailEntry {
+            entry: format!("field:{}", def.key),
+            label: def.label.clone(),
+            kind: "field".to_owned(),
+            is_enabled: true,
+        })
+        .collect();
+
+    let taxonomies: Vec<(uuid::Uuid, String)> =
+        sqlx::query_as("SELECT id, label FROM taxonomies WHERE kind <> 'category' ORDER BY label")
+            .fetch_all(conn.executor())
+            .await
+            .map_err(dam_db::Error::from)?;
+    entries.extend(taxonomies.into_iter().map(|(id, label)| RailEntry {
+        entry: format!("taxonomy:{id}"),
+        label,
+        kind: "taxonomy".to_owned(),
+        is_enabled: true,
+    }));
+
+    entries.extend(
+        dam_db::facets::Builtin::ALL
+            .into_iter()
+            .map(|builtin| RailEntry {
+                entry: format!("builtin:{}", builtin.key()),
+                label: builtin.key().to_owned(),
+                kind: "builtin".to_owned(),
+                is_enabled: true,
+            }),
+    );
+    Ok(entries)
 }
 
 fn present(def: Catalogued, assets_with_values: i64) -> SchemaField {

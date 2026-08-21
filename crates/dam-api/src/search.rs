@@ -419,14 +419,20 @@ pub async fn facets(
     // then shows them three.
     let (planned, defs) = plan(conn.executor(), &caller, &params.q).await?;
 
-    // Every facetable field, plus every taxonomy. Which fields are facetable is the tenant's decision,
-    // recorded on the field definition — a hard-coded list here would be a second schema.
-    let mut requests: Vec<dam_db::facets::FacetRequest> = defs
+    // Every facetable field, plus every taxonomy — each paired with the rail entry that names it, so the
+    // tenant's own order can be applied below (Q.19). Which fields are facetable is the tenant's decision,
+    // recorded on the field definition; a hard-coded list here would be a second schema.
+    let mut requests: Vec<(String, dam_db::facets::FacetRequest)> = defs
         .iter()
         .filter(|def| def.facetable)
-        .map(|def| dam_db::facets::FacetRequest::Field {
-            key: def.key.clone(),
-            limit: FACET_BUCKETS,
+        .map(|def| {
+            (
+                format!("field:{}", def.key),
+                dam_db::facets::FacetRequest::Field {
+                    key: def.key.clone(),
+                    limit: FACET_BUCKETS,
+                },
+            )
         })
         .collect();
     // Vocabularies only. A *category* tree has its own surface — a hierarchy with rollup counts — and
@@ -439,20 +445,30 @@ pub async fn facets(
             .await
             .map_err(dam_db::Error::from)?;
     requests.extend(taxonomies.into_iter().map(|taxonomy_id| {
-        dam_db::facets::FacetRequest::Taxonomy {
-            taxonomy_id,
-            limit: FACET_BUCKETS,
-        }
+        (
+            format!("taxonomy:{taxonomy_id}"),
+            dam_db::facets::FacetRequest::Taxonomy {
+                taxonomy_id,
+                limit: FACET_BUCKETS,
+            },
+        )
     }));
     // The four every library has, whatever its schema (Q.15). Not configurable: none of them can be marked
     // facetable on a field definition, because none of them is a field — status is a column, orientation is
     // derived from two more, a rating is an aggregate over another table, and an attachment is a row pointing
     // back. A tenant who does not want one hides it in the rail, which is presentation.
-    requests.extend(
-        dam_db::facets::Builtin::ALL
-            .into_iter()
-            .map(dam_db::facets::FacetRequest::Builtin),
-    );
+    requests.extend(dam_db::facets::Builtin::ALL.into_iter().map(|builtin| {
+        (
+            format!("builtin:{}", builtin.key()),
+            dam_db::facets::FacetRequest::Builtin(builtin),
+        )
+    }));
+
+    // The tenant's own order, and the entries it has switched off (Q.19). Applied *before* counting rather
+    // than after: a disabled facet that was counted and then dropped is three queries nobody reads, and on a
+    // library where counting is the expensive part that is the whole cost of the feature.
+    let configured = dam_db::rail::read(conn.executor()).await?;
+    let requests = dam_db::rail::arrange(&requests, &configured);
 
     let counted = dam_db::facets::count_on(conn.executor(), &planned, &defs, &requests).await?;
     conn.commit().await?;

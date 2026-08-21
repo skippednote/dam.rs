@@ -26,14 +26,14 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M0–M3c** Foundation, ingest, metadata/search/rights, delivery/sharing/restore | complete |
 | **F** The UI: browse, detail, upload, filter rail, lightbox, bulk bar, design pass | complete |
 | **F.11b** Share/portal UI, schema administration, metadata types | complete except restore UX |
-| **Q** Acquia parity, 20 slices | Q.1–Q.18 done (Q.14 includes all three portal sources); Q.14b, Q.19 and Q.20 open |
+| **Q** Acquia parity, 20 slices | Q.1–Q.18 and Q.19a done; Q.14b, Q.19b and Q.20 open |
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | **done** — two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query, the MCP server |
 | **M6** Workflow/proofing, annotations, analytics | not started |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** Q.19 refine-search → Q.14b collections in the app → Q.20 sundries → M4 local AI → M6 → M3d → Pre-GA.
+**Next up, in order:** Q.19b dependent fields → Q.14b collections in the app → Q.20 sundries → M4 local AI → M6 → M3d → Pre-GA.
 
 **`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
 note carried; `DECISIONS.md` records what was chosen. Two of them needed code: a portal may now be backed by a
@@ -2290,7 +2290,43 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
       In the app: an Export CSV button beside Advanced, a `fetch` and a blob rather than a link because the
       endpoint is authenticated and an `<a href>` carries no header, and the server's sentence shown verbatim
       when a set is too large.
-- [ ] **Q.19 Refine-search configuration**, including dependent metadata fields.
+- [x] **Q.19a Refine-search configuration.** Dependent metadata fields are Q.19b below.
+
+      Until this, the rail was every facetable field ordered by `display_order`, then every vocabulary by
+      label, then the four built-ins — a reasonable default and not something a tenant could change. A library
+      with thirty facetable fields has a rail nobody scrolls to the bottom of, and the two filters that matter
+      are wherever the schema happened to put them.
+
+      **An entry is a kind and a name**, not a field: `field:brand`, `taxonomy:<uuid>`, `builtin:stars`. That is
+      what lets the four built-ins be arranged and switched off like anything else — "we do not use ratings" is
+      expressible without asking us — and what stops a vocabulary called `brand` colliding with a field of the
+      same name. The shape is a CHECK constraint rather than a handler's validation, because a row naming none
+      of the three would be a rail entry nothing can render, failing as an absence.
+
+      **Absent means default.** A tenant that has never configured anything has no rows and gets the order the
+      schema implies. Seeding the defaults at provision time was the alternative and it is worse: a field
+      defined next month would be missing from a table that looked complete, and the rail would quietly stop
+      offering it. For the same reason, an entry the configuration does not mention appears *after* everything
+      configured rather than vanishing — a filter that disappears because somebody arranged the rail last year
+      is a filter nobody knows to ask for.
+
+      **Disabling is not un-facetable.** `field_defs.facetable` is a resource decision — faceting free text
+      produces a bucket per distinct value — and it governs whether the count may be computed at all. This is
+      presentation: a field can be facetable and hidden, which is how `stars:4` stays typeable in the box while
+      the star rail comes off the screen. The order is applied *before* counting, so a hidden facet is not three
+      queries nobody reads.
+
+      Move-up and move-down rather than drag, because the keyboard equivalent of drag *is* those two buttons —
+      building them first means one interaction that works everywhere. Disabled entries stay on screen under a
+      divider, since you cannot re-enable what you cannot see.
+
+      Nine mutations caught. One survivor was a test with no vocabulary in it, so "a taxonomy is an entry too"
+      had nothing to prove. Driven live: configuring `colours, orientation, brand, status` reordered the real
+      rail, moving a row in the browser moved it again, and the screen was reading field *keys* where the tenant
+      had written labels — the catalogue, not the definitions, is what a person-facing list needs.
+
+- [ ] **Q.19b Dependent metadata fields.** A field whose relevance depends on another field's value: shown when
+      the parent matches, and required only when shown.
 - [ ] **Q.20 Site branding, webhook delivery, the admin worklists, tag vocabulary administration.** The
   worklists are the cheapest real value on this list: they are queries over data damrs already holds.
 

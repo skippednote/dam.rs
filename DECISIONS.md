@@ -2600,3 +2600,17 @@ that quietly omits rows is worse than one that includes a near-miss. Reversible:
 a spreadsheet and the person who re-imports it never learns what was left out. The refusal carries the number,
 because "too many" without one is not actionable. The same reasoning made the export page to the cap rather than
 ask for it in one call, where `assets::MAX_LIMIT` had been silently cutting it to 500 rows. Reversible: yes.
+
+**A rail entry names its kind: `field:`, `taxonomy:`, `builtin:`.** The refine-search panel shows three
+different kinds of thing, and a configuration that only knew about fields could not express "put Campaign above
+Brand" or "we do not use ratings". The prefix is also what stops a vocabulary and a field of the same name being
+one entry. Reversible: no.
+
+**An unconfigured rail entry appears last rather than not at all.** A tenant that never touches the screen gets
+the schema's implied order, and a field defined after somebody last arranged the rail shows up at the end where
+an administrator can move it. A filter that vanishes because of a year-old configuration is a filter nobody
+knows to ask for. Reversible: yes.
+
+**Hiding a facet is presentation; `facetable` is a resource decision.** A field can be facetable and hidden — the
+box still accepts its clauses — and the rail's order is applied before counting, so a hidden facet costs no
+queries. Reversible: yes.

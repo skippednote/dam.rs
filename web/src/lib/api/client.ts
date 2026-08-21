@@ -301,6 +301,26 @@ export async function removeField(key: string): Promise<RemovedField> {
 }
 
 /** Sets the whole field order. The server refuses a partial list. */
+export type RailEntry = components['schemas']['RailEntry'];
+
+/**
+ * The refine-search rail's configuration (Q.19).
+ *
+ * Every entry the rail can show, in the order it will show them, with the disabled ones at the end — you
+ * cannot re-enable what you cannot see.
+ */
+export async function listRail(): Promise<RailEntry[]> {
+	return request<RailEntry[]>('/schema/facets');
+}
+
+/** The whole ordered list of enabled entries. A partial write would be an order nobody asked for. */
+export async function setRail(enabled: string[]): Promise<void> {
+	await request<void>('/schema/facets', {
+		method: 'PUT',
+		body: JSON.stringify({ enabled })
+	});
+}
+
 export async function reorderFields(keys: string[]): Promise<void> {
 	await request<void>('/schema/fields/order', {
 		method: 'PUT',

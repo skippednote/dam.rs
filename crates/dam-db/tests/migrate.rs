@@ -74,7 +74,8 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             // 73 since 0027: `ai_credentials`, a tenant's own sealed model-provider keys.
             // 74 since 0028: `enrichment_settings`, one row saying whether a model may run and what to tell it.
             // 75 since 0030: `portals`, a named branded share of a set.
-            75,
+            // 76 since 0032: `search_facets`, which filters the refine-search rail offers and in what order.
+            76,
         ),
         (
             "view count",
@@ -119,7 +120,9 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             // 263 since 0031: the partial index over `assets.published_at`. Partial because the published set is
             // the interesting one, and on a library where most assets are internal it is a small fraction of
             // the table.
-            263,
+            //
+            // 265 since 0032: `search_facets` gains its primary key and the position index the rail reads.
+            265,
         ),
         (
             "check constraints",
@@ -166,7 +169,11 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             //
             // 92 since 0018: `auto_import_mappings.source` is shape-checked, because a mapping's left-hand side is
             // free text and a malformed one would silently never match.
-            134,
+            //
+            // 135 since 0032: a `search_facets` row must name a field, a taxonomy or a built-in. A row that
+            // named none of them would be a rail entry nothing can render — and it would fail as an absence,
+            // which is the hardest kind of wrong to notice.
+            135,
         ),
         (
             "hnsw indexes",

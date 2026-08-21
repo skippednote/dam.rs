@@ -16,6 +16,7 @@
 	 */
 	import { onMount } from 'svelte';
 	import AutoImport from '$lib/components/schema/AutoImport.svelte';
+	import RefineSearch from '$lib/components/schema/RefineSearch.svelte';
 	import MetadataTypes from '$lib/components/schema/MetadataTypes.svelte';
 	import UploadProfiles from '$lib/components/schema/UploadProfiles.svelte';
 	import {
@@ -409,6 +410,12 @@
 			</p>
 		{/if}
 	</section>
+
+	<!-- The rail comes straight after the fields, because what it can offer *is* the facetable ones: reading
+	     the two together is how somebody sees why a field they just marked facetable turned up at the bottom of
+	     a panel. -->
+	<hr class="border-line" />
+	<RefineSearch />
 
 	<!-- Types come after the fields because a type is a selection *over* them; the page reads in the order
 	     the two depend on each other. `onchanged` reloads the field list, since a type edit can change a

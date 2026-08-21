@@ -34,6 +34,7 @@ pub mod provenance;
 pub mod provision;
 pub mod query_sql;
 pub mod quotas;
+pub mod rail;
 pub mod restores;
 pub mod rights;
 pub mod saved_searches;

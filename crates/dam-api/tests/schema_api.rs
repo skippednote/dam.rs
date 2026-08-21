@@ -18,6 +18,9 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 struct Fixture {
+    /// Held so the index directory outlives the fixture — the search router needs one even when no test
+    /// searches through the index.
+    _indexes: tempfile::TempDir,
     _pg: PostgresHarness,
     app: axum::Router,
     acme: PgPool,
@@ -34,13 +37,23 @@ async fn fixture() -> Fixture {
 
     let key = provision(&global, "acme", "a@example.com").await;
     let read_only_key = scoped_key(&global, "acme", &["asset:read"]).await;
+    // The search router is mounted alongside, because the interesting question about rail *configuration* is
+    // whether the rail obeys it — a stored order nothing reads is a settings screen that lies.
+    let index_dir = tempfile::tempdir().expect("index dir");
     let app = router(SchemaState {
         global: global.clone(),
-    });
+    })
+    .merge(dam_api::search::router(dam_api::search::SearchState {
+        global: global.clone(),
+        indexes: std::sync::Arc::new(dam_search::IndexPool::new(dam_search::PoolConfig::new(
+            index_dir.path(),
+        ))),
+    }));
     let acme = pg.pool_for_schema("t_acme").await.expect("acme pool");
 
     Fixture {
         _pg: pg,
+        _indexes: index_dir,
         app,
         acme,
         key,
@@ -171,6 +184,7 @@ async fn the_schema_admin_contract_holds() {
     a_locked_kind_is_a_conflict_not_a_bad_request(&f).await;
     a_removal_says_what_goes_dark(&f).await;
     a_reorder_takes_the_whole_list(&f).await;
+    the_rail_is_ordered_and_switched_off_by_the_tenant(&f).await;
 }
 
 #[tokio::test]
@@ -745,4 +759,123 @@ async fn a_reorder_takes_the_whole_list(f: &Fixture) {
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+// ─── the refine-search rail (Q.19) ──────────────────────────────────────────
+
+/// The rail is the tenant's to arrange, including the parts that are not fields.
+///
+/// A library with thirty facetable fields has a rail nobody scrolls to the bottom of, and until this the order
+/// was whatever the schema implied. The built-ins are in it too, which is what makes "we do not use ratings"
+/// expressible without asking us.
+async fn the_rail_is_ordered_and_switched_off_by_the_tenant(f: &Fixture) {
+    // Two facetable fields, so there is something to reorder.
+    for key in ["brandish", "campaignish"] {
+        let (status, body) = call(
+            f,
+            "POST",
+            "/schema/fields",
+            &f.key,
+            Some(json!({ "key": key, "label": key, "kind": "text", "facetable": true })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+
+    // A vocabulary, because a rail entry is not only a field: the whole point of the entry naming its *kind*
+    // is that a taxonomy and a field can share a name and still be two entries.
+    let vocabulary: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO taxonomies (id, key, label, kind) \
+         VALUES (gen_random_uuid(), 'materials', 'Materials', 'vocabulary') RETURNING id",
+    )
+    .fetch_one(&f.acme)
+    .await
+    .expect("vocabulary");
+
+    let (status, candidates) = call(f, "GET", "/schema/facets", &f.key, None).await;
+    assert_eq!(status, StatusCode::OK, "{candidates}");
+    let entries: Vec<&str> = candidates
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter_map(|entry| entry["entry"].as_str())
+        .collect();
+    assert!(entries.contains(&"field:brandish"), "{candidates}");
+    assert!(
+        entries.contains(&format!("taxonomy:{vocabulary}").as_str()),
+        "a vocabulary is an entry too: {candidates}"
+    );
+    // The four built-ins are entries like any other, which is the point.
+    for builtin in [
+        "builtin:status",
+        "builtin:orientation",
+        "builtin:stars",
+        "builtin:has",
+    ] {
+        assert!(
+            entries.contains(&builtin),
+            "{builtin} is missing: {candidates}"
+        );
+    }
+
+    // Configure: campaignish first, brandish second, and no ratings at all.
+    let (status, body) = call(
+        f,
+        "PUT",
+        "/schema/facets",
+        &f.key,
+        Some(json!({ "enabled": ["field:campaignish", "field:brandish", "builtin:status"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+    let (_, after) = call(f, "GET", "/schema/facets", &f.key, None).await;
+    let enabled: Vec<&str> = after
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter(|entry| entry["is_enabled"] == json!(true))
+        .filter_map(|entry| entry["entry"].as_str())
+        .collect();
+    assert_eq!(
+        enabled,
+        vec!["field:campaignish", "field:brandish", "builtin:status"],
+        "the tenant's order, and only what they enabled: {after}"
+    );
+    // The disabled ones are still listed — you cannot re-enable what you cannot see.
+    let listed: Vec<&str> = after
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter_map(|entry| entry["entry"].as_str())
+        .collect();
+    assert!(listed.contains(&"builtin:stars"), "{after}");
+
+    // And the rail itself is in that order, with the disabled facet absent rather than empty.
+    let (status, rail) = call(f, "GET", "/search/facets", &f.key, None).await;
+    assert_eq!(status, StatusCode::OK, "{rail}");
+    let keys: Vec<&str> = rail
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter_map(|facet| facet["key"].as_str())
+        .collect();
+    assert_eq!(
+        keys,
+        vec!["campaignish", "brandish", "status"],
+        "the rail must be the configuration: {rail}"
+    );
+
+    // An entry the rail cannot show is refused rather than stored: a typo'd key would be a row matching
+    // nothing, silently holding the position an administrator meant for something real.
+    let (status, body) = call(
+        f,
+        "PUT",
+        "/schema/facets",
+        &f.key,
+        Some(json!({ "enabled": ["field:no_such_field"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body.to_string().contains("no_such_field"), "{body}");
 }
