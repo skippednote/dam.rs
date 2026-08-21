@@ -2361,6 +2361,7 @@ export interface components {
         FieldDefinition: {
             /** @description Whether an enrichment run may write it. */
             ai_writable: boolean;
+            depends_on?: null | components["schemas"]["FieldDependency"];
             facetable: boolean;
             key: string;
             /** @description The database spelling of the kind, so a client can pick an input type. */
@@ -2382,6 +2383,13 @@ export interface components {
             search_alias?: string | null;
             /** Format: uuid */
             taxonomy_id?: string | null;
+        };
+        /** @description The condition a dependent field hangs off (Q.19b). */
+        FieldDependency: {
+            /** @description The field whose value decides. */
+            key: string;
+            /** @description The values that make this one apply. Compared as text, so `true` and `2026` work as written. */
+            values: string[];
         };
         /**
          * @description How long a `GET` takes to become possible.

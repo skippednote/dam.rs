@@ -6052,6 +6052,17 @@
             "type": "boolean",
             "description": "Whether an enrichment run may write it."
           },
+          "depends_on": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/FieldDependency",
+                "description": "When this field applies at all (Q.19b).\n\nPresent so the editor can *hide* an inapplicable field rather than offering one whose value the server\nwill refuse. The refusal exists too — a client is not trusted with a rule — but a form that asks a\nquestion and then rejects the answer is a form nobody trusts back."
+              }
+            ]
+          },
           "facetable": {
             "type": "boolean"
           },
@@ -6090,6 +6101,27 @@
               "null"
             ],
             "format": "uuid"
+          }
+        }
+      },
+      "FieldDependency": {
+        "type": "object",
+        "description": "The condition a dependent field hangs off (Q.19b).",
+        "required": [
+          "key",
+          "values"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "The field whose value decides."
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The values that make this one apply. Compared as text, so `true` and `2026` work as written."
           }
         }
       },

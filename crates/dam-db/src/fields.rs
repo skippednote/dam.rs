@@ -93,6 +93,10 @@ pub struct Catalogued {
     /// cannot see it cannot explain why a field it just added returns nothing from search.
     pub searchable: bool,
     pub search_alias: Option<String>,
+    /// The validation object as stored, so a caller can read the parts it cares about — the dependency, for a
+    /// form that has to decide whether to show the field at all (Q.19b). Passed through rather than parsed
+    /// here, because `Constraints` is `dam_core`'s vocabulary and this struct is a row.
+    pub validation: Value,
     /// The taxonomy a term field is bound to, when it is one.
     pub taxonomy_id: Option<Uuid>,
 }
@@ -116,10 +120,11 @@ where
             bool,
             Option<String>,
             Option<Uuid>,
+            Value,
         ),
     >(
         "SELECT key, label, kind, multivalued, required, read_only, ai_writable, facetable, \
-                searchable, search_alias, taxonomy_id \
+                searchable, search_alias, taxonomy_id, validation \
          FROM field_defs ORDER BY display_order, key",
     )
     .fetch_all(executor)
@@ -140,6 +145,7 @@ where
                 searchable,
                 search_alias,
                 taxonomy_id,
+                validation,
             )| Catalogued {
                 key,
                 label,
@@ -152,6 +158,7 @@ where
                 searchable,
                 search_alias,
                 taxonomy_id,
+                validation,
             },
         )
         .collect())
@@ -233,7 +240,9 @@ where
     E: sqlx::PgExecutor<'e> + Copy,
 {
     let defs = load(executor).await.map_err(ValidationOutcome::Failed)?;
-    let accepted = dam_core::fields::validate(&defs, payload, mode, writer)
+    // No stored context: this entry point has no asset, so a dependent field is judged on the payload alone.
+    // Every asset-scoped write goes through `validate_for_on`, which loads what is already there.
+    let accepted = dam_core::fields::validate(&defs, payload, mode, writer, &Map::new())
         .map_err(ValidationOutcome::Rejected)?;
 
     let rejections = check_taxonomy_refs(executor, &accepted.taxonomy_refs)
@@ -297,7 +306,22 @@ pub async fn validate_for_on(
             })?,
         None => load(&mut *conn).await.map_err(ValidationOutcome::Failed)?,
     };
-    let accepted = dam_core::fields::validate(&defs, payload, mode, writer)
+    // What the asset already carries, so a dependent field's condition is judged on the document as it will
+    // be rather than on the patch alone (Q.19b). An edit that fills in a child field without restating its
+    // parent is the ordinary shape of an edit, and judging the payload alone would refuse it.
+    let stored: Map<String, Value> = match for_asset {
+        Some(asset_id) => sqlx::query_scalar::<_, Value>(
+            "SELECT coalesce(values, '{}'::jsonb) FROM asset_metadata WHERE asset_id = $1",
+        )
+        .bind(asset_id)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(|error| ValidationOutcome::Failed(Error::from(error)))?
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default(),
+        None => Map::new(),
+    };
+    let accepted = dam_core::fields::validate(&defs, payload, mode, writer, &stored)
         .map_err(ValidationOutcome::Rejected)?;
 
     let rejections = check_taxonomy_refs(&mut *conn, &accepted.taxonomy_refs)
@@ -338,6 +362,41 @@ impl std::fmt::Display for ValidationOutcome {
 }
 
 impl std::error::Error for ValidationOutcome {}
+
+/// Refuses a dependency that cannot be evaluated (Q.19b).
+///
+/// Three ways it cannot be: naming itself, naming a field that does not exist, or naming a field that is
+/// itself dependent. The last is the one-level rule, and it is enforced here rather than tolerated because a
+/// chain turns "is this field applicable" into a graph walk with cycles in it — and the failure of a cycle is
+/// a form that renders nothing, with no error to read.
+async fn check_dependency(
+    conn: &mut sqlx::PgConnection,
+    key: &str,
+    validation: &Value,
+) -> Result<(), SchemaRefusal> {
+    let Some(dependency) = dam_core::fields::Constraints::from_json(validation).depends_on else {
+        return Ok(());
+    };
+    if dependency.key == key {
+        return Err(SchemaRefusal::SelfDependency(key.to_owned()));
+    }
+    let parent: Option<Value> =
+        sqlx::query_scalar("SELECT validation FROM field_defs WHERE key = $1")
+            .bind(&dependency.key)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(|error| SchemaRefusal::Database(Error::from(error)))?;
+    let Some(parent_validation) = parent else {
+        return Err(SchemaRefusal::UnknownParent(dependency.key));
+    };
+    if dam_core::fields::Constraints::from_json(&parent_validation)
+        .depends_on
+        .is_some()
+    {
+        return Err(SchemaRefusal::DependencyChain(dependency.key));
+    }
+    Ok(())
+}
 
 /// Confirms every referenced term exists and belongs to its field's taxonomy.
 ///
@@ -434,6 +493,18 @@ pub enum SchemaRefusal {
 
     #[error("a taxonomy field needs the taxonomy it is bound to")]
     TaxonomyRequired,
+
+    #[error("`{0}` cannot depend on itself")]
+    SelfDependency(String),
+
+    #[error("no field `{0}` to depend on")]
+    UnknownParent(String),
+
+    #[error(
+        "`{0}` is itself dependent, and a dependency is one level: a chain needs cycle detection, an \
+         evaluation order, and an answer to what a field two hops from a cleared parent means"
+    )]
+    DependencyChain(String),
 
     #[error("no taxonomy {0} exists")]
     UnknownTaxonomy(Uuid),
@@ -588,6 +659,7 @@ pub async fn define_on(
     let kind =
         FieldKind::parse(&spec.kind).map_err(|_| SchemaRefusal::UnknownKind(spec.kind.clone()))?;
     check_taxonomy(&mut *conn, kind, spec.taxonomy_id).await?;
+    check_dependency(&mut *conn, &spec.key, &spec.validation).await?;
 
     // Checked rather than left to the unique index, so the refusal names which of the two collided: a
     // driver error on a two-column insert cannot tell an administrator whether to change the key or the
@@ -645,6 +717,11 @@ pub async fn amend_on(
     change: Amendment,
 ) -> Result<Amended, SchemaRefusal> {
     let before = one(&mut *conn, key).await?;
+
+    // An amendment can introduce a dependency, so it gets the same three checks a definition does (Q.19b).
+    if let Some(validation) = &change.validation {
+        check_dependency(&mut *conn, key, validation).await?;
+    }
 
     let kind = match &change.kind {
         Some(raw) => {

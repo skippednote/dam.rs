@@ -78,6 +78,78 @@ async fn validate(pool: &PgPool, payload: serde_json::Value) -> Result<(), Vec<(
     }
 }
 
+/// The wiring `validate_for_on` exists for (Q.19b).
+///
+/// The rule itself is `dam_core`'s and tested there. What this covers is that the asset-scoped entry point
+/// *loads* what the asset already carries: an edit that fills in a child field without restating its parent is
+/// the ordinary shape of an edit, and a validator judging the payload alone would refuse it.
+async fn a_dependent_field_is_judged_against_what_the_asset_already_carries(pool: &PgPool) {
+    field(pool, "has_people", "bool", None, false).await;
+    sqlx::query(
+        "INSERT INTO field_defs (id, key, label, kind, validation) \
+         VALUES (gen_random_uuid(), 'release_reference', 'Release reference', 'text', \
+                 '{\"depends_on\": {\"key\": \"has_people\", \"values\": [\"true\"]}}'::jsonb)",
+    )
+    .execute(pool)
+    .await
+    .expect("dependent field");
+
+    // Two assets: one whose stored metadata satisfies the condition, one whose does not.
+    let with_people = Uuid::new_v4();
+    let without = Uuid::new_v4();
+    for (id, has_people) in [(with_people, true), (without, false)] {
+        sqlx::query(
+            "INSERT INTO assets (id, content_hash, filename, mime, bytes, version_group_id) \
+             VALUES ($1, $2, 'shoot.jpg', 'image/jpeg', 10, $1)",
+        )
+        .bind(id)
+        .bind(format!("{id}"))
+        .execute(pool)
+        .await
+        .expect("asset");
+        sqlx::query("INSERT INTO asset_metadata (asset_id, values) VALUES ($1, $2)")
+            .bind(id)
+            .bind(serde_json::json!({"has_people": has_people}))
+            .execute(pool)
+            .await
+            .expect("metadata");
+    }
+
+    let patch = serde_json::json!({"release_reference": "MR-9"});
+    let object = patch.as_object().expect("object").clone();
+
+    let mut conn = pool.acquire().await.expect("conn");
+    let accepted = fields::validate_for_on(
+        &mut conn,
+        Some(with_people),
+        &object,
+        Mode::Patch,
+        Writer::Human,
+    )
+    .await;
+    assert!(
+        accepted.is_ok(),
+        "the stored parent satisfies the condition: {:?}",
+        accepted.err().map(|e| e.to_string())
+    );
+
+    let refused = fields::validate_for_on(
+        &mut conn,
+        Some(without),
+        &object,
+        Mode::Patch,
+        Writer::Human,
+    )
+    .await;
+    match refused {
+        Err(ValidationOutcome::Rejected(rejections)) => {
+            assert_eq!(rejections[0].key, "release_reference");
+            assert_eq!(rejections[0].code, "not_applicable");
+        }
+        other => panic!("an inapplicable field must be refused: {other:?}"),
+    }
+}
+
 // ─── the case the task names ────────────────────────────────────────────────
 
 async fn a_taxonomy_ref_refuses_a_term_from_the_wrong_taxonomy(pool: &PgPool) {
@@ -204,6 +276,7 @@ async fn the_field_validation_invariants_hold() {
     a_term_that_does_not_exist_is_distinguished_from_the_wrong_taxonomy(&pool).await;
     every_bad_term_in_a_multivalued_field_is_reported(&pool).await;
     definitions_are_loaded_with_their_constraints(&pool).await;
+    a_dependent_field_is_judged_against_what_the_asset_already_carries(&pool).await;
     // Last: it drops a CHECK constraint and inserts a row that makes `load` fail for every
     // subsequent case.
     a_field_kind_this_build_does_not_know_is_an_error_not_a_default(&pool).await;

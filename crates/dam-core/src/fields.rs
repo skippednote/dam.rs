@@ -123,6 +123,57 @@ pub struct Constraints {
     /// A regular expression, applied anchored — see [`MAX_PATTERN_BYTES`].
     pub pattern: Option<String>,
     pub enum_values: Option<Vec<String>>,
+    /// When this field applies at all (Q.19b).
+    ///
+    /// In `validation` rather than a column of its own, and that is a judgement worth stating: a dependency
+    /// *is* a constraint — "this field is only meaningful when that one says so" — and the column already
+    /// exists, so the alternative was a migration plus a new `FieldDef` member plus every construction site in
+    /// the workspace. An older build reading a newer definition ignores an unknown member, which here means
+    /// showing the field always: the safe direction, since the other one refuses somebody's data.
+    pub depends_on: Option<Dependency>,
+}
+
+/// The condition under which a field applies (Q.19b).
+///
+/// One level only: a field's parent must not itself be dependent. Chains are where this becomes a graph, and a
+/// graph needs cycle detection, an evaluation order, and an answer to "what does a field two hops from a
+/// cleared parent mean" — none of which anybody has asked for. The rule is checked where a definition is
+/// written, so a schema cannot hold one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dependency {
+    /// The field whose value decides.
+    pub key: String,
+    /// The values that make this field apply. Compared as text, so `true`, `2026` and `Yes` all work — the
+    /// parent's own kind already governs what can be stored there.
+    pub values: Vec<String>,
+}
+
+impl Dependency {
+    /// Whether this field applies, given the effective document.
+    ///
+    /// The *effective* document is the patch over what is stored: a dependent field's parent is often
+    /// untouched by the write that fills the child in, and judging the condition on the payload alone would
+    /// refuse a perfectly good edit.
+    #[must_use]
+    pub fn holds(&self, effective: &Map<String, Value>) -> bool {
+        let Some(actual) = effective.get(&self.key) else {
+            return false;
+        };
+        let matches = |value: &Value| {
+            let rendered = match value {
+                Value::String(text) => text.clone(),
+                Value::Null => return false,
+                other => other.to_string(),
+            };
+            self.values.iter().any(|wanted| wanted == &rendered)
+        };
+        match actual {
+            // A multivalued parent applies if *any* of its values match, which is what "when the shoot is
+            // tagged editorial" means to the person writing the rule.
+            Value::Array(items) => items.iter().any(matches),
+            single => matches(single),
+        }
+    }
 }
 
 /// Longest permitted `pattern`.
@@ -166,7 +217,61 @@ impl Constraints {
                     .map(str::to_owned)
                     .collect()
             }),
+            // A dependency with no values is no dependency: it could never hold, so the field would be
+            // permanently inapplicable — read as absent rather than stored as a field nobody can fill.
+            depends_on: object
+                .get("depends_on")
+                .and_then(Value::as_object)
+                .and_then(|dependency| {
+                    let key = dependency.get("key").and_then(Value::as_str)?;
+                    let values: Vec<String> = dependency
+                        .get("values")
+                        .and_then(Value::as_array)?
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect();
+                    (!values.is_empty()).then(|| Dependency {
+                        key: key.to_owned(),
+                        values,
+                    })
+                }),
         }
+    }
+
+    /// The `validation` object these constraints came from, for writing one back.
+    ///
+    /// Only what is set, so a definition with no constraints stores `{}` rather than a document of nulls — and
+    /// an unknown member a newer build wrote is *lost* here rather than preserved, which is the one thing this
+    /// round trip cannot do and is worth knowing before somebody adds a constraint on an older deployment.
+    #[must_use]
+    pub fn to_json(&self) -> Value {
+        let mut object = Map::new();
+        if let Some(min) = self.min {
+            object.insert("min".to_owned(), min.into());
+        }
+        if let Some(max) = self.max {
+            object.insert("max".to_owned(), max.into());
+        }
+        if let Some(min_length) = self.min_length {
+            object.insert("min_length".to_owned(), min_length.into());
+        }
+        if let Some(max_length) = self.max_length {
+            object.insert("max_length".to_owned(), max_length.into());
+        }
+        if let Some(pattern) = &self.pattern {
+            object.insert("pattern".to_owned(), pattern.clone().into());
+        }
+        if let Some(values) = &self.enum_values {
+            object.insert("enum".to_owned(), values.clone().into());
+        }
+        if let Some(dependency) = &self.depends_on {
+            object.insert(
+                "depends_on".to_owned(),
+                serde_json::json!({"key": dependency.key, "values": dependency.values}),
+            );
+        }
+        Value::Object(object)
     }
 }
 
@@ -261,10 +366,19 @@ pub fn validate(
     payload: &Map<String, Value>,
     mode: Mode,
     writer: Writer,
+    stored: &Map<String, Value>,
 ) -> Result<Accepted, Vec<Rejection>> {
     let mut rejections = Vec::new();
     let mut values = BTreeMap::new();
     let mut taxonomy_refs = Vec::new();
+
+    // The document as it will be, for judging dependencies (Q.19b): the patch over what is already there. A
+    // condition judged on the payload alone would refuse a write that filled in a child field without
+    // restating its parent, which is the ordinary shape of an edit.
+    let mut effective = stored.clone();
+    for (key, value) in payload {
+        effective.insert(key.clone(), value.clone());
+    }
 
     for (key, value) in payload {
         let Some(def) = defs.iter().find(|d| &d.key == key) else {
@@ -292,6 +406,26 @@ pub fn validate(
                 key,
                 "not_ai_writable",
                 "enrichment may not write to this field",
+            ));
+            continue;
+        }
+
+        // A field whose condition does not hold is not a field this asset has (Q.19b). Refused rather than
+        // dropped, for the same reason an unknown key is: a value silently discarded is a value somebody
+        // believes they saved. Clearing is allowed through, because letting somebody empty a field that has
+        // become irrelevant is the only way to tidy up after a parent changes.
+        if let Some(dependency) = &def.constraints.depends_on
+            && !value.is_null()
+            && !dependency.holds(&effective)
+        {
+            rejections.push(Rejection::new(
+                key,
+                "not_applicable",
+                format!(
+                    "this field applies only when {} is one of {}",
+                    dependency.key,
+                    dependency.values.join(", ")
+                ),
             ));
             continue;
         }
@@ -369,6 +503,17 @@ pub fn validate(
 
     if mode == Mode::Create {
         for def in defs.iter().filter(|d| d.required && !d.read_only) {
+            // A required *dependent* field is required only when it applies (Q.19b). Otherwise every asset
+            // would have to answer a question that is not being asked of it — which is the whole point of
+            // making the field dependent.
+            if def
+                .constraints
+                .depends_on
+                .as_ref()
+                .is_some_and(|dependency| !dependency.holds(&effective))
+            {
+                continue;
+            }
             if !values.contains_key(&def.key) && !payload.contains_key(&def.key) {
                 rejections.push(Rejection::new(
                     &def.key,

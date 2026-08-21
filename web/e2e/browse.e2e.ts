@@ -156,6 +156,33 @@ const FIELDS = [
 		search_alias: 'col',
 		taxonomy_id: null
 	},
+	// Q.19b. A dependent field and the parent it hangs off: the release reference applies only to a photograph
+	// with people in it.
+	{
+		key: 'has_people',
+		label: 'Has people',
+		kind: 'bool',
+		multivalued: false,
+		required: false,
+		read_only: false,
+		ai_writable: false,
+		facetable: true,
+		search_alias: null,
+		taxonomy_id: null
+	},
+	{
+		key: 'release_reference',
+		label: 'Release reference',
+		kind: 'text',
+		multivalued: false,
+		required: false,
+		read_only: false,
+		ai_writable: false,
+		facetable: false,
+		search_alias: null,
+		taxonomy_id: null,
+		depends_on: { key: 'has_people', values: ['true'] }
+	},
 	{
 		key: 'ingested_at',
 		label: 'Ingested at',
@@ -1258,4 +1285,28 @@ test('the bulk bar has no axe violations', async ({ page }) => {
 
 	const results = await new AxeBuilder({ page }).withTags(WCAG_21_AA).analyze();
 	expect(results.violations).toEqual([]);
+});
+
+test('a dependent field appears only when its condition is met', async ({ page }) => {
+	// Q.19b. The server refuses an inapplicable value too; hiding the box is why nobody has to see that
+	// refusal. A form that asks a question and then rejects the answer is a form nobody trusts back.
+	await connect(page);
+	await page.goto('/assets');
+	await page.getByRole('gridcell').nth(0).click();
+
+	const panel = page.getByRole('complementary', { name: 'Selected asset' });
+	await expect(panel.getByLabel('Has people')).toBeVisible();
+	// Not rendered at all, and the count below says why — a field simply absent reads as a schema somebody
+	// forgot to finish.
+	await expect(panel.getByLabel('Release reference')).toHaveCount(0);
+	await expect(panel.getByText(/applies only when another field says so/)).toBeVisible();
+
+	// Answering the parent reveals it in the same breath, from the draft rather than after a save: a form that
+	// only revealed it on reload is a form somebody saves twice.
+	await panel.getByLabel('Has people').fill('true');
+	await expect(panel.getByLabel('Release reference')).toBeVisible();
+
+	// And taking the answer back hides it again.
+	await panel.getByLabel('Has people').fill('false');
+	await expect(panel.getByLabel('Release reference')).toHaveCount(0);
 });

@@ -89,6 +89,22 @@ pub struct FieldDefinition {
     /// The shorthand prefix, when the tenant defined one: `bra:acme` for `brand`.
     pub search_alias: Option<String>,
     pub taxonomy_id: Option<Uuid>,
+    /// When this field applies at all (Q.19b).
+    ///
+    /// Present so the editor can *hide* an inapplicable field rather than offering one whose value the server
+    /// will refuse. The refusal exists too — a client is not trusted with a rule — but a form that asks a
+    /// question and then rejects the answer is a form nobody trusts back.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub depends_on: Option<FieldDependency>,
+}
+
+/// The condition a dependent field hangs off (Q.19b).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct FieldDependency {
+    /// The field whose value decides.
+    pub key: String,
+    /// The values that make this one apply. Compared as text, so `true` and `2026` work as written.
+    pub values: Vec<String>,
 }
 
 /// The tenant's field definitions, in display order.
@@ -127,6 +143,13 @@ pub async fn fields(
                 facetable: def.facetable,
                 search_alias: def.search_alias,
                 taxonomy_id: def.taxonomy_id,
+                // From `validation`, where the definition lives — see `dam_core::fields::Constraints`.
+                depends_on: dam_core::fields::Constraints::from_json(&def.validation)
+                    .depends_on
+                    .map(|dependency| FieldDependency {
+                        key: dependency.key,
+                        values: dependency.values,
+                    }),
             })
             .collect(),
     ))

@@ -64,6 +64,32 @@
 	 */
 	const editable = $derived(fields.filter((field) => !field.read_only));
 
+	/**
+	 * Whether a dependent field applies to the asset as it currently stands (Q.19b).
+	 *
+	 * Judged on the *draft* rather than the saved values, so ticking "has people" reveals the release field in
+	 * the same breath — a form that only revealed it after a save would be a form somebody saves twice.
+	 *
+	 * The server refuses an inapplicable value too; this is not the check, it is the reason nobody has to see
+	 * the check. A form that asks a question and then rejects the answer is a form nobody trusts back.
+	 */
+	function applies(field: FieldDefinition): boolean {
+		const dependency = field.depends_on;
+		if (!dependency) return true;
+		const parent = fields.find((one) => one.key === dependency.key);
+		// A draft value is text; a saved one may be an array or a boolean. Both are compared as text, which is
+		// what the server does with the rule.
+		const raw = parent && parent.key in draft ? draft[parent.key] : base[dependency.key];
+		const held = Array.isArray(raw)
+			? raw.map((item) => String(item))
+			: String(raw ?? '')
+					.split(',')
+					.map((item) => item.trim());
+		return dependency.values.some((wanted) => held.includes(wanted));
+	}
+
+	const shown = $derived(editable.filter(applies));
+
 	// Keyed on the asset, not on its values: carrying an unsaved edit across a selection change would
 	// silently apply one asset's caption to another, and re-seeding on every value change would discard an
 	// edit in progress the moment anything upstream refreshed.
@@ -184,7 +210,7 @@
 	</p>
 {:else}
 	<form class="space-y-4" onsubmit={save}>
-		{#each editable as field (field.key)}
+		{#each shown as field (field.key)}
 			{@const problem = problemFor(field.key)}
 			<div class="space-y-1">
 				<label
@@ -248,6 +274,18 @@
 				{fields.length - editable.length} read-only field{fields.length - editable.length === 1
 					? ''
 					: 's'} not shown — set by ingest or a connector.
+			</p>
+		{/if}
+
+		{#if editable.length > shown.length}
+			<!--
+				Said rather than left to be noticed (Q.19b). A field that is simply absent reads as a schema
+				somebody forgot to finish; naming the condition tells an editor which other answer would bring
+				it back.
+			-->
+			<p class="text-xs text-muted">
+				{editable.length - shown.length} field{editable.length - shown.length === 1 ? '' : 's'} not shown
+				— each applies only when another field says so.
 			</p>
 		{/if}
 	</form>

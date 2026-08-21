@@ -185,6 +185,7 @@ async fn the_schema_admin_contract_holds() {
     a_removal_says_what_goes_dark(&f).await;
     a_reorder_takes_the_whole_list(&f).await;
     the_rail_is_ordered_and_switched_off_by_the_tenant(&f).await;
+    a_dependency_is_one_level_and_names_a_field_that_exists(&f).await;
 }
 
 #[tokio::test]
@@ -878,4 +879,90 @@ async fn the_rail_is_ordered_and_switched_off_by_the_tenant(f: &Fixture) {
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert!(body.to_string().contains("no_such_field"), "{body}");
+}
+
+/// A dependency is checked where it is written (Q.19b).
+///
+/// Three ways it cannot be evaluated, and all three are the administrator's to fix in the form: naming itself,
+/// naming nothing, or naming a field that is itself dependent. The last is the one-level rule — a chain turns
+/// "does this field apply" into a graph walk with cycles in it, and a cycle's failure is a form that renders
+/// nothing with no error to read.
+async fn a_dependency_is_one_level_and_names_a_field_that_exists(f: &Fixture) {
+    let (status, body) = call(
+        f,
+        "POST",
+        "/schema/fields",
+        &f.key,
+        Some(json!({
+            "key": "has_people", "label": "Has people", "kind": "bool", "facetable": true
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    // The good case first, so the refusals below are about the dependency rather than about the request.
+    let dependent = json!({
+        "key": "release_reference", "label": "Release reference", "kind": "text",
+        "validation": {"depends_on": {"key": "has_people", "values": ["true"]}}
+    });
+    let (status, body) = call(f, "POST", "/schema/fields", &f.key, Some(dependent)).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    // Naming a field that does not exist.
+    let (status, body) = call(
+        f,
+        "POST",
+        "/schema/fields",
+        &f.key,
+        Some(json!({
+            "key": "orphan", "label": "Orphan", "kind": "text",
+            "validation": {"depends_on": {"key": "no_such_field", "values": ["true"]}}
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body.to_string().contains("no_such_field"), "{body}");
+
+    // Naming itself.
+    let (status, body) = call(
+        f,
+        "POST",
+        "/schema/fields",
+        &f.key,
+        Some(json!({
+            "key": "narcissus", "label": "Narcissus", "kind": "text",
+            "validation": {"depends_on": {"key": "narcissus", "values": ["true"]}}
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body.to_string().contains("itself"), "{body}");
+
+    // Naming a field that is itself dependent — the one-level rule.
+    let (status, body) = call(
+        f,
+        "POST",
+        "/schema/fields",
+        &f.key,
+        Some(json!({
+            "key": "second_hop", "label": "Second hop", "kind": "text",
+            "validation": {"depends_on": {"key": "release_reference", "values": ["MR-1"]}}
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body.to_string().contains("one level"), "{body}");
+
+    // And an amendment cannot smuggle one in either.
+    let (status, body) = call(
+        f,
+        "PATCH",
+        "/schema/fields/has_people",
+        &f.key,
+        Some(json!({
+            "validation": {"depends_on": {"key": "release_reference", "values": ["MR-1"]}}
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
 }

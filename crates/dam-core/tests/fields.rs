@@ -19,7 +19,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use dam_core::fields::{self, Constraints, FieldDef, FieldKind, Mode, Writer};
-use serde_json::json;
+use serde_json::{Map, json};
 use uuid::Uuid;
 
 fn def(key: &str, kind: FieldKind) -> FieldDef {
@@ -42,7 +42,7 @@ fn create(
     payload: serde_json::Value,
 ) -> Result<fields::Accepted, Vec<fields::Rejection>> {
     let object = payload.as_object().expect("an object").clone();
-    fields::validate(defs, &object, Mode::Create, Writer::Human)
+    fields::validate(defs, &object, Mode::Create, Writer::Human, &Map::new())
 }
 
 fn patch(
@@ -50,7 +50,7 @@ fn patch(
     payload: serde_json::Value,
 ) -> Result<fields::Accepted, Vec<fields::Rejection>> {
     let object = payload.as_object().expect("an object").clone();
-    fields::validate(defs, &object, Mode::Patch, Writer::Human)
+    fields::validate(defs, &object, Mode::Patch, Writer::Human, &Map::new())
 }
 
 fn codes(rejections: &[fields::Rejection]) -> Vec<&str> {
@@ -261,7 +261,7 @@ fn a_read_only_field_refuses_every_writer() {
             .as_object()
             .expect("object")
             .clone();
-        let rejected = fields::validate(&defs, &object, Mode::Create, writer)
+        let rejected = fields::validate(&defs, &object, Mode::Create, writer, &Map::new())
             .expect_err("read-only must refuse");
         assert_eq!(codes(&rejected), vec!["read_only"]);
     }
@@ -280,13 +280,14 @@ fn enrichment_may_only_write_where_ai_writable_says_so() {
         .as_object()
         .expect("object")
         .clone();
-    fields::validate(&defs, &allowed, Mode::Patch, Writer::Ai).expect("ai may write a caption");
+    fields::validate(&defs, &allowed, Mode::Patch, Writer::Ai, &Map::new())
+        .expect("ai may write a caption");
 
     let refused = json!({"legal_notes": "probably fine"})
         .as_object()
         .expect("object")
         .clone();
-    let rejected = fields::validate(&defs, &refused, Mode::Patch, Writer::Ai)
+    let rejected = fields::validate(&defs, &refused, Mode::Patch, Writer::Ai, &Map::new())
         .expect_err("ai must not write legal notes");
     assert_eq!(codes(&rejected), vec!["not_ai_writable"]);
 
@@ -296,7 +297,8 @@ fn enrichment_may_only_write_where_ai_writable_says_so() {
         .as_object()
         .expect("object")
         .clone();
-    fields::validate(&defs, &both, Mode::Create, Writer::Human).expect("a person may write both");
+    fields::validate(&defs, &both, Mode::Create, Writer::Human, &Map::new())
+        .expect("a person may write both");
 }
 
 // ─── constraints ────────────────────────────────────────────────────────────
@@ -503,4 +505,212 @@ fn a_text_value_keeps_its_whitespace_but_an_empty_string_is_not_a_value() {
 
     let rejected = create(&defs, json!({"brand": "   "})).expect_err("blank is not a value");
     assert_eq!(codes(&rejected), vec!["required"]);
+}
+
+// ─── dependent fields (Q.19b) ───────────────────────────────────────────────
+
+/// A field with a dependency, and the parent it hangs off.
+fn dependent_defs() -> Vec<FieldDef> {
+    vec![
+        FieldDef {
+            key: "has_people".to_owned(),
+            kind: FieldKind::Bool,
+            taxonomy_id: None,
+            multivalued: false,
+            required: false,
+            read_only: false,
+            ai_writable: false,
+            facetable: true,
+            constraints: Constraints::default(),
+        },
+        FieldDef {
+            key: "release_reference".to_owned(),
+            kind: FieldKind::Text,
+            taxonomy_id: None,
+            multivalued: false,
+            // Required *and* dependent: the combination is the point. A model release is required for a
+            // photograph with people in it and meaningless for one without.
+            required: true,
+            read_only: false,
+            ai_writable: false,
+            facetable: false,
+            constraints: Constraints {
+                depends_on: Some(dam_core::fields::Dependency {
+                    key: "has_people".to_owned(),
+                    values: vec!["true".to_owned()],
+                }),
+                ..Constraints::default()
+            },
+        },
+    ]
+}
+
+#[test]
+fn a_dependent_field_is_refused_when_its_condition_does_not_hold() {
+    let defs = dependent_defs();
+    let payload = json!({"has_people": false, "release_reference": "MR-1"});
+    let object = payload.as_object().expect("object").clone();
+    let rejections = fields::validate(&defs, &object, Mode::Create, Writer::Human, &Map::new())
+        .expect_err("a release reference on a photograph with no people in it");
+    assert_eq!(rejections[0].key, "release_reference");
+    assert_eq!(rejections[0].code, "not_applicable");
+    // The refusal names the parent and what it must be, because an administrator reading it has to know
+    // which other field to change.
+    assert!(
+        rejections[0].detail.contains("has_people"),
+        "{rejections:?}"
+    );
+    assert!(rejections[0].detail.contains("true"), "{rejections:?}");
+}
+
+#[test]
+fn a_dependent_field_is_accepted_when_it_holds() {
+    let defs = dependent_defs();
+    let payload = json!({"has_people": true, "release_reference": "MR-1"});
+    let object = payload.as_object().expect("object").clone();
+    let accepted = fields::validate(&defs, &object, Mode::Create, Writer::Human, &Map::new())
+        .expect("the condition holds");
+    assert_eq!(
+        accepted.values.get("release_reference"),
+        Some(&json!("MR-1"))
+    );
+}
+
+#[test]
+fn the_condition_is_judged_on_the_document_as_it_will_be() {
+    // The ordinary shape of an edit: fill in the child, leave the parent alone. Judging the payload alone
+    // would refuse this, which would make a dependent field unfillable in one request.
+    let defs = dependent_defs();
+    let stored = json!({"has_people": true})
+        .as_object()
+        .expect("object")
+        .clone();
+    let patch = json!({"release_reference": "MR-2"})
+        .as_object()
+        .expect("object")
+        .clone();
+    let accepted = fields::validate(&defs, &patch, Mode::Patch, Writer::Human, &stored)
+        .expect("the stored parent satisfies the condition");
+    assert_eq!(
+        accepted.values.get("release_reference"),
+        Some(&json!("MR-2"))
+    );
+
+    // And the other way: a patch that changes the parent to something the child does not apply to refuses
+    // the child in the same request, because the document as it will be is what counts.
+    let both = json!({"has_people": false, "release_reference": "MR-3"})
+        .as_object()
+        .expect("object")
+        .clone();
+    let rejections = fields::validate(&defs, &both, Mode::Patch, Writer::Human, &stored)
+        .expect_err("the parent changed in this very patch");
+    assert_eq!(rejections[0].code, "not_applicable");
+}
+
+#[test]
+fn a_required_dependent_field_is_required_only_when_it_applies() {
+    let defs = dependent_defs();
+
+    // No people: the release reference is not required, and its absence is not a rejection.
+    let without = json!({"has_people": false})
+        .as_object()
+        .expect("object")
+        .clone();
+    fields::validate(&defs, &without, Mode::Create, Writer::Human, &Map::new())
+        .expect("a photograph with no people needs no release");
+
+    // People: it is required, and the message is the ordinary required one rather than anything special.
+    let with = json!({"has_people": true})
+        .as_object()
+        .expect("object")
+        .clone();
+    let rejections = fields::validate(&defs, &with, Mode::Create, Writer::Human, &Map::new())
+        .expect_err("a photograph with people needs a release");
+    assert_eq!(rejections[0].key, "release_reference");
+    assert_eq!(rejections[0].code, "required");
+}
+
+#[test]
+fn a_field_that_became_irrelevant_can_still_be_cleared() {
+    // The tidy-up path. A parent flipped by mistake leaves a value behind — deliberately, because deleting
+    // somebody's work on a checkbox change is worse — and clearing it must not be refused as inapplicable.
+    let defs = dependent_defs();
+    let stored = json!({"has_people": false, "release_reference": "MR-4"})
+        .as_object()
+        .expect("object")
+        .clone();
+    let clearing = json!({"release_reference": null})
+        .as_object()
+        .expect("object")
+        .clone();
+    let rejections = fields::validate(&defs, &clearing, Mode::Patch, Writer::Human, &stored)
+        .expect_err("it is a required field, so clearing is refused for *that* reason");
+    assert_eq!(
+        rejections[0].code, "required",
+        "the refusal must be about requiredness, not applicability: {rejections:?}"
+    );
+}
+
+#[test]
+fn a_multivalued_parent_matches_on_any_of_its_values() {
+    // "When the shoot is tagged editorial" is what somebody writing the rule means, and a shoot carries
+    // several tags.
+    let defs = vec![
+        FieldDef {
+            key: "uses".to_owned(),
+            kind: FieldKind::Text,
+            taxonomy_id: None,
+            multivalued: true,
+            required: false,
+            read_only: false,
+            ai_writable: false,
+            facetable: true,
+            constraints: Constraints::default(),
+        },
+        FieldDef {
+            key: "editorial_note".to_owned(),
+            kind: FieldKind::Text,
+            taxonomy_id: None,
+            multivalued: false,
+            required: false,
+            read_only: false,
+            ai_writable: false,
+            facetable: false,
+            constraints: Constraints {
+                depends_on: Some(dam_core::fields::Dependency {
+                    key: "uses".to_owned(),
+                    values: vec!["editorial".to_owned()],
+                }),
+                ..Constraints::default()
+            },
+        },
+    ];
+    let payload = json!({"uses": ["advertising", "editorial"], "editorial_note": "page 12"})
+        .as_object()
+        .expect("object")
+        .clone();
+    fields::validate(&defs, &payload, Mode::Create, Writer::Human, &Map::new())
+        .expect("any value matching is enough");
+}
+
+#[test]
+fn a_dependency_round_trips_through_the_validation_json() {
+    // The definition lives in `field_defs.validation`, so the read and the write have to agree — and an
+    // older build reading a newer definition ignores what it does not know, which here means showing the
+    // field always rather than refusing data.
+    let constraints = Constraints {
+        depends_on: Some(dam_core::fields::Dependency {
+            key: "has_people".to_owned(),
+            values: vec!["true".to_owned(), "maybe".to_owned()],
+        }),
+        max_length: Some(40),
+        ..Constraints::default()
+    };
+    let json = constraints.to_json();
+    assert_eq!(Constraints::from_json(&json), constraints);
+
+    // A dependency with no values could never hold, so it is read as absent rather than stored as a field
+    // nobody can fill.
+    let empty = json!({"depends_on": {"key": "has_people", "values": []}});
+    assert_eq!(Constraints::from_json(&empty).depends_on, None);
 }

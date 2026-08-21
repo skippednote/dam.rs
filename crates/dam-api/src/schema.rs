@@ -564,7 +564,12 @@ impl From<Refusal> for Failure {
             | SchemaRefusal::UnknownKind(_)
             | SchemaRefusal::TaxonomyRequired
             | SchemaRefusal::UnknownTaxonomy(_)
-            | SchemaRefusal::IncompleteOrder { .. } => Self::Unprocessable(refusal.to_string()),
+            | SchemaRefusal::IncompleteOrder { .. }
+            // Q.19b. All three are "fix the request": a dependency naming itself, naming nothing, or naming
+            // a field that is itself dependent is a definition an administrator can correct in the form.
+            | SchemaRefusal::SelfDependency(_)
+            | SchemaRefusal::UnknownParent(_)
+            | SchemaRefusal::DependencyChain(_) => Self::Unprocessable(refusal.to_string()),
             SchemaRefusal::Database(error) => error.into(),
         }
     }
