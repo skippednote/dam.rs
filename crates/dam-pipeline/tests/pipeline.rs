@@ -636,11 +636,13 @@ async fn clip(dir: &std::path::Path, name: &str, width: u32, height: u32) -> Vec
     tokio::fs::read(&path).await.expect("clip bytes")
 }
 
-/// Video is measured by the job that reads the original, even though no image profile can render it.
+/// A video is measured, and rendered from a frame of itself.
 ///
-/// The gap this closes was found by uploading a real iPhone library: every clip landed with no dimensions and
-/// no duration, because finalisation measures with the pure-Rust probe and nothing else ever looked. `avprobe`
-/// had existed and been tested in `dam-media` the whole time; nothing called it.
+/// Two gaps found by uploading a real iPhone library. Every clip landed with no dimensions and no duration,
+/// because finalisation measures with the pure-Rust probe and nothing else ever looked — `avprobe` had existed
+/// and been tested in `dam-media` the whole time, and nothing called it. And every clip had no derivative at
+/// all, because the image profiles cannot decode a container, so a grid of videos was a wall of grey
+/// rectangles.
 async fn a_video_is_measured_even_though_nothing_renders_it(f: &Fixture) {
     let dir = tempfile::tempdir().expect("temp dir");
     let bytes = clip(dir.path(), "measured.mp4", 640, 360).await;
@@ -655,12 +657,22 @@ async fn a_video_is_measured_even_though_nothing_renders_it(f: &Fixture) {
     .await
     .expect("finalise");
 
-    // Nothing renders: the image profiles all refuse a container neither the `image` crate nor vips decodes.
     let derived =
         dam_pipeline::derive::asset(&f.global, blob(f), &f.slug, f.tenant_id, finalised.asset_id)
             .await
             .expect("derive");
-    assert!(derived.rendered.is_empty(), "{derived:?}");
+
+    // Rendered from a frame of itself. All three profiles, through exactly the machinery a photograph uses —
+    // which is what makes the thumbnail deliverable without a second delivery path.
+    let mut rendered = derived.rendered.clone();
+    rendered.sort();
+    assert_eq!(
+        rendered,
+        vec!["preview-1024", "thumb-256", "web-2048"],
+        "a video must get a poster, refused: {:?}",
+        derived.refused
+    );
+    assert!(derived.has_thumbnail());
 
     let (width, height, duration): (Option<i32>, Option<i32>, Option<i64>) =
         sqlx::query_as("SELECT width, height, duration_ms FROM assets WHERE id = $1")
@@ -674,6 +686,29 @@ async fn a_video_is_measured_even_though_nothing_renders_it(f: &Fixture) {
     assert!(
         duration.is_some_and(|ms| ms > 0),
         "no duration: {duration:?}"
+    );
+
+    // A one-second clip is the case that catches a guessed seek: a Live Photo is about this long, there are
+    // thousands of them in a phone library, and seeking a second into one lands past the last frame — where
+    // ffmpeg exits 0 having written nothing at all.
+    let brief = clip(dir.path(), "brief.mp4", 320, 240).await;
+    stage_as(f, "measure006", "brief.mp4", "video/mp4", &brief).await;
+    let short = dam_pipeline::finalise::upload(
+        &f.global,
+        f.store.as_ref(),
+        &f.slug,
+        f.tenant_id,
+        "measure006",
+    )
+    .await
+    .expect("finalise");
+    let derived =
+        dam_pipeline::derive::asset(&f.global, blob(f), &f.slug, f.tenant_id, short.asset_id)
+            .await
+            .expect("derive");
+    assert!(
+        derived.has_thumbnail(),
+        "a one-second clip must still get a poster: {derived:?}"
     );
 }
 

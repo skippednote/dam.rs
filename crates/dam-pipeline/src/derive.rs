@@ -48,6 +48,7 @@ use dam_db::TenantConn;
 use dam_media::derive::Rendition;
 use dam_media::profiles::{self, Profile};
 use dam_store::{BlobStore, Key};
+use std::borrow::Cow;
 use uuid::Uuid;
 
 /// What derivation produced.
@@ -147,12 +148,40 @@ pub async fn asset(
     // Measured from these bytes before anything is rendered, because rendering may refuse the file and the
     // measurement is worth having either way — a video has dimensions and a duration whether or not this
     // build can make a poster frame from it.
-    if unmeasured && let Err(error) = measure_and_fill(global, slug, asset_id, &mime, &source).await
-    {
-        // Not fatal. A missing dimension is a worse asset, not a failed upload, and the reason is logged
-        // rather than swallowed — which is exactly what the old `.ok()` did wrong.
-        tracing::warn!(%error, %asset_id, %mime, "could not measure the original");
+    // The duration matters twice: the row wants it, and the poster frame below seeks by it. Measured first so
+    // a video uploaded a moment ago has a real duration to seek into rather than a fallback.
+    let mut duration_ms = duration_ms;
+    if unmeasured {
+        match measure_and_fill(global, slug, asset_id, &mime, &source).await {
+            Ok(measured) => duration_ms = duration_ms.or(measured.duration_ms),
+            // Not fatal. A missing dimension is a worse asset, not a failed upload, and the reason is logged
+            // rather than swallowed — which is exactly what the old `.ok()` did wrong.
+            Err(error) => {
+                tracing::warn!(%error, %asset_id, %mime, "could not measure the original")
+            }
+        }
     }
+
+    // A video is rendered from a *frame* of itself (3.5's visible half). The image profiles cannot decode a
+    // container, so before this a clip had no derivative at all and the grid showed "processing" forever — a
+    // library of videos as a wall of grey rectangles. Extracting one frame turns the whole existing rendition
+    // path, and the delivery path behind it, into video thumbnails for free.
+    //
+    // The full proxy — H.264, loudness, HLS — is still M3.5. This is the poster, which is what a person
+    // actually notices.
+    let renderable: Cow<'_, [u8]> = if timed {
+        match poster_of(&mime, duration_ms, &source).await {
+            Ok(frame) => Cow::Owned(frame),
+            Err(error) => {
+                // Not fatal, and named: a clip whose frame cannot be extracted is a clip with no thumbnail,
+                // which is what it already had.
+                tracing::warn!(%error, %asset_id, %mime, "could not extract a poster frame");
+                Cow::Borrowed(&source)
+            }
+        }
+    } else {
+        Cow::Borrowed(&source)
+    };
 
     let mut rendered = Vec::new();
     let mut refused = Vec::new();
@@ -164,7 +193,7 @@ pub async fn asset(
             color_profile: profile.color_profile,
             op_hash: &op_hash,
         };
-        match render_one(store, tenant_id, &content_hash, &source, &recipe).await {
+        match render_one(store, tenant_id, &content_hash, &renderable, &recipe).await {
             Ok(output) => {
                 // `record_on`, not `record`: this has to run on the tenant-scoped connection, or the
                 // unqualified `derivatives` resolves against whatever schema the pooled connection last had.
@@ -474,6 +503,31 @@ async fn render_one(
 
 /// The libvips path: source to a temp file, render, read back.
 ///
+/// One frame of a video, as bytes the image renditions can render.
+///
+/// Separate from the measurement so a clip whose duration is unknown still gets a poster: the seek falls back
+/// to one second in, which is inside the shot for anything longer than that and harmless for anything shorter
+/// — ffmpeg lands on the last frame rather than failing.
+async fn poster_of(mime: &str, duration_ms: Option<i64>, source: &[u8]) -> Result<Vec<u8>> {
+    if !mime.starts_with("video/") {
+        // Audio has no frame to take. A waveform would be a picture of the file rather than of the recording,
+        // and inventing one is worse than leaving the tile blank.
+        return Err(Error::Permanent(format!(
+            "{mime} has no frame to use as a poster"
+        )));
+    }
+    let tools = dam_media::avprobe::AvToolchain::discover()
+        .map_err(|e| Error::Permanent(format!("ffmpeg is not on PATH: {e}")))?;
+    let dir = tempfile::tempdir().map_err(|e| Error::Permanent(format!("temp dir: {e}")))?;
+    let path = dir.path().join("clip");
+    tokio::fs::write(&path, source)
+        .await
+        .map_err(|e| Error::Permanent(format!("writing the clip: {e}")))?;
+    dam_media::video::poster_frame(&tools, &path, duration_ms)
+        .await
+        .map_err(|e| Error::Permanent(format!("poster frame: {e}")))
+}
+
 /// Fills in the dimensions, duration and page count finalisation could not measure.
 ///
 /// Writes the bytes to a temporary file because both tools work on paths — which is the same reason the vips
@@ -488,7 +542,7 @@ async fn measure_and_fill(
     asset_id: Uuid,
     mime: &str,
     source: &[u8],
-) -> Result<()> {
+) -> Result<Measured> {
     let dir = tempfile::tempdir().map_err(|e| Error::Permanent(format!("temp dir: {e}")))?;
     let path = dir.path().join("original");
     tokio::fs::write(&path, source)
@@ -552,7 +606,7 @@ async fn measure_and_fill(
     .await
     .map_err(dam_db::Error::from)?;
     conn.commit().await?;
-    Ok(())
+    Ok(measured)
 }
 
 /// What a full-fidelity probe found. Every field optional: a tool that cannot answer must leave the column

@@ -807,7 +807,26 @@ fn context(f: &Fixture, transport: Arc<Recorded>) -> dam_pipeline::worker::Conte
 }
 
 /// Claims and handles one job of a kind, returning its id.
+/// Claims and runs the next job of `kind`, making it due first.
+///
+/// The "making it due" is the point. A collector enqueues its own next poll with a `run_after` in the future —
+/// that delay is production behaviour, and another case in this file asserts it exists. A test that claimed
+/// immediately was therefore racing it: the job is real, queued, and not yet claimable, so `claim` returned
+/// nothing and the case failed about one run in ten with "collect ran". Two gate suites died on that before it
+/// was worth chasing.
+///
+/// Bringing the timestamp forward is what a test wants and says so, where a sleep would trade a flake for a
+/// slower flake.
 async fn run_one(f: &Fixture, context: &dam_pipeline::worker::Context, kind: &str) -> Option<Uuid> {
+    sqlx::query(
+        "UPDATE dam_global.jobs SET run_after = now() \
+          WHERE kind = $1 AND state = 'queued' AND run_after > now()",
+    )
+    .bind(kind)
+    .execute(&f.global)
+    .await
+    .expect("make the delayed poll due");
+
     let claimed = dam_db::jobs::claim(
         &f.global,
         &context.worker,

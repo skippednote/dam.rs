@@ -196,6 +196,86 @@ pub async fn measure_loudness(
 /// A measurement that reports silence is also skipped, whatever the caller passes. See
 /// [`Loudness::is_silent`]: normalising silence produces a stream the encoder rejects, so this is not a
 /// preference the caller gets to override.
+/// A single frame, as JPEG bytes, for a video's thumbnail (3.5's visible half).
+///
+/// A library of videos with no thumbnails is a grid of grey rectangles, and until this every clip in one was
+/// exactly that: the image profiles cannot decode a container, so a video had no derivative at all and the
+/// grid showed "processing" forever.
+///
+/// The frame is taken *into* the clip rather than at zero, because the first frame of a phone video is very
+/// often black or a blurred pan. A tenth of the duration, capped at ten seconds so a feature does not decode
+/// for a minute to find its poster.
+///
+/// With no duration the seek is **zero**, not a guessed second. A one-second clip — which is what a Live Photo
+/// is, and there are thousands of them in a phone library — has nothing at the one-second mark, and ffmpeg
+/// exits 0 having written no file at all. Frame zero of a short clip is a real frame; a second into it is
+/// nothing.
+///
+/// Returns the JPEG bytes rather than writing a derivative: what to do with a frame is the pipeline's decision,
+/// and the renditions it feeds are the ordinary image ones.
+pub async fn poster_frame(
+    tools: &AvToolchain,
+    input: &Path,
+    duration_ms: Option<i64>,
+) -> Result<Vec<u8>> {
+    let seek_ms = duration_ms
+        .map(|total| {
+            (total / 10)
+                .clamp(1_000, 10_000)
+                .min(total.saturating_sub(100))
+        })
+        .unwrap_or(1_000)
+        .max(0);
+    let seconds = format!("{}.{:03}", seek_ms / 1000, seek_ms % 1000);
+
+    let dir = tempfile::tempdir().map_err(|e| Error::Rejected {
+        path: input.display().to_string(),
+        detail: format!("temp dir: {e}"),
+    })?;
+    let out = dir.path().join("poster.jpg");
+    let out_arg = out.to_string_lossy().to_string();
+    let input_arg = input.to_string_lossy().to_string();
+
+    // `-ss` before `-i` so ffmpeg seeks rather than decodes up to the point, which on a long clip is the
+    // difference between a second and a minute. `-frames:v 1` and `-an`: one picture, no audio stream.
+    let args: Vec<String> = vec![
+        "-hide_banner".into(),
+        "-nostdin".into(),
+        "-y".into(),
+        "-ss".into(),
+        seconds,
+        "-i".into(),
+        input_arg,
+        "-frames:v".into(),
+        "1".into(),
+        "-an".into(),
+        // Quality 3 of 31: a poster is re-rendered into the thumbnail profiles from here, so this is an
+        // intermediate and should not be the lossy step that shows.
+        "-q:v".into(),
+        "3".into(),
+        out_arg,
+    ];
+    let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+    // A frame extraction is a decode of one picture, so the probe's budget is the right order of magnitude —
+    // not the transcode's, which scales with duration.
+    crate::avprobe::run_ffmpeg(tools, &borrowed).await?;
+
+    let bytes = tokio::fs::read(&out).await.map_err(|e| Error::Rejected {
+        path: input.display().to_string(),
+        detail: format!("reading the poster frame: {e}"),
+    })?;
+    if bytes.is_empty() {
+        // ffmpeg exits 0 having written nothing when the seek lands past the last frame, which a container
+        // with a lying duration does. An empty poster would be recorded as a derivative and served as a
+        // broken image.
+        return Err(Error::Rejected {
+            path: input.display().to_string(),
+            detail: "ffmpeg wrote an empty poster frame".to_owned(),
+        });
+    }
+    Ok(bytes)
+}
+
 pub async fn transcode_proxy(
     tools: &AvToolchain,
     input: &Path,
