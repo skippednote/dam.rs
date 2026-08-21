@@ -94,6 +94,9 @@ pub mod tags {
     pub const MODEL: u16 = 0x0110;
     /// IFD0.
     pub const SOFTWARE: u16 = 0x0131;
+    /// IFD0. 1-8; 5-8 are the quarter turns that swap the axes, and 6 is what an iPhone writes for a
+    /// portrait photograph.
+    pub const ORIENTATION: u16 = 0x0112;
     /// Exif sub-directory.
     pub const DATE_TIME_ORIGINAL: u16 = 0x9003;
     /// Exif sub-directory.

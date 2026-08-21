@@ -16,6 +16,24 @@
 //! §18.3 budgets the original for two reads — one to hash at ingest, one to derive. All three profiles render
 //! from the single download below rather than fetching per profile, which would be three.
 //!
+//! ## The full-fidelity measurement happens here, not at ingest
+//!
+//! Finalisation measures from the first 256 KB with the pure-Rust probe, which is fast, needs no subprocess,
+//! and answers for most of a library. It cannot answer for the rest: the `image` crate has no HEIF decoder, so
+//! every iPhone photograph landed with no dimensions at all while its thumbnails rendered perfectly through
+//! libvips — the two halves of the system disagreeing about what it can read. Video was worse: nothing probed
+//! it, so a clip had no dimensions and no duration, though `avprobe` had existed and been tested all along.
+//! And a JPEG whose `SOF` marker sits past 256 KB measured as unknown for a third reason again.
+//!
+//! One remedy for all three, and it costs no extra read: this job has already downloaded the original, so it
+//! measures again with the tool that can — `vipsheader` for stills, `ffprobe` for anything timed — and fills
+//! in what finalisation left null. Only nulls: a value the cheap probe *did* produce is not overwritten, so a
+//! re-run cannot flip a dimension, and the fast path stays authoritative where it worked.
+//!
+//! Found by uploading a real iPhone library rather than by reading the code. Every one of the three was
+//! invisible: `probe::image(bytes).ok()` discards the error, so "could not measure" and "has no dimensions"
+//! were the same row.
+//!
 //! ## Idempotent on `(asset_id, op_hash)`
 //!
 //! `derivatives::record` is `ON CONFLICT DO NOTHING`, and the object key is derived from the op hash — so a
@@ -71,8 +89,9 @@ pub async fn asset(
     asset_id: Uuid,
 ) -> Result<Derived> {
     let mut conn = TenantConn::begin(global, slug).await?;
-    let row = sqlx::query_as::<_, (String, String, i64)>(
-        "SELECT content_hash, mime, bytes FROM assets WHERE id = $1 AND deleted_at IS NULL",
+    let row = sqlx::query_as::<_, (String, String, i64, Option<i32>, Option<i32>, Option<i64>)>(
+        "SELECT content_hash, mime, bytes, width, height, duration_ms \
+         FROM assets WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind(asset_id)
     .fetch_optional(conn.executor())
@@ -80,7 +99,7 @@ pub async fn asset(
     .map_err(dam_db::Error::from)?;
     conn.commit().await?;
 
-    let Some((content_hash, mime, _bytes)) = row else {
+    let Some((content_hash, mime, _bytes, width, height, duration_ms)) = row else {
         // Deleted between the job being queued and being claimed. Permanent, and not an error worth alarming
         // about: the queue is asynchronous and a user deleting an asset immediately after uploading it is
         // ordinary.
@@ -104,7 +123,15 @@ pub async fn asset(
         .map(|profile| profile.name.to_owned())
         .collect();
 
-    if outstanding.is_empty() {
+    // Whether the row is still missing something a full-fidelity probe could supply. Timed media needs a
+    // duration as well as dimensions; a still does not have one to miss.
+    let timed = mime.starts_with("video/") || mime.starts_with("audio/");
+    let unmeasured = width.is_none() || height.is_none() || (timed && duration_ms.is_none());
+
+    // Nothing to render *and* nothing to measure is the only case that returns without reading the original.
+    // Getting this wrong is how the first version of the measurement missed every asset that already had its
+    // derivatives — which is to say every asset in an existing library, the one population a backfill is for.
+    if outstanding.is_empty() && !unmeasured {
         return Ok(Derived {
             asset_id,
             rendered: Vec::new(),
@@ -116,6 +143,16 @@ pub async fn asset(
     // One read of the original, for every profile — see the module docs.
     let original = Key::original(tenant_id, &content_hash)?;
     let source = store.get(&original, None).await?.into_bytes(&original)?;
+
+    // Measured from these bytes before anything is rendered, because rendering may refuse the file and the
+    // measurement is worth having either way — a video has dimensions and a duration whether or not this
+    // build can make a poster frame from it.
+    if unmeasured && let Err(error) = measure_and_fill(global, slug, asset_id, &mime, &source).await
+    {
+        // Not fatal. A missing dimension is a worse asset, not a failed upload, and the reason is logged
+        // rather than swallowed — which is exactly what the old `.ok()` did wrong.
+        tracing::warn!(%error, %asset_id, %mime, "could not measure the original");
+    }
 
     let mut rendered = Vec::new();
     let mut refused = Vec::new();
@@ -437,6 +474,96 @@ async fn render_one(
 
 /// The libvips path: source to a temp file, render, read back.
 ///
+/// Fills in the dimensions, duration and page count finalisation could not measure.
+///
+/// Writes the bytes to a temporary file because both tools work on paths — which is the same reason the vips
+/// render path does, and the same containment §16 asks for.
+///
+/// Timed media goes to `ffprobe` and stills to `vipsheader`, decided by the *sniffed* mime rather than by the
+/// filename: a `.MP4` that is really QuickTime and a `.PNG` that is really a JPEG both arrived in the first
+/// real upload, and trusting the extension would have sent each to the wrong tool.
+async fn measure_and_fill(
+    global: &sqlx::PgPool,
+    slug: &dam_core::TenantSlug,
+    asset_id: Uuid,
+    mime: &str,
+    source: &[u8],
+) -> Result<()> {
+    let dir = tempfile::tempdir().map_err(|e| Error::Permanent(format!("temp dir: {e}")))?;
+    let path = dir.path().join("original");
+    tokio::fs::write(&path, source)
+        .await
+        .map_err(|e| Error::Permanent(format!("writing the original: {e}")))?;
+
+    let timed = mime.starts_with("video/") || mime.starts_with("audio/");
+    let measured = if timed {
+        let tools = dam_media::avprobe::AvToolchain::discover()
+            .map_err(|e| Error::Permanent(format!("ffprobe is not on PATH: {e}")))?;
+        let probe = dam_media::avprobe::probe(&tools, &path)
+            .await
+            .map_err(|e| Error::Permanent(format!("ffprobe: {e}")))?;
+        Measured {
+            // Timed media carries no EXIF orientation to apply; ffprobe reports the stream's own dimensions,
+            // which is what a player shows.
+            width: probe.width,
+            height: probe.height,
+            duration_ms: probe.duration_ms,
+            page_count: None,
+        }
+    } else {
+        let tools = dam_media::vips::Toolchain::discover()
+            .map_err(|e| Error::Permanent(format!("libvips is not on PATH: {e}")))?;
+        let probe = dam_media::vips::probe(&tools, &path)
+            .await
+            .map_err(|e| Error::Permanent(format!("vipsheader: {e}")))?;
+        // vips reports *stored* dimensions and rotates at render time, so the axes swap here for exactly the
+        // orientations that swap them — the same rule `probe::image` applies to a JPEG.
+        let swaps = matches!(probe.orientation, Some(5..=8));
+        Measured {
+            width: Some(if swaps { probe.height } else { probe.width }),
+            height: Some(if swaps { probe.width } else { probe.height }),
+            duration_ms: None,
+            page_count: probe.page_count,
+        }
+    };
+
+    let mut conn = TenantConn::begin(global, slug).await?;
+    // `coalesce`, so this only ever fills a null. The cheap probe is authoritative where it worked, and a
+    // re-run of this job must not change an answer somebody has already seen.
+    sqlx::query(
+        "UPDATE assets SET \
+             width = coalesce(width, $2), \
+             height = coalesce(height, $3), \
+             duration_ms = coalesce(duration_ms, $4), \
+             page_count = coalesce(page_count, $5), \
+             updated_at = now() \
+         WHERE id = $1",
+    )
+    .bind(asset_id)
+    .bind(measured.width.and_then(|v| i32::try_from(v).ok()))
+    .bind(measured.height.and_then(|v| i32::try_from(v).ok()))
+    .bind(measured.duration_ms)
+    .bind(
+        measured
+            .page_count
+            .and_then(|pages| i32::try_from(pages).ok()),
+    )
+    .execute(conn.executor())
+    .await
+    .map_err(dam_db::Error::from)?;
+    conn.commit().await?;
+    Ok(())
+}
+
+/// What a full-fidelity probe found. Every field optional: a tool that cannot answer must leave the column
+/// alone rather than write a zero.
+struct Measured {
+    width: Option<u32>,
+    height: Option<u32>,
+    duration_ms: Option<i64>,
+    page_count: Option<usize>,
+}
+
 /// vips works on paths rather than buffers, and that is not merely an API detail — it is what lets the render
 /// happen in another process, which is the containment §16 asks for.
 enum VipsFailure {

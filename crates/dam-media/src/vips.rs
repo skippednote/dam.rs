@@ -129,6 +129,12 @@ pub struct VipsProbe {
     /// Pages, for paged formats only. `None` for a single image rather than `Some(1)`: a JPEG is not a
     /// one-page document, and storing 1 for every photograph would make documents unfilterable.
     pub page_count: Option<usize>,
+    /// EXIF orientation, 1-8, when the file carries one.
+    ///
+    /// vips reports the *stored* dimensions and leaves rotation to render time, so a caller that wants
+    /// display dimensions needs this to know whether the axes swap. HEIF is why it matters: an iPhone writes
+    /// orientation 6 constantly, and the pure-Rust EXIF reader cannot find it inside an ISO-BMFF box.
+    pub orientation: Option<u16>,
     /// Whether the file carries an embedded ICC profile (D11).
     pub has_icc_profile: bool,
 }
@@ -197,6 +203,12 @@ fn parse_header(text: &str) -> Result<VipsProbe> {
         .filter(|pages| *pages > 1);
 
     Ok(VipsProbe {
+        orientation: fields
+            .get("orientation")
+            .and_then(|value| value.parse::<u16>().ok())
+            // Outside 1-8 is dropped rather than applied, the same rule the EXIF reader follows: cameras
+            // have written 0 and 9, and applying either turns a photograph on its side.
+            .filter(|value| (1..=8).contains(value)),
         width,
         height,
         bands: number("bands").unwrap_or(0),
@@ -423,6 +435,31 @@ pub async fn run_raw(tools: &Toolchain, args: &[&str]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_orientation_is_read_and_a_nonsense_one_is_dropped() {
+        // vips reports stored dimensions and rotates at render time, so a caller that wants display
+        // dimensions needs this field — and HEIF is why: an iPhone writes orientation 6 constantly, and the
+        // pure-Rust EXIF reader cannot find it inside an ISO-BMFF box.
+        let upright =
+            parse_header("width: 10\nheight: 20\nbands: 3\norientation: 1\n").expect("parse");
+        assert_eq!(upright.orientation, Some(1));
+        let turned =
+            parse_header("width: 10\nheight: 20\nbands: 3\norientation: 6\n").expect("parse");
+        assert_eq!(turned.orientation, Some(6));
+
+        // Outside 1-8 is dropped rather than applied, the same rule the EXIF reader follows: cameras have
+        // written 0 and 9, and applying either turns a photograph on its side.
+        for nonsense in ["orientation: 0", "orientation: 9", "orientation: banana"] {
+            let probed = parse_header(&format!("width: 10\nheight: 20\nbands: 3\n{nonsense}\n"))
+                .expect("parse");
+            assert_eq!(probed.orientation, None, "{nonsense} was kept");
+        }
+
+        // Absent entirely is the ordinary case for a PNG.
+        let plain = parse_header("width: 10\nheight: 20\nbands: 3\n").expect("parse");
+        assert_eq!(plain.orientation, None);
+    }
 
     #[test]
     fn a_header_with_no_page_field_reports_no_page_count() {

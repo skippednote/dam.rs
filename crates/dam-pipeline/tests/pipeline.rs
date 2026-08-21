@@ -97,6 +97,14 @@ fn jpeg(width: u32, height: u32) -> Vec<u8> {
 
 /// Stages an upload: a session row plus the bytes at the staging key, exactly as TUS leaves them.
 async fn stage(f: &Fixture, upload_id: &str, filename: &str, bytes: &[u8]) {
+    stage_as(f, upload_id, filename, "image/jpeg", bytes).await;
+}
+
+/// Stages an upload whose client-declared type is not a JPEG.
+///
+/// Declared, not sniffed: finalisation sniffs the bytes and records the mismatch, which is the whole point of
+/// the field. A video staged as `image/jpeg` would be a test of nothing.
+async fn stage_as(f: &Fixture, upload_id: &str, filename: &str, declared_mime: &str, bytes: &[u8]) {
     let mut conn = dam_db::TenantConn::begin(&f.global, &f.slug)
         .await
         .expect("tenant conn");
@@ -106,7 +114,7 @@ async fn stage(f: &Fixture, upload_id: &str, filename: &str, bytes: &[u8]) {
         upload_id,
         Some(bytes.len() as u64),
         Some(filename),
-        Some("image/jpeg"),
+        Some(declared_mime),
         None,
         // No profile named on the session, deliberately: the finalisation case marks its profile as the
         // tenant's fallback, so this also exercises the resolution path an ordinary upload takes.
@@ -601,6 +609,249 @@ async fn a_promotion_that_lost_its_asset_row_resumes(f: &Fixture) {
 
 // ─── derivation ─────────────────────────────────────────────────────────────
 
+/// A tiny clip, for the measurement cases. ffmpeg is pinned in `.mise.toml`.
+async fn clip(dir: &std::path::Path, name: &str, width: u32, height: u32) -> Vec<u8> {
+    let tools = dam_media::avprobe::AvToolchain::discover().unwrap_or_else(|e| {
+        panic!(
+            "these cases need ffmpeg on PATH; it is pinned in .mise.toml, so run them as \
+             `mise run check` or `mise exec -- cargo test`. Underlying error: {e}"
+        )
+    });
+    let path = dir.join(name);
+    dam_media::avprobe::run_ffmpeg(
+        &tools,
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            &format!("testsrc=size={width}x{height}:rate=25:duration=1"),
+            "-pix_fmt",
+            "yuv420p",
+            path.to_str().expect("utf-8 path"),
+            "-y",
+        ],
+    )
+    .await
+    .expect("ffmpeg");
+    tokio::fs::read(&path).await.expect("clip bytes")
+}
+
+/// Video is measured by the job that reads the original, even though no image profile can render it.
+///
+/// The gap this closes was found by uploading a real iPhone library: every clip landed with no dimensions and
+/// no duration, because finalisation measures with the pure-Rust probe and nothing else ever looked. `avprobe`
+/// had existed and been tested in `dam-media` the whole time; nothing called it.
+async fn a_video_is_measured_even_though_nothing_renders_it(f: &Fixture) {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let bytes = clip(dir.path(), "measured.mp4", 640, 360).await;
+    stage_as(f, "measure001", "measured.mp4", "video/mp4", &bytes).await;
+    let finalised = dam_pipeline::finalise::upload(
+        &f.global,
+        f.store.as_ref(),
+        &f.slug,
+        f.tenant_id,
+        "measure001",
+    )
+    .await
+    .expect("finalise");
+
+    // Nothing renders: the image profiles all refuse a container neither the `image` crate nor vips decodes.
+    let derived =
+        dam_pipeline::derive::asset(&f.global, blob(f), &f.slug, f.tenant_id, finalised.asset_id)
+            .await
+            .expect("derive");
+    assert!(derived.rendered.is_empty(), "{derived:?}");
+
+    let (width, height, duration): (Option<i32>, Option<i32>, Option<i64>) =
+        sqlx::query_as("SELECT width, height, duration_ms FROM assets WHERE id = $1")
+            .bind(finalised.asset_id)
+            .fetch_one(&f.tenant)
+            .await
+            .expect("row");
+    assert_eq!((width, height), (Some(640), Some(360)));
+    // A duration, which is the field only a timed probe can supply — and the one a player needs before it can
+    // draw a scrub bar.
+    assert!(
+        duration.is_some_and(|ms| ms > 0),
+        "no duration: {duration:?}"
+    );
+}
+
+/// The measurement runs even when every derivative already exists.
+///
+/// This is the case the first version of the fix missed, and it is the only population that matters for a
+/// backfill: an existing library has its thumbnails already, so a job that returned early on "nothing to
+/// render" would measure exactly none of it.
+async fn an_asset_whose_derivatives_all_exist_is_still_measured(f: &Fixture) {
+    let bytes = jpeg(900, 600);
+    stage(f, "measure002", "already-derived.jpg", &bytes).await;
+    let finalised = dam_pipeline::finalise::upload(
+        &f.global,
+        f.store.as_ref(),
+        &f.slug,
+        f.tenant_id,
+        "measure002",
+    )
+    .await
+    .expect("finalise");
+    dam_pipeline::derive::asset(&f.global, blob(f), &f.slug, f.tenant_id, finalised.asset_id)
+        .await
+        .expect("derive");
+
+    // Now forget the dimensions, as an asset ingested before the measurement existed would have them.
+    sqlx::query("UPDATE assets SET width = NULL, height = NULL WHERE id = $1")
+        .bind(finalised.asset_id)
+        .execute(&f.tenant)
+        .await
+        .expect("forget");
+
+    let again =
+        dam_pipeline::derive::asset(&f.global, blob(f), &f.slug, f.tenant_id, finalised.asset_id)
+            .await
+            .expect("derive");
+    assert!(
+        again.rendered.is_empty(),
+        "nothing left to render: {again:?}"
+    );
+
+    let (width, height): (Option<i32>, Option<i32>) =
+        sqlx::query_as("SELECT width, height FROM assets WHERE id = $1")
+            .bind(finalised.asset_id)
+            .fetch_one(&f.tenant)
+            .await
+            .expect("row");
+    assert_eq!(
+        (width, height),
+        (Some(900), Some(600)),
+        "an already-derived asset must still be measured"
+    );
+}
+
+/// A measured dimension is a *display* dimension: a quarter turn swaps the axes.
+///
+/// vips reports what is stored and rotates at render time, so the swap has to happen here or a portrait
+/// photograph is recorded as a landscape one — which is the orientation facet answering wrong and a grid cell
+/// laid out the wrong way round. The same rule `probe::image` applies to a JPEG, applied to the tool that can
+/// read the formats it cannot.
+async fn a_quarter_turn_swaps_the_axes_in_the_measurement(f: &Fixture) {
+    // 6 is "rotate 90° clockwise", which is what an iPhone writes for a portrait photograph.
+    let bytes = dam_media::testing::decodable_jpeg_with_exif(
+        600,
+        400,
+        &[(tags::ORIENTATION, Entry::Short(6))],
+        &[],
+    );
+    stage(f, "measure004", "turned.jpg", &bytes).await;
+    let finalised = dam_pipeline::finalise::upload(
+        &f.global,
+        f.store.as_ref(),
+        &f.slug,
+        f.tenant_id,
+        "measure004",
+    )
+    .await
+    .expect("finalise");
+
+    // Forgotten, so the measurement is the thing under test rather than the cheap probe.
+    sqlx::query("UPDATE assets SET width = NULL, height = NULL WHERE id = $1")
+        .bind(finalised.asset_id)
+        .execute(&f.tenant)
+        .await
+        .expect("forget");
+
+    dam_pipeline::derive::asset(&f.global, blob(f), &f.slug, f.tenant_id, finalised.asset_id)
+        .await
+        .expect("derive");
+
+    let (width, height): (Option<i32>, Option<i32>) =
+        sqlx::query_as("SELECT width, height FROM assets WHERE id = $1")
+            .bind(finalised.asset_id)
+            .fetch_one(&f.tenant)
+            .await
+            .expect("row");
+    assert_eq!(
+        (width, height),
+        (Some(400), Some(600)),
+        "a quarter turn must swap the axes, not record what is stored"
+    );
+
+    // A *mirror* is not a quarter turn. 2 flips left-for-right and leaves the axes alone, so a swap here
+    // would record a landscape photograph as a portrait one for a transform that changes neither dimension.
+    let mirrored = dam_media::testing::decodable_jpeg_with_exif(
+        600,
+        400,
+        &[(tags::ORIENTATION, Entry::Short(2))],
+        &[],
+    );
+    stage(f, "measure005", "mirrored.jpg", &mirrored).await;
+    let flipped = dam_pipeline::finalise::upload(
+        &f.global,
+        f.store.as_ref(),
+        &f.slug,
+        f.tenant_id,
+        "measure005",
+    )
+    .await
+    .expect("finalise");
+    sqlx::query("UPDATE assets SET width = NULL, height = NULL WHERE id = $1")
+        .bind(flipped.asset_id)
+        .execute(&f.tenant)
+        .await
+        .expect("forget");
+    dam_pipeline::derive::asset(&f.global, blob(f), &f.slug, f.tenant_id, flipped.asset_id)
+        .await
+        .expect("derive");
+    let (width, height): (Option<i32>, Option<i32>) =
+        sqlx::query_as("SELECT width, height FROM assets WHERE id = $1")
+            .bind(flipped.asset_id)
+            .fetch_one(&f.tenant)
+            .await
+            .expect("row");
+    assert_eq!(
+        (width, height),
+        (Some(600), Some(400)),
+        "a mirror does not swap the axes"
+    );
+}
+
+/// A measurement fills nulls and nothing else.
+///
+/// The cheap probe is authoritative where it worked, and a re-run of this job must not change an answer
+/// somebody has already seen — a dimension that flips between runs is a grid that reflows for no reason.
+async fn a_measurement_never_overwrites_one_that_already_exists(f: &Fixture) {
+    let bytes = jpeg(800, 400);
+    stage(f, "measure003", "keep-mine.jpg", &bytes).await;
+    let finalised = dam_pipeline::finalise::upload(
+        &f.global,
+        f.store.as_ref(),
+        &f.slug,
+        f.tenant_id,
+        "measure003",
+    )
+    .await
+    .expect("finalise");
+
+    // A deliberately wrong height, present. Only the null is the measurement's business.
+    sqlx::query("UPDATE assets SET width = NULL, height = 4242 WHERE id = $1")
+        .bind(finalised.asset_id)
+        .execute(&f.tenant)
+        .await
+        .expect("seed");
+
+    dam_pipeline::derive::asset(&f.global, blob(f), &f.slug, f.tenant_id, finalised.asset_id)
+        .await
+        .expect("derive");
+
+    let (width, height): (Option<i32>, Option<i32>) =
+        sqlx::query_as("SELECT width, height FROM assets WHERE id = $1")
+            .bind(finalised.asset_id)
+            .fetch_one(&f.tenant)
+            .await
+            .expect("row");
+    assert_eq!(width, Some(800), "the null was filled");
+    assert_eq!(height, Some(4242), "the value that existed was left alone");
+}
+
 async fn an_asset_gets_a_thumbnail_a_preview_and_a_proxy(f: &Fixture) {
     let bytes = jpeg(1200, 800);
     stage(f, "derive001", "wide.jpg", &bytes).await;
@@ -920,6 +1171,10 @@ async fn derivation_holds() {
     deriving_twice_records_one_row_per_profile(&f).await;
     deriving_a_deleted_asset_is_permanent(&f).await;
     a_file_no_renderer_can_read_is_not_a_failure(&f).await;
+    a_video_is_measured_even_though_nothing_renders_it(&f).await;
+    an_asset_whose_derivatives_all_exist_is_still_measured(&f).await;
+    a_measurement_never_overwrites_one_that_already_exists(&f).await;
+    a_quarter_turn_swaps_the_axes_in_the_measurement(&f).await;
 }
 
 #[tokio::test]
