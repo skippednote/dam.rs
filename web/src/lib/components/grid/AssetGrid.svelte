@@ -356,6 +356,22 @@
 								<span class="flex flex-wrap items-center gap-1">
 									<TierBadge tier={asset.tier} />
 									<RightsBadge state={asset.rights_state} />
+									{#if asset.published_at}
+										<!--
+											Published (Q.14): this asset can appear on a page anybody can reach. Form
+											rather than colour, like the tier badge — the colour channel belongs to
+											rights, the only dimension with legal consequence — and a title carrying the
+											instant, because "since when" is the question a public appearance raises.
+										-->
+										<span
+											data-testid="published-badge"
+											title={`Published ${new Date(asset.published_at).toLocaleString()}`}
+											class="inline-flex items-center gap-1 rounded-md border border-state-neutral bg-surface px-2 py-0.5 text-xs text-fg"
+										>
+											<span aria-hidden="true">◉</span>
+											Public
+										</span>
+									{/if}
 									{#if asset.average_stars !== null && asset.average_stars !== undefined}
 										<!--
 											The library's average, as a number rather than five glyphs: a cell has no room for

@@ -726,5 +726,6 @@ pub fn summary_of(row: &assets::Summary) -> AssetSummary {
         average_stars: None,
         // Same: filled from one attachment read per page.
         has_attachment: false,
+        published_at: row.published_at,
     }
 }

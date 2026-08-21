@@ -336,7 +336,8 @@ async fn the_page_carries_what_the_grid_draws(f: &Fixture) {
     assert_eq!(item["provenance_state"], "none");
     assert!(
         item["thumbnail_url"].is_null(),
-        "absent until the internal-preview rights question in NEEDS-REVIEW.md is answered"
+        "absent until an internal preview is rendered for it; see the module docs on why a thumbnail is a \
+         delivery URL rather than a field"
     );
     assert!(page["offset"].is_number());
 }

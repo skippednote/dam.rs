@@ -91,7 +91,34 @@ impl Grant {
     }
 
     fn permits(&self, action: Action) -> bool {
-        self.permissions.iter().any(|p| p == action.permission())
+        self.permissions
+            .iter()
+            .any(|held| grants_permission(held, action.permission()))
+    }
+}
+
+/// Whether a held permission string covers `wanted`.
+///
+/// Exact match, or a `namespace:*` wildcard covering that namespace. The wildcard exists because the seeded
+/// `admin` role is written as `asset:*`, `metadata:*`, `tenant:*`, `rights:*` — and until this function existed
+/// nothing expanded it, so a person given the built-in administrator role and *not* flagged as a tenant admin
+/// on their membership held no asset permissions at all. The failure was in the safe direction and invisible:
+/// every test and every live check reached admin access through the tenant-admin path instead, so the role row
+/// was never consulted for the case its wildcards were written for.
+///
+/// No bare `*`, and no wildcard in the middle. A permission string is `namespace:verb`, so those are the only
+/// two shapes that mean anything — and a matcher that accepted more would be a matcher somebody could widen by
+/// typo.
+#[must_use]
+pub fn grants_permission(held: &str, wanted: &str) -> bool {
+    if held == wanted {
+        return true;
+    }
+    match held.split_once(':') {
+        Some((namespace, "*")) => wanted
+            .split_once(':')
+            .is_some_and(|(asked, _)| asked == namespace),
+        _ => false,
     }
 }
 
@@ -566,5 +593,46 @@ mod tests {
             compile(&grants, Action::Read, Utc::now()).allowed_groups(),
             &[Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3)]
         );
+    }
+}
+
+#[cfg(test)]
+mod wildcard_tests {
+    use super::*;
+
+    #[test]
+    fn a_namespace_wildcard_covers_its_own_verbs_and_nothing_else() {
+        // The seeded `admin` role is written this way, and until `grants_permission` existed nothing expanded
+        // it: a person holding that role without the tenant-admin flag held no asset permissions at all.
+        assert!(grants_permission("asset:*", "asset:read"));
+        assert!(grants_permission("asset:*", "asset:download"));
+        assert!(grants_permission("metadata:*", "metadata:write"));
+        // A wildcard is scoped to its namespace. One that leaked across namespaces would make `metadata:*` a
+        // download permission, which is the widening nobody asked for.
+        assert!(!grants_permission("metadata:*", "asset:read"));
+        // Exact matches still work, and a bare star is not a permission: a matcher that accepted one could be
+        // widened to everything by a typo in a seed.
+        assert!(grants_permission("asset:read", "asset:read"));
+        assert!(!grants_permission("*", "asset:read"));
+        assert!(!grants_permission("asset:rea*", "asset:read"));
+        assert!(!grants_permission("asset:read", "asset:download"));
+    }
+
+    #[test]
+    fn a_wildcard_role_compiles_to_a_predicate_that_permits() {
+        // The end-to-end shape of the bug: a grant carrying only wildcards must permit the action, or the
+        // predicate matches nothing and the caller is refused before any query runs.
+        let grants = Grants::from(vec![Grant {
+            permissions: vec!["asset:*".to_owned()],
+            asset_group_ids: vec![],
+            all_asset_groups: true,
+            valid_from: None,
+            valid_until: None,
+            requires_eula: false,
+            eula_accepted: true,
+        }]);
+        let predicate = compile(&grants, Action::Read, Utc::now());
+        assert!(predicate.permits_action());
+        assert!(!predicate.matches_nothing());
     }
 }

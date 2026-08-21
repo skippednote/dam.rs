@@ -11,14 +11,17 @@
 //! video and channel, a media-class filter over the same set. None of them changes who may see or take what, and
 //! the naming invites the opposite assumption strongly enough to be worth repeating here.
 //!
-//! ## Only a collection, for now
+//! ## Three sources, and what makes two of them safe
 //!
-//! The schema anticipates three sources — a collection, a saved search, a media class — and this API accepts one.
-//! A collection is *explicit*: somebody with Manage put each asset in it, which is a decision about publication.
-//! A saved search is a **live query**, and a portal backed by one would make every future asset that happens to
-//! match it anonymously visible without anybody deciding. That is an access-control question ARCHITECTURE does
-//! not settle (§ "Whether Portals ships at all" is a product question; this is a policy one), so it is written up
-//! in NEEDS-REVIEW.md and refused here rather than guessed at.
+//! A collection is *explicit*: somebody with Manage put each asset in it, which is itself the decision to
+//! publish it. A saved search and a media class are **live queries**, and a portal backed by one would otherwise
+//! make every future asset that happens to match it anonymously visible without anybody deciding — nobody
+//! decides, a rule does.
+//!
+//! So the live sources show only assets carrying `assets.published_at`: publication is a per-asset act, done by
+//! a person through a bulk operation, and the query *narrows* an explicitly published set rather than defining
+//! one. That is the whole of the mechanism, and it is why a portal over "every video" is safe to point at the
+//! public internet: it is every video somebody published, not every video that exists.
 //!
 //! ## Searching inside a portal narrows
 //!
@@ -263,17 +266,28 @@ pub async fn create(
         ))
     })?;
 
-    let collection_id = source_of(&request)?;
+    let source = source_of(&request)?;
 
     let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
-    // The collection must exist and be one this caller can see. Without this a portal could be created over an
-    // id somebody guessed, which is the one place in this feature where a mistake publishes the wrong assets.
-    let exists: Option<Uuid> = sqlx::query_scalar("SELECT id FROM collections WHERE id = $1")
-        .bind(collection_id)
-        .fetch_optional(conn.executor())
-        .await
-        .map_err(dam_db::Error::from)?;
-    if exists.is_none() {
+    // Whatever the source points at must exist. Without this a portal could be created over an id somebody
+    // guessed, which is the one place in this feature where a mistake publishes the wrong assets. A media
+    // class points at nothing, so there is nothing to check.
+    let target: Option<Uuid> = match &source {
+        Source::Collection(id) => sqlx::query_scalar("SELECT id FROM collections WHERE id = $1")
+            .bind(id)
+            .fetch_optional(conn.executor())
+            .await
+            .map_err(dam_db::Error::from)?,
+        Source::SavedSearch(id) => {
+            sqlx::query_scalar("SELECT id FROM saved_searches WHERE id = $1")
+                .bind(id)
+                .fetch_optional(conn.executor())
+                .await
+                .map_err(dam_db::Error::from)?
+        }
+        Source::MediaClass(_) => Some(Uuid::nil()),
+    };
+    if target.is_none() {
         conn.commit().await?;
         return Err(Failure::NotFound);
     }
@@ -285,7 +299,7 @@ pub async fn create(
             title: request.title,
             intro: request.intro,
             kind,
-            source: Source::Collection(collection_id),
+            source,
             logo_asset_id: request.logo_asset_id,
             accent: request.accent,
             is_public: request.is_public,
@@ -324,12 +338,56 @@ pub async fn create(
     ))
 }
 
+/// The saved search behind a portal, planned for an anonymous reader (Q.14).
+///
+/// The access predicate is the widest one this system can compile, and that is not a hole: a portal visitor has
+/// no account, so there are no groups to scope to, and what governs the set is `assets.published_at` — a
+/// decision a person made per asset — plus the delivery chokepoint, which re-evaluates rights for every preview
+/// and download. Scoping to the *author's* groups was the alternative and it is worse: the portal's contents
+/// would then change when somebody edited a role.
+async fn published_query(
+    state: &PortalState,
+    saved_search_id: Uuid,
+) -> Result<dam_core::query::Planned, VisitorFailure> {
+    // The delivery pool, pinned to the delivery tenant's schema — the same pool every other read on this path
+    // uses, because a portal token arrives with no tenant attached.
+    let pool = state.delivery.pool();
+    let saved = dam_db::saved_searches::load(pool, saved_search_id)
+        .await?
+        .ok_or_else(|| {
+            VisitorFailure::Portal(
+                StatusCode::NOT_FOUND,
+                "this portal's saved search no longer exists".to_owned(),
+            )
+        })?;
+    let defs =
+        dam_db::fields::load(&mut *pool.acquire().await.map_err(dam_db::Error::from)?).await?;
+    Ok(dam_db::saved_searches::plan(&saved, widest(), &defs)?)
+}
+
+/// The widest predicate the policy module can compile. See [`published_query`] for why a portal uses it.
+fn widest() -> dam_core::policy::AccessPredicate {
+    dam_core::policy::compile(
+        &dam_core::policy::Grants::from(vec![dam_core::policy::Grant {
+            permissions: vec!["asset:read".to_owned()],
+            asset_group_ids: vec![],
+            all_asset_groups: true,
+            valid_from: None,
+            valid_until: None,
+            requires_eula: false,
+            eula_accepted: true,
+        }]),
+        dam_core::policy::Action::Read,
+        chrono::Utc::now(),
+    )
+}
+
 /// Which of the three sources was asked for, or the refusal that says why not.
 ///
 /// The schema holds three and this build shows one. Both halves of that are deliberate: the column exists because
 /// the other two are a slice away, and the refusal exists because *which* assets a live query publishes to the
 /// public internet is a decision ARCHITECTURE.md does not settle. See NEEDS-REVIEW.md.
-fn source_of(request: &NewPortalRequest) -> Result<Uuid, Failure> {
+fn source_of(request: &NewPortalRequest) -> Result<Source, Failure> {
     let asked = usize::from(request.collection_id.is_some())
         + usize::from(request.saved_search_id.is_some())
         + usize::from(request.media_class.is_some());
@@ -339,17 +397,24 @@ fn source_of(request: &NewPortalRequest) -> Result<Uuid, Failure> {
                 .to_owned(),
         ));
     }
-    if request.saved_search_id.is_some() || request.media_class.is_some() {
-        return Err(Failure::Unprocessable(
-            "this build publishes a collection, where somebody put each asset there on purpose. A saved search \
-             or a media class is a live query, so the portal would publish every future asset that happens to \
-             match it — nobody decides, a rule does. See NEEDS-REVIEW.md."
-                .to_owned(),
-        ));
+    if let Some(id) = request.collection_id {
+        return Ok(Source::Collection(id));
     }
-    request
-        .collection_id
-        .ok_or_else(|| Failure::Unprocessable("a portal needs a collection_id".to_owned()))
+    if let Some(id) = request.saved_search_id {
+        return Ok(Source::SavedSearch(id));
+    }
+    let class = request
+        .media_class
+        .clone()
+        .ok_or_else(|| Failure::Unprocessable("a portal needs a source".to_owned()))?;
+    // The classes the schema recognises, and no others: a portal over `mime LIKE 'sometypo/%'` is an empty
+    // page nobody can explain.
+    if !["image", "video", "audio", "document"].contains(&class.as_str()) {
+        return Err(Failure::Unprocessable(format!(
+            "`{class}` is not a media class; use image, video, audio or document"
+        )));
+    }
+    Ok(Source::MediaClass(class))
 }
 
 /// Every portal, retired ones included.
@@ -581,15 +646,6 @@ async fn render(
     }
     dam_db::shares::check_passcode(state.delivery.pool(), share.id, passcode).await?;
 
-    let Source::Collection(collection_id) = portal.source else {
-        // The schema allows two more sources and this build accepts one — see the module note and
-        // NEEDS-REVIEW.md. Said plainly rather than rendered empty: an empty portal reads as a mistake.
-        return Err(VisitorFailure::Portal(
-            StatusCode::NOT_FOUND,
-            "this portal's source is not one this build can show".to_owned(),
-        ));
-    };
-
     let searching = portal
         .allow_search
         .then(|| query.unwrap_or("").trim())
@@ -602,16 +658,37 @@ async fn render(
         _ => None,
     };
 
+    // The set, per source. A collection is curated and shows what it holds; the two live sources show only
+    // assets somebody published, which is what makes them safe to point at the public internet at all — see
+    // the module note and `MemberSource`.
+    let planned = match &portal.source {
+        Source::SavedSearch(id) => Some(published_query(state, *id).await?),
+        _ => None,
+    };
+    let source = match (&portal.source, planned.as_ref()) {
+        (Source::Collection(id), _) => dam_db::portals::MemberSource::Collection(*id),
+        (Source::MediaClass(class), _) => dam_db::portals::MemberSource::Class(class),
+        (Source::SavedSearch(_), Some(planned)) => dam_db::portals::MemberSource::Query(planned),
+        // Unreachable as written — the plan is built for a saved search two lines up — and a refusal rather
+        // than a panic, so it stays harmless if somebody reorders this.
+        (Source::SavedSearch(_), None) => {
+            return Err(VisitorFailure::Portal(
+                StatusCode::NOT_FOUND,
+                "this portal's saved search could not be read".to_owned(),
+            ));
+        }
+    };
+
     let rows = dam_db::portals::members(
         state.delivery.pool(),
-        collection_id,
+        source,
         searching,
         media_class,
         MAX_ITEMS,
     )
     .await?;
     let total =
-        dam_db::portals::member_count(state.delivery.pool(), collection_id, searching, media_class)
+        dam_db::portals::member_count(state.delivery.pool(), source, searching, media_class)
             .await?;
 
     let mut items = Vec::with_capacity(rows.len());

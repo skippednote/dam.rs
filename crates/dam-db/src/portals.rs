@@ -19,6 +19,7 @@
 
 use crate::Error;
 use chrono::{DateTime, Utc};
+use dam_core::query::Planned;
 use sqlx::{Postgres, QueryBuilder};
 use uuid::Uuid;
 
@@ -445,18 +446,25 @@ pub struct Member {
 /// send to a client.
 pub async fn members(
     pool: &sqlx::PgPool,
-    collection_id: Uuid,
+    source: MemberSource<'_>,
     search: Option<&str>,
     media_class: Option<&str>,
     limit: i64,
 ) -> Result<Vec<Member>, Error> {
     let mut builder = member_query(
         "SELECT assets.id, assets.filename, assets.mime, assets.bytes",
-        collection_id,
+        source,
         search,
         media_class,
-    );
-    builder.push(" ORDER BY collection_items.position, assets.filename LIMIT ");
+    )?;
+    // A collection has an order somebody chose; a live query has none, so it reads newest first — which is
+    // what a channel or a video portal is for, and is at least deterministic.
+    builder.push(match source {
+        MemberSource::Collection(_) => {
+            " ORDER BY collection_items.position, assets.filename LIMIT "
+        }
+        _ => " ORDER BY assets.published_at DESC, assets.id LIMIT ",
+    });
     builder.push_bind(limit);
     let rows: Vec<(Uuid, String, String, i64)> = builder.build_query_as().fetch_all(pool).await?;
     Ok(rows
@@ -477,30 +485,73 @@ pub async fn members(
 /// a different reason than the cap.
 pub async fn member_count(
     pool: &sqlx::PgPool,
-    collection_id: Uuid,
+    source: MemberSource<'_>,
     search: Option<&str>,
     media_class: Option<&str>,
 ) -> Result<i64, Error> {
-    let mut builder = member_query("SELECT count(*)", collection_id, search, media_class);
+    let mut builder = member_query("SELECT count(*)", source, search, media_class)?;
     Ok(builder.build_query_scalar().fetch_one(pool).await?)
+}
+
+/// Where a portal's set comes from, as the reader needs it (Q.14).
+///
+/// The three variants are not three features — they are one question asked of differently governed sets. A
+/// collection is curated: somebody with Manage put each asset in it, and that act *is* the decision to publish
+/// it. A live query is not, so both query-shaped sources are restricted to assets carrying `published_at` —
+/// the query then narrows an explicitly published set rather than defining one. Without that restriction a
+/// portal backed by `brand:acme` would publish every future asset that happens to match, and nobody would have
+/// decided anything.
+#[derive(Debug, Clone, Copy)]
+pub enum MemberSource<'a> {
+    /// A collection, in the order its curator chose.
+    Collection(Uuid),
+    /// A saved search over published assets.
+    Query(&'a Planned),
+    /// Every published asset of one media class.
+    Class(&'a str),
 }
 
 /// The shared `FROM`/`WHERE` of both reads, so the count and the rows cannot disagree.
 fn member_query(
     select: &str,
-    collection_id: Uuid,
+    source: MemberSource<'_>,
     search: Option<&str>,
     media_class: Option<&str>,
-) -> QueryBuilder<Postgres> {
+) -> Result<QueryBuilder<Postgres>, Error> {
     let mut builder: QueryBuilder<Postgres> = QueryBuilder::new(select);
-    builder.push(
-        " FROM collection_items \
-          JOIN assets ON assets.id = collection_items.asset_id \
-          LEFT JOIN asset_metadata ON asset_metadata.asset_id = assets.id \
-          WHERE collection_items.collection_id = ",
-    );
-    builder.push_bind(collection_id);
-    builder.push(" AND assets.deleted_at IS NULL");
+    match source {
+        MemberSource::Collection(collection_id) => {
+            builder.push(
+                " FROM collection_items \
+                  JOIN assets ON assets.id = collection_items.asset_id \
+                  LEFT JOIN asset_metadata ON asset_metadata.asset_id = assets.id \
+                  WHERE collection_items.collection_id = ",
+            );
+            builder.push_bind(collection_id);
+            builder.push(" AND assets.deleted_at IS NULL");
+        }
+        MemberSource::Query(planned) => {
+            builder.push(
+                " FROM assets \
+                  LEFT JOIN asset_metadata ON asset_metadata.asset_id = assets.id \
+                  WHERE ",
+            );
+            // The saved search itself, rendered by the same translator every other search uses. Its access
+            // predicate is the unscoped one — a visitor has no account and therefore no groups — which is why
+            // the publication gate below is not optional.
+            crate::query_sql::push_where(&mut builder, planned)?;
+            builder.push(" AND assets.published_at IS NOT NULL");
+        }
+        MemberSource::Class(class) => {
+            builder.push(
+                " FROM assets \
+                  LEFT JOIN asset_metadata ON asset_metadata.asset_id = assets.id \
+                  WHERE assets.deleted_at IS NULL AND assets.published_at IS NOT NULL \
+                    AND assets.mime LIKE ",
+            );
+            builder.push_bind(format!("{class}/%"));
+        }
+    }
     builder.push(crate::versions::LIBRARY_ROWS);
 
     if let Some(class) = media_class {
@@ -518,7 +569,7 @@ fn member_query(
         builder.push_bind(format!("%{term}%"));
         builder.push(")");
     }
-    builder
+    Ok(builder)
 }
 
 #[cfg(test)]

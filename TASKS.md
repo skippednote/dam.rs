@@ -26,7 +26,7 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M0–M3c** Foundation, ingest, metadata/search/rights, delivery/sharing/restore | complete |
 | **F** The UI: browse, detail, upload, filter rail, lightbox, bulk bar, design pass | complete |
 | **F.11b** Share/portal UI, schema administration, metadata types | complete except restore UX |
-| **Q** Acquia parity, 20 slices | Q.1–Q.17 done; Q.14b and Q.18–Q.20 open |
+| **Q** Acquia parity, 20 slices | Q.1–Q.17 done (Q.14 now includes all three portal sources); Q.14b and Q.18–Q.20 open |
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | **done** — two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query, the MCP server |
@@ -34,6 +34,12 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
 **Next up, in order:** Q.18–Q.19 search → Q.14b collections in the app → Q.20 sundries → M4 local AI → M6 → M3d → Pre-GA.
+
+**`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
+note carried; `DECISIONS.md` records what was chosen. Two of them needed code: a portal may now be backed by a
+live query because publication became a per-asset act (Q.14 above), and a namespace wildcard in a permission
+string is expanded, which fixed a seeded `admin` role that conferred nothing unless its holder also carried the
+tenant-admin flag. C2PA (task 1.9) is unblocked and still unbuilt.
 M5 is complete. M5a and M5b are done and verified against the running stack: both
 hosted clients reach their real vendor endpoints, and a full enrichment ran end to end through the worker against
 a local OpenAI-compatible endpoint — values written with provenance, a disclosure row, tags suggested, 0.75¢
@@ -2104,6 +2110,21 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
       queued and rendered under its own recipe's hash and served under the built-in's. A download that reports
       ready and hands back a URL nobody can fetch. A key that shadows a built-in rendition is now refused where
       an administrator can still pick another one, and the fixture that carried the collision was renamed.
+
+      **All three sources ship now.** A collection was safe because putting an asset in one is itself the
+      decision to publish it; a saved search and a media class are live queries, and a portal backed by one would
+      publish every future asset that happened to match. The answer is `assets.published_at`: publication is a
+      per-asset act, done by a person through a bulk operation — so the actor, the selection and the per-item
+      outcome land where every other bulk act's do — and a live-query portal shows only assets carrying it. The
+      query narrows a set somebody admitted rather than defining one. A `publish`/`unpublish` bulk kind, a chip
+      on the grid cell, and two controls in the bulk bar named for what they do to the world rather than for the
+      column they write.
+
+      Re-publishing an already-published asset is a skip, not a restamp: `published_at` answers "since when has
+      this been public", which a restamp erases. Unpublishing something that was never published is a success —
+      "not on a public page" is what the caller asked for, and failing there makes an unpublish over a grid
+      selection look broken for doing what it was told. Ten mutations caught; one survivor was a test that
+      published *everything*, so the gate it was checking had nothing left to exclude.
 
       **Not done:** the tenant-facing screen for *making* one — see Q.14b, which is the slice that makes a
       collection something a person can create and curate. Until then a portal is created through the API.

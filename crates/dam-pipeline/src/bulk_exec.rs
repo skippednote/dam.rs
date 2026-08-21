@@ -148,6 +148,14 @@ enum Action {
         values: serde_json::Map<String, Value>,
     },
     Delete,
+    /// Publish or unpublish, which is one action with a direction (Q.14).
+    ///
+    /// Routed through the bulk machinery rather than a synchronous endpoint because publication is what a
+    /// public page rests on: the actor, the selection and the per-item outcome are the audit trail a public
+    /// appearance deserves, and `bulk_operations` already records all three.
+    Publish {
+        published: bool,
+    },
 }
 
 /// What applying to one asset produced. A thin wrapper so the borrow of a `&'static str` reason is simple.
@@ -190,12 +198,14 @@ impl Action {
                 Ok(Self::MetadataSet { values })
             }
             "delete" => Ok(Self::Delete),
+            "publish" => Ok(Self::Publish { published: true }),
+            "unpublish" => Ok(Self::Publish { published: false }),
             // The schema's vocabulary is wider than what is executable, and the honest response to the gap
             // is a named refusal. "Completing" while doing nothing would be worse: the history would say the
             // work happened.
             other => Err(Error::Permanent(format!(
-                "bulk operations of kind {other:?} are not executable yet; only metadata_set and \
-                 delete are"
+                "bulk operations of kind {other:?} are not executable yet; only metadata_set, delete, \
+                 publish and unpublish are"
             ))),
         }
     }
@@ -204,6 +214,7 @@ impl Action {
         match self {
             Self::Delete => apply_delete(conn, asset_id).await,
             Self::MetadataSet { values } => apply_metadata(conn, asset_id, values).await,
+            Self::Publish { published } => apply_publication(conn, asset_id, *published).await,
         }
     }
 }
@@ -241,6 +252,40 @@ async fn apply_delete(conn: &mut sqlx::PgConnection, asset_id: Uuid) -> Result<A
         Some((true, _)) => Applied::Skipped("legal hold blocks deletion"),
         Some((_, true)) => Applied::Skipped("already deleted"),
         Some(_) => Applied::Failed("the asset exists but could not be deleted".to_owned()),
+        None => Applied::Failed("no such asset".to_owned()),
+    })
+}
+
+/// Publishes or unpublishes one asset (Q.14).
+///
+/// The instant comes from `now()` in the database rather than from the worker's clock, for the same reason
+/// every other timestamp here does: two workers on two machines with a second of drift between them would
+/// order a publication before the decision that caused it.
+///
+/// An asset that is already published is a **skip**, not a success: re-stamping it would lose the instant
+/// somebody actually decided, and that instant is the audit answer to "since when has this been public".
+async fn apply_publication(
+    conn: &mut sqlx::PgConnection,
+    asset_id: Uuid,
+    published: bool,
+) -> Result<Applied> {
+    let at = published.then(chrono::Utc::now);
+    let changed = dam_db::assets::set_published(conn, asset_id, at).await?;
+    if changed {
+        return Ok(Applied::Done);
+    }
+    let exists: Option<(bool,)> =
+        sqlx::query_as("SELECT deleted_at IS NOT NULL FROM assets WHERE id = $1")
+            .bind(asset_id)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(dam_db::Error::from)?;
+    Ok(match exists {
+        Some((true,)) => Applied::Skipped("deleted"),
+        Some((false,)) if published => Applied::Skipped("already published"),
+        Some((false,)) => {
+            Applied::Failed("the asset exists but could not be unpublished".to_owned())
+        }
         None => Applied::Failed("no such asset".to_owned()),
     })
 }

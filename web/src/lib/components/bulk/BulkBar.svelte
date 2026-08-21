@@ -163,7 +163,12 @@
 
 	function describe(kind: string, count: number): string {
 		const assets = `${count} asset${count === 1 ? '' : 's'}`;
-		return kind === 'delete' ? `Delete ${assets}` : `Update ${assets}`;
+		if (kind === 'delete') return `Delete ${assets}`;
+		// Named for what it does to the world rather than for the field it writes: publishing is what puts an
+		// asset on a page anybody can reach, and a confirmation reading "Update 40 assets" hides that.
+		if (kind === 'publish') return `Publish ${assets}`;
+		if (kind === 'unpublish') return `Unpublish ${assets}`;
+		return `Update ${assets}`;
 	}
 </script>
 
@@ -257,6 +262,27 @@
 			{#if ordered}
 				<span class="text-xs text-muted">{ordered}</span>
 			{/if}
+
+			<!--
+				Publication (Q.14). A separate control from metadata because it is not metadata: it is the act
+				that admits an asset to a public page, which is why it goes through the same confirmation as a
+				delete and why the confirmation names it.
+			-->
+			<button
+				type="button"
+				class="rounded-md border border-line px-2.5 py-1 hover:bg-raised"
+				onclick={() => preview('publish', {})}
+			>
+				Publish…
+			</button>
+
+			<button
+				type="button"
+				class="rounded-md border border-line px-2.5 py-1 hover:bg-raised"
+				onclick={() => preview('unpublish', {})}
+			>
+				Unpublish…
+			</button>
 
 			<button
 				type="button"

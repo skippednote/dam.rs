@@ -450,4 +450,67 @@ async fn bulk_execution_holds() {
     an_unimplemented_kind_is_refused_by_name(&f).await;
     a_vanished_operation_is_permanent(&f).await;
     the_worker_runs_it_and_queues_the_reindex(&f).await;
+    publishing_stamps_once_and_unpublishing_clears_it(&f).await;
+}
+
+// ─── publish / unpublish (Q.14) ─────────────────────────────────────────────
+
+/// Publication is the act a live-query portal rests on, so the instant it happened is the audit answer.
+///
+/// Re-publishing an already-published asset is a **skip** rather than a success: restamping would lose the
+/// instant somebody decided, and "since when has this been public" is the question the column exists to
+/// answer.
+async fn publishing_stamps_once_and_unpublishing_clears_it(f: &Fixture) {
+    let one = asset(f, "publish-one.jpg").await;
+    let two = asset(f, "publish-two.jpg").await;
+
+    let id = operation(f, "publish", serde_json::json!({}), &[one, two]).await;
+    let executed = run(f, id).await.expect("run");
+    assert_eq!(executed.state, "completed");
+    assert_eq!(executed.done, 2);
+
+    let first: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT published_at FROM assets WHERE id = $1")
+            .bind(one)
+            .fetch_one(&f.tenant)
+            .await
+            .expect("published_at");
+    assert!(first.is_some(), "the asset was not published");
+
+    // Again, over one already-published asset and one that is not.
+    let three = asset(f, "publish-three.jpg").await;
+    let again = operation(f, "publish", serde_json::json!({}), &[one, three]).await;
+    let executed = run(f, again).await.expect("run");
+    assert_eq!(
+        executed.state, "completed",
+        "a skip is not a failure: {executed:?}"
+    );
+    let unchanged: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT published_at FROM assets WHERE id = $1")
+            .bind(one)
+            .fetch_one(&f.tenant)
+            .await
+            .expect("published_at");
+    assert_eq!(unchanged, first, "an already-published asset was restamped");
+
+    // And unpublishing clears it over a mixed selection — including an asset nobody ever published — without
+    // reporting a partial failure. "Not on a public page" is what the caller asked for, and an asset that was
+    // already off it satisfies that; failing there would make an unpublish over a grid selection look broken
+    // for doing exactly what it was told.
+    let never = asset(f, "publish-never.jpg").await;
+    let off = operation(f, "unpublish", serde_json::json!({}), &[two, three, never]).await;
+    let executed = run(f, off).await.expect("run");
+    assert_eq!(
+        executed.state, "completed",
+        "an asset that was already unpublished must not fail: {executed:?}"
+    );
+    assert_eq!(executed.done, 3, "{executed:?}");
+    let cleared: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM assets WHERE id = ANY($1) AND published_at IS NOT NULL",
+    )
+    .bind(vec![two, three])
+    .fetch_one(&f.tenant)
+    .await
+    .expect("count");
+    assert_eq!(cleared, 0, "unpublish left one published");
 }

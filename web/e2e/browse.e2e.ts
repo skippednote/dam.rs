@@ -47,7 +47,10 @@ function summary(index: number) {
 		is_favourite: false,
 		average_stars: null,
 		// Paperwork flag, as every summary now carries it (Q.9).
-		has_attachment: false
+		has_attachment: false,
+		// Published, on every third asset (Q.14): the chip has to be visibly a per-asset fact rather than a
+		// property of the page.
+		published_at: index % 3 === 0 ? '2026-08-01T09:00:00Z' : null
 	};
 }
 
@@ -1183,6 +1186,23 @@ test('changing the selection abandons an unconfirmed bulk dialog', async ({ page
 		.click({ modifiers: ['ControlOrMeta'] });
 	await expect(bar).not.toContainText('Delete 1 asset?');
 	await expect(bar).toContainText('2 selected');
+});
+
+test('a published asset says so, and the bar can publish a selection', async ({ page }) => {
+	// Q.14. Publication is the act that admits an asset to a page anybody can reach, so it is a chip on the
+	// cell and a confirmation that names it — not a metadata edit reading "Update 2 assets".
+	const recorder = await connect(page);
+	await page.goto('/assets');
+
+	await expect(page.getByTestId('published-badge').first()).toBeVisible();
+
+	// Selection is a click on the cell, as everywhere else in this grid.
+	await page.getByRole('gridcell').nth(0).click();
+	// Exact, because "Unpublish…" contains "Publish…".
+	await page.getByRole('button', { name: 'Publish…', exact: true }).click();
+	await expect(page.getByRole('button', { name: /^Publish 1 asset$/ })).toBeVisible();
+	await page.getByRole('button', { name: /^Publish 1 asset$/ }).click();
+	expect(recorder.bulk.some((call) => call.body.kind === 'publish')).toBe(true);
 });
 
 test('the bulk bar has no axe violations', async ({ page }) => {

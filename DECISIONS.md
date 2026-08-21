@@ -2518,3 +2518,74 @@ Tantivy automaton disagree at the margins, and §12 forbids an approximate answe
 — so the clause goes to the database that can answer it exactly, unranked, like every other clause the index
 cannot answer. Before this, Q.16's wildcard syntax answered 501 for every field except `filename`.
 Reversible: no.
+
+## The parked decisions, answered 2026-08-21
+
+Every open question in `NEEDS-REVIEW.md` was answered in one go, with the recommendation each note already
+carried. What follows is what was chosen and what it cost to implement, because "sane defaults" is only a real
+answer if the defaults are written down.
+
+**Roles combine as a union.** `contributor` on {A,B} plus `reviewer` on {B,C} is {A,B,C}. Intersection would
+mean granting somebody an extra role *reduced* their access, which no administrator expects and which makes
+roles non-composable. Already how `compile` worked. Reversible: yes.
+
+**An unreleased or expired asset stays visible and stops being downloadable.** Somebody has to find an expired
+asset in order to renew its licence, and a librarian needs to see next week's embargoed campaign in order to tag
+it. Visibility and distribution are separate gates in `policy`, and the download refusal carries the reason code
+so a UI can say "licence expired 14 Aug" rather than silently omitting the asset. An asset that vanishes on
+expiry is one nobody renews. Reversible: yes.
+
+**`requires_eula` gates download, not visibility.** Browsing is what tells somebody the EULA is worth accepting;
+gating search results makes an unaccepted EULA look like an empty library, which reads as a broken product rather
+than a gate. Reversible: yes.
+
+**Rule-based groups are evaluated live, not materialised.** An access check that reads a table refreshed on a
+schedule is wrong for the length of the schedule, and "wrong" here means showing somebody an asset they should
+not see or hiding one they should. The renderer still refuses a rule-based group by name rather than ignoring it
+— ignoring would silently grant *less* than configured — and nothing can create one yet, so live evaluation is
+built when the group-administration surface is, rather than now for a path nothing can reach. Reversible: yes,
+and the fallback (materialise with a stated staleness bound) is written in the original note.
+
+**An administrator bypasses group scoping and release windows, and nothing else.** Not expiry, not legal hold,
+not a denied or unevaluated `rights_state`. An administrator manages the library, so unreleased assets have to be
+reachable; a lapsed licence is a legal fact about an asset rather than a permission anybody holds. Under the
+alternative, "administrator" silently becomes "may commit a rights violation" — and it would be invisible in an
+audit, because the download would look authorised. Reversible: no.
+
+**A private comment stays private, including from administrators.** `everything()`, the widest predicate this
+system can compile, does not open one. "Private" is a word people act on, and a product that means "private
+unless somebody with the right role looks" has to say so somewhere nobody reads. Moderation and legal discovery
+are real needs and they are answered by a deliberate, audited disclosure path when one is built — not by a role
+that already exists quietly having the power. Reversible: yes, and the widening is the easy direction.
+
+**C2PA: one signing identity per deployment, test certificates refused outside development, and an inbound
+manifest that fails validation is accepted, recorded, and not re-signed.** Per-tenant certificates mean
+provisioning and rotating a CA-chained certificate per customer, which is an operations burden nobody asked for;
+the tenant travels in the assertion instead, so a verifier still learns who performed the transform. Rejecting a
+broken inbound manifest would mean a customer cannot ingest their own historical archive if any of it was
+re-saved by a tool that broke the chain — so the asset exists, the broken chain is visible in
+`provenance_manifests`, and derivatives carry no credential. Stripping is forbidden by D13 and stays forbidden.
+Reversible: the failure policy yes, the identity scheme no.
+
+**A namespace wildcard in a permission string is expanded.** `asset:*` covers `asset:read`. The seeded `admin`
+role is written in wildcards and nothing expanded them, so a person holding that role without the tenant-admin
+flag on their membership held no asset permissions at all — invisible, because every test and every live check
+reached admin access through the tenant-admin path instead. Scoped to the namespace, with no bare `*` and no
+wildcard in the middle: a matcher that accepted more would be one a typo in a seed could widen to everything.
+Reversible: yes.
+
+**A portal may be backed by a live query, because publication is now a per-asset act.** See the entry below.
+
+**Publication is a per-asset act, and a live-query portal shows only published assets.** `assets.published_at`
+is set by a person through a bulk operation, so the actor, the selection and the per-item outcome are recorded
+where every other bulk act is recorded. A portal backed by a saved search or a media class then *narrows* an
+explicitly published set rather than defining one — without that, a portal backed by `brand:acme` would publish
+every future asset that happens to match, and nobody would have decided anything. A collection needs no flag,
+because putting an asset in one is already the decision. The two alternatives were a rights floor (publishes
+anything with a broad licence, hides cleared assets whose evaluation is stale) and a warning on the portal
+screen (makes an irreversible disclosure depend on somebody reading it). Reversible: yes.
+
+**Re-publishing an already-published asset is a skip, not a restamp.** `published_at` answers "since when has
+this been public", which a restamp would erase. Unpublishing an asset that was never published is a success
+rather than a failure: "not on a public page" is what the caller asked for, and failing there makes an unpublish
+over a grid selection look broken for doing what it was told. Reversible: yes.

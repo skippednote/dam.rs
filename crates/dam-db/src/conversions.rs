@@ -120,7 +120,12 @@ impl Conversion {
     pub fn permitted_for(&self, permissions: &[String]) -> bool {
         match &self.required_permission {
             None => true,
-            Some(required) => permissions.iter().any(|held| held == required),
+            // Through the policy module's matcher, so `asset:*` covers `conversion:print` exactly as it does
+            // in the access predicate. Two spellings of "does this permission cover that one" is how a role
+            // ends up meaning different things in two places.
+            Some(required) => permissions
+                .iter()
+                .any(|held| dam_core::policy::grants_permission(held, required)),
         }
     }
 }

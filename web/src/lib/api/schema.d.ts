@@ -1705,6 +1705,15 @@ export interface components {
             mime: string;
             provenance_state: components["schemas"]["ProvenanceState"];
             /**
+             * Format: date-time
+             * @description When somebody published this asset, or absent (Q.14).
+             *
+             *     Publication is a per-asset act, and it is what a live-query portal rests on. On a grid it is a chip:
+             *     the difference between "in the library" and "on a public page" is the one a person needs to see before
+             *     they act on a selection.
+             */
+            published_at?: string | null;
+            /**
              * @description Rights evaluation outcome. A *display* input: enforcement happens at the distribution
              *     chokepoint (D12), and this field is what dims a button rather than what protects an asset.
              */

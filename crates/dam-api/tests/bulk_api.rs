@@ -349,4 +349,40 @@ async fn the_bulk_contract_holds() {
     an_unexecutable_kind_is_a_422_not_a_dead_job(&f).await;
     creation_queues_the_job_and_status_reports_progress(&f).await;
     an_unknown_operation_is_404(&f).await;
+    publication_is_a_bulk_kind_so_it_has_an_actor_and_a_trail(&f).await;
+}
+
+/// Publishing is queued through the bulk machinery, not applied by a synchronous endpoint (Q.14).
+///
+/// The reason is the audit trail: publication is what puts an asset in front of the public internet, and
+/// `bulk_operations` already records who asked, over what selection, with a per-item outcome. A second
+/// mechanism for the same act would be a second place to look when somebody asks since when an asset was
+/// public.
+async fn publication_is_a_bulk_kind_so_it_has_an_actor_and_a_trail(f: &Fixture) {
+    let id = asset(&f.acme, "for-the-public.jpg").await;
+    for kind in ["publish", "unpublish"] {
+        let response = send(
+            &f.app,
+            post("/bulk", &f.key, json!({"kind": kind, "asset_ids": [id]})),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::ACCEPTED,
+            "{kind} must be executable"
+        );
+        let body = json(response).await;
+        assert_eq!(body["kind"], kind, "{body}");
+        assert_eq!(body["target_count"], 1, "{body}");
+    }
+
+    // The actor is recorded, which is the half a synchronous endpoint would have had to reinvent.
+    let actors: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM bulk_operations WHERE kind IN ('publish', 'unpublish') \
+           AND actor_id IS NOT NULL",
+    )
+    .fetch_one(&f.acme)
+    .await
+    .expect("count");
+    assert_eq!(actors, 2, "both operations recorded who asked");
 }

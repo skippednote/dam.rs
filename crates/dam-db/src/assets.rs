@@ -12,6 +12,7 @@
 //! that rule slightly differently and leave a download button enabled until somebody presses it.
 
 use crate::Error;
+use chrono::{DateTime, Utc};
 use dam_core::policy::AccessPredicate;
 use dam_core::{AssetTier, ProvenanceState, RestoreState, RightsState, StorageClass};
 use sqlx::{Postgres, QueryBuilder, Row as _};
@@ -30,6 +31,13 @@ pub struct Summary {
     pub rights_state: RightsState,
     pub provenance_state: ProvenanceState,
     pub tag_confidence: Option<f32>,
+    /// When somebody published this asset, or `None` (Q.14).
+    ///
+    /// Publication is a per-asset act by a person, and it is what a live-query portal rests on: the query
+    /// narrows an explicitly published set rather than defining one. On a grid it is a chip, because the
+    /// difference between "in the library" and "on a public page" is the one a person needs to see before
+    /// they act.
+    pub published_at: Option<DateTime<Utc>>,
 }
 
 /// One page, with the total the same predicate produced.
@@ -119,7 +127,7 @@ where
 
     let mut builder: QueryBuilder<Postgres> = QueryBuilder::new(
         "SELECT assets.id, assets.filename, assets.mime, assets.bytes, assets.width, assets.height, \
-                assets.rights_state, assets.provenance_state, \
+                assets.rights_state, assets.provenance_state, assets.published_at, \
                 placement.storage_class, placement.restore_state, \
                 count(*) OVER () AS total \
          FROM assets ",
@@ -163,6 +171,7 @@ where
                 // Not selected: it comes from the enrichment tables, and a join per row on a grid page is
                 // the kind of cost that only shows up at a hundred thousand assets. Populated by 4.x.
                 tag_confidence: None,
+                published_at: row.get("published_at"),
             })
         })
         .collect::<Result<Vec<Summary>, Error>>()?;
@@ -199,7 +208,7 @@ where
 
     let mut builder: QueryBuilder<Postgres> = QueryBuilder::new(
         "SELECT assets.id, assets.filename, assets.mime, assets.bytes, assets.width, assets.height, \
-                assets.rights_state, assets.provenance_state, \
+                assets.rights_state, assets.provenance_state, assets.published_at, \
                 placement.storage_class, placement.restore_state, \
                 count(*) OVER () AS total \
          FROM assets \
@@ -246,6 +255,7 @@ where
                 // Not selected: it comes from the enrichment tables, and a join per row on a grid page is
                 // the kind of cost that only shows up at a hundred thousand assets. Populated by 4.x.
                 tag_confidence: None,
+                published_at: row.get("published_at"),
             })
         })
         .collect::<Result<Vec<Summary>, Error>>()?;
@@ -354,7 +364,8 @@ where
     // from not applying at all.
     let mut builder: QueryBuilder<Postgres> = QueryBuilder::new(
         "SELECT assets.id, assets.filename, assets.mime, assets.bytes, assets.width, assets.height, \
-                assets.rights_state, assets.provenance_state, assets.duration_ms, assets.page_count, \
+                assets.rights_state, assets.provenance_state, assets.published_at, \
+                assets.duration_ms, assets.page_count, \
                 assets.color_space, assets.has_alpha, assets.content_hash, assets.status, \
                 assets.enrichment_state, assets.legal_hold, assets.release_at, assets.expires_at, \
                 assets.version_no, assets.created_at, assets.updated_at, \
@@ -390,6 +401,7 @@ where
             rights_state: parse_rights(&row.get::<String, _>("rights_state"))?,
             provenance_state: parse_provenance(&row.get::<String, _>("provenance_state"))?,
             tag_confidence: None,
+            published_at: row.get("published_at"),
         },
         values: row.get("values"),
         technical: row.get("technical"),
@@ -455,4 +467,44 @@ fn parse_rights(raw: &str) -> Result<RightsState, Error> {
 fn parse_provenance(raw: &str) -> Result<ProvenanceState, Error> {
     raw.parse()
         .map_err(|_| Error::Inconsistent(format!("assets.provenance_state holds {raw:?}")))
+}
+
+/// Marks assets as published, or clears the mark (Q.14).
+///
+/// Publication is the per-asset act a public page rests on: a live-query portal shows only assets that carry
+/// this, so the query narrows an explicitly published set rather than defining one. Idempotent on purpose —
+/// `published_at` is only written where it is currently null, so re-publishing a selection that already
+/// includes published assets does not restamp them and lose the instant somebody actually decided.
+///
+/// Returns how many rows changed, which is what a bulk item's outcome records.
+pub async fn set_published(
+    conn: &mut sqlx::PgConnection,
+    asset_id: Uuid,
+    at: Option<DateTime<Utc>>,
+) -> Result<bool, Error> {
+    let changed = match at {
+        Some(at) => {
+            sqlx::query(
+                "UPDATE assets SET published_at = $2, updated_at = now() \
+                 WHERE id = $1 AND deleted_at IS NULL AND published_at IS NULL",
+            )
+            .bind(asset_id)
+            .bind(at)
+            .execute(&mut *conn)
+            .await?
+        }
+        // Unpublishing does not care whether it was published: the caller asked for "not on a public page",
+        // and reporting nothing-changed for an already-unpublished asset would make an unpublish over a mixed
+        // selection look like a partial failure.
+        None => {
+            sqlx::query(
+                "UPDATE assets SET published_at = NULL, updated_at = now() \
+                 WHERE id = $1 AND deleted_at IS NULL",
+            )
+            .bind(asset_id)
+            .execute(&mut *conn)
+            .await?
+        }
+    };
+    Ok(changed.rows_affected() > 0)
 }

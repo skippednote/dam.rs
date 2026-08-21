@@ -115,7 +115,11 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             //
             // 262 since 0030: `portals` gains a primary key, the unique index behind its slug, and the two
             // partial indexes a public lookup and a live list read.
-            262,
+            //
+            // 263 since 0031: the partial index over `assets.published_at`. Partial because the published set is
+            // the interesting one, and on a library where most assets are internal it is a small fraction of
+            // the table.
+            263,
         ),
         (
             "check constraints",

@@ -60,6 +60,13 @@ pub struct AssetSummary {
     /// and *how many* documents there are is a detail for the panel. Scoped like everything else: paperwork the
     /// caller cannot see does not count, or the flag would disclose that something exists.
     pub has_attachment: bool,
+    /// When somebody published this asset, or absent (Q.14).
+    ///
+    /// Publication is a per-asset act, and it is what a live-query portal rests on. On a grid it is a chip:
+    /// the difference between "in the library" and "on a public page" is the one a person needs to see before
+    /// they act on a selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// One page of results.

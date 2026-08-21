@@ -10,7 +10,8 @@
 //! - **Retiring revokes.** A URL that was handed out stops working, and both halves stop together.
 //! - **Presentation can change; the set cannot.** A portal that swapped its collection would show a different
 //!   library to everyone holding the old link.
-//! - **A live-query source is refused with a reason**, not rendered empty. See NEEDS-REVIEW.md.
+//! - **A live-query source shows only published assets**, so the query narrows a set a person admitted rather
+//!   than defining one. See `DECISIONS.md` on why publication is a per-asset act.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
@@ -635,27 +636,131 @@ async fn a_nonsense_portal_is_refused_with_the_rule_it_broke() {
 }
 
 #[tokio::test]
-async fn a_live_query_as_the_source_is_refused_with_the_reason() {
+async fn a_live_query_portal_publishes_only_what_somebody_published() {
+    // The decision behind `assets.published_at`. A portal backed by a live query would otherwise publish every
+    // future asset that happens to match it — nobody decides, a rule does. So the query narrows an explicitly
+    // published set rather than defining one, and an asset nobody published is not on the page whatever it
+    // matches.
     let f = fixture().await;
 
-    // The two sources the schema anticipates and this build refuses. Named in the request shape on purpose: a
-    // tenant asking for "every video" gets the decision back, not a complaint about a missing field.
-    for source in [
-        json!({"collection_id": Value::Null, "saved_search_id": Uuid::now_v7().to_string()}),
-        json!({"collection_id": Value::Null, "media_class": "video"}),
-    ] {
-        let (status, body) = call(
-            &f,
-            "POST",
-            "/portals",
-            Some(&f.key),
-            Some(new_portal(&f, source)),
-        )
-        .await;
-        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
-        assert!(body.to_string().contains("NEEDS-REVIEW.md"), "{body}");
-    }
+    // A saved search over the whole library, and one of the three assets published.
+    let search: Uuid = sqlx::query_scalar(
+        "INSERT INTO saved_searches (id, name, query, owner_id) \
+         VALUES (gen_random_uuid(), 'everything', '{\"kind\":\"all\"}'::jsonb, NULL) RETURNING id",
+    )
+    .fetch_one(&f.acme)
+    .await
+    .expect("saved search");
+    sqlx::query("UPDATE assets SET published_at = now() WHERE id = $1")
+        .bind(f.photo)
+        .execute(&f.acme)
+        .await
+        .expect("publish");
 
+    let (status, created) = call(
+        &f,
+        "POST",
+        "/portals",
+        Some(&f.key),
+        Some(new_portal(
+            &f,
+            json!({"collection_id": Value::Null, "saved_search_id": search.to_string()}),
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+
+    let (status, page) = call(&f, "GET", "/portal/press-kit", None, None).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert_eq!(
+        page["total"], 1,
+        "the search matches the whole library and one asset is published: {page}"
+    );
+    assert_eq!(page["items"][0]["asset_id"], f.photo.to_string(), "{page}");
+
+    // Publishing a second asset changes the page with no edit to the portal — which is the point of a live
+    // source, and is safe precisely because publication is the act that admits it.
+    sqlx::query("UPDATE assets SET published_at = now() WHERE id = $1")
+        .bind(f.clip)
+        .execute(&f.acme)
+        .await
+        .expect("publish");
+    let (_, page) = call(&f, "GET", "/portal/press-kit", None, None).await;
+    assert_eq!(page["total"], 2, "{page}");
+
+    // And unpublishing removes it again.
+    sqlx::query("UPDATE assets SET published_at = NULL WHERE id = $1")
+        .bind(f.clip)
+        .execute(&f.acme)
+        .await
+        .expect("unpublish");
+    let (_, page) = call(&f, "GET", "/portal/press-kit", None, None).await;
+    assert_eq!(page["total"], 1, "{page}");
+}
+
+#[tokio::test]
+async fn a_media_class_portal_is_every_published_asset_of_that_class() {
+    let f = fixture().await;
+    // The video and the photo are published; the third asset is not. Publishing everything would make this
+    // case pass whether or not the publication gate applied at all.
+    sqlx::query("UPDATE assets SET published_at = now() WHERE id = ANY($1)")
+        .bind(vec![f.clip, f.photo])
+        .execute(&f.acme)
+        .await
+        .expect("publish");
+    let unpublished_clip = asset(&f.acme, "unpublished-reel", "video/mp4").await;
+
+    let (status, created) = call(
+        &f,
+        "POST",
+        "/portals",
+        Some(&f.key),
+        Some(new_portal(
+            &f,
+            json!({"collection_id": Value::Null, "media_class": "video", "kind": "channel"}),
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+
+    let (status, page) = call(&f, "GET", "/portal/press-kit", None, None).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert_eq!(
+        page["total"], 1,
+        "one published video, and a second video nobody published: {page}"
+    );
+    assert_eq!(page["items"][0]["asset_id"], f.clip.to_string(), "{page}");
+    let listed: Vec<&str> = page["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter_map(|item| item["asset_id"].as_str())
+        .collect();
+    assert!(
+        !listed.contains(&unpublished_clip.to_string().as_str()),
+        "an unpublished video reached a public page: {page}"
+    );
+
+    // A class the schema does not recognise is refused rather than rendered as an empty page nobody can
+    // explain.
+    let (status, body) = call(
+        &f,
+        "POST",
+        "/portals",
+        Some(&f.key),
+        Some(new_portal(
+            &f,
+            json!({"key": "typo", "collection_id": Value::Null, "media_class": "vidoe"}),
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body.to_string().contains("media class"), "{body}");
+}
+
+#[tokio::test]
+async fn a_portal_needs_exactly_one_source() {
+    let f = fixture().await;
     // Two sources at once, and none at all: both are the same mistake, and neither picks one silently.
     for source in [
         json!({"media_class": "video"}),
@@ -672,6 +777,21 @@ async fn a_live_query_as_the_source_is_refused_with_the_reason() {
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
         assert!(body.to_string().contains("exactly one"), "{body}");
     }
+
+    // A source pointing at nothing is a 404 rather than a portal over an empty set: a portal created over a
+    // guessed id is the one mistake in this feature that publishes the wrong assets.
+    let (status, body) = call(
+        &f,
+        "POST",
+        "/portals",
+        Some(&f.key),
+        Some(new_portal(
+            &f,
+            json!({"collection_id": Value::Null, "saved_search_id": Uuid::now_v7().to_string()}),
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
 }
 
 #[tokio::test]

@@ -4680,6 +4680,14 @@
           "provenance_state": {
             "$ref": "#/components/schemas/ProvenanceState"
           },
+          "published_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When somebody published this asset, or absent (Q.14).\n\nPublication is a per-asset act, and it is what a live-query portal rests on. On a grid it is a chip:\nthe difference between \"in the library\" and \"on a public page\" is the one a person needs to see before\nthey act on a selection."
+          },
           "rights_state": {
             "$ref": "#/components/schemas/RightsState",
             "description": "Rights evaluation outcome. A *display* input: enforcement happens at the distribution\nchokepoint (D12), and this field is what dims a button rather than what protects an asset."
