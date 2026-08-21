@@ -348,3 +348,113 @@ fn every_advertised_source_is_one_the_extractor_can_actually_produce() {
         );
     }
 }
+
+// ─── where the photograph was taken ─────────────────────────────────────────
+
+/// A coordinate comes out as decimal degrees, signed by its hemisphere.
+///
+/// Found by importing a phone library: every one of those photographs carries a location and none of it was
+/// being read. EXIF stores three rationals plus a letter, which no field could hold — so this is transcribed
+/// into the interchange shape, the same exception the timestamp is.
+#[test]
+fn a_coordinate_is_transcribed_into_decimal_degrees() {
+    use dam_media::testing::jpeg_with_gps;
+    use dam_media::testing::tags::{
+        GPS_ALTITUDE, GPS_LATITUDE, GPS_LATITUDE_REF, GPS_LONGITUDE, GPS_LONGITUDE_REF,
+    };
+
+    // 51°30'26.4"N, 0°7'39.6"W — a little west of Greenwich, which is the point: the sign has to come from the
+    // reference letter, and a longitude that lost it would be on the wrong side of London.
+    let bytes = jpeg_with_gps(
+        &[(MAKE, Entry::Text("Apple"))],
+        &[],
+        &[
+            (GPS_LATITUDE_REF, Entry::Text("N")),
+            (GPS_LATITUDE, Entry::Dms([(51, 1), (30, 1), (264, 10)])),
+            (GPS_LONGITUDE_REF, Entry::Text("W")),
+            (GPS_LONGITUDE, Entry::Dms([(0, 1), (7, 1), (396, 10)])),
+            (GPS_ALTITUDE, Entry::Rational(115, 1)),
+        ],
+    );
+
+    let found = embedded::read(&bytes);
+    assert_eq!(
+        found.get("exif.gps").map(String::as_str),
+        Some("51.507333,-0.127667"),
+        "{found:?}"
+    );
+    assert_eq!(
+        found.get("exif.gps_altitude").map(String::as_str),
+        Some("115.0"),
+        "{found:?}"
+    );
+    // The rest of the file still reads, which is the check that the extra directory did not displace anything.
+    assert_eq!(found.get("exif.make").map(String::as_str), Some("Apple"));
+}
+
+/// A southern, eastern coordinate: both signs the other way round.
+#[test]
+fn the_hemisphere_letters_decide_the_signs() {
+    use dam_media::testing::jpeg_with_gps;
+    use dam_media::testing::tags::{
+        GPS_LATITUDE, GPS_LATITUDE_REF, GPS_LONGITUDE, GPS_LONGITUDE_REF,
+    };
+
+    // 33°51'54"S, 151°12'36"E — Sydney.
+    let bytes = jpeg_with_gps(
+        &[],
+        &[],
+        &[
+            (GPS_LATITUDE_REF, Entry::Text("S")),
+            (GPS_LATITUDE, Entry::Dms([(33, 1), (51, 1), (54, 1)])),
+            (GPS_LONGITUDE_REF, Entry::Text("E")),
+            (GPS_LONGITUDE, Entry::Dms([(151, 1), (12, 1), (36, 1)])),
+        ],
+    );
+    assert_eq!(
+        embedded::read(&bytes).get("exif.gps").map(String::as_str),
+        Some("-33.865000,151.210000")
+    );
+}
+
+/// A camera with no fix writes zeroes, and (0, 0) is in the Gulf of Guinea.
+///
+/// Six hundred photographs pinned to one point in the ocean is worse than none pinned at all — and it looks
+/// like data rather than like an absence, which is what makes it worth refusing here.
+#[test]
+fn a_null_island_coordinate_is_not_a_location() {
+    use dam_media::testing::jpeg_with_gps;
+    use dam_media::testing::tags::{
+        GPS_LATITUDE, GPS_LATITUDE_REF, GPS_LONGITUDE, GPS_LONGITUDE_REF,
+    };
+
+    let bytes = jpeg_with_gps(
+        &[],
+        &[],
+        &[
+            (GPS_LATITUDE_REF, Entry::Text("N")),
+            (GPS_LATITUDE, Entry::Dms([(0, 1), (0, 1), (0, 1)])),
+            (GPS_LONGITUDE_REF, Entry::Text("E")),
+            (GPS_LONGITUDE, Entry::Dms([(0, 1), (0, 1), (0, 1)])),
+        ],
+    );
+    assert_eq!(embedded::read(&bytes).get("exif.gps"), None);
+}
+
+/// Half a coordinate is not a location.
+#[test]
+fn a_latitude_without_a_longitude_is_dropped() {
+    use dam_media::testing::jpeg_with_gps;
+    use dam_media::testing::tags::{GPS_LATITUDE, GPS_LATITUDE_REF};
+
+    // Storing this would put the photograph on the Greenwich meridian, which is a claim the file never made.
+    let bytes = jpeg_with_gps(
+        &[],
+        &[],
+        &[
+            (GPS_LATITUDE_REF, Entry::Text("N")),
+            (GPS_LATITUDE, Entry::Dms([(51, 1), (30, 1), (0, 1)])),
+        ],
+    );
+    assert_eq!(embedded::read(&bytes).get("exif.gps"), None);
+}

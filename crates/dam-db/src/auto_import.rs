@@ -447,6 +447,22 @@ fn coerce(value: &str, kind: Option<dam_core::fields::FieldKind>) -> Value {
         //
         // Only the split is done here; whether `2026-03-14` is a real date is still the validator's answer, so
         // there is no second date parser.
+        // A coordinate arrives as `lat,lon` in decimal degrees, because that is the only shape the extractor
+        // could produce without knowing the target: EXIF stores degrees, minutes, seconds and a hemisphere
+        // letter, and a `geo` field wants an object. The conversion belongs here for the same reason the int
+        // one does — this layer knows the field was *declared* geo.
+        K::Geo => {
+            let (lat, lon) = match value.trim().split_once(',') {
+                Some((lat, lon)) => (lat.trim(), lon.trim()),
+                // Left as text, which the validator refuses with a message naming the field. Silently dropping
+                // it would make a mapping that never fires and never says why.
+                None => return Value::String(value.to_owned()),
+            };
+            match (lat.parse::<f64>(), lon.parse::<f64>()) {
+                (Ok(lat), Ok(lon)) => serde_json::json!({"lat": lat, "lon": lon}),
+                _ => Value::String(value.to_owned()),
+            }
+        }
         K::Date => Value::String(
             value
                 .trim()

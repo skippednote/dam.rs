@@ -53,6 +53,31 @@
 	const values = $derived((asset.values ?? {}) as Record<string, unknown>);
 	const technical = $derived((asset.technical ?? {}) as Record<string, unknown>);
 
+	/**
+	 * The technical facts as rows, with one level of nesting flattened.
+	 *
+	 * `technical.embedded` holds everything the file said about itself — camera, lens, exposure, coordinates,
+	 * XMP — and `JSON.stringify` on it produced a single unreadable row of two hundred characters. The tags are
+	 * the useful part of this panel to a photographer, so they get rows of their own.
+	 *
+	 * The child key is the label because these keys arrive namespaced (`exif.make`, `xmp.credit`), so it
+	 * already reads as what it is; a `embedded.exif.make` label would be three words of scaffolding in front
+	 * of the one that matters.
+	 */
+	const facts = $derived.by(() => {
+		const rows: [string, unknown][] = [];
+		const nested: [string, unknown][] = [];
+		for (const [key, value] of Object.entries(technical)) {
+			if (value && typeof value === 'object' && !Array.isArray(value)) {
+				nested.push(...Object.entries(value as Record<string, unknown>));
+			} else {
+				rows.push([key, value]);
+			}
+		}
+		nested.sort(([a], [b]) => a.localeCompare(b));
+		return [...rows, ...nested];
+	});
+
 	/** Whether the original can be fetched right now. See the component docs. */
 	const originalAvailable = $derived(
 		asset.tier === 'hot' || asset.tier === 'cool' || asset.tier === 'restored'
@@ -244,7 +269,7 @@
 	     disclosure is also why it costs nothing to have here — it fetches only once somebody opens it. -->
 	<HistoryPanel assetId={asset.id} filename={asset.filename} />
 
-	{#if Object.keys(technical).length > 0}
+	{#if facts.length > 0}
 		<details>
 			<summary class="cursor-pointer text-xs font-semibold tracking-wide text-muted uppercase">
 				Technical
@@ -254,7 +279,7 @@
 				schema, which is why they are not merged into the editable document above.
 			-->
 			<dl class="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-				{#each Object.entries(technical) as [key, value] (key)}
+				{#each facts as [key, value] (key)}
 					<dt class="text-muted">{key}</dt>
 					<dd class="break-all">
 						{typeof value === 'object' ? JSON.stringify(value) : String(value)}

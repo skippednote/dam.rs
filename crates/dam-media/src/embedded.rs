@@ -131,6 +131,27 @@ fn read_exif(bytes: &[u8], into: &mut BTreeMap<String, String>) {
         }
     }
 
+    // Where the photograph was taken (found in the validation pass: a phone library is full of coordinates and
+    // none of them were being read).
+    //
+    // Transcribed, not guessed — the same exception `iso_timestamp` is. EXIF stores a coordinate as three
+    // rationals of degrees, minutes and seconds plus a separate hemisphere letter, which is not a number any
+    // field could hold: a `geo` field wants decimal degrees, and nothing downstream can turn `51 deg 30 min
+    // 26 sec` plus `"N"` into one. So this converts the specified shape into the interchange one and leaves the
+    // typing to the mapping layer, which knows the target is a `geo` field.
+    if let Some(coordinates) = gps_decimal(&reader) {
+        into.insert("exif.gps".to_owned(), coordinates);
+    }
+    if let Some(field) = reader
+        .get_field(exif::Tag::GPSAltitude, exif::In::PRIMARY)
+        .and_then(|field| rational_parts(field).first().copied())
+    {
+        // Metres, as EXIF specifies. The below-sea-level reference is a separate tag and is deliberately not
+        // applied: a negative altitude is rare enough, and reading the ref wrongly would put a photograph
+        // underwater rather than on a hill.
+        into.insert("exif.gps_altitude".to_owned(), format!("{field:.1}"));
+    }
+
     // EXIF writes a timestamp as `YYYY:MM:DD HH:MM:SS`, which is not a date in any interchange format, so a
     // mapping onto a date field could never fire. Transcribing a fixed wire format into the standard one is not
     // the type-guessing this module refuses — the shape is specified, and the alternative is a name that is
@@ -140,6 +161,77 @@ fn read_exif(bytes: &[u8], into: &mut BTreeMap<String, String>) {
             iso_timestamp(&stamp, into.get("exif.taken_at_offset").map(String::as_str))
     {
         into.insert("exif.taken_at".to_owned(), iso);
+    }
+}
+
+/// A coordinate as `lat,lon` in decimal degrees, or `None` when the file carries no usable pair.
+///
+/// Both halves or neither: a latitude without a longitude is not a location, and storing one would put every
+/// such photograph on the Greenwich meridian.
+fn gps_decimal(reader: &exif::Exif) -> Option<String> {
+    let lat = degrees(
+        reader,
+        exif::Tag::GPSLatitude,
+        exif::Tag::GPSLatitudeRef,
+        "S",
+    )?;
+    let lon = degrees(
+        reader,
+        exif::Tag::GPSLongitude,
+        exif::Tag::GPSLongitudeRef,
+        "W",
+    )?;
+    // A camera with no fix writes zeroes rather than omitting the tags, and (0, 0) is in the Gulf of Guinea.
+    // Six hundred photographs pinned to the same point in the ocean is worse than none pinned at all.
+    if lat == 0.0 && lon == 0.0 {
+        return None;
+    }
+    if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+        return None;
+    }
+    // Six decimal places is about a tenth of a metre — past the accuracy of any consumer GPS, and short enough
+    // not to pretend otherwise.
+    Some(format!("{lat:.6},{lon:.6}"))
+}
+
+/// One coordinate in decimal degrees, signed by its hemisphere reference.
+fn degrees(reader: &exif::Exif, tag: exif::Tag, ref_tag: exif::Tag, negative: &str) -> Option<f64> {
+    let field = reader
+        .get_field(tag, exif::In::PRIMARY)
+        .or_else(|| reader.get_field(tag, exif::In::THUMBNAIL))?;
+    let parts = rational_parts(field);
+    // Degrees, minutes, seconds. A file with fewer is a file writing something else under this tag.
+    let (d, m, s) = (
+        *parts.first()?,
+        parts.get(1).copied().unwrap_or(0.0),
+        parts.get(2).copied().unwrap_or(0.0),
+    );
+    let magnitude = d + m / 60.0 + s / 3600.0;
+
+    let hemisphere = reader
+        .get_field(ref_tag, exif::In::PRIMARY)
+        .map(|field| field.display_value().to_string())
+        .unwrap_or_default();
+    // The reference is what makes a southern latitude negative, and a file that omits it is a file that has
+    // not said which side of the equator it is on — so the sign is left positive rather than assumed.
+    let signed = if hemisphere
+        .trim()
+        .trim_matches('"')
+        .eq_ignore_ascii_case(negative)
+    {
+        -magnitude
+    } else {
+        magnitude
+    };
+    Some(signed)
+}
+
+/// The rationals in a field, as floats. Empty for a field that holds something else.
+fn rational_parts(field: &exif::Field) -> Vec<f64> {
+    match &field.value {
+        exif::Value::Rational(parts) => parts.iter().map(|r| r.to_f64()).collect(),
+        exif::Value::SRational(parts) => parts.iter().map(|r| r.to_f64()).collect(),
+        _ => Vec::new(),
     }
 }
 

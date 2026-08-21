@@ -26,6 +26,8 @@ pub enum Entry<'a> {
     Short(u16),
     /// A pair of 32-bit integers (type 5), numerator then denominator — FNumber, ExposureTime, FocalLength.
     Rational(u32, u32),
+    /// Three rationals (type 5, count 3) — how EXIF writes a coordinate: degrees, minutes, seconds.
+    Dms([(u32, u32); 3]),
 }
 
 impl Entry<'_> {
@@ -33,7 +35,7 @@ impl Entry<'_> {
         match self {
             Self::Text(_) => 2,
             Self::Short(_) => 3,
-            Self::Rational(_, _) => 5,
+            Self::Rational(_, _) | Self::Dms(_) => 5,
         }
     }
 
@@ -52,6 +54,15 @@ impl Entry<'_> {
                 bytes.extend_from_slice(&denominator.to_le_bytes());
                 Some(bytes)
             }
+            // Twenty-four bytes: three rationals, in the order EXIF specifies.
+            Self::Dms(parts) => {
+                let mut bytes = Vec::with_capacity(24);
+                for (numerator, denominator) in parts {
+                    bytes.extend_from_slice(&numerator.to_le_bytes());
+                    bytes.extend_from_slice(&denominator.to_le_bytes());
+                }
+                Some(bytes)
+            }
         }
     }
 
@@ -59,6 +70,7 @@ impl Entry<'_> {
         match self {
             Self::Text(text) => u32::try_from(text.len() + 1).unwrap_or(u32::MAX),
             Self::Short(_) | Self::Rational(_, _) => 1,
+            Self::Dms(_) => 3,
         }
     }
 
@@ -75,7 +87,7 @@ impl Entry<'_> {
                 let [low, high] = number.to_le_bytes();
                 [low, high, 0, 0]
             }
-            Self::Rational(_, _) => [0; 4],
+            Self::Rational(_, _) | Self::Dms(_) => [0; 4],
         }
     }
 }
@@ -115,6 +127,121 @@ pub mod tags {
     const EXIF_IFD_POINTER: u16 = 0x8769;
 
     pub(super) const POINTER: u16 = EXIF_IFD_POINTER;
+
+    /// GPS lives in a directory of its own, reached from IFD0 by this pointer — which is why a coordinate
+    /// cannot be written with the primary or Exif tags.
+    pub(super) const GPS_IFD_POINTER: u16 = 0x8825;
+
+    /// GPS directory. `N`/`S` and `E`/`W` are what make a coordinate signed.
+    pub const GPS_LATITUDE_REF: u16 = 0x0001;
+    /// GPS directory. Three rationals: degrees, minutes, seconds.
+    pub const GPS_LATITUDE: u16 = 0x0002;
+    /// GPS directory.
+    pub const GPS_LONGITUDE_REF: u16 = 0x0003;
+    /// GPS directory.
+    pub const GPS_LONGITUDE: u16 = 0x0004;
+    /// GPS directory. Metres above sea level, as one rational.
+    pub const GPS_ALTITUDE: u16 = 0x0006;
+}
+
+/// A TIFF block with a GPS directory as well as the other two.
+///
+/// Separate from [`tiff`] rather than a third parameter on it, because GPS is the only directory most fixtures
+/// never want and threading an empty slice through every call site would be noise.
+fn tiff_with_gps(
+    primary: &[(u16, Entry<'_>)],
+    sub: &[(u16, Entry<'_>)],
+    gps: &[(u16, Entry<'_>)],
+) -> Vec<u8> {
+    // Built by appending a GPS directory to the two-directory layout and pointing IFD0 at it. The offsets are
+    // absolute, so the pointer's value is only knowable once the earlier directories have been measured —
+    // which is why this reimplements the layout rather than patching the output of `tiff`.
+    let mut out = b"II\x2a\x00".to_vec();
+    out.extend_from_slice(&8u32.to_le_bytes());
+
+    let with_exif = !sub.is_empty();
+    let with_gps = !gps.is_empty();
+    let primary_count = primary.len() + usize::from(with_exif) + usize::from(with_gps);
+
+    let ifd0_at = 8usize;
+    let ifd0_size = 2 + primary_count * 12 + 4;
+    let ifd0_heap_at = ifd0_at + ifd0_size;
+    let ifd0_heap_len: usize = primary
+        .iter()
+        .filter_map(|(_, value)| value.heap_bytes().map(|bytes| bytes.len()))
+        .sum();
+    let sub_at = ifd0_heap_at + ifd0_heap_len;
+    let sub_size = if with_exif { 2 + sub.len() * 12 + 4 } else { 0 };
+    let sub_heap_at = sub_at + sub_size;
+    let sub_heap_len: usize = sub
+        .iter()
+        .filter_map(|(_, value)| value.heap_bytes().map(|bytes| bytes.len()))
+        .sum();
+    let gps_at = sub_heap_at + sub_heap_len;
+    let gps_size = 2 + gps.len() * 12 + 4;
+    let gps_heap_at = gps_at + gps_size;
+
+    let mut heap = Vec::new();
+    out.extend_from_slice(
+        &u16::try_from(primary_count)
+            .unwrap_or(u16::MAX)
+            .to_le_bytes(),
+    );
+    for (tag, value) in primary {
+        write_entry(&mut out, *tag, *value, ifd0_heap_at, &mut heap);
+    }
+    // The pointers, in tag order: a directory whose entries are out of order is one some readers skip.
+    if with_exif {
+        write_pointer(&mut out, tags::POINTER, sub_at);
+    }
+    if with_gps {
+        write_pointer(&mut out, tags::GPS_IFD_POINTER, gps_at);
+    }
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&heap);
+
+    if with_exif {
+        let mut sub_heap = Vec::new();
+        out.extend_from_slice(&u16::try_from(sub.len()).unwrap_or(u16::MAX).to_le_bytes());
+        for (tag, value) in sub {
+            write_entry(&mut out, *tag, *value, sub_heap_at, &mut sub_heap);
+        }
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&sub_heap);
+    }
+
+    if with_gps {
+        let mut gps_heap = Vec::new();
+        out.extend_from_slice(&u16::try_from(gps.len()).unwrap_or(u16::MAX).to_le_bytes());
+        for (tag, value) in gps {
+            write_entry(&mut out, *tag, *value, gps_heap_at, &mut gps_heap);
+        }
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&gps_heap);
+    }
+
+    out
+}
+
+/// A LONG entry holding one absolute offset — how every IFD points at another.
+fn write_pointer(out: &mut Vec<u8>, tag: u16, at: usize) {
+    out.extend_from_slice(&tag.to_le_bytes());
+    out.extend_from_slice(&4u16.to_le_bytes());
+    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&u32::try_from(at).unwrap_or(0).to_le_bytes());
+}
+
+/// A JPEG carrying EXIF with a GPS directory.
+#[must_use]
+pub fn jpeg_with_gps(
+    primary: &[(u16, Entry<'_>)],
+    sub: &[(u16, Entry<'_>)],
+    gps: &[(u16, Entry<'_>)],
+) -> Vec<u8> {
+    let mut jpeg = vec![0xff, 0xd8];
+    jpeg.extend_from_slice(&segment(&tiff_with_gps(primary, sub, gps)));
+    jpeg.extend_from_slice(&[0xff, 0xd9]);
+    jpeg
 }
 
 /// A TIFF block: IFD0 with `primary`, plus an Exif sub-directory with `sub` when `sub` is non-empty.
@@ -202,17 +329,21 @@ pub fn jpeg_with_exif(primary: &[(u16, Entry<'_>)], sub: &[(u16, Entry<'_>)]) ->
 /// The APP1 segment, ready to splice in after a JPEG's start-of-image marker.
 #[must_use]
 pub fn app1(primary: &[(u16, Entry<'_>)], sub: &[(u16, Entry<'_>)]) -> Vec<u8> {
-    let block = tiff(primary, sub);
-    let mut segment = vec![0xff, 0xe1];
+    segment(&tiff(primary, sub))
+}
+
+/// A TIFF block wrapped as an APP1 segment. Shared so the GPS fixture cannot drift from the other one.
+fn segment(block: &[u8]) -> Vec<u8> {
+    let mut out = vec![0xff, 0xe1];
     // Length covers itself and the `Exif\0\0` prefix, hence the eight.
-    segment.extend_from_slice(
+    out.extend_from_slice(
         &u16::try_from(block.len() + 8)
             .unwrap_or(u16::MAX)
             .to_be_bytes(),
     );
-    segment.extend_from_slice(b"Exif\0\0");
-    segment.extend_from_slice(&block);
-    segment
+    out.extend_from_slice(b"Exif\0\0");
+    out.extend_from_slice(block);
+    out
 }
 
 /// An encoded image of `width` by `height` with the EXIF spliced in, so both readers have something to work with.

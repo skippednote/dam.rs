@@ -254,6 +254,23 @@ pub async fn upload(
     .await
     .map_err(dam_db::Error::from)?;
 
+    // Everything the file says about itself, kept whether or not this tenant maps any of it.
+    //
+    // Auto-import is a *projection*: a tag reaches `values` only where a mapping names a field for it (Q.4).
+    // That is the right rule for the tenant's own schema — a library with no `lens` field should not grow one
+    // because a camera wrote a tag — but reading twenty-two tags and keeping four was lossy in a way nothing
+    // could recover from. The bytes are in cold storage and a mapping added next month had nothing to apply
+    // itself to; the answer to "does this photo know where it was taken" was "re-download the original and
+    // find out".
+    //
+    // So the whole extracted set is kept here, next to the other read-only facts, and mapping stays a
+    // projection over something durable. This is also what makes a mapping added later backfillable without
+    // touching object storage.
+    let embedded = header
+        .as_deref()
+        .map(dam_media::embedded::read)
+        .unwrap_or_default();
+
     // The technical facts go in `asset_metadata.technical`, which is read-only and shaped by the file rather
     // than by the tenant's schema — which is why it is not merged into `values`.
     let technical = serde_json::json!({
@@ -264,6 +281,9 @@ pub async fn upload(
         "has_icc_profile": probe.as_ref().map(|p| p.has_icc_profile),
         "stored_width": probe.as_ref().and_then(|p| p.stored_width),
         "stored_height": probe.as_ref().and_then(|p| p.stored_height),
+        // Nested rather than flattened, so a tag named `sniffed_mime` by some future camera cannot shadow the
+        // fact above it, and so a reader can tell "the file claims this" from "we measured this".
+        "embedded": embedded,
     });
     // The profile's defaults become the asset's starting metadata (Q.3), validated on the way in — the same
     // validator a human's edit goes through, so a default cannot write a read-only field or a value of the
@@ -280,28 +300,26 @@ pub async fn upload(
     // read it as "a person put this here" and decline: one blanket default would silently defeat the import on
     // every asset from that source. Running the import first keeps the profile doing exactly what it promises,
     // which is to fill what is *not* otherwise known.
-    let imported = match header.as_deref() {
-        Some(bytes) => {
-            let embedded = dam_media::embedded::read(bytes);
-            let plan =
-                dam_db::auto_import::plan_on(conn.executor(), &embedded, &serde_json::Map::new())
-                    .await
-                    .map_err(|refusal| dam_db::Error::Migrate(refusal.to_string()))?;
-            // Logged, not fatal: a file whose tag will not fit its field is the tenant's configuration to fix,
-            // and failing the upload over it would strand bytes somebody is waiting on. Silence is the thing to
-            // avoid — a mapping that never produces anything should be findable.
-            for rejection in &plan.rejected {
-                tracing::warn!(
-                    %asset_id,
-                    field = %rejection.key,
-                    code = %rejection.code,
-                    detail = %rejection.detail,
-                    "an auto-imported value did not fit its field",
-                );
-            }
-            plan.values
+    let imported = if embedded.is_empty() {
+        serde_json::Map::new()
+    } else {
+        let plan =
+            dam_db::auto_import::plan_on(conn.executor(), &embedded, &serde_json::Map::new())
+                .await
+                .map_err(|refusal| dam_db::Error::Migrate(refusal.to_string()))?;
+        // Logged, not fatal: a file whose tag will not fit its field is the tenant's configuration to fix,
+        // and failing the upload over it would strand bytes somebody is waiting on. Silence is the thing to
+        // avoid — a mapping that never produces anything should be findable.
+        for rejection in &plan.rejected {
+            tracing::warn!(
+                %asset_id,
+                field = %rejection.key,
+                code = %rejection.code,
+                detail = %rejection.detail,
+                "an auto-imported value did not fit its field",
+            );
         }
-        None => serde_json::Map::new(),
+        plan.values
     };
 
     let defaults = match profile.as_ref() {
