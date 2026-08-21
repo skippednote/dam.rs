@@ -57,7 +57,15 @@ pub fn router(state: BulkState) -> Router {
 /// Narrower than the schema's vocabulary, matching what `dam_pipeline::bulk_exec` can actually apply. The
 /// executor refuses unknown kinds too, but a 422 here is a message in the requester's face; a dead job is a
 /// message in a queue nobody watches.
-const EXECUTABLE: &[&str] = &["metadata_set", "delete", "publish", "unpublish"];
+const EXECUTABLE: &[&str] = &[
+    "metadata_set",
+    "delete",
+    "publish",
+    "unpublish",
+    "archive",
+    "unarchive",
+    "restore",
+];
 
 /// What a client asks for.
 #[derive(Debug, Clone, Deserialize, ToSchema)]

@@ -104,6 +104,168 @@ async fn asset_with_bytes(f: &Fixture, label: &str) -> Uuid {
     id
 }
 
+/// Records the original's placement in an archive class, as the lifecycle engine would.
+async fn archive_the_original(f: &Fixture, asset_id: Uuid, class: &str) {
+    let content_hash: String = sqlx::query_scalar("SELECT content_hash FROM assets WHERE id = $1")
+        .bind(asset_id)
+        .fetch_one(&f.pool)
+        .await
+        .expect("hash");
+    let pool_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO dam_global.storage_pools \
+           (id, tenant_id, name, driver, bucket, credentials_ref, storage_class, latency_class) \
+         VALUES (gen_random_uuid(), NULL, $1, 's3', 'b', 'test', $2, 'hours') RETURNING id",
+    )
+    .bind(format!("cold-{asset_id}"))
+    .bind(class)
+    .fetch_one(&f.pool)
+    .await
+    .expect("pool");
+    sqlx::query(
+        "INSERT INTO object_placements \
+           (object_key, pool_id, asset_id, size_bytes, checksum, storage_class, state) \
+         VALUES ($1, $2, $3, 10, 'x', $4, 'present')",
+    )
+    .bind(format!(
+        "acme/o/{}/{}",
+        &content_hash[..2],
+        &content_hash[2..4]
+    ))
+    .bind(pool_id)
+    .bind(asset_id)
+    .bind(class)
+    .execute(&f.pool)
+    .await
+    .expect("placement");
+}
+
+/// §6.5: cold bytes are a `202` with an ETA, not an error and not a redirect to a failing GET.
+///
+/// Before this, the redirect was minted regardless and S3 answered the browser with an
+/// `InvalidObjectState` XML document — a failure that happened after the hand-off, in a response damrs never
+/// saw and no amount of reading our own logs would explain.
+async fn an_archived_original_is_a_202_with_an_eta(f: &Fixture) {
+    let id = asset_with_bytes(f, "in-deep-archive").await;
+    licence(f, id, None).await;
+    archive_the_original(f, id, "DEEP_ARCHIVE").await;
+
+    let token = delivery::issue(
+        &f.state,
+        id,
+        dam_media::profiles::ORIGINAL,
+        &web(),
+        None,
+        Duration::hours(1),
+        now(),
+    )
+    .await
+    .expect("issue");
+
+    let response = get(&f.app, &token).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::ACCEPTED,
+        "the asset exists and the caller is entitled to it — what is missing is time, so a 404 would be a \
+         lie and a 503 would invite retrying for forty-eight hours",
+    );
+    let body: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 1 << 16)
+            .await
+            .expect("body"),
+    )
+    .expect("json");
+    assert_eq!(body["storage_class"], "DEEP_ARCHIVE", "{body}");
+    assert_eq!(
+        body["restore_url"],
+        format!("/assets/{id}/restore"),
+        "and where to ask, so a client does not have to know the URL shape: {body}",
+    );
+}
+
+/// The grid must still look like a grid.
+///
+/// A derivative is its own object in its own namespace and `Key::is_tier_exempt` keeps the lifecycle engine
+/// off it, so a thumbnail is deliverable whatever the original's class.
+///
+/// This case exists because the first version of the archival check ignored the claim's transform and read
+/// the original's placement for *every* delivery — so archiving one asset turned its grid cell into a
+/// placeholder while the badge beside it said Archived. Found by archiving one real asset and looking at the
+/// screen; no test would have caught it, because no test archived anything.
+async fn a_derivative_of_an_archived_asset_is_still_delivered(f: &Fixture) {
+    let id = asset_with_bytes(f, "cold-original-warm-proxy").await;
+    licence(f, id, None).await;
+    archive_the_original(f, id, "GLACIER").await;
+
+    let token = delivery::issue(
+        &f.state,
+        id,
+        "web-2048",
+        &web(),
+        None,
+        Duration::hours(1),
+        now(),
+    )
+    .await
+    .expect("issue");
+
+    assert_eq!(
+        get(&f.app, &token).await.status(),
+        StatusCode::FOUND,
+        "the proxy is warm and the grid depends on it; only a claim on the original can be archived",
+    );
+}
+
+/// A restored copy delivers, and an expired one stops.
+///
+/// The trap the schema comments warn about twice: `restore_state` and the storage class are independent, so a
+/// row still saying `available` past its window would mint a URL that 403s at S3 with nothing on our side
+/// explaining it. The expiry is the authority, not the state.
+async fn a_restored_copy_is_delivered_until_it_lapses(f: &Fixture) {
+    let id = asset_with_bytes(f, "thawed").await;
+    licence(f, id, None).await;
+    archive_the_original(f, id, "GLACIER").await;
+    sqlx::query(
+        "UPDATE object_placements \
+         SET restore_state = 'available', restore_expires_at = $2 \
+         WHERE asset_id = $1",
+    )
+    .bind(id)
+    .bind(now() + Duration::days(3))
+    .execute(&f.pool)
+    .await
+    .expect("a warm copy");
+
+    let token = delivery::issue(
+        &f.state,
+        id,
+        dam_media::profiles::ORIGINAL,
+        &web(),
+        None,
+        Duration::hours(1),
+        now(),
+    )
+    .await
+    .expect("issue");
+    assert_eq!(
+        get(&f.app, &token).await.status(),
+        StatusCode::FOUND,
+        "a restored copy is the whole point of restoring: it must deliver",
+    );
+
+    // Past the window. The class never changed, so the asset is archived again.
+    sqlx::query("UPDATE object_placements SET restore_expires_at = $2 WHERE asset_id = $1")
+        .bind(id)
+        .bind(now() - Duration::hours(1))
+        .execute(&f.pool)
+        .await
+        .expect("lapse it");
+    assert_eq!(
+        get(&f.app, &token).await.status(),
+        StatusCode::ACCEPTED,
+        "and once the copy has lapsed the same URL must say so rather than 403 from someone else's API",
+    );
+}
+
 /// Attaches a perpetual worldwide licence, optionally ending at `ends_at`.
 async fn licence(f: &Fixture, asset_id: Uuid, ends_at: Option<DateTime<Utc>>) {
     let license_id = Uuid::new_v4();
@@ -1274,6 +1436,10 @@ async fn the_delivery_chokepoint_holds() {
     a_preview_token_cannot_carry_a_share_link(&f).await;
     a_preview_of_a_name_that_is_not_a_profile_is_refused(&f).await;
     a_distribution_token_cannot_be_edited_into_a_preview(&f).await;
+
+    an_archived_original_is_a_202_with_an_eta(&f).await;
+    a_derivative_of_an_archived_asset_is_still_delivered(&f).await;
+    a_restored_copy_is_delivered_until_it_lapses(&f).await;
 
     // Last: it edits every licence row, so it must not run before the cases above.
     a_licence_that_lapses_after_issue_stops_an_already_issued_url(&f).await;

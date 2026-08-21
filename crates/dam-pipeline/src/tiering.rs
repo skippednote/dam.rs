@@ -62,6 +62,8 @@ pub struct Swept {
     pub planned: usize,
     /// Objects examined and left alone, with a reason.
     pub skipped: usize,
+    /// Objects the store refused to move.
+    pub failed: usize,
     /// Policies that halted before finishing.
     pub halted: Vec<String>,
 }
@@ -88,6 +90,7 @@ pub async fn sweep(
                 swept.moved += result.moved;
                 swept.planned += result.planned;
                 swept.skipped += result.skipped;
+                swept.failed += result.failed;
                 swept.halted.extend(result.halted);
             }
             Err(error) => tracing::error!(
@@ -173,9 +176,33 @@ async fn one_policy(
             continue;
         }
 
-        store
+        // Per object, and a failure here does not abandon the policy.
+        //
+        // The first version propagated, which cost the accounting: one refusal aborted the run and the
+        // partial result went with it, so a policy that had already moved five objects reported `moved=0`.
+        // A log that understates what happened is worse than no log — the next run would move five it
+        // believed were still Standard, and the minimum-duration counters would be the only evidence.
+        if let Err(error) = store
             .transition(&transition.object_key, transition.to)
-            .await?;
+            .await
+        {
+            swept.failed += 1;
+            let unsupported = matches!(error, dam_store::Error::Unsupported { .. });
+            tracing::error!(
+                %error,
+                policy = %policy.engine.name,
+                key = %transition.object_key.as_str(),
+                "could not transition",
+            );
+            // A capability the driver does not have will refuse every remaining object identically, so
+            // continuing would be a hundred more copies of the same line. Anything else — a timeout, a
+            // throttle, one object under a lock — is per-object, and the other hundred deserve their turn.
+            if unsupported {
+                swept.halted.push(policy.engine.name.clone());
+                break;
+            }
+            continue;
+        }
         let mut conn = dam_db::TenantConn::begin(global, slug).await?;
         dam_db::tiering::transitioned(
             conn.executor(),

@@ -1168,6 +1168,163 @@
         }
       }
     },
+    "/assets/{asset_id}/restore": {
+      "get": {
+        "tags": [
+          "archival"
+        ],
+        "summary": "The restore in flight for an asset, if there is one.",
+        "operationId": "restore_state",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The current restore",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RestoreView"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such asset"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "archival"
+        ],
+        "summary": "Asks for an archived asset to be brought back.",
+        "description": "`Download`, not `Manage`: a restore is the first half of taking a copy, and somebody who may download an\nasset may ask for its bytes to be fetchable. It is also where the cost sits, which is why the threshold\nexists — the answer to an expensive request is \"somebody senior confirms\", not \"no\".",
+        "operationId": "request_restore",
+        "parameters": [
+          {
+            "name": "tier",
+            "in": "query",
+            "description": "`expedited`, `standard` or `bulk`. Defaults to Standard — the middle, because a default of Expedited\nspends ten times more than most callers meant to and a default of Bulk makes the feature feel broken.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "keep_warm_days",
+            "in": "query",
+            "description": "How long the copy stays warm. Defaults to seven days (§6.5).",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          },
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The restore, planned and recorded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RestoreView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such asset, or nothing archived to restore"
+          },
+          "422": {
+            "description": "The tier is not offered for this asset's class, or nothing is archived",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assets/{asset_id}/restore/quote": {
+      "get": {
+        "tags": [
+          "archival"
+        ],
+        "summary": "What each tier would cost and when it would land, without asking for anything.",
+        "description": "§6.5 requires the estimate *before* the user confirms, and without this endpoint there was no way to\nhonour that: the only thing that produced a plan was the POST, which also records the request. So a screen\ncould either show a price or ask for a restore, and showing the price meant having already asked.\n\nAll three tiers in one response rather than one call per tier. The whole reason to show a number is the\ncomparison — 10× on price against 100× on latency — and three round trips to assemble one table would\nleave a screen rendering half a decision.\n\nA tier the class cannot offer is present with `available: false` and the reason, rather than absent. Deep\nArchive has no Expedited, and a chooser that silently showed two options where another asset shows three\ninvites \"why is this one different\" — which is a question the response can simply answer.",
+        "operationId": "quote",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What each tier would cost",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuoteView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such asset"
+          },
+          "422": {
+            "description": "Nothing archived to restore",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/assets/{asset_id}/tags/{term_id}": {
       "patch": {
         "tags": [
@@ -2481,6 +2638,86 @@
         }
       }
     },
+    "/lifecycle/policies": {
+      "get": {
+        "tags": [
+          "archival"
+        ],
+        "summary": "Every enabled policy, in the order the engine applies them.",
+        "operationId": "policies",
+        "responses": {
+          "200": {
+            "description": "The tiering rules",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PolicyView"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/lifecycle/policies/{id}/plan": {
+      "post": {
+        "tags": [
+          "archival"
+        ],
+        "summary": "Plans one policy against the current library.",
+        "operationId": "plan",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What the policy would do",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such policy"
+          }
+        }
+      }
+    },
+    "/lifecycle/runs": {
+      "post": {
+        "tags": [
+          "archival"
+        ],
+        "summary": "Queues a lifecycle sweep.",
+        "operationId": "run",
+        "responses": {
+          "202": {
+            "description": "The sweep is queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunQueued"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/me": {
       "get": {
         "tags": [
@@ -3021,6 +3258,41 @@
           },
           "404": {
             "description": "No such portal, or it is retired"
+          }
+        }
+      }
+    },
+    "/restores/{id}/approve": {
+      "post": {
+        "tags": [
+          "archival"
+        ],
+        "summary": "Releases a restore that was held for approval.",
+        "operationId": "approve",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Released; the worker will issue it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RestoreView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such request, or it was not awaiting approval"
           }
         }
       }
@@ -5833,9 +6105,16 @@
             "type": "string",
             "description": "What was asked for, echoed so a client holding several requests can tell them apart."
           },
+          "restore_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where to ask for a restore, on `archived`. Absent otherwise.\n\nPresent because a URL that will 202 is worse than no URL: the client has something that looks\nfetchable, hands it to a browser, and the wait shows up as a mystery in somebody else's response. The\nmint knows the bytes are cold, so it says so here rather than letting the delivery route say it later."
+          },
           "status": {
             "type": "string",
-            "description": "`ready` or `rendering`. A client polls on `rendering`."
+            "description": "`ready`, `rendering`, or `archived`. A client polls on `rendering` and asks for a restore on\n`archived`."
           },
           "url": {
             "type": [
@@ -6728,6 +7007,110 @@
           "deleting"
         ]
       },
+      "PlanView": {
+        "type": "object",
+        "description": "What one policy would do, without doing it.",
+        "required": [
+          "policy_name",
+          "dry_run",
+          "transitions",
+          "skipped"
+        ],
+        "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "description": "Whether executing this policy would move anything at all."
+          },
+          "halted": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Present when the run stopped early, with what stopped it. A truncated plan that did not say so reads\nexactly like a policy that is working."
+          },
+          "policy_name": {
+            "type": "string"
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SkipView"
+            },
+            "description": "Every candidate that was examined and left alone, with why. The answer to \"why did nothing happen?\"."
+          },
+          "transitions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TransitionView"
+            }
+          }
+        }
+      },
+      "PolicyView": {
+        "type": "object",
+        "description": "One tiering rule, as an administrator reads it.",
+        "required": [
+          "id",
+          "name",
+          "enabled",
+          "applies_to",
+          "target_class",
+          "after_days",
+          "dry_run"
+        ],
+        "properties": {
+          "after_days": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Days of idleness before an object is eligible.",
+            "minimum": 0
+          },
+          "applies_to": {
+            "type": "string",
+            "description": "`original`, `derivative` or `both`."
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "**True by default.** A policy that has never been taken off dry run has never moved anything, which is\nthe state every policy starts in and the most important thing on this row."
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "last_run_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "last_run_moved": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "max_objects_per_run": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
+          },
+          "target_class": {
+            "type": "string",
+            "description": "Where eligible objects go."
+          }
+        }
+      },
       "PortalDownload": {
         "type": "object",
         "description": "The download response.",
@@ -7137,6 +7520,63 @@
           }
         }
       },
+      "QuoteOption": {
+        "type": "object",
+        "description": "One tier's price and wait.",
+        "required": [
+          "tier",
+          "available",
+          "est_cost_cents",
+          "needs_approval"
+        ],
+        "properties": {
+          "available": {
+            "type": "boolean",
+            "description": "False when the storage class does not offer this tier."
+          },
+          "est_cost_cents": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Whole cents, rounded up. Zero when the pool has no prices recorded, which means \"this deployment does\nnot know\" rather than \"free\" — the screen should say so rather than promising nothing.",
+            "minimum": 0
+          },
+          "eta_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "needs_approval": {
+            "type": "boolean",
+            "description": "Whether choosing this would wait for an administrator instead of starting."
+          },
+          "tier": {
+            "type": "string"
+          },
+          "unavailable_because": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "QuoteView": {
+        "type": "object",
+        "description": "What restoring one asset would cost, per tier.",
+        "required": [
+          "options"
+        ],
+        "properties": {
+          "options": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QuoteOption"
+            }
+          }
+        }
+      },
       "RailEntry": {
         "type": "object",
         "description": "One thing the refine-search rail can show, and whether it does (Q.19).",
@@ -7228,6 +7668,27 @@
           }
         }
       },
+      "RestoreOptions": {
+        "type": "object",
+        "description": "What a caller asks for.\n\nQuery parameters rather than a body, and not only for tidiness. A restore has no entity to send — the\nasset is in the path and these two are modifiers — and an empty body under a JSON content-type is an\nextractor rejection, which axum returns *before* the handler runs. That turned `POST .../restore` with no\nbody from a reader into a `400` about the body instead of the `403` the permission check owes them: the\ngate never ran. A request with nothing to send should not have to send `{}` to find out it was refused.",
+        "properties": {
+          "keep_warm_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How long the copy stays warm. Defaults to seven days (§6.5)."
+          },
+          "tier": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`expedited`, `standard` or `bulk`. Defaults to Standard — the middle, because a default of Expedited\nspends ten times more than most callers meant to and a default of Bulk makes the feature feel broken."
+          }
+        }
+      },
       "RestoreState": {
         "type": "string",
         "description": "Where a restore has got to, matching `object_placements.restore_state`.",
@@ -7247,6 +7708,67 @@
           "standard",
           "bulk"
         ]
+      },
+      "RestoreView": {
+        "type": "object",
+        "description": "A restore, as the caller sees it.",
+        "required": [
+          "id",
+          "tier",
+          "state",
+          "est_cost_cents",
+          "bytes",
+          "joined_existing"
+        ],
+        "properties": {
+          "available_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "est_cost_cents": {
+            "type": "integer",
+            "format": "int64",
+            "description": "What this is expected to cost, in whole cents, rounded up so an approved estimate is not exceeded."
+          },
+          "eta_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the copy is expected. The slow end of the documented window, so an ETA met early beats one missed."
+          },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the temporary copy lapses. The storage class never changed, so after this the asset needs\nrestoring again."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "joined_existing": {
+            "type": "boolean",
+            "description": "True when this request was already in flight and the caller has joined it rather than starting a\nsecond one. Two people asking for the same archived asset share one retrieval and one charge."
+          },
+          "state": {
+            "type": "string",
+            "description": "`queued`, `awaiting_approval`, `requested`, `ongoing`, `available`, `expired`, `failed`, `cancelled`."
+          },
+          "tier": {
+            "type": "string"
+          }
+        }
       },
       "ReviewRow": {
         "type": "object",
@@ -7292,6 +7814,30 @@
           "denied",
           "unknown"
         ]
+      },
+      "RunQueued": {
+        "type": "object",
+        "description": "What a queued run reports.",
+        "required": [
+          "job_id",
+          "policies_in_dry_run",
+          "policies_enabled"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "policies_enabled": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "policies_in_dry_run": {
+            "type": "integer",
+            "description": "Restated on the response, because \"I pressed run and nothing moved\" is otherwise a support ticket\nrather than a policy that is still in dry run.",
+            "minimum": 0
+          }
+        }
       },
       "SchemaField": {
         "type": "object",
@@ -7468,6 +8014,30 @@
           }
         }
       },
+      "SkipView": {
+        "type": "object",
+        "description": "One object a run would leave alone.",
+        "required": [
+          "object_key",
+          "reason"
+        ],
+        "properties": {
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The human sentence, where there is more to say — a pin's reason, or the date something becomes\neligible."
+          },
+          "object_key": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "description": "A stable machine-readable reason, for grouping a plan of ten thousand into a handful of lines."
+          }
+        }
+      },
       "SortOrder": {
         "type": "string",
         "description": "The orders a client may ask for.\n\nA closed set on the wire as well as in SQL. Accepting a column name would make the ORDER BY\ncaller-supplied, and validating one against a list is the same list written twice.",
@@ -7608,6 +8178,40 @@
           "accept": {
             "type": "boolean",
             "description": "`true` confirms the tag, `false` rejects it. Both are recorded: the rejections are the training signal."
+          }
+        }
+      },
+      "TransitionView": {
+        "type": "object",
+        "description": "One object a run would move.",
+        "required": [
+          "object_key",
+          "from",
+          "to",
+          "size_bytes"
+        ],
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "min_duration_until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When this object could next move, after this one. The minimum billable duration the new class starts."
+          },
+          "object_key": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "to": {
+            "type": "string"
           }
         }
       },

@@ -256,7 +256,32 @@ pub enum Refusal {
         state: RightsState,
         codes: Vec<String>,
     },
+    /// The bytes are in an archive class and cannot be fetched yet (§6.5).
+    ///
+    /// A `202`, not a `404` and not a `503`. The asset exists, the caller is entitled to it, and the request
+    /// was accepted — what is missing is only time. A `404` would be a lie about existence and a `503` would
+    /// invite a client to retry in a second, which for Deep Archive on Bulk is forty-eight hours of retrying.
+    Restoring(RestoringBody),
     Internal,
+}
+
+/// What a caller is told about an archived object.
+///
+/// Carries the state of any restore already in flight, so two people clicking the same archived asset are
+/// told the same ETA rather than each being invited to start their own retrieval — the coalescing in
+/// `restores::request` makes that safe, but a response that did not mention it would still have them each
+/// pressing the button.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct RestoringBody {
+    /// `archive` when nothing has been asked for yet; otherwise the request's own state.
+    pub state: String,
+    /// Where to ask, so a client does not have to know the URL shape.
+    pub restore_url: String,
+    /// When the copy is expected, if a restore is already under way.
+    pub eta_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// The storage class the bytes are in, so a client can say "Deep Archive, so this takes hours" rather
+    /// than "unavailable".
+    pub storage_class: String,
 }
 
 impl IntoResponse for Refusal {
@@ -265,6 +290,7 @@ impl IntoResponse for Refusal {
             // 404, not 403. A token that does not verify tells us nothing about whether the asset exists,
             // and answering 403 would confirm that it does.
             Self::NotDeliverable => StatusCode::NOT_FOUND.into_response(),
+            Self::Restoring(body) => (StatusCode::ACCEPTED, axum::Json(body)).into_response(),
             Self::RightsDenied { state, codes } => (
                 StatusCode::FORBIDDEN,
                 axum::Json(serde_json::json!({
@@ -477,6 +503,102 @@ async fn issue_with_purpose(
 }
 
 /// Serves a signed delivery URL.
+/// Whether this claim's bytes are archived, and what to tell the caller if they are.
+///
+/// `None` is the overwhelmingly common answer, and for anything but an original it is the *only* answer
+/// without a query at all.
+///
+/// ## Only a claim on the original can be archived
+///
+/// A derivative is its own object in its own namespace, and `Key::is_tier_exempt` means the lifecycle engine
+/// will never move one. So a thumbnail, a preview or a rendered conversion is deliverable whatever the state
+/// of the original it came from — which is what keeps a grid of archived assets looking like a grid, and is
+/// the whole reason §2 makes the proxies the search substrate.
+///
+/// The first version of this function ignored the claim's transform and read the original's placement for
+/// every delivery. Every thumbnail of an archived asset answered `202`, so archiving anything turned its
+/// grid cell into a placeholder — the exact failure the paragraph above says cannot happen. Found by
+/// archiving one real asset and looking at the screen: the badge said Archived and the picture next to it
+/// had gone.
+async fn archived_wait(
+    state: &DeliveryState,
+    claim: &signed_url::DeliveryClaim,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<Option<RestoringBody>, Refusal> {
+    if claim.transform != dam_media::profiles::ORIGINAL {
+        return Ok(None);
+    }
+
+    // The *coldest* copy of the original, matching how `object_key` picks. A warmest-first read here would
+    // report a Standard replica and mint a URL for bytes in Deep Archive.
+    let row: Option<(String, String, Option<chrono::DateTime<chrono::Utc>>)> = sqlx::query_as(
+        "SELECT p.storage_class, p.restore_state, p.restore_expires_at \
+         FROM object_placements p \
+         WHERE p.asset_id = $1 AND p.derivative_id IS NULL AND p.state = 'present' \
+         ORDER BY CASE p.storage_class \
+                      WHEN 'DEEP_ARCHIVE' THEN 0 WHEN 'GLACIER' THEN 1 ELSE 2 \
+                  END, p.object_key \
+         LIMIT 1",
+    )
+    .bind(claim.asset_id)
+    .fetch_optional(&state.global)
+    .await
+    .map_err(|error| {
+        tracing::error!(%error, "reading a placement for delivery");
+        Refusal::Internal
+    })?;
+
+    let Some((class, restore, expires)) = row else {
+        // No placement is a freshly finalised upload, which is `Standard` by definition — the same reading
+        // `assets::tier_of` takes, and for the same reason.
+        return Ok(None);
+    };
+    let Ok(class) = class.parse::<dam_core::StorageClass>() else {
+        tracing::error!(%class, "a placement holds an unknown storage class");
+        return Err(Refusal::Internal);
+    };
+    if !class.requires_restore() {
+        return Ok(None);
+    }
+    // A restored copy is deliverable until it lapses, and the expiry is the authority rather than the state:
+    // a row that still says `available` past its window is exactly the trap the schema comments warn about
+    // twice, and trusting it would mint a URL that 403s at S3.
+    if restore == "available" && expires.is_some_and(|at| at > now) {
+        return Ok(None);
+    }
+
+    Ok(Some(RestoringBody {
+        state: if restore == "none" || restore == "expired" {
+            "archive".to_owned()
+        } else {
+            restore
+        },
+        restore_url: format!("/assets/{}/restore", claim.asset_id),
+        eta_at: in_flight_eta(state, claim.asset_id).await,
+        storage_class: class.to_string(),
+    }))
+}
+
+/// The ETA of a restore already under way, if there is one.
+///
+/// Best effort: a failure to read it costs the caller a null ETA, not their request. The 202 is still the
+/// right answer with or without a date on it.
+async fn in_flight_eta(
+    state: &DeliveryState,
+    asset_id: uuid::Uuid,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    sqlx::query_scalar(
+        "SELECT eta_at FROM restore_requests \
+         WHERE asset_id = $1 AND state IN ('queued', 'awaiting_approval', 'requested', 'ongoing') \
+         ORDER BY requested_at DESC LIMIT 1",
+    )
+    .bind(asset_id)
+    .fetch_optional(&state.global)
+    .await
+    .ok()
+    .flatten()
+}
+
 async fn deliver(
     State(state): State<Arc<DeliveryState>>,
     Path(token): Path<String>,
@@ -523,6 +645,22 @@ async fn deliver(
     }
 
     let key = object_key(&state, &claim, now).await?;
+
+    // Step 3. Are the bytes reachable at all?
+    //
+    // §6.5: a download that resolves to an archived object "cannot be served ... and this is a `202` with an
+    // ETA and a cost estimate rather than an error". Before this, the redirect was minted regardless and S3
+    // answered the browser with an `InvalidObjectState` XML document — a failure that happened *after* the
+    // hand-off, in a response damrs never saw, and which no amount of reading our own logs would explain.
+    //
+    // The placement is the source of truth rather than a `HEAD` to the store. It is one local read against a
+    // row we maintain, on the hot path of every thumbnail in every grid; a vendor round trip per delivery to
+    // learn something we already know would be a per-image latency cost paid to answer a question that is
+    // almost always "yes, it is Standard".
+    if let Some(wait) = archived_wait(&state, &claim, now).await? {
+        return Err(Refusal::Restoring(wait));
+    }
+
     let url = state
         .store
         .presign_get(&key, PRESIGN_TTL)

@@ -26,6 +26,7 @@
 	import AttachmentPanel from './AttachmentPanel.svelte';
 	import DownloadPanel from './DownloadPanel.svelte';
 	import HistoryPanel from './HistoryPanel.svelte';
+	import RestorePanel from './RestorePanel.svelte';
 	import VersionPanel from './VersionPanel.svelte';
 	import MetadataEditor from './MetadataEditor.svelte';
 	import SharePanel from './SharePanel.svelte';
@@ -187,6 +188,10 @@
 			</p>
 		{/if}
 	</div>
+
+	<!-- Where the words above become an action. Until this existed the panel could explain that an asset was
+	     archived and offer nothing to do about it, which is the whole of F.11b·2b. -->
+	<RestorePanel assetId={asset.id} tier={asset.tier} />
 
 	<!-- Directly under the paragraph about availability, because that paragraph is what somebody reads before
 	     deciding to take a copy. The panel hides itself for a caller who may look and not download. -->

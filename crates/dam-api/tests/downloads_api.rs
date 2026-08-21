@@ -321,6 +321,94 @@ async fn the_download_http_contract_holds() {
     the_ledger_names_who_took_it(&f, photograph).await;
     the_options_are_the_tenants_own_vocabulary(&f).await;
     a_cap_reached_through_the_ledger_refuses(&f).await;
+    archived_bytes_are_reported_here_rather_than_at_the_redirect(&f).await;
+}
+
+/// Cold bytes are named at the mint, not discovered by following the URL.
+///
+/// The delivery route refuses them properly — a `202` with the class and an ETA — but by then the client has
+/// been handed something it was told was fetchable and may well have given it to a browser, where the wait
+/// surfaces as a mystery in a response nothing on our side wrote. `download-options` has reported
+/// `original_available` from exactly this fact all along; this endpoint was the one that knew and said
+/// "ready" anyway.
+///
+/// After rights, and the order is deliberate. Telling somebody how to thaw an asset they are not licensed for
+/// would invite them to spend money on a download that will still be refused.
+async fn archived_bytes_are_reported_here_rather_than_at_the_redirect(f: &Fixture) {
+    let cold = asset(f, "in-the-freezer", "image/jpeg").await;
+    licence(f, cold).await;
+    let pool_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO dam_global.storage_pools \
+           (id, tenant_id, name, driver, bucket, credentials_ref, storage_class, latency_class) \
+         VALUES (gen_random_uuid(), NULL, 'cold', 's3', 'b', 'test', 'DEEP_ARCHIVE', 'hours') \
+         RETURNING id",
+    )
+    .fetch_one(&f.global)
+    .await
+    .expect("pool");
+    sqlx::query(
+        "INSERT INTO object_placements \
+           (object_key, pool_id, asset_id, size_bytes, checksum, storage_class, state) \
+         VALUES ($1, $2, $3, 10, 'x', 'DEEP_ARCHIVE', 'present')",
+    )
+    .bind(format!("acme/o/aa/bb/{cold}"))
+    .bind(pool_id)
+    .bind(cold)
+    .execute(&f.acme)
+    .await
+    .expect("placement");
+
+    let (status, body) = call(
+        f,
+        &format!("/assets/{cold}/download"),
+        &f.printer_key,
+        json!({ "format": "original" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(body["status"], "archived", "{body}");
+    assert!(
+        body["url"].is_null(),
+        "a URL that will 202 is worse than no URL: {body}",
+    );
+    assert_eq!(
+        body["restore_url"],
+        format!("/assets/{cold}/restore"),
+        "and it says where to ask, so a client does not have to know the URL shape: {body}",
+    );
+
+    // Nothing was distributed, so nothing is charged against the licence. A cold asset that consumed a
+    // download every time somebody clicked would exhaust a capped licence without ever delivering a byte.
+    assert!(
+        ledger_rows(f, cold).await.is_empty(),
+        "an archived answer is not a download",
+    );
+
+    // An unlicensed cold asset is still refused for the licence, not offered a restore.
+    let unlicensed_cold = asset(f, "cold-and-unlicensed", "image/jpeg").await;
+    sqlx::query(
+        "INSERT INTO object_placements \
+           (object_key, pool_id, asset_id, size_bytes, checksum, storage_class, state) \
+         VALUES ($1, $2, $3, 10, 'x', 'DEEP_ARCHIVE', 'present')",
+    )
+    .bind(format!("acme/o/cc/dd/{unlicensed_cold}"))
+    .bind(pool_id)
+    .bind(unlicensed_cold)
+    .execute(&f.acme)
+    .await
+    .expect("placement");
+    let (status, _) = call(
+        f,
+        &format!("/assets/{unlicensed_cold}/download"),
+        &f.printer_key,
+        json!({ "format": "original" }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "rights are the stronger answer, and a restore they cannot use is money wasted",
+    );
 }
 
 async fn a_declared_use_is_recorded_as_declared(f: &Fixture, photograph: Uuid) {

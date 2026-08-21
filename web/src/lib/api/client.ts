@@ -1138,3 +1138,36 @@ export async function createPortal(body: {
 export async function retirePortal(id: string): Promise<PortalRow> {
 	return request<PortalRow>(`/portals/${id}`, { method: 'DELETE' });
 }
+
+// ─── archival (§6.5) ────────────────────────────────────────────────────────
+
+export type RestoreQuote = components['schemas']['QuoteView'];
+export type RestoreQuoteOption = components['schemas']['QuoteOption'];
+export type Restore = components['schemas']['RestoreView'];
+
+/**
+ * What restoring an asset would cost at each tier, and when each would land.
+ *
+ * Asks for nothing. The distinction matters: this is the endpoint that lets a screen show a price *before*
+ * the user commits, which §6.5 requires and which the request endpoint cannot do — it records as it prices.
+ */
+export async function restoreQuote(assetId: string): Promise<RestoreQuote> {
+	return request<RestoreQuote>(`/assets/${assetId}/restore/quote`);
+}
+
+/** The most recent restore for an asset, in any state, or `null` if nobody has ever asked. */
+export async function currentRestore(assetId: string): Promise<Restore | null> {
+	return request<Restore | null>(`/assets/${assetId}/restore`);
+}
+
+/**
+ * Asks for an asset's original to be brought back.
+ *
+ * `joined_existing` on the response means somebody else had already asked and this caller is now waiting on
+ * the same retrieval — one charge, one ETA, which is what the coalescing in `restore_requests` is for.
+ */
+export async function requestRestore(assetId: string, tier: string): Promise<Restore> {
+	return request<Restore>(`/assets/${assetId}/restore?tier=${encodeURIComponent(tier)}`, {
+		method: 'POST'
+	});
+}

@@ -264,8 +264,16 @@ fn original() -> String {
 pub struct DownloadIssued {
     /// The signed URL. Absent while a conversion is still being rendered.
     pub url: Option<String>,
-    /// `ready` or `rendering`. A client polls on `rendering`.
+    /// `ready`, `rendering`, or `archived`. A client polls on `rendering` and asks for a restore on
+    /// `archived`.
     pub status: String,
+    /// Where to ask for a restore, on `archived`. Absent otherwise.
+    ///
+    /// Present because a URL that will 202 is worse than no URL: the client has something that looks
+    /// fetchable, hands it to a browser, and the wait shows up as a mystery in somebody else's response. The
+    /// mint knows the bytes are cold, so it says so here rather than letting the delivery route say it later.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restore_url: Option<String>,
     /// What was asked for, echoed so a client holding several requests can tell them apart.
     pub format: String,
 }
@@ -387,6 +395,7 @@ pub async fn issue(
                 DownloadIssued {
                     url: None,
                     status: "rendering".to_owned(),
+                    restore_url: None,
                     format: conversion.key,
                 },
             ));
@@ -417,6 +426,35 @@ pub async fn issue(
             evaluation.verdict.as_str(),
             reasons_of(&evaluation)
         )));
+    }
+
+    // Cold bytes are reported here rather than left for the delivery route to refuse.
+    //
+    // The delivery route *does* refuse them, with a 202 and an ETA — but by then the client has been handed a
+    // URL, called it fetchable, and quite possibly given it to a browser. The wait then surfaces as a mystery
+    // in a response nothing on this side wrote. The mint already knows: `download-options` reports
+    // `original_available` from exactly this fact, and this endpoint was the one place that knew and said
+    // "ready" anyway.
+    //
+    // After rights, deliberately. Whether the caller may have the bytes at all is a stronger answer than
+    // whether the bytes are warm, and telling somebody how to thaw an asset they are not licensed for would
+    // be inviting them to spend money on a download that will still be refused.
+    //
+    // Not recorded against the licence either, because nothing was distributed — which is why this sits above
+    // the ledger write below.
+    if transform == original()
+        && let Some(archived) =
+            archived_original(&state.global, &caller.tenant_slug, asset_id).await?
+    {
+        return Ok((
+            StatusCode::ACCEPTED,
+            DownloadIssued {
+                url: None,
+                status: "archived".to_owned(),
+                restore_url: Some(format!("/assets/{asset_id}/restore")),
+                format: archived,
+            },
+        ));
     }
 
     // Recorded before the URL exists. An unrecorded download makes `max_downloads` under-count and permits more
@@ -460,9 +498,42 @@ pub async fn issue(
         DownloadIssued {
             url: Some(delivery.url_for(&token)),
             status: "ready".to_owned(),
+            restore_url: None,
             format: transform,
         },
     ))
+}
+
+/// The storage class of an asset's coldest original, when it needs a restore.
+///
+/// `None` for the common case, at the cost of one indexed read. Only the original is asked about: a rendered
+/// conversion is its own object and does not tier, so a named format stays deliverable while the original it
+/// came from is cold.
+async fn archived_original(
+    global: &sqlx::PgPool,
+    slug: &dam_core::TenantSlug,
+    asset_id: Uuid,
+) -> Result<Option<String>, Failure> {
+    let mut conn = dam_db::TenantConn::begin(global, slug).await?;
+    let class: Option<String> = sqlx::query_scalar(
+        "SELECT storage_class FROM object_placements \
+         WHERE asset_id = $1 AND derivative_id IS NULL AND state = 'present' \
+           AND NOT (restore_state = 'available' AND restore_expires_at > now()) \
+         ORDER BY CASE storage_class \
+                      WHEN 'DEEP_ARCHIVE' THEN 0 WHEN 'GLACIER' THEN 1 ELSE 2 \
+                  END, object_key \
+         LIMIT 1",
+    )
+    .bind(asset_id)
+    .fetch_optional(conn.executor())
+    .await
+    .map_err(dam_db::Error::from)?;
+    conn.commit().await?;
+
+    Ok(class.filter(|raw| {
+        raw.parse::<dam_core::StorageClass>()
+            .is_ok_and(dam_core::StorageClass::requires_restore)
+    }))
 }
 
 /// The reason codes of a refusal, as a sentence fragment.
@@ -503,6 +574,14 @@ impl From<Denied> for Failure {
             // learns nothing about whether the thing they named exists, which is the delivery module's rule and
             // stays its rule here.
             delivery::Refusal::NotDeliverable => Self::NotFound,
+            // Archived bytes, on a route that has no `202` to give: this one answers with a URL or an error,
+            // so the wait becomes a sentence naming what to do about it. `Unprocessable` rather than
+            // `Forbidden` because nothing is being withheld — the request cannot be *completed* yet, and the
+            // caller has an action available that fixes it.
+            delivery::Refusal::Restoring(body) => Self::Unprocessable(format!(
+                "the original is in {} and cannot be fetched yet; ask for a restore at {}",
+                body.storage_class, body.restore_url,
+            )),
             delivery::Refusal::Internal => Self::Internal,
         }
     }

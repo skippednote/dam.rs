@@ -369,6 +369,59 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/assets/{asset_id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The restore in flight for an asset, if there is one. */
+        get: operations["restore_state"];
+        put?: never;
+        /**
+         * Asks for an archived asset to be brought back.
+         * @description `Download`, not `Manage`: a restore is the first half of taking a copy, and somebody who may download an
+         *     asset may ask for its bytes to be fetchable. It is also where the cost sits, which is why the threshold
+         *     exists — the answer to an expensive request is "somebody senior confirms", not "no".
+         */
+        post: operations["request_restore"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/assets/{asset_id}/restore/quote": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What each tier would cost and when it would land, without asking for anything.
+         * @description §6.5 requires the estimate *before* the user confirms, and without this endpoint there was no way to
+         *     honour that: the only thing that produced a plan was the POST, which also records the request. So a screen
+         *     could either show a price or ask for a restore, and showing the price meant having already asked.
+         *
+         *     All three tiers in one response rather than one call per tier. The whole reason to show a number is the
+         *     comparison — 10× on price against 100× on latency — and three round trips to assemble one table would
+         *     leave a screen rendering half a decision.
+         *
+         *     A tier the class cannot offer is present with `available: false` and the reason, rather than absent. Deep
+         *     Archive has no Expedited, and a chooser that silently showed two options where another asset shows three
+         *     invites "why is this one different" — which is a question the response can simply answer.
+         */
+        get: operations["quote"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/assets/{asset_id}/tags/{term_id}": {
         parameters: {
             query?: never;
@@ -833,6 +886,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/lifecycle/policies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every enabled policy, in the order the engine applies them. */
+        get: operations["policies"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/lifecycle/policies/{id}/plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Plans one policy against the current library. */
+        post: operations["plan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/lifecycle/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Queues a lifecycle sweep. */
+        post: operations["run"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/me": {
         parameters: {
             query?: never;
@@ -1061,6 +1165,23 @@ export interface paths {
          *     the old URL, which is a new portal wearing an old name.
          */
         patch: operations["present"];
+        trace?: never;
+    };
+    "/restores/{id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Releases a restore that was held for approval. */
+        post: operations["approve"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/schema/facets": {
@@ -2239,7 +2360,18 @@ export interface components {
         DownloadIssued: {
             /** @description What was asked for, echoed so a client holding several requests can tell them apart. */
             format: string;
-            /** @description `ready` or `rendering`. A client polls on `rendering`. */
+            /**
+             * @description Where to ask for a restore, on `archived`. Absent otherwise.
+             *
+             *     Present because a URL that will 202 is worse than no URL: the client has something that looks
+             *     fetchable, hands it to a browser, and the wait shows up as a mystery in somebody else's response. The
+             *     mint knows the bytes are cold, so it says so here rather than letting the delivery route say it later.
+             */
+            restore_url?: string | null;
+            /**
+             * @description `ready`, `rendering`, or `archived`. A client polls on `rendering` and asks for a restore on
+             *     `archived`.
+             */
             status: string;
             /** @description The signed URL. Absent while a conversion is still being rendered. */
             url?: string | null;
@@ -2659,6 +2791,47 @@ export interface components {
          * @enum {string}
          */
         PlacementState: "uploading" | "present" | "transitioning" | "missing" | "corrupt" | "deleting";
+        /** @description What one policy would do, without doing it. */
+        PlanView: {
+            /** @description Whether executing this policy would move anything at all. */
+            dry_run: boolean;
+            /**
+             * @description Present when the run stopped early, with what stopped it. A truncated plan that did not say so reads
+             *     exactly like a policy that is working.
+             */
+            halted?: string | null;
+            policy_name: string;
+            /** @description Every candidate that was examined and left alone, with why. The answer to "why did nothing happen?". */
+            skipped: components["schemas"]["SkipView"][];
+            transitions: components["schemas"]["TransitionView"][];
+        };
+        /** @description One tiering rule, as an administrator reads it. */
+        PolicyView: {
+            /**
+             * Format: int32
+             * @description Days of idleness before an object is eligible.
+             */
+            after_days: number;
+            /** @description `original`, `derivative` or `both`. */
+            applies_to: string;
+            /**
+             * @description **True by default.** A policy that has never been taken off dry run has never moved anything, which is
+             *     the state every policy starts in and the most important thing on this row.
+             */
+            dry_run: boolean;
+            enabled: boolean;
+            /** Format: uuid */
+            id: string;
+            /** Format: date-time */
+            last_run_at?: string | null;
+            /** Format: int32 */
+            last_run_moved?: number | null;
+            /** Format: int32 */
+            max_objects_per_run?: number | null;
+            name: string;
+            /** @description Where eligible objects go. */
+            target_class: string;
+        };
         /** @description The download response. */
         PortalDownload: {
             /** Format: int32 */
@@ -2841,6 +3014,27 @@ export interface components {
              */
             suggestion?: string | null;
         };
+        /** @description One tier's price and wait. */
+        QuoteOption: {
+            /** @description False when the storage class does not offer this tier. */
+            available: boolean;
+            /**
+             * Format: int64
+             * @description Whole cents, rounded up. Zero when the pool has no prices recorded, which means "this deployment does
+             *     not know" rather than "free" — the screen should say so rather than promising nothing.
+             */
+            est_cost_cents: number;
+            /** Format: date-time */
+            eta_at?: string | null;
+            /** @description Whether choosing this would wait for an administrator instead of starting. */
+            needs_approval: boolean;
+            tier: string;
+            unavailable_because?: string | null;
+        };
+        /** @description What restoring one asset would cost, per tier. */
+        QuoteView: {
+            options: components["schemas"]["QuoteOption"][];
+        };
         /** @description One thing the refine-search rail can show, and whether it does (Q.19). */
         RailEntry: {
             /**
@@ -2886,6 +3080,27 @@ export interface components {
             api_key: string;
         };
         /**
+         * @description What a caller asks for.
+         *
+         *     Query parameters rather than a body, and not only for tidiness. A restore has no entity to send — the
+         *     asset is in the path and these two are modifiers — and an empty body under a JSON content-type is an
+         *     extractor rejection, which axum returns *before* the handler runs. That turned `POST .../restore` with no
+         *     body from a reader into a `400` about the body instead of the `403` the permission check owes them: the
+         *     gate never ran. A request with nothing to send should not have to send `{}` to find out it was refused.
+         */
+        RestoreOptions: {
+            /**
+             * Format: int64
+             * @description How long the copy stays warm. Defaults to seven days (§6.5).
+             */
+            keep_warm_days?: number | null;
+            /**
+             * @description `expedited`, `standard` or `bulk`. Defaults to Standard — the middle, because a default of Expedited
+             *     spends ten times more than most callers meant to and a default of Bulk makes the feature feel broken.
+             */
+            tier?: string | null;
+        };
+        /**
          * @description Where a restore has got to, matching `object_placements.restore_state`.
          * @enum {string}
          */
@@ -2895,6 +3110,39 @@ export interface components {
          * @enum {string}
          */
         RestoreTier: "expedited" | "standard" | "bulk";
+        /** @description A restore, as the caller sees it. */
+        RestoreView: {
+            /** Format: date-time */
+            available_at?: string | null;
+            /** Format: int64 */
+            bytes: number;
+            /**
+             * Format: int64
+             * @description What this is expected to cost, in whole cents, rounded up so an approved estimate is not exceeded.
+             */
+            est_cost_cents: number;
+            /**
+             * Format: date-time
+             * @description When the copy is expected. The slow end of the documented window, so an ETA met early beats one missed.
+             */
+            eta_at?: string | null;
+            /**
+             * Format: date-time
+             * @description When the temporary copy lapses. The storage class never changed, so after this the asset needs
+             *     restoring again.
+             */
+            expires_at?: string | null;
+            /** Format: uuid */
+            id: string;
+            /**
+             * @description True when this request was already in flight and the caller has joined it rather than starting a
+             *     second one. Two people asking for the same archived asset share one retrieval and one charge.
+             */
+            joined_existing: boolean;
+            /** @description `queued`, `awaiting_approval`, `requested`, `ongoing`, `available`, `expired`, `failed`, `cancelled`. */
+            state: string;
+            tier: string;
+        };
         /** @description One asset in the review queue. */
         ReviewRow: {
             /** Format: uuid */
@@ -2909,6 +3157,17 @@ export interface components {
          * @enum {string}
          */
         RightsState: "allowed" | "expiring" | "denied" | "unknown";
+        /** @description What a queued run reports. */
+        RunQueued: {
+            /** Format: uuid */
+            job_id: string;
+            policies_enabled: number;
+            /**
+             * @description Restated on the response, because "I pressed run and nothing moved" is otherwise a support ticket
+             *     rather than a policy that is still in dry run.
+             */
+            policies_in_dry_run: number;
+        };
         /** @description A field definition with the numbers an administrator needs before touching it. */
         SchemaField: {
             ai_writable: boolean;
@@ -2971,6 +3230,17 @@ export interface components {
             /** Format: int32 */
             max_downloads?: number | null;
             revoked: boolean;
+        };
+        /** @description One object a run would leave alone. */
+        SkipView: {
+            /**
+             * @description The human sentence, where there is more to say — a pin's reason, or the date something becomes
+             *     eligible.
+             */
+            detail?: string | null;
+            object_key: string;
+            /** @description A stable machine-readable reason, for grouping a plan of ten thousand into a handful of lines. */
+            reason: string;
         };
         /**
          * @description The orders a client may ask for.
@@ -3041,6 +3311,19 @@ export interface components {
         TagDecision: {
             /** @description `true` confirms the tag, `false` rejects it. Both are recorded: the rejections are the training signal. */
             accept: boolean;
+        };
+        /** @description One object a run would move. */
+        TransitionView: {
+            from: string;
+            /**
+             * Format: date-time
+             * @description When this object could next move, after this one. The minimum billable duration the new class starts.
+             */
+            min_duration_until?: string | null;
+            object_key: string;
+            /** Format: int64 */
+            size_bytes: number;
+            to: string;
         };
         /** @description A category tree. */
         TreeRow: {
@@ -4089,6 +4372,119 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    restore_state: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The current restore */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": null | components["schemas"]["RestoreView"];
+                };
+            };
+            /** @description No such asset */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    request_restore: {
+        parameters: {
+            query?: {
+                /**
+                 * @description `expedited`, `standard` or `bulk`. Defaults to Standard — the middle, because a default of Expedited
+                 *     spends ten times more than most callers meant to and a default of Bulk makes the feature feel broken.
+                 */
+                tier?: string | null;
+                /** @description How long the copy stays warm. Defaults to seven days (§6.5). */
+                keep_warm_days?: number | null;
+            };
+            header?: never;
+            path: {
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The restore, planned and recorded */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RestoreView"];
+                };
+            };
+            /** @description No such asset, or nothing archived to restore */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The tier is not offered for this asset's class, or nothing is archived */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    quote: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description What each tier would cost */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuoteView"];
+                };
+            };
+            /** @description No such asset */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Nothing archived to restore */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
             };
         };
     };
@@ -5252,6 +5648,75 @@ export interface operations {
             };
         };
     };
+    policies: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The tiering rules */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PolicyView"][];
+                };
+            };
+        };
+    };
+    plan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description What the policy would do */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanView"];
+                };
+            };
+            /** @description No such policy */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    run: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The sweep is queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunQueued"];
+                };
+            };
+        };
+    };
     me: {
         parameters: {
             query?: never;
@@ -5708,6 +6173,35 @@ export interface operations {
                 };
             };
             /** @description No such portal, or it is retired */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    approve: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Released; the worker will issue it */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RestoreView"];
+                };
+            };
+            /** @description No such request, or it was not awaiting approval */
             404: {
                 headers: {
                     [name: string]: unknown;

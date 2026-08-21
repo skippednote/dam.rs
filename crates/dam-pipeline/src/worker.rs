@@ -319,6 +319,7 @@ pub async fn handle(context: &Context, job: &Job) -> Result<()> {
                 moved = swept.moved,
                 planned = swept.planned,
                 skipped = swept.skipped,
+                failed = swept.failed,
                 halted = ?swept.halted,
                 "lifecycle sweep",
             );

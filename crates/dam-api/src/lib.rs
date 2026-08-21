@@ -4,6 +4,7 @@
 
 pub mod ai;
 pub mod app;
+pub mod archival;
 pub mod assets;
 pub mod attachments;
 pub mod auto_import;

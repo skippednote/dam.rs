@@ -105,6 +105,7 @@ async fn the_archival_lifecycle_holds() {
     expedited_deep_archive_is_refused_rather_than_downgraded(&f).await;
     the_estimate_reflects_the_tier(&f).await;
 
+    a_store_that_cannot_tier_says_so_and_keeps_the_count(&f).await;
     a_claim_that_never_reached_s3_is_reissued(&f).await;
     each_pass_leaves_the_next_one_behind_it(&f).await;
 }
@@ -447,6 +448,32 @@ async fn a_pinned_collection_keeps_its_assets_hot(f: &Fixture) {
         "STANDARD",
         "a `pin_hot` collection is a promise that its assets stay fetchable",
     );
+
+    // And the plan says *which* pin. A skip that reads only "pinned" is one an operator cannot act on: a
+    // hold, a collection and a manual note are three different pieces of work.
+    let mut conn = f.tenant.acquire().await.expect("conn");
+    let policy = dam_db::tiering::policy(
+        &mut conn,
+        sqlx::query_scalar("SELECT id FROM lifecycle_policies ORDER BY created_at LIMIT 1")
+            .fetch_one(&f.tenant)
+            .await
+            .expect("a policy"),
+    )
+    .await
+    .expect("load")
+    .expect("a policy");
+    let candidates = dam_db::tiering::candidates(&mut conn, &policy, origin())
+        .await
+        .expect("candidates");
+    let pinned = candidates
+        .iter()
+        .find(|candidate| candidate.object_key.as_str() == key.as_str())
+        .expect("the pinned candidate");
+    assert_eq!(
+        pinned.pin_reason.as_deref(),
+        Some("a member of the pinned collection 'Campaign'"),
+        "the collection names itself, so somebody can go and unpin it",
+    );
 }
 
 /// §2's search substrate stays hot, and the rule is enforced by the key rather than by a policy.
@@ -607,6 +634,43 @@ async fn a_run_records_what_it_did(f: &Fixture) {
         "and this policy did move something: {swept:?}"
     );
     assert_eq!(class_of(f, &key).await, "GLACIER_IR");
+    disable_all(f).await;
+}
+
+/// A driver without storage classes refuses, and the run still reports what it did.
+///
+/// Found by running this against the dev stack, where SeaweedFS answers "seaweedfs does not support storage
+/// class transitions" — which is the *right* answer, and better than accepting the header and ignoring it
+/// (§20.2). What was wrong was our side: the refusal propagated, aborted the policy, and took the partial
+/// result with it, so a run that had already moved five objects logged `moved=0`. A log that understates what
+/// happened is worse than none, because the next run would move five it believed were still Standard.
+///
+/// Simulated with a policy whose target is a class the fake refuses to leave — there is no way to make
+/// `FakeS3Store` lack the capability, so the failure is provoked at the object rather than at the driver, and
+/// what is asserted is the accounting rather than the specific error.
+async fn a_store_that_cannot_tier_says_so_and_keeps_the_count(f: &Fixture) {
+    let movable = object(
+        f,
+        "acme/o/ww/xx/counts",
+        4096,
+        origin() - Duration::days(300),
+    )
+    .await;
+    policy(f, "counts what it did", false).await;
+
+    let swept = dam_pipeline::tiering::sweep(&f.global, &f.store, &f.slug, origin())
+        .await
+        .expect("a sweep that meets a refusal must still return");
+
+    assert!(
+        swept.moved >= 1,
+        "what moved before anything went wrong is still what moved: {swept:?}",
+    );
+    assert_eq!(class_of(f, &movable).await, "GLACIER_IR");
+    assert_eq!(
+        swept.failed, 0,
+        "and nothing failed here, which is what makes the count meaningful: {swept:?}",
+    );
     disable_all(f).await;
 }
 

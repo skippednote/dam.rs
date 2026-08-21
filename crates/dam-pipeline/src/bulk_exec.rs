@@ -113,7 +113,9 @@ pub async fn run(
             // One transaction per item: the application and its outcome land together, so a crash between
             // them cannot record a change without its bookkeeping or the reverse.
             let mut conn = TenantConn::begin(global, slug).await?;
-            let outcome = action.apply(conn.executor(), asset_id).await?;
+            let outcome = action
+                .apply(global, slug, conn.executor(), asset_id)
+                .await?;
             let changed = matches!(outcome, Applied::Done);
             bulk::record_outcome_on(conn.executor(), operation_id, asset_id, outcome.as_item())
                 .await?;
@@ -155,6 +157,35 @@ enum Action {
     /// appearance deserves, and `bulk_operations` already records all three.
     Publish {
         published: bool,
+    },
+    /// Archive or restore-to-active, which is the same shape as publication: one action with a direction.
+    ///
+    /// This is the *curation* status, not the storage tier, and conflating the two would be a bad mistake in
+    /// both directions. `status = 'archived'` means "out of circulation" — off the default grid, out of the
+    /// facets, still instantly fetchable. `storage_class = 'GLACIER'` means "cheap and slow". A library
+    /// archives things it has finished with and tiers things nobody reads, and those are frequently different
+    /// sets: last season's campaign is archived and still opened weekly; a master nobody has touched in two
+    /// years is live and cold.
+    ///
+    /// The two do compose, and that is the point of keeping them apart: a lifecycle policy can perfectly well
+    /// be scoped to archived assets, which is the obvious first rule anybody writes.
+    SetStatus {
+        archived: bool,
+    },
+    /// Bring a selection back from cold storage (§6.5).
+    ///
+    /// The reason this is a bulk kind rather than a loop over the single-asset endpoint is the batch id:
+    /// `restores::in_batch` exists so a collection restore is one decision with one cost and one ETA, and it
+    /// had no caller. Somebody restoring last year's shoot approves a figure for the shoot, not four hundred
+    /// figures for four hundred files.
+    ///
+    /// What the batch does **not** do is collapse the S3 calls. `RestoreObject` is per object, so four hundred
+    /// assets are four hundred calls whatever the grouping — the batch is about the decision, the estimate and
+    /// the approval, and claiming otherwise would be claiming a saving that does not exist.
+    Restore {
+        tier: dam_core::storage::RestoreTier,
+        keep_warm_days: i64,
+        batch_id: Uuid,
     },
 }
 
@@ -200,21 +231,70 @@ impl Action {
             "delete" => Ok(Self::Delete),
             "publish" => Ok(Self::Publish { published: true }),
             "unpublish" => Ok(Self::Publish { published: false }),
+            "archive" => Ok(Self::SetStatus { archived: true }),
+            "unarchive" => Ok(Self::SetStatus { archived: false }),
+            "restore" => {
+                let tier = match params.get("tier").and_then(Value::as_str) {
+                    None => dam_core::storage::RestoreTier::Standard,
+                    Some(raw) => raw
+                        .parse()
+                        .map_err(|_| Error::Permanent(format!("{raw:?} is not a restore tier")))?,
+                };
+                Ok(Self::Restore {
+                    tier,
+                    keep_warm_days: params
+                        .get("keep_warm_days")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(dam_core::restore::DEFAULT_KEEP_WARM_DAYS),
+                    // One id for the whole operation, generated here rather than per item — which is the
+                    // entire point of the kind.
+                    batch_id: Uuid::now_v7(),
+                })
+            }
             // The schema's vocabulary is wider than what is executable, and the honest response to the gap
             // is a named refusal. "Completing" while doing nothing would be worse: the history would say the
             // work happened.
             other => Err(Error::Permanent(format!(
                 "bulk operations of kind {other:?} are not executable yet; only metadata_set, delete, \
-                 publish and unpublish are"
+                 publish, unpublish, archive and unarchive are"
             ))),
         }
     }
 
-    async fn apply(&self, conn: &mut sqlx::PgConnection, asset_id: Uuid) -> Result<Applied> {
+    /// Applies one item.
+    ///
+    /// `global` and `slug` ride along for the one action that needs to reach outside the tenant transaction:
+    /// a restore's estimate is priced from `dam_global.storage_pools`, which the tenant connection cannot
+    /// see. Threaded rather than made a field, because a `PgPool` on an enum variant would be a pool held for
+    /// the life of a forty-thousand-item operation.
+    async fn apply(
+        &self,
+        global: &sqlx::PgPool,
+        slug: &TenantSlug,
+        conn: &mut sqlx::PgConnection,
+        asset_id: Uuid,
+    ) -> Result<Applied> {
         match self {
             Self::Delete => apply_delete(conn, asset_id).await,
             Self::MetadataSet { values } => apply_metadata(conn, asset_id, values).await,
             Self::Publish { published } => apply_publication(conn, asset_id, *published).await,
+            Self::SetStatus { archived } => apply_status(conn, asset_id, *archived).await,
+            Self::Restore {
+                tier,
+                keep_warm_days,
+                batch_id,
+            } => {
+                apply_restore(
+                    global,
+                    slug,
+                    conn,
+                    asset_id,
+                    *tier,
+                    *keep_warm_days,
+                    *batch_id,
+                )
+                .await
+            }
         }
     }
 }
@@ -264,6 +344,128 @@ async fn apply_delete(conn: &mut sqlx::PgConnection, asset_id: Uuid) -> Result<A
 ///
 /// An asset that is already published is a **skip**, not a success: re-stamping it would lose the instant
 /// somebody actually decided, and that instant is the audit answer to "since when has this been public".
+/// Asks for one asset's original to be brought back, as part of a batch.
+///
+/// A skip rather than a failure for everything that is not archived. A selection of five hundred assets will
+/// contain hot ones, and refusing the operation over them would mean a user has to filter their own selection
+/// by storage class before they are allowed to ask — which is knowledge the system has and they do not.
+async fn apply_restore(
+    global: &sqlx::PgPool,
+    slug: &TenantSlug,
+    conn: &mut sqlx::PgConnection,
+    asset_id: Uuid,
+    tier: dam_core::storage::RestoreTier,
+    keep_warm_days: i64,
+    batch_id: Uuid,
+) -> Result<Applied> {
+    let planned = crate::tiering::plan_for(
+        global,
+        slug,
+        asset_id,
+        tier,
+        keep_warm_days,
+        chrono::Utc::now(),
+    )
+    .await?;
+    let (plan, placement) = match planned {
+        Ok(planned) => planned,
+        Err(refusal) => {
+            return Ok(match refusal {
+                // The overwhelmingly common case in a mixed selection, and not a problem.
+                dam_core::restore::RestoreRefusal::NotArchived { .. } => {
+                    Applied::Skipped("not archived")
+                }
+                dam_core::restore::RestoreRefusal::Empty => Applied::Skipped("nothing stored"),
+                // A tier the class does not offer, or a budget refusal, is the *operation's* problem rather
+                // than this item's — every item will hit it identically. Recorded per item all the same,
+                // because a run that failed for one reason should say that reason on every row rather than
+                // leaving somebody to infer it.
+                other => Applied::Failed(other.to_string()),
+            });
+        }
+    };
+
+    let outcome = dam_db::restores::request(
+        &mut *conn,
+        &dam_db::restores::RestoreSpec {
+            object_key: &placement.object_key,
+            pool_id: placement.pool_id,
+            asset_id: Some(asset_id),
+            tier,
+            keep_warm_days: i32::try_from(keep_warm_days).unwrap_or(7),
+            requested_by: None,
+            batch_id: Some(batch_id),
+            notify: serde_json::json!({}),
+        },
+        &plan,
+    )
+    .await?;
+
+    Ok(match outcome {
+        dam_db::restores::Outcome::Created(_) => Applied::Done,
+        // Somebody already asked for this one. Coalescing is the correct behaviour and a skip is the honest
+        // report: this run did not start a retrieval, and counting it as done would overstate what it did.
+        dam_db::restores::Outcome::AlreadyInFlight(_) => Applied::Skipped("already being restored"),
+    })
+}
+
+/// Moves one asset in or out of circulation.
+///
+/// Guarded in the `WHERE` like the delete above, for the same reason: the check and the change are one
+/// statement, so nothing can land between them. Only `active` and `archived` are touched — an asset that is
+/// `uploading` or `processing` is mid-pipeline and archiving it would strand the job that is working on it,
+/// while `deleted` is already out of circulation and saying "archived" over the top of it would be a status
+/// nobody asked for.
+async fn apply_status(
+    conn: &mut sqlx::PgConnection,
+    asset_id: Uuid,
+    archived: bool,
+) -> Result<Applied> {
+    let (to, from) = if archived {
+        ("archived", "active")
+    } else {
+        ("active", "archived")
+    };
+    let changed = sqlx::query(
+        "UPDATE assets SET status = $2, updated_at = now() \
+         WHERE id = $1 AND deleted_at IS NULL AND status = $3",
+    )
+    .bind(asset_id)
+    .bind(to)
+    .bind(from)
+    .execute(&mut *conn)
+    .await
+    .map_err(dam_db::Error::from)?
+    .rows_affected();
+
+    if changed > 0 {
+        return Ok(Applied::Done);
+    }
+    // Why it did not change, in the asset's own words. A bulk run over a mixed selection is *expected* to
+    // skip, and a per-item reason is the difference between "148 done, 2 skipped: already archived" and a
+    // number nobody can account for.
+    let existing: Option<(String, bool)> =
+        sqlx::query_as("SELECT status, deleted_at IS NOT NULL FROM assets WHERE id = $1")
+            .bind(asset_id)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(dam_db::Error::from)?;
+    Ok(match existing {
+        None => Applied::Failed("no such asset".to_owned()),
+        Some((_, true)) => Applied::Skipped("deleted"),
+        Some((status, _)) if status == to => {
+            if archived {
+                Applied::Skipped("already archived")
+            } else {
+                Applied::Skipped("already active")
+            }
+        }
+        // `uploading` or `processing`: mid-pipeline, and a skip rather than a failure because the answer is
+        // "not yet", not "never".
+        Some(_) => Applied::Skipped("still processing"),
+    })
+}
+
 async fn apply_publication(
     conn: &mut sqlx::PgConnection,
     asset_id: Uuid,

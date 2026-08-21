@@ -164,8 +164,18 @@ pub async fn candidates(
                  OR EXISTS (SELECT 1 FROM collection_items ci \
                             JOIN collections c ON c.id = ci.collection_id \
                             WHERE ci.asset_id = p.asset_id AND c.pin_hot)) AS pinned, \
-                p.pin_reason, \
-                coalesce(a.legal_hold, false) AS held \
+                -- The reason, in the order that decides which one matters. A legal hold outranks everything
+                -- because it is the one that is not negotiable; a pinned collection names itself, so an
+                -- operator reading a plan can go and unpin it; the stored column is the manual note and
+                -- comes last.
+                coalesce( \
+                    CASE WHEN a.legal_hold THEN 'the asset is under legal hold' END, \
+                    (SELECT 'a member of the pinned collection ' || quote_literal(c.label) \
+                     FROM collection_items ci JOIN collections c ON c.id = ci.collection_id \
+                     WHERE ci.asset_id = p.asset_id AND c.pin_hot \
+                     ORDER BY c.label LIMIT 1), \
+                    p.pin_reason \
+                ) AS pin_reason \
          FROM object_placements p \
          LEFT JOIN assets a ON a.id = p.asset_id \
          LEFT JOIN derivatives d ON d.id = p.derivative_id \
@@ -199,7 +209,6 @@ fn candidate_of(row: sqlx::postgres::PgRow) -> Result<Candidate, Error> {
     let state: String = row.try_get("state")?;
     let restore: String = row.try_get("restore_state")?;
     let size: i64 = row.try_get("size_bytes")?;
-    let held: bool = row.try_get("held")?;
     let pin_reason: Option<String> = row.try_get("pin_reason")?;
 
     Ok(Candidate {
@@ -217,15 +226,10 @@ fn candidate_of(row: sqlx::postgres::PgRow) -> Result<Candidate, Error> {
             .parse()
             .map_err(|_| Error::Inconsistent(format!("restore_state holds {restore:?}")))?,
         pinned: row.try_get("pinned")?,
-        // The reason travels with the pin, so a skip line says *why* rather than only that it did. A legal
-        // hold has no `pin_reason` of its own — it is a column on the asset — so it gets the one an operator
-        // reading a plan needs to see, and it wins over a manual note because it is the one that is not
-        // negotiable.
-        pin_reason: if held {
-            Some("the asset is under legal hold".to_owned())
-        } else {
-            pin_reason
-        },
+        // Resolved in the query, in precedence order — see the `coalesce` there. A skip that says only
+        // "pinned" is a plan an operator cannot act on: the useful question is which pin, and the answer is
+        // different work depending on whether it is a hold, a collection, or a note somebody left.
+        pin_reason,
         min_duration_until: row.try_get("min_duration_until")?,
         placed_at: row.try_get("placed_at")?,
         last_accessed_at: row.try_get("last_accessed_at")?,

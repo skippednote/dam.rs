@@ -345,6 +345,25 @@ pub async fn due_for_poll(
     Ok(rows.into_iter().map(into_request).collect())
 }
 
+/// One request by id.
+///
+/// So a handler that just changed a request's state can answer with the row rather than with the boolean the
+/// update returned — a caller that approved something needs to see what they approved.
+pub async fn by_id(
+    conn: &mut sqlx::PgConnection,
+    id: Uuid,
+) -> Result<Option<RestoreRequest>, Error> {
+    let row = sqlx::query_as::<_, RestoreRow>(
+        "SELECT id, object_key, pool_id, asset_id, tier, state, batch_id, eta_at, available_at, \
+                expires_at, est_cost_cents, bytes, keep_warm_days \
+         FROM restore_requests WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(row.map(into_request))
+}
+
 /// Every request in a batch.
 ///
 /// So a worker can issue **one** S3 call and then mark all of them, which is what makes a 400-asset collection

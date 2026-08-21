@@ -451,6 +451,100 @@ async fn bulk_execution_holds() {
     a_vanished_operation_is_permanent(&f).await;
     the_worker_runs_it_and_queues_the_reindex(&f).await;
     publishing_stamps_once_and_unpublishing_clears_it(&f).await;
+    archiving_moves_only_what_is_active_and_says_why_not(&f).await;
+}
+
+// ─── archive / unarchive (§6.4's curation half) ─────────────────────────────
+
+/// The curation status, which is not the storage tier.
+///
+/// `status = 'archived'` means out of circulation and still instantly fetchable; `storage_class = 'GLACIER'`
+/// means cheap and slow. A library archives what it has finished with and tiers what nobody reads, and those
+/// are frequently different sets — so they are separate columns, changed by separate machinery, and this case
+/// only touches the first.
+///
+/// Added because a mutation sweep pointed out that dropping the `WHERE` guards entirely broke no test: the
+/// three new kinds had been wired through `bulk_exec` with no coverage at all, so `archive` was free to
+/// overwrite `deleted` and to archive an asset that was still mid-pipeline.
+async fn archiving_moves_only_what_is_active_and_says_why_not(f: &Fixture) {
+    let active = asset(f, "arch-active.jpg").await;
+    let already = asset(f, "arch-already.jpg").await;
+    sqlx::query("UPDATE assets SET status = 'archived' WHERE id = $1")
+        .bind(already)
+        .execute(&f.tenant)
+        .await
+        .expect("pre-archive");
+    let processing = asset(f, "arch-processing.jpg").await;
+    sqlx::query("UPDATE assets SET status = 'processing' WHERE id = $1")
+        .bind(processing)
+        .execute(&f.tenant)
+        .await
+        .expect("mid-pipeline");
+    let deleted = asset(f, "arch-deleted.jpg").await;
+    sqlx::query("UPDATE assets SET deleted_at = now(), status = 'deleted' WHERE id = $1")
+        .bind(deleted)
+        .execute(&f.tenant)
+        .await
+        .expect("pre-delete");
+
+    let id = operation(
+        f,
+        "archive",
+        serde_json::json!({}),
+        &[active, already, processing, deleted],
+    )
+    .await;
+    let executed = run(f, id).await.expect("run");
+    assert_eq!(executed.done, 1, "only the active one moves");
+    assert_eq!(executed.failed, 0, "and none of the others is a *failure*");
+
+    let statuses = |ids: Vec<Uuid>| async move {
+        sqlx::query_as::<_, (Uuid, String)>("SELECT id, status FROM assets WHERE id = ANY($1)")
+            .bind(ids)
+            .fetch_all(&f.tenant)
+            .await
+            .expect("statuses")
+    };
+    let rows = statuses(vec![active, processing, deleted]).await;
+    let status_of = |target: Uuid| {
+        rows.iter()
+            .find(|(id, _)| *id == target)
+            .map(|(_, status)| status.as_str())
+            .expect("a row")
+    };
+    assert_eq!(status_of(active), "archived");
+    assert_eq!(
+        status_of(processing),
+        "processing",
+        "archiving something mid-pipeline would strand the job working on it",
+    );
+    assert_eq!(
+        status_of(deleted),
+        "deleted",
+        "and a deleted asset is already out of circulation; saying `archived` over it would be a status \
+         nobody asked for",
+    );
+
+    // Each skip says which of the three it was, because a run over a mixed selection is expected to skip and
+    // "3 skipped" with no reasons is a number nobody can account for.
+    let items = bulk::items(&f.tenant, id, 100).await.expect("items");
+    let reason = |target: Uuid| {
+        items
+            .iter()
+            .find(|item| item.asset_id == target)
+            .expect("every target has an item")
+            .reason
+            .clone()
+    };
+    assert_eq!(reason(already).as_deref(), Some("already archived"));
+    assert_eq!(reason(processing).as_deref(), Some("still processing"));
+    assert_eq!(reason(deleted).as_deref(), Some("deleted"));
+
+    // And back again, which is the same action with a direction.
+    let back = operation(f, "unarchive", serde_json::json!({}), &[active, already]).await;
+    let executed = run(f, back).await.expect("run");
+    assert_eq!(executed.done, 2, "both were archived, so both come back");
+    assert_eq!(statuses(vec![active]).await[0].1, "active",);
 }
 
 // ─── publish / unpublish (Q.14) ─────────────────────────────────────────────
