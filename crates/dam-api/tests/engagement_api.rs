@@ -87,18 +87,35 @@ async fn fixture() -> Fixture {
     // routing between them is what was untested.
     let index_dir = tempfile::tempdir().expect("index dir");
     let indexes = std::sync::Arc::new(IndexPool::new(PoolConfig::new(index_dir.path())));
+    // A signer on both, because "the grid and the search results agree" turned out to include the *picture*,
+    // and with no keyring neither side can mint one — so the disagreement was unassertable here.
+    let tenant_id: Uuid =
+        sqlx::query_scalar("SELECT id FROM dam_global.tenants WHERE slug = 'acme'")
+            .fetch_one(&global)
+            .await
+            .expect("tenant id");
+    let delivery = std::sync::Arc::new(dam_api::delivery::DeliveryState::new(
+        acme.clone(),
+        std::sync::Arc::new(dam_store::FakeS3Store::with_test_clock().0),
+        dam_core::signed_url::Keyring::single(
+            "k1",
+            dam_core::Secret::new("a-signing-key".to_owned()),
+        ),
+        tenant_id,
+    ));
     let app = router(EngagementState {
         global: global.clone(),
     })
     .merge(dam_api::search::router(dam_api::search::SearchState {
         global: global.clone(),
         indexes: std::sync::Arc::clone(&indexes),
+        delivery: Some(std::sync::Arc::clone(&delivery)),
     }))
     // The asset routes too, because half of this slice is about engagement arriving *on the asset payload* —
     // and "the grid and the search results agree" is only checkable with both mounted.
     .merge(dam_api::assets::router(dam_api::assets::AssetState {
         global: global.clone(),
-        delivery: None,
+        delivery: Some(delivery),
     }));
 
     Fixture {
@@ -392,6 +409,42 @@ async fn a_ranked_search_result_carries_engagement_too(f: &Fixture, visible: Uui
         "a ranked result's star is empty: {found}"
     );
     assert_eq!(found["average_stars"], json!(2.0), "{found}");
+
+    // The same argument, for the picture rather than the star. `/assets` filled `thumbnail_url` and `/search`
+    // did not, so a grid lost every thumbnail the moment somebody typed a query — the star bug this case was
+    // written for, one field over, and it survived here because the fixture had no signer to mint one with.
+    let profile = &dam_media::profiles::THUMB_256;
+    sqlx::query(
+        "INSERT INTO derivatives (id, asset_id, role, profile, op_hash, object_key, mime, bytes) \
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, 'thumb/ranked.jpg', 'image/jpeg', 5)",
+    )
+    .bind(visible)
+    .bind(profile.role)
+    .bind(profile.name)
+    .bind(profile.op_hash())
+    .execute(&f.acme)
+    .await
+    .expect("a rendered thumbnail");
+
+    let (_, panel) = call(f, "GET", &format!("/assets/{visible}"), &f.key, None).await;
+    let from_panel = panel["thumbnail_url"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the browse path must fill it first: {panel}"))
+        .to_owned();
+
+    let (_, body) = call(f, "GET", "/search?q=visible", &f.key, None).await;
+    let ranked = body["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|item| item["id"] == json!(visible.to_string()))
+        .unwrap_or_else(|| panic!("the indexed asset is missing: {body}"))
+        .clone();
+    assert_eq!(
+        ranked["thumbnail_url"].as_str(),
+        Some(from_panel.as_str()),
+        "a ranked result must carry the same thumbnail URL the panel does: {ranked}"
+    );
 }
 
 async fn engagement_reaches_the_grid_and_the_panel_in_one_request(f: &Fixture, visible: Uuid) {

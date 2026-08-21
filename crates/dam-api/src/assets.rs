@@ -656,7 +656,38 @@ fn preview_link(
     asset_id: Uuid,
     transform: &str,
 ) -> Option<String> {
-    let delivery = state.delivery.as_ref()?;
+    preview_link_with(state.delivery.as_deref(), caller, asset_id, transform)
+}
+
+/// The thumbnail profile's op hash, for asking which of a page's assets have one.
+///
+/// Public because the search endpoints ask the same question about the same profile, and a second literal
+/// there would be a grid whose pictures silently stop appearing the day the profile changes.
+#[must_use]
+pub fn thumb_op_hash() -> String {
+    thumb_profile().op_hash()
+}
+
+/// A thumbnail URL for one asset, from a keyring rather than from an [`AssetState`].
+///
+/// The search endpoints hold a `SearchState`, which has no asset state to pass; taking the keyring directly is
+/// what lets both families of endpoint mint the same link through the same code.
+#[must_use]
+pub fn thumbnail_url(
+    delivery: Option<&crate::delivery::DeliveryState>,
+    caller: &caller::Caller,
+    asset_id: Uuid,
+) -> Option<String> {
+    preview_link_with(delivery, caller, asset_id, thumb_profile().name)
+}
+
+fn preview_link_with(
+    delivery: Option<&crate::delivery::DeliveryState>,
+    caller: &caller::Caller,
+    asset_id: Uuid,
+    transform: &str,
+) -> Option<String> {
+    let delivery = delivery?;
     let identity = caller.identity_id?;
     let now = delivery.now();
 

@@ -48,6 +48,7 @@ async fn fixture() -> Fixture {
         indexes: std::sync::Arc::new(dam_search::IndexPool::new(dam_search::PoolConfig::new(
             index_dir.path(),
         ))),
+        delivery: None,
     }));
     let acme = pg.pool_for_schema("t_acme").await.expect("acme pool");
 

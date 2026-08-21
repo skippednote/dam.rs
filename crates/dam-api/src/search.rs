@@ -38,6 +38,17 @@ use utoipa::{IntoParams, ToSchema};
 pub struct SearchState {
     pub global: PgPool,
     pub indexes: Arc<IndexPool>,
+    /// The delivery keyring, for minting the thumbnail links a result page draws.
+    ///
+    /// Optional for the same reason `AssetState`'s is: the endpoint tests build a state without one, and a
+    /// deployment that cannot sign a preview should return results without pictures rather than no results.
+    ///
+    /// Its absence here was a visible bug for as long as search has existed. `/assets` filled `thumbnail_url`
+    /// and `/search` did not, so a grid had pictures while browsing and grey "processing" placeholders the
+    /// moment anybody typed a query — the same assets, the same page, the same derivatives, no thumbnails.
+    /// Found by driving the browser over a real library; every API test passed throughout, because a test
+    /// asserting the field is absent is exactly what the old behaviour produced.
+    pub delivery: Option<Arc<crate::delivery::DeliveryState>>,
 }
 
 impl std::fmt::Debug for SearchState {
@@ -183,12 +194,24 @@ pub async fn run(
         let engagement = crate::assets::page_engagement(caller, conn.executor(), &ids)
             .await
             .map_err(|_| Failure::Internal)?;
+        // Which of them have a thumbnail to point at, in one query for the page — the same read the browse
+        // path does, for the same reason.
+        let with_thumbnails =
+            dam_db::derivatives::which_have(conn.executor(), &ids, &crate::assets::thumb_op_hash())
+                .await?;
         conn.commit().await?;
         return Ok(AssetPage {
             items: page
                 .items
                 .iter()
-                .map(|row| crate::assets::summary_with_engagement(row, &engagement))
+                .map(|row| {
+                    let mut summary = crate::assets::summary_with_engagement(row, &engagement);
+                    if with_thumbnails.contains(&row.id) {
+                        summary.thumbnail_url =
+                            crate::assets::thumbnail_url(state.delivery.as_deref(), caller, row.id);
+                    }
+                    summary
+                })
                 .collect(),
             total: page.total,
             offset,
@@ -236,16 +259,21 @@ pub async fn run(
     let engagement = crate::assets::page_engagement(caller, conn.executor(), &window)
         .await
         .map_err(|_| Failure::Internal)?;
+    let with_thumbnails =
+        dam_db::derivatives::which_have(conn.executor(), &window, &crate::assets::thumb_op_hash())
+            .await?;
 
     let mut items = Vec::with_capacity(window.len());
     for asset_id in &window {
         // Per id rather than one `IN` query, because the ranking is the order and a set query returns rows
         // in whatever order it likes. The window is at most 200 rows.
         if let Some(found) = assets::detail(conn.executor(), &caller.predicate, *asset_id).await? {
-            items.push(crate::assets::summary_with_engagement(
-                &found.summary,
-                &engagement,
-            ));
+            let mut summary = crate::assets::summary_with_engagement(&found.summary, &engagement);
+            if with_thumbnails.contains(asset_id) {
+                summary.thumbnail_url =
+                    crate::assets::thumbnail_url(state.delivery.as_deref(), caller, *asset_id);
+            }
+            items.push(summary);
         }
     }
     // A cost guard rather than a behaviour one, and worth saying so before somebody simplifies it away

@@ -107,6 +107,7 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
     let search_state = Arc::new(crate::search::SearchState {
         global: deps.global.clone(),
         indexes: Arc::clone(&deps.indexes),
+        delivery: Some(Arc::clone(&delivery)),
     });
     let download_state = Arc::new(crate::downloads::DownloadState {
         global: deps.global.clone(),

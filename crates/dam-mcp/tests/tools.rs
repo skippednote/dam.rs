@@ -120,6 +120,7 @@ async fn fixture() -> Fixture {
     let search_state = Arc::new(dam_api::search::SearchState {
         global: global.clone(),
         indexes,
+        delivery: None,
     });
     // A real signer, so a download refusal is the *licence's* refusal rather than "this deployment cannot mint".
     // The distinction is the whole point of one of the cases below.

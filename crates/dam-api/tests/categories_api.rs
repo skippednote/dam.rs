@@ -75,11 +75,33 @@ async fn fixture() -> Fixture {
     let index_dir = tempfile::tempdir().expect("index dir");
     let app = router(CategoryState {
         global: global.clone(),
-    })
-    .merge(dam_api::search::router(dam_api::search::SearchState {
-        global: global.clone(),
-        indexes: std::sync::Arc::new(IndexPool::new(PoolConfig::new(index_dir.path()))),
-    }));
+    });
+    // A real signer on the search state, because "does a result page carry a picture" is a question only a
+    // state that can *mint* one can answer — and with `None` here the assertion would pass against the bug.
+    let tenant_id: Uuid =
+        sqlx::query_scalar("SELECT id FROM dam_global.tenants WHERE slug = 'acme'")
+            .fetch_one(&global)
+            .await
+            .expect("tenant id");
+    let delivery = std::sync::Arc::new(dam_api::delivery::DeliveryState::new(
+        acme.clone(),
+        std::sync::Arc::new(dam_store::FakeS3Store::with_test_clock().0),
+        dam_core::signed_url::Keyring::single(
+            "k1",
+            dam_core::Secret::new("a-signing-key".to_owned()),
+        ),
+        tenant_id,
+    ));
+    let app = app
+        .merge(dam_api::search::router(dam_api::search::SearchState {
+            global: global.clone(),
+            indexes: std::sync::Arc::new(IndexPool::new(PoolConfig::new(index_dir.path()))),
+            delivery: Some(std::sync::Arc::clone(&delivery)),
+        }))
+        .merge(dam_api::assets::router(dam_api::assets::AssetState {
+            global: global.clone(),
+            delivery: Some(delivery),
+        }));
 
     Fixture {
         _pg: pg,
@@ -295,6 +317,99 @@ async fn the_category_http_contract_holds() {
     a_type_ahead_offers_what_the_caller_can_see(&f).await;
     an_export_is_the_search_it_came_from(&f).await;
     an_oversized_export_is_refused_with_its_size(&f).await;
+    a_result_page_draws_the_same_thumbnails_the_grid_does(&f).await;
+}
+
+/// A search result carries the thumbnail a browse result carries.
+///
+/// The bug this pins had been there since search existed: `/assets` filled `thumbnail_url` and `/search` did
+/// not, so every picture in the grid turned into a grey "processing" placeholder the moment somebody typed a
+/// query, and came back when they cleared it. The same assets, the same derivatives, the same page.
+///
+/// Nothing caught it. Every API test passed, because a test asserting the field is *absent* is exactly what
+/// the broken behaviour produced — and the fixtures that mount `/search` had no signer, so the field could
+/// not have been filled in even by correct code. It took driving a browser over a real library to see it,
+/// which is the argument for doing that: this class of bug is invisible from inside the assertions.
+///
+/// Both paths need asserting, because they are separate code: the relational query is answered in SQL and the
+/// text query is answered by the index and hydrated per row. Fixing one and leaving the other would present
+/// as thumbnails that appear for some searches and not others, which is harder to diagnose than none
+/// appearing at all. This case covers the SQL path; `engagement_api` covers the ranked one.
+async fn a_result_page_draws_the_same_thumbnails_the_grid_does(f: &Fixture) {
+    let profile = &dam_media::profiles::THUMB_256;
+    let with: Uuid =
+        sqlx::query_scalar("SELECT id FROM assets WHERE filename = 'answers-a-category-query.jpg'")
+            .fetch_one(&f.acme)
+            .await
+            .expect("the asset the category cases filed");
+    sqlx::query(
+        "INSERT INTO derivatives (id, asset_id, role, profile, op_hash, object_key, mime, bytes) \
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, 'thumb/one.jpg', 'image/jpeg', 5)",
+    )
+    .bind(with)
+    .bind(profile.role)
+    .bind(profile.name)
+    .bind(profile.op_hash())
+    .execute(&f.acme)
+    .await
+    .expect("a rendered thumbnail");
+
+    // The baseline is the detail read rather than a page, because the export cases above seeded six hundred
+    // assets and the one this needs is not in the first page of any order.
+    let (_, browse) = call(f, "GET", &format!("/assets/{with}"), &f.key, None).await;
+    assert!(
+        browse["thumbnail_url"].as_str().is_some(),
+        "the browse path must fill it, or this case proves nothing about the search path: {browse}"
+    );
+
+    // The SQL path.
+    let (status, body) = call(f, "GET", "/search?q=caption:*arbour*", &f.key, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["ranked"], false,
+        "the SQL path, as the case above proves"
+    );
+    assert!(
+        thumbnail_of(&body, with).is_some(),
+        "a relational search result must carry the thumbnail its browse row carries: {body}"
+    );
+
+    // The ranked half of the same property is asserted in `engagement_api`, whose fixture reindexes and so
+    // has a populated index to rank from — this one does not, and a ranked page with no rows would pass this
+    // assertion by never reaching it.
+
+    // And the field still means what it says. An asset with no rendered thumbnail gets no URL — the fix is
+    // "ask which assets have one", not "point every row at a preview and let the delivery route 404" and call
+    // a checkerboard placeholder a picture. Both rows in one page, so the assertion is about the *rows* rather
+    // than about two requests that might have differed for some other reason.
+    let without = asset(f, "thumbless-answers-a-category-query", false).await;
+    let (_, body) = call(
+        f,
+        "GET",
+        "/search?q=filename:*answers-a-category-query*",
+        &f.key,
+        None,
+    )
+    .await;
+    assert!(
+        thumbnail_of(&body, with).is_some(),
+        "the rendered one still carries its URL: {body}"
+    );
+    assert!(
+        thumbnail_of(&body, without).is_none(),
+        "an asset with nothing rendered must still have no thumbnail URL: {body}"
+    );
+}
+
+/// One asset's `thumbnail_url` out of a page, or `None` if the page does not list it.
+fn thumbnail_of(page: &serde_json::Value, asset_id: Uuid) -> Option<String> {
+    page["items"]
+        .as_array()?
+        .iter()
+        .find(|item| item["id"].as_str() == Some(&asset_id.to_string()))?
+        .get("thumbnail_url")?
+        .as_str()
+        .map(str::to_owned)
 }
 
 /// The CSV export (Q.18): the same search, as a file.
