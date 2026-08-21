@@ -381,6 +381,22 @@ pub async fn start_run(
 /// `stages` is whatever the pipeline wants a reader to know: what was written, what was refused, which words
 /// the model reached for that the tenant has no term for. `used_original` should be false on every row — 0003
 /// says so, and a true one means some stage is reading masters, which at library scale is a restore storm.
+/// Closes a run, and moves the asset's own enrichment state with it (M5b, found in the validation pass).
+///
+/// `assets.enrichment_state` exists so a screen can say "awaiting review" without a join and so the review
+/// queue is an index scan — its migration says exactly that. Nothing wrote it. Every asset ever described sat
+/// at `pending`, which is also what an asset nobody has touched says, so the two were indistinguishable and
+/// the index was over a column with one value in it.
+///
+/// The mapping is the run's outcome seen from the asset's side:
+///
+/// - `needs_review` when the model proposed something a person has to decide about — a suggested tag, or a
+///   field the tenant's rules refused. That is the queue.
+/// - `done` when it wrote cleanly and left nothing to decide.
+/// - `failed` when the call failed. Distinct from `pending`: one has been tried, the other has not, and a
+///   retry sweep needs to tell them apart.
+/// - `pending` is left alone for a skip. A tenant over their cap or without a key has not had their asset
+///   enriched, and saying otherwise would hide the work still to do.
 pub async fn finish_run(
     conn: &mut sqlx::PgConnection,
     id: Uuid,
@@ -390,14 +406,15 @@ pub async fn finish_run(
     failed_stage: Option<&str>,
     used_original: bool,
 ) -> Result<(), Error> {
-    sqlx::query(
+    let updated = sqlx::query_scalar::<_, Uuid>(
         "UPDATE enrichment_runs \
             SET state = $2, stages = $3, failed_stage = $4, used_original = $5, \
                 input_tokens = $6, output_tokens = $7, cached_tokens = $8, \
                 est_cost_cents = CAST($9 AS numeric), \
                 finished_at = now(), \
                 duration_ms = (EXTRACT(EPOCH FROM (now() - started_at)) * 1000)::int \
-          WHERE id = $1",
+          WHERE id = $1 \
+        RETURNING asset_id",
     )
     .bind(id)
     .bind(outcome.as_str())
@@ -408,8 +425,28 @@ pub async fn finish_run(
     .bind(cost.output_tokens)
     .bind(cost.cached_tokens)
     .bind(cents(cost.micro_cents))
-    .execute(&mut *conn)
+    .fetch_optional(&mut *conn)
     .await?;
+
+    // The asset's own state, from the same transaction as the run's. Two statements in one transaction rather
+    // than a trigger: a trigger would put this rule where nobody reading the pipeline would find it.
+    let Some(asset_id) = updated else {
+        // No run with that id. Nothing to say about an asset nobody named.
+        return Ok(());
+    };
+    let state = match outcome {
+        Outcome::Succeeded => "done",
+        // Partial means something was refused or a human value was kept — a person has to look.
+        Outcome::Partial => "needs_review",
+        Outcome::Failed => "failed",
+        // A skip has not enriched anything, so the asset is still waiting. Saying otherwise would hide work.
+        Outcome::Skipped => return Ok(()),
+    };
+    sqlx::query("UPDATE assets SET enrichment_state = $2, updated_at = now() WHERE id = $1")
+        .bind(asset_id)
+        .bind(state)
+        .execute(&mut *conn)
+        .await?;
     Ok(())
 }
 

@@ -856,6 +856,24 @@ fn a_wildcard_says_no_where_it_would_mean_nothing() {
     let numeric = parse_err("year:202*");
     assert_eq!(numeric.code, "not_matchable");
     assert!(numeric.detail.contains("int"), "{numeric:?}");
+
+    // But every text-shaped kind takes one. `Text` alone was the first rule, and it refused
+    // `description:*river*` on a `textarea` — the kind most worth a substring search now that a model writes
+    // the descriptions. Found against a real library, not in the tests.
+    let schema = shorthand::Schema::new(
+        vec![
+            def("description", FieldKind::Textarea, None),
+            def("notes", FieldKind::LongText, None),
+            def("homepage", FieldKind::Url, None),
+        ],
+        HashMap::new(),
+    );
+    for input in ["description:*river*", "notes:*draft*", "homepage:*example*"] {
+        assert!(
+            shorthand::parse(input, &schema).is_ok(),
+            "{input} must be a substring search"
+        );
+    }
 }
 
 #[test]

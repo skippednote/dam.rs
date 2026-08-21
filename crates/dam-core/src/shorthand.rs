@@ -831,10 +831,23 @@ impl<'a> Parser<'a> {
                 column,
             )?
         } else if let Some(pattern) = wildcard(value) {
-            // Substring and prefix (Q.16). Text only: a wildcard over a date or a number has no meaning that
-            // is not a coincidence of formatting, and answering one would return whatever the ISO spelling
-            // happened to allow.
-            if kind != FieldKind::Text {
+            // Substring and prefix (Q.16). Over *text* only: a wildcard on a date or a number has no meaning
+            // that is not a coincidence of formatting, and answering one would return whatever the ISO
+            // spelling happened to allow.
+            //
+            // Every kind whose value is text, though, and the first version of this said `Text` alone —
+            // which refused `description:*river*` on a `textarea` field, the one kind most worth searching by
+            // substring now that a model writes the descriptions. Found by pointing a real key at a real
+            // library and asking for a word in one.
+            if !matches!(
+                kind,
+                FieldKind::Text
+                    | FieldKind::Textarea
+                    | FieldKind::LongText
+                    | FieldKind::Select
+                    | FieldKind::MultiSelect
+                    | FieldKind::Url
+            ) {
                 return Err(ParseError::new(
                     "not_matchable",
                     column,

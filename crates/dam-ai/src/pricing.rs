@@ -84,6 +84,13 @@ impl Default for Prices {
     ///
     /// Deliberately sparse. A name that is not here falls back on [`Prices::fallback`], and the fallback is
     /// expensive on purpose.
+    ///
+    /// The OpenAI half was missing until a real key was pointed at a real library: this comment said "and
+    /// OpenAI's" while the table held six Claude models and nothing else, so every OpenAI call was charged the
+    /// $10/$50 fallback. `gpt-4o-mini` at $0.15/$0.60 was therefore overstated about sixty-sevenfold, and a
+    /// tenant with a hard cap would have hit it after seven photographs instead of four hundred. The fallback
+    /// was doing exactly what it says — overstating, so the cap trips early rather than late — but a rate
+    /// that wrong is not a safety margin, it is a broken feature.
     fn default() -> Self {
         let by_model = BTreeMap::from([
             (
@@ -110,6 +117,13 @@ impl Default for Prices {
                 "claude-fable-5".to_owned(),
                 Price::per_mtok_dollars(10.0, 50.0),
             ),
+            // OpenAI. Prefix-matched like the rest, so a dated build — `gpt-4o-mini-2024-07-18`, which is what
+            // the API actually reports back — is priced by its family rather than falling through.
+            ("gpt-4o-mini".to_owned(), Price::per_mtok_dollars(0.15, 0.6)),
+            ("gpt-4o".to_owned(), Price::per_mtok_dollars(2.5, 10.0)),
+            ("gpt-4.1-mini".to_owned(), Price::per_mtok_dollars(0.4, 1.6)),
+            ("gpt-4.1".to_owned(), Price::per_mtok_dollars(2.0, 8.0)),
+            ("o4-mini".to_owned(), Price::per_mtok_dollars(1.1, 4.4)),
         ]);
         Self { by_model }
     }
@@ -191,6 +205,69 @@ pub fn cost(price: &Price, usage: &Usage) -> i64 {
         + rate(usage.cached_input_tokens, price.cached_input)
         + rate(usage.cache_write_tokens, price.cache_write);
     i64::try_from(total).unwrap_or(i64::MAX)
+}
+
+#[cfg(test)]
+mod openai_prices {
+    use super::*;
+
+    #[test]
+    fn an_openai_model_is_priced_by_its_family_rather_than_the_fallback() {
+        let prices = Prices::default();
+        // The name the API reports back, which is dated. Prefix matching is what makes that harmless.
+        let mini = prices.for_model("gpt-4o-mini-2024-07-18");
+        assert_eq!(mini, Price::per_mtok_dollars(0.15, 0.6));
+        // And not the fallback, which is what it was getting: sixty-seven times the real rate, enough to make
+        // a hard cap trip after seven photographs.
+        assert_ne!(mini, Prices::fallback());
+
+        // `gpt-4o-mini` must win over `gpt-4o` — the longest prefix, or every mini call is priced as a 4o one.
+        assert_eq!(
+            prices.for_model("gpt-4o-mini"),
+            Price::per_mtok_dollars(0.15, 0.6)
+        );
+        assert_eq!(
+            prices.for_model("gpt-4o"),
+            Price::per_mtok_dollars(2.5, 10.0)
+        );
+        assert_eq!(
+            prices.for_model("gpt-4.1-mini-2026-01-01"),
+            Price::per_mtok_dollars(0.4, 1.6)
+        );
+    }
+
+    #[test]
+    fn a_model_nobody_priced_still_costs_the_expensive_fallback() {
+        // The behaviour that was right all along, kept: an unpriced model is a configuration gap, and
+        // overstating stops work early where understating blows a cap silently.
+        assert_eq!(
+            Prices::default().for_model("some-new-vendor-model"),
+            Prices::fallback()
+        );
+    }
+
+    #[test]
+    fn a_described_photograph_costs_about_half_a_penny() {
+        // The numbers from the real run that found this: 37,160 input tokens and 76 output for one iPhone
+        // photograph through `gpt-4o-mini`. Image inputs on mini are charged at roughly thirty-three times the
+        // tokens of 4o at a twenty-fifth of the price, which is why the token count looks alarming and the
+        // bill should not.
+        let prices = Prices::default();
+        let micro_cents = prices.estimate(
+            "gpt-4o-mini-2024-07-18",
+            &Usage {
+                input_tokens: 37_160,
+                output_tokens: 76,
+                cached_input_tokens: 0,
+                cache_write_tokens: 0,
+            },
+        );
+        let cents = micro_cents as f64 / 1_000_000.0;
+        assert!(
+            (0.4..0.7).contains(&cents),
+            "a described photograph should cost about half a penny, not {cents:.2}"
+        );
+    }
 }
 
 #[cfg(test)]

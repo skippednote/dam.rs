@@ -609,3 +609,61 @@ async fn the_review_queue_orders_by_agreement_then_confidence() {
     assert_eq!(item.fields[0].key, "alt_text");
     assert!(!item.fields[0].reviewed);
 }
+
+/// Closing a run moves the asset's own state, which is what makes "awaiting review" answerable.
+///
+/// Found by describing real photographs and looking at the rows: every asset ever enriched still said
+/// `pending`, the same as one nobody had touched. The column's migration says it exists so a screen can show
+/// "awaiting review" without a join and so the review queue is an index scan — and nothing wrote it, so the
+/// index was over a column with a single value in it.
+#[tokio::test]
+async fn closing_a_run_moves_the_assets_own_state() {
+    let (_pg, pool) = db().await;
+
+    async fn state_after(pool: &PgPool, name: &str, outcome: Outcome) -> String {
+        let id = asset(pool, name).await;
+        let run = enrichment::start_run(c!(pool), id, "llm_describe", 1)
+            .await
+            .expect("start");
+        enrichment::finish_run(
+            c!(pool),
+            run,
+            outcome,
+            Cost {
+                input_tokens: 10,
+                output_tokens: 5,
+                cached_tokens: 0,
+                micro_cents: 1_000,
+            },
+            &json!({"describe": {"state": "ok"}}),
+            None,
+            false,
+        )
+        .await
+        .expect("finish");
+        sqlx::query_scalar("SELECT enrichment_state FROM assets WHERE id = $1")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .expect("state")
+    }
+
+    // Written cleanly, nothing to decide.
+    assert_eq!(state_after(&pool, "s-ok", Outcome::Succeeded).await, "done");
+    // Something refused or a human value kept: a person has to look, which is the queue.
+    assert_eq!(
+        state_after(&pool, "s-partial", Outcome::Partial).await,
+        "needs_review"
+    );
+    // Tried and failed, which a retry sweep must be able to tell from never tried.
+    assert_eq!(
+        state_after(&pool, "s-failed", Outcome::Failed).await,
+        "failed"
+    );
+    // A skip has enriched nothing — over a cap, no credential — so the asset is still waiting. Marking it
+    // anything else would hide work that still has to happen.
+    assert_eq!(
+        state_after(&pool, "s-skipped", Outcome::Skipped).await,
+        "pending"
+    );
+}
