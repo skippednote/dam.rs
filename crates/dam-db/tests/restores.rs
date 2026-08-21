@@ -61,6 +61,15 @@ fn plan_for(tier: RestoreTier, needs_approval: bool) -> Plan {
     .expect("plan")
 }
 
+/// A connection from the schema-scoped pool.
+///
+/// The module takes a `&mut PgConnection` rather than a pool, because a tenant table needs the tenant's
+/// `search_path` and that lives on a connection — which is what made the pool-shaped version unusable from
+/// the worker. In a test the pool already carries the right search path, so one line borrows from it.
+async fn conn(pool: &PgPool) -> sqlx::pool::PoolConnection<sqlx::Postgres> {
+    pool.acquire().await.expect("connection")
+}
+
 fn spec<'a>(key: &'a str, pool_id: Uuid) -> RestoreSpec<'a> {
     RestoreSpec {
         object_key: key,
@@ -83,14 +92,22 @@ async fn a_second_request_for_the_same_object_adopts_the_first(pool: &PgPool) {
     let pool_id = Uuid::new_v4();
     let plan = plan_for(RestoreTier::Bulk, false);
 
-    let first = restores::request(pool, &spec("acme/o/aa/bb/one", pool_id), &plan)
-        .await
-        .expect("first");
+    let first = restores::request(
+        &mut *conn(pool).await,
+        &spec("acme/o/aa/bb/one", pool_id),
+        &plan,
+    )
+    .await
+    .expect("first");
     assert!(matches!(first, Outcome::Created(_)));
 
-    let second = restores::request(pool, &spec("acme/o/aa/bb/one", pool_id), &plan)
-        .await
-        .expect("second");
+    let second = restores::request(
+        &mut *conn(pool).await,
+        &spec("acme/o/aa/bb/one", pool_id),
+        &plan,
+    )
+    .await
+    .expect("second");
     match &second {
         Outcome::AlreadyInFlight(existing) => {
             assert_eq!(
@@ -117,7 +134,7 @@ async fn the_same_object_in_a_different_pool_is_a_different_restore(pool: &PgPoo
     let key = "acme/o/cc/dd/two";
     let plan = plan_for(RestoreTier::Bulk, false);
     for _ in 0..2 {
-        let outcome = restores::request(pool, &spec(key, Uuid::new_v4()), &plan)
+        let outcome = restores::request(&mut *conn(pool).await, &spec(key, Uuid::new_v4()), &plan)
             .await
             .expect("request");
         assert!(matches!(outcome, Outcome::Created(_)));
@@ -131,7 +148,7 @@ async fn a_finished_restore_does_not_block_a_new_one(pool: &PgPool) {
     let key = "acme/o/ee/ff/three";
     let plan = plan_for(RestoreTier::Bulk, false);
 
-    let first = restores::request(pool, &spec(key, pool_id), &plan)
+    let first = restores::request(&mut *conn(pool).await, &spec(key, pool_id), &plan)
         .await
         .expect("first");
     let id = first.request().id;
@@ -143,7 +160,7 @@ async fn a_finished_restore_does_not_block_a_new_one(pool: &PgPool) {
         .await
         .expect("expire");
 
-    let again = restores::request(pool, &spec(key, pool_id), &plan)
+    let again = restores::request(&mut *conn(pool).await, &spec(key, pool_id), &plan)
         .await
         .expect("second");
     assert!(
@@ -165,13 +182,17 @@ async fn a_plan_needing_approval_is_held_rather_than_queued(pool: &PgPool) {
         "the fixture must actually need approval"
     );
 
-    let outcome = restores::request(pool, &spec("acme/o/gg/hh/held", pool_id), &plan)
-        .await
-        .expect("request");
+    let outcome = restores::request(
+        &mut *conn(pool).await,
+        &spec("acme/o/gg/hh/held", pool_id),
+        &plan,
+    )
+    .await
+    .expect("request");
     assert_eq!(outcome.request().state, "awaiting_approval");
 
     // And it is not claimable while held — the whole point.
-    let claimed = restores::claim_queued(pool, 10, now())
+    let claimed = restores::claim_queued(&mut *conn(pool).await, 10, now())
         .await
         .expect("claim");
     assert!(
@@ -183,20 +204,24 @@ async fn a_plan_needing_approval_is_held_rather_than_queued(pool: &PgPool) {
 async fn approving_moves_it_to_queued_and_reports_only_the_first_call(pool: &PgPool) {
     let pool_id = Uuid::new_v4();
     let plan = plan_for(RestoreTier::Expedited, true);
-    let outcome = restores::request(pool, &spec("acme/o/ii/jj/appr", pool_id), &plan)
-        .await
-        .expect("request");
+    let outcome = restores::request(
+        &mut *conn(pool).await,
+        &spec("acme/o/ii/jj/appr", pool_id),
+        &plan,
+    )
+    .await
+    .expect("request");
     let id = outcome.request().id;
     let approver = Uuid::new_v4();
 
     assert!(
-        restores::approve(pool, id, approver, now())
+        restores::approve(&mut *conn(pool).await, id, approver, now())
             .await
             .expect("approve"),
         "the first approval reports that it acted"
     );
     assert!(
-        !restores::approve(pool, id, approver, now())
+        !restores::approve(&mut *conn(pool).await, id, approver, now())
             .await
             .expect("approve"),
         "a repeat must be idempotent, so an audit entry is written once"
@@ -215,14 +240,23 @@ async fn approving_something_that_was_never_held_does_nothing(pool: &PgPool) {
     // never asked to make.
     let pool_id = Uuid::new_v4();
     let plan = plan_for(RestoreTier::Bulk, false);
-    let outcome = restores::request(pool, &spec("acme/o/kk/ll/free", pool_id), &plan)
-        .await
-        .expect("request");
+    let outcome = restores::request(
+        &mut *conn(pool).await,
+        &spec("acme/o/kk/ll/free", pool_id),
+        &plan,
+    )
+    .await
+    .expect("request");
     assert_eq!(outcome.request().state, "queued");
     assert!(
-        !restores::approve(pool, outcome.request().id, Uuid::new_v4(), now())
-            .await
-            .expect("approve")
+        !restores::approve(
+            &mut *conn(pool).await,
+            outcome.request().id,
+            Uuid::new_v4(),
+            now()
+        )
+        .await
+        .expect("approve")
     );
 }
 
@@ -231,11 +265,15 @@ async fn approving_something_that_was_never_held_does_nothing(pool: &PgPool) {
 async fn claiming_moves_queued_to_requested(pool: &PgPool) {
     let pool_id = Uuid::new_v4();
     let plan = plan_for(RestoreTier::Bulk, false);
-    let outcome = restores::request(pool, &spec("acme/o/mm/nn/claim", pool_id), &plan)
-        .await
-        .expect("request");
+    let outcome = restores::request(
+        &mut *conn(pool).await,
+        &spec("acme/o/mm/nn/claim", pool_id),
+        &plan,
+    )
+    .await
+    .expect("request");
 
-    let claimed = restores::claim_queued(pool, 100, now())
+    let claimed = restores::claim_queued(&mut *conn(pool).await, 100, now())
         .await
         .expect("claim");
     let mine = claimed
@@ -245,7 +283,7 @@ async fn claiming_moves_queued_to_requested(pool: &PgPool) {
     assert_eq!(mine.state, "requested");
 
     // Claimed once. A second worker must not pick it up.
-    let again = restores::claim_queued(pool, 100, now())
+    let again = restores::claim_queued(&mut *conn(pool).await, 100, now())
         .await
         .expect("claim");
     assert!(again.iter().all(|r| r.id != outcome.request().id));
@@ -257,18 +295,22 @@ async fn availability_recomputes_the_expiry_from_when_it_actually_landed(pool: &
     // second restore, billed again.
     let pool_id = Uuid::new_v4();
     let plan = plan_for(RestoreTier::Bulk, false);
-    let outcome = restores::request(pool, &spec("acme/o/oo/pp/avail", pool_id), &plan)
-        .await
-        .expect("request");
+    let outcome = restores::request(
+        &mut *conn(pool).await,
+        &spec("acme/o/oo/pp/avail", pool_id),
+        &plan,
+    )
+    .await
+    .expect("request");
     let id = outcome.request().id;
-    restores::claim_queued(pool, 100, now())
+    restores::claim_queued(&mut *conn(pool).await, 100, now())
         .await
         .expect("claim");
 
     // Landed six hours early.
     let landed = now() + Duration::hours(6);
     assert!(
-        restores::mark_available(pool, id, landed)
+        restores::mark_available(&mut *conn(pool).await, id, landed)
             .await
             .expect("available")
     );
@@ -292,13 +334,22 @@ async fn a_failure_keeps_its_reason_and_cannot_overwrite_an_available_copy(pool:
     let pool_id = Uuid::new_v4();
     let plan = plan_for(RestoreTier::Bulk, false);
 
-    let failing = restores::request(pool, &spec("acme/o/qq/rr/fail", pool_id), &plan)
-        .await
-        .expect("request");
+    let failing = restores::request(
+        &mut *conn(pool).await,
+        &spec("acme/o/qq/rr/fail", pool_id),
+        &plan,
+    )
+    .await
+    .expect("request");
     assert!(
-        restores::mark_failed(pool, failing.request().id, "glacier said no", now())
-            .await
-            .expect("fail")
+        restores::mark_failed(
+            &mut *conn(pool).await,
+            failing.request().id,
+            "glacier said no",
+            now()
+        )
+        .await
+        .expect("fail")
     );
     let reason: Option<String> =
         sqlx::query_scalar("SELECT last_error FROM restore_requests WHERE id = $1")
@@ -310,19 +361,28 @@ async fn a_failure_keeps_its_reason_and_cannot_overwrite_an_available_copy(pool:
 
     // A late failure notification must not undo an already-available copy — the bytes are there, and marking
     // it failed would make the delivery path restore something it already has.
-    let good = restores::request(pool, &spec("acme/o/ss/tt/good", pool_id), &plan)
-        .await
-        .expect("request");
-    restores::claim_queued(pool, 100, now())
+    let good = restores::request(
+        &mut *conn(pool).await,
+        &spec("acme/o/ss/tt/good", pool_id),
+        &plan,
+    )
+    .await
+    .expect("request");
+    restores::claim_queued(&mut *conn(pool).await, 100, now())
         .await
         .expect("claim");
-    restores::mark_available(pool, good.request().id, now())
+    restores::mark_available(&mut *conn(pool).await, good.request().id, now())
         .await
         .expect("available");
     assert!(
-        !restores::mark_failed(pool, good.request().id, "late error", now())
-            .await
-            .expect("fail"),
+        !restores::mark_failed(
+            &mut *conn(pool).await,
+            good.request().id,
+            "late error",
+            now()
+        )
+        .await
+        .expect("fail"),
         "a late failure must not overwrite an available copy"
     );
 }
@@ -339,7 +399,7 @@ async fn siblings_share_a_batch_so_one_s3_call_serves_them_all(pool: &PgPool) {
     for n in 0..5 {
         let key = format!("acme/o/uu/vv/batch-{n}");
         restores::request(
-            pool,
+            &mut *conn(pool).await,
             &RestoreSpec {
                 batch_id: Some(batch),
                 ..spec(&key, pool_id)
@@ -350,7 +410,9 @@ async fn siblings_share_a_batch_so_one_s3_call_serves_them_all(pool: &PgPool) {
         .expect("request");
     }
 
-    let members = restores::in_batch(pool, batch).await.expect("batch");
+    let members = restores::in_batch(&mut *conn(pool).await, batch)
+        .await
+        .expect("batch");
     assert_eq!(members.len(), 5);
     assert!(members.iter().all(|r| r.batch_id == Some(batch)));
 }
@@ -362,24 +424,28 @@ async fn the_sweep_expires_lapsed_copies_and_reports_them(pool: &PgPool) {
     // system explains. The sweep returns what lapsed so the caller can invalidate whatever pointed at it.
     let pool_id = Uuid::new_v4();
     let plan = plan_for(RestoreTier::Bulk, false);
-    let outcome = restores::request(pool, &spec("acme/o/ww/xx/sweep", pool_id), &plan)
-        .await
-        .expect("request");
+    let outcome = restores::request(
+        &mut *conn(pool).await,
+        &spec("acme/o/ww/xx/sweep", pool_id),
+        &plan,
+    )
+    .await
+    .expect("request");
     let id = outcome.request().id;
-    restores::claim_queued(pool, 100, now())
+    restores::claim_queued(&mut *conn(pool).await, 100, now())
         .await
         .expect("claim");
-    restores::mark_available(pool, id, now())
+    restores::mark_available(&mut *conn(pool).await, id, now())
         .await
         .expect("available");
 
     // Nothing has lapsed yet.
-    let early = restores::sweep_expired(pool, now() + Duration::days(1), 100)
+    let early = restores::sweep_expired(&mut *conn(pool).await, now() + Duration::days(1), 100)
         .await
         .expect("sweep");
     assert!(early.iter().all(|r| r.id != id));
 
-    let swept = restores::sweep_expired(pool, now() + Duration::days(8), 100)
+    let swept = restores::sweep_expired(&mut *conn(pool).await, now() + Duration::days(8), 100)
         .await
         .expect("sweep");
     let mine = swept.iter().find(|r| r.id == id).expect("must have lapsed");
@@ -390,7 +456,7 @@ async fn the_sweep_expires_lapsed_copies_and_reports_them(pool: &PgPool) {
     );
 
     // Idempotent: a second sweep must not report it again, or a notification goes out twice.
-    let again = restores::sweep_expired(pool, now() + Duration::days(9), 100)
+    let again = restores::sweep_expired(&mut *conn(pool).await, now() + Duration::days(9), 100)
         .await
         .expect("sweep");
     assert!(again.iter().all(|r| r.id != id));
@@ -404,21 +470,25 @@ async fn spend_counts_failures_because_a_failed_retrieval_is_still_billed(pool: 
     let pool_id = Uuid::new_v4();
     let plan = plan_for(RestoreTier::Expedited, false);
 
-    let before = restores::spent_this_month(pool, now())
+    let before = restores::spent_this_month(&mut *conn(pool).await, now())
         .await
         .expect("spend");
 
-    let failing = restores::request(pool, &spec("acme/o/yy/zz/spend", pool_id), &plan)
-        .await
-        .expect("request");
-    restores::claim_queued(pool, 100, now())
+    let failing = restores::request(
+        &mut *conn(pool).await,
+        &spec("acme/o/yy/zz/spend", pool_id),
+        &plan,
+    )
+    .await
+    .expect("request");
+    restores::claim_queued(&mut *conn(pool).await, 100, now())
         .await
         .expect("claim");
-    restores::mark_failed(pool, failing.request().id, "nope", now())
+    restores::mark_failed(&mut *conn(pool).await, failing.request().id, "nope", now())
         .await
         .expect("fail");
 
-    let after = restores::spent_this_month(pool, now())
+    let after = restores::spent_this_month(&mut *conn(pool).await, now())
         .await
         .expect("spend");
     assert!(
@@ -432,14 +502,18 @@ async fn a_queued_request_does_not_count_against_spend_yet(pool: &PgPool) {
     // block itself.
     let pool_id = Uuid::new_v4();
     let plan = plan_for(RestoreTier::Expedited, false);
-    let before = restores::spent_this_month(pool, now())
+    let before = restores::spent_this_month(&mut *conn(pool).await, now())
         .await
         .expect("spend");
-    restores::request(pool, &spec("acme/o/a1/b1/queued", pool_id), &plan)
-        .await
-        .expect("request");
+    restores::request(
+        &mut *conn(pool).await,
+        &spec("acme/o/a1/b1/queued", pool_id),
+        &plan,
+    )
+    .await
+    .expect("request");
     assert_eq!(
-        restores::spent_this_month(pool, now())
+        restores::spent_this_month(&mut *conn(pool).await, now())
             .await
             .expect("spend"),
         before,

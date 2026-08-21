@@ -44,6 +44,12 @@ pub struct RestoreRequest {
     pub expires_at: Option<DateTime<Utc>>,
     pub est_cost_cents: i64,
     pub bytes: i64,
+    /// How long the temporary copy stays available once restored.
+    ///
+    /// On the request rather than read from configuration at issue time, because it is what was *promised*:
+    /// the plan the caller approved said seven days, and a default that changed next week must not silently
+    /// shorten a copy somebody is already relying on.
+    pub keep_warm_days: i32,
 }
 
 impl RestoreRequest {
@@ -96,7 +102,7 @@ impl Outcome {
 /// that here rather than in the caller means a plan that needs approval cannot be enqueued by a caller that
 /// forgot to look.
 pub async fn request(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     spec: &RestoreSpec<'_>,
     plan: &Plan,
 ) -> Result<Outcome, Error> {
@@ -128,14 +134,14 @@ pub async fn request(
     .bind(i64::try_from(plan.bytes).unwrap_or(i64::MAX))
     .bind(spec.batch_id)
     .bind(&spec.notify)
-    .execute(pool)
+    .execute(&mut *conn)
     .await?
     .rows_affected();
 
     // `ON CONFLICT DO NOTHING` covers the partial unique index without naming it. Naming the constraint would
     // couple this to the index's exact predicate, and the predicate is the list of in-flight states — which is
     // the thing most likely to gain a member.
-    let existing = in_flight_for(pool, spec.object_key, spec.pool_id)
+    let existing = in_flight_for(&mut *conn, spec.object_key, spec.pool_id)
         .await?
         .ok_or_else(|| {
             Error::Inconsistent(format!(
@@ -153,20 +159,20 @@ pub async fn request(
 
 /// The in-flight request for an object, if there is one.
 pub async fn in_flight_for(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     object_key: &str,
     pool_id: Uuid,
 ) -> Result<Option<RestoreRequest>, Error> {
     let row = sqlx::query_as::<_, RestoreRow>(
         "SELECT id, object_key, pool_id, asset_id, tier, state, batch_id, eta_at, available_at, \
-                expires_at, est_cost_cents, bytes \
+                expires_at, est_cost_cents, bytes, keep_warm_days \
          FROM restore_requests \
          WHERE object_key = $1 AND pool_id = $2 \
            AND state IN ('queued', 'awaiting_approval', 'requested', 'ongoing')",
     )
     .bind(object_key)
     .bind(pool_id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *conn)
     .await?;
     Ok(row.map(into_request))
 }
@@ -177,7 +183,7 @@ pub async fn in_flight_for(
 /// held is left alone rather than "re-approved" — approving something that did not need it would put an
 /// administrator's name against a decision they were never asked to make.
 pub async fn approve(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     id: Uuid,
     approver: Uuid,
     now: DateTime<Utc>,
@@ -190,7 +196,7 @@ pub async fn approve(
     .bind(id)
     .bind(approver)
     .bind(now)
-    .execute(pool)
+    .execute(&mut *conn)
     .await?
     .rows_affected();
     Ok(updated > 0)
@@ -200,20 +206,25 @@ pub async fn approve(
 ///
 /// `FOR UPDATE SKIP LOCKED`, so several workers can drain the queue without one blocking behind another's
 /// row — the same pattern the job queue uses.
+///
+/// The caller's transaction is the claim's boundary. This took a connection from a pool and opened its own
+/// transaction in the first version, which read as self-contained and made the function unusable: a tenant
+/// table needs the tenant's `search_path`, that lives on a `TenantConn`'s connection, and a pool handed the
+/// same query the `dam_global` search path. The lock and the state change still share one transaction — it is
+/// the caller's, which is where the rest of a poll's writes are anyway.
 pub async fn claim_queued(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     limit: i64,
     now: DateTime<Utc>,
 ) -> Result<Vec<RestoreRequest>, Error> {
-    let mut tx = pool.begin().await?;
     let rows = sqlx::query_as::<_, RestoreRow>(
         "SELECT id, object_key, pool_id, asset_id, tier, state, batch_id, eta_at, available_at, \
-                expires_at, est_cost_cents, bytes \
+                expires_at, est_cost_cents, bytes, keep_warm_days \
          FROM restore_requests WHERE state = 'queued' \
          ORDER BY requested_at LIMIT $1 FOR UPDATE SKIP LOCKED",
     )
     .bind(limit)
-    .fetch_all(&mut *tx)
+    .fetch_all(&mut *conn)
     .await?;
 
     if !rows.is_empty() {
@@ -223,10 +234,9 @@ pub async fn claim_queued(
         )
         .bind(&ids)
         .bind(now)
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await?;
     }
-    tx.commit().await?;
 
     Ok(rows
         .into_iter()
@@ -244,7 +254,7 @@ pub async fn claim_queued(
 /// was derived from an *estimated* ETA, and a Bulk restore that landed early would otherwise expire early too,
 /// giving the user less warm time than they were promised.
 pub async fn mark_available(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     id: Uuid,
     now: DateTime<Utc>,
 ) -> Result<bool, Error> {
@@ -256,7 +266,7 @@ pub async fn mark_available(
     )
     .bind(id)
     .bind(now)
-    .execute(pool)
+    .execute(&mut *conn)
     .await?
     .rows_affected();
     Ok(updated > 0)
@@ -264,7 +274,7 @@ pub async fn mark_available(
 
 /// Records a failure, keeping the reason.
 pub async fn mark_failed(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     id: Uuid,
     reason: &str,
     now: DateTime<Utc>,
@@ -276,7 +286,7 @@ pub async fn mark_failed(
     .bind(id)
     .bind(reason)
     .bind(now)
-    .execute(pool)
+    .execute(&mut *conn)
     .await?
     .rows_affected();
     Ok(updated > 0)
@@ -287,7 +297,7 @@ pub async fn mark_failed(
 /// Returns the requests that lapsed, so the caller can invalidate whatever pointed at them. Without this the
 /// copy disappears at S3 and a delivery URL starts failing with a 403 that nothing in our system explains.
 pub async fn sweep_expired(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     now: DateTime<Utc>,
     limit: i64,
 ) -> Result<Vec<RestoreRequest>, Error> {
@@ -297,11 +307,40 @@ pub async fn sweep_expired(
                       WHERE state = 'available' AND expires_at IS NOT NULL AND expires_at <= $1 \
                       ORDER BY expires_at LIMIT $2) \
          RETURNING id, object_key, pool_id, asset_id, tier, state, batch_id, eta_at, available_at, \
-                   expires_at, est_cost_cents, bytes",
+                   expires_at, est_cost_cents, bytes, keep_warm_days",
     )
     .bind(now)
     .bind(limit)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows.into_iter().map(into_request).collect())
+}
+
+/// The in-flight requests worth asking S3 about.
+///
+/// Ordered by `eta_at`, which is what `restore_requests_poll_idx` indexes — the index has existed since the
+/// first migration with no query behind it, because nothing ever polled.
+///
+/// Requests with no ETA are included rather than skipped, and come first. A null there means the estimate
+/// could not be made, not that the restore is not happening, and excluding them would strand a request
+/// forever in `requested` with nothing ever looking at it again.
+///
+/// No clock argument, deliberately: polling only the ones whose ETA has passed would be trusting an estimate
+/// to decide when to check reality. Glacier frequently lands early, and a request that was going to be ready
+/// in twelve hours and arrived in twenty minutes should not wait out the other eleven.
+pub async fn due_for_poll(
+    conn: &mut sqlx::PgConnection,
+    limit: i64,
+) -> Result<Vec<RestoreRequest>, Error> {
+    let rows = sqlx::query_as::<_, RestoreRow>(
+        "SELECT id, object_key, pool_id, asset_id, tier, state, batch_id, eta_at, available_at, \
+                expires_at, est_cost_cents, bytes, keep_warm_days \
+         FROM restore_requests \
+         WHERE state IN ('requested', 'ongoing') \
+         ORDER BY eta_at NULLS FIRST LIMIT $1",
+    )
+    .bind(limit)
+    .fetch_all(&mut *conn)
     .await?;
     Ok(rows.into_iter().map(into_request).collect())
 }
@@ -310,14 +349,17 @@ pub async fn sweep_expired(
 ///
 /// So a worker can issue **one** S3 call and then mark all of them, which is what makes a 400-asset collection
 /// restore one bulk job rather than 400.
-pub async fn in_batch(pool: &sqlx::PgPool, batch_id: Uuid) -> Result<Vec<RestoreRequest>, Error> {
+pub async fn in_batch(
+    conn: &mut sqlx::PgConnection,
+    batch_id: Uuid,
+) -> Result<Vec<RestoreRequest>, Error> {
     let rows = sqlx::query_as::<_, RestoreRow>(
         "SELECT id, object_key, pool_id, asset_id, tier, state, batch_id, eta_at, available_at, \
-                expires_at, est_cost_cents, bytes \
+                expires_at, est_cost_cents, bytes, keep_warm_days \
          FROM restore_requests WHERE batch_id = $1 ORDER BY requested_at",
     )
     .bind(batch_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
     Ok(rows.into_iter().map(into_request).collect())
 }
@@ -327,14 +369,17 @@ pub async fn in_batch(pool: &sqlx::PgPool, batch_id: Uuid) -> Result<Vec<Restore
 /// Feeds `dam_core::restore::Budget::spent_this_month_cents`. Counts everything that reached S3 — including
 /// failures, because a failed retrieval is often still billed, and a budget that ignored them would let a
 /// retry loop spend without limit.
-pub async fn spent_this_month(pool: &sqlx::PgPool, now: DateTime<Utc>) -> Result<u64, Error> {
+pub async fn spent_this_month(
+    conn: &mut sqlx::PgConnection,
+    now: DateTime<Utc>,
+) -> Result<u64, Error> {
     let spent: Option<i64> = sqlx::query_scalar(
         "SELECT coalesce(sum(est_cost_cents), 0)::bigint FROM restore_requests \
          WHERE state IN ('requested', 'ongoing', 'available', 'expired', 'failed') \
            AND requested_at >= date_trunc('month', $1::timestamptz)",
     )
     .bind(now)
-    .fetch_one(pool)
+    .fetch_one(&mut *conn)
     .await?;
     Ok(u64::try_from(spent.unwrap_or(0)).unwrap_or(0))
 }
@@ -352,6 +397,7 @@ type RestoreRow = (
     Option<DateTime<Utc>>,
     i64,
     i64,
+    i32,
 );
 
 fn into_request(row: RestoreRow) -> RestoreRequest {
@@ -368,6 +414,7 @@ fn into_request(row: RestoreRow) -> RestoreRequest {
         expires_at,
         est_cost_cents,
         bytes,
+        keep_warm_days,
     ) = row;
     RestoreRequest {
         id,
@@ -382,6 +429,7 @@ fn into_request(row: RestoreRow) -> RestoreRequest {
         expires_at,
         est_cost_cents,
         bytes,
+        keep_warm_days,
     }
 }
 

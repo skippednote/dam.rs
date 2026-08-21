@@ -42,6 +42,7 @@ pub mod shares;
 pub mod suggest;
 pub mod taxonomy;
 pub mod tenant_conn;
+pub mod tiering;
 pub mod upload_profiles;
 pub mod uploads;
 pub mod usage;

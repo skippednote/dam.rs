@@ -187,12 +187,37 @@ impl RestoreTier {
 
 impl fmt::Display for RestoreTier {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s = match self {
+        f.write_str(self.as_str())
+    }
+}
+
+impl RestoreTier {
+    /// The stored spelling, matching the `restore_requests.tier` CHECK constraint.
+    pub fn as_str(self) -> &'static str {
+        match self {
             Self::Expedited => "expedited",
             Self::Standard => "standard",
             Self::Bulk => "bulk",
-        };
-        f.write_str(s)
+        }
+    }
+}
+
+impl FromStr for RestoreTier {
+    type Err = Error;
+
+    /// The other half of [`RestoreTier::as_str`], missing until a worker needed to read back a tier it had
+    /// written. Without it the stored column was write-only: a request could be recorded and never acted on,
+    /// because nothing could turn `"bulk"` back into the argument `RestoreObject` takes.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "expedited" => Ok(Self::Expedited),
+            "standard" => Ok(Self::Standard),
+            "bulk" => Ok(Self::Bulk),
+            other => Err(Error::validation(
+                "restore tier",
+                format!("unknown: {other}"),
+            )),
+        }
     }
 }
 

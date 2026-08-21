@@ -49,6 +49,10 @@ pub mod kind {
     pub const BACKFILL_SUBMIT: &str = "backfill_submit";
     /// A submitted batch is polled, and applied once it has ended (M5c).
     pub const BACKFILL_COLLECT: &str = "backfill_collect";
+    /// Every lifecycle policy is planned and, where it says so, executed (§6.4).
+    pub const TIER_SWEEP: &str = "tier_sweep";
+    /// Restore requests are issued, checked, and expired (§6.5).
+    pub const RESTORE_POLL: &str = "restore_poll";
 }
 
 /// How long to wait when the queue is empty.
@@ -303,6 +307,51 @@ pub async fn handle(context: &Context, job: &Job) -> Result<()> {
             Ok(())
         }
 
+        kind::TIER_SWEEP => {
+            let swept = crate::tiering::sweep(
+                &context.global,
+                context.store.as_ref() as &dyn BlobStore,
+                &slug,
+                chrono::Utc::now(),
+            )
+            .await?;
+            tracing::info!(
+                moved = swept.moved,
+                planned = swept.planned,
+                skipped = swept.skipped,
+                halted = ?swept.halted,
+                "lifecycle sweep",
+            );
+            // Tomorrow's sweep, queued from inside today's. Not deduped, for the reason
+            // `requeue_backfill_collect` documents at length: this job is still `running`, so a shared key
+            // would resolve to itself and the chain would end here.
+            requeue_tier_sweep(&context.global, job.tenant_id, crate::tiering::SWEEP_EVERY).await?;
+            Ok(())
+        }
+
+        kind::RESTORE_POLL => {
+            let polled = crate::tiering::poll(
+                &context.global,
+                context.store.as_ref() as &dyn BlobStore,
+                &slug,
+                chrono::Utc::now(),
+            )
+            .await?;
+            if polled != crate::tiering::Polled::default() {
+                tracing::info!(
+                    issued = polled.issued,
+                    reissued = polled.reissued,
+                    available = polled.available,
+                    expired = polled.expired,
+                    failed = polled.failed,
+                    "restore poll",
+                );
+            }
+            requeue_restore_poll(&context.global, job.tenant_id, crate::tiering::POLL_EVERY)
+                .await?;
+            Ok(())
+        }
+
         kind::BACKFILL_SUBMIT => {
             let Some(ai) = context.ai.as_ref() else {
                 tracing::debug!("no ai context; backfill not configured");
@@ -549,6 +598,66 @@ pub async fn requeue_backfill_collect(
     after: Duration,
 ) -> Result<Uuid> {
     Ok(jobs::enqueue(global, collect_spec(tenant_id, batch_id, slice, after)).await?)
+}
+
+/// Starts a tenant's lifecycle sweep chain.
+///
+/// Deduped per tenant, because a second chain would double every transition attempt — harmless in itself,
+/// since `transition` on an object already in the class is a no-op, but it doubles the S3 request bill and
+/// makes the log unreadable.
+pub async fn enqueue_tier_sweep(global: &sqlx::PgPool, tenant_id: Uuid) -> Result<Uuid> {
+    Ok(jobs::enqueue(
+        global,
+        sweep_spec(tenant_id, chrono::Duration::zero())
+            .dedupe_key(format!("tier_sweep:{tenant_id}")),
+    )
+    .await?)
+}
+
+/// Queues tomorrow's sweep, from inside today's. Not deduped — see [`requeue_backfill_collect`].
+pub async fn requeue_tier_sweep(
+    global: &sqlx::PgPool,
+    tenant_id: Uuid,
+    after: chrono::Duration,
+) -> Result<Uuid> {
+    Ok(jobs::enqueue(global, sweep_spec(tenant_id, after)).await?)
+}
+
+fn sweep_spec(tenant_id: Uuid, after: chrono::Duration) -> jobs::JobSpec {
+    jobs::JobSpec::new(tenant_id, kind::TIER_SWEEP)
+        // Below every interactive kind. A sweep is housekeeping and a thumbnail is somebody waiting.
+        .priority(90)
+        .run_after(chrono::Utc::now() + after)
+}
+
+/// Starts a tenant's restore-poll chain.
+///
+/// Deduped per tenant. Called when a restore is requested rather than at boot, so a deployment where nobody
+/// has ever archived anything runs no polling at all.
+pub async fn enqueue_restore_poll(global: &sqlx::PgPool, tenant_id: Uuid) -> Result<Uuid> {
+    Ok(jobs::enqueue(
+        global,
+        poll_spec(tenant_id, chrono::Duration::zero())
+            .dedupe_key(format!("restore_poll:{tenant_id}")),
+    )
+    .await?)
+}
+
+/// Queues the next poll, from inside this one. Not deduped — see [`requeue_backfill_collect`].
+pub async fn requeue_restore_poll(
+    global: &sqlx::PgPool,
+    tenant_id: Uuid,
+    after: chrono::Duration,
+) -> Result<Uuid> {
+    Ok(jobs::enqueue(global, poll_spec(tenant_id, after)).await?)
+}
+
+fn poll_spec(tenant_id: Uuid, after: chrono::Duration) -> jobs::JobSpec {
+    jobs::JobSpec::new(tenant_id, kind::RESTORE_POLL)
+        // Higher than the sweep and lower than a derive: somebody is waiting for a restore, but not watching
+        // it appear the way they watch a thumbnail.
+        .priority(85)
+        .run_after(chrono::Utc::now() + after)
 }
 
 /// The shape both collector enqueues share, minus the dedupe decision.
