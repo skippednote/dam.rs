@@ -2494,3 +2494,27 @@ Reversible: yes.
 *red* suite mean nothing, and a red baseline reports every mutation as caught. Q.16's sweep did exactly that
 after a new fixture broke an unrelated assertion, and two real gaps hid behind the false all-clear. The harness
 now probes each target before mutating and refuses to report verdicts it cannot support. Reversible: n/a.
+
+**A suggestion is access-filtered, because it names the value.** Facet counts disclose by inference; a
+type-ahead row states the fact. Every suggestion source is counted over the caller's visible library and
+narrowed by the query already typed. Reversible: no.
+
+**No search history in the suggestions.** What other people searched for cannot be access-filtered — the search
+belonged to somebody with different grants — and ranking by frequency across a tenant leaks which clients are
+busy. Suggestions come from what this caller can already see. Reversible: yes, and it would need a per-caller
+history store rather than a shared one.
+
+**Did-you-mean is an offer, not a correction.** A misspelled field is still refused and a mistyped value still
+returns nothing; the correction sits beside the answer as one click. Silently answering a different query than
+the one asked is a filter nobody chose, and the first wrong guess produces results nobody can explain.
+Reversible: no.
+
+**A value suggestion is made only for a lone field equality.** It is the typo people make, and the only shape
+where the candidate can be checked to exist in the caller's own library first. Two clauses have two candidates
+and no way to know which was mistyped. Reversible: yes.
+
+**A field substring routes to SQL.** The index refuses `Contains`/`StartsWith` by name because an `ILIKE` and a
+Tantivy automaton disagree at the margins, and §12 forbids an approximate answer that differs between back ends
+— so the clause goes to the database that can answer it exactly, unranked, like every other clause the index
+cannot answer. Before this, Q.16's wildcard syntax answered 501 for every field except `filename`.
+Reversible: no.

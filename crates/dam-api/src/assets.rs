@@ -291,6 +291,8 @@ pub async fn list(
         .collect();
 
     Ok(Json(AssetPage {
+        // Browse, not search: there is no query to have misspelled.
+        did_you_mean: None,
         items,
         total: page.total,
         offset: page.offset,

@@ -7,8 +7,10 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+	completeWith,
 	composeConditions,
 	composeFilenames,
+	correctAt,
 	hasTerm,
 	narrow,
 	operatorsFor,
@@ -17,6 +19,7 @@ import {
 	renderTerm,
 	selectedValue,
 	toggleTerm,
+	trailingWord,
 	withOnlyTerm,
 	withTerm,
 	withoutTerm,
@@ -251,5 +254,38 @@ describe('the advanced form (Q.16)', () => {
 		);
 		expect(narrow('', 'year:2026')).toBe('year:2026');
 		expect(narrow('brand:acme', '   ')).toBe('brand:acme');
+	});
+});
+
+describe('completing and correcting (Q.17)', () => {
+	it('reads the word being typed, and only at the end', () => {
+		expect(trailingWord('brand:acm')).toBe('acm');
+		expect(trailingWord('year:2024 harb')).toBe('harb');
+		// Whitespace means they have moved on, so there is nothing to complete — and completing the *previous*
+		// word would replace text the caret has already left.
+		expect(trailingWord('brand:acme ')).toBe('');
+		expect(trailingWord('year:2024 harb  ')).toBe('');
+		expect(trailingWord('')).toBe('');
+	});
+
+	it('replaces the whole token when a suggestion is accepted', () => {
+		// Not an append: `brand:acm` plus `brand:acme` would be two clauses where the user made one.
+		expect(completeWith('brand:acm', 'brand:acme')).toBe('brand:acme');
+		expect(completeWith('year:2024 acm', 'brand:acme')).toBe('year:2024 brand:acme');
+		expect(completeWith('', 'brand:acme')).toBe('brand:acme');
+		expect(completeWith('year:2024 ', 'brand:acme')).toBe('year:2024 brand:acme');
+	});
+
+	it('corrects the half of a token the parser pointed at', () => {
+		// Column 1 is the key: `brnad:acme` keeps its value.
+		expect(correctAt('brnad:acme', 1, 'brand')).toBe('brand:acme');
+		// Column 4 is the value of `is:` — the key is fine and the vocabulary was not.
+		expect(correctAt('is:favourit', 4, 'favourite')).toBe('is:favourite');
+		// Mid-query, with the rest left alone.
+		expect(correctAt('year:2024 brnad:acme', 11, 'brand')).toBe('year:2024 brand:acme');
+		// A bare word with no colon is replaced whole.
+		expect(correctAt('brnad', 1, 'brand')).toBe('brand');
+		// A column outside the query changes nothing rather than guessing at a token.
+		expect(correctAt('brnad:acme', 99, 'brand')).toBe('brnad:acme');
 	});
 });

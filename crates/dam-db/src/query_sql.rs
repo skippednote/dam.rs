@@ -556,7 +556,7 @@ fn push_personal(
 /// The part that looks safe and is not. Unescaped, `contains("50%")` becomes a prefix match on "50" and
 /// silently returns far more than asked; `_` matches any character; and a trailing `\` is a syntax error
 /// the user cannot understand. The backslash goes first, or it would escape the escapes.
-fn escape_like(text: &str) -> String {
+pub(crate) fn escape_like(text: &str) -> String {
     text.replace('\\', "\\\\")
         .replace('%', "\\%")
         .replace('_', "\\_")

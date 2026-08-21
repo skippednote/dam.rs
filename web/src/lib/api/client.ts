@@ -23,6 +23,7 @@ export type ValidationProblem = components['schemas']['ValidationProblem'];
 export type QueryProblem = components['schemas']['QueryProblem'];
 export type SortOrder = components['schemas']['SortOrder'];
 export type FieldDefinition = components['schemas']['FieldDefinition'];
+export type Suggestion = components['schemas']['Suggestion'];
 export type BulkPreview = components['schemas']['BulkPreview'];
 export type BulkStatus = components['schemas']['BulkStatus'];
 export type CreatedShare = components['schemas']['CreatedShare'];
@@ -174,6 +175,16 @@ export async function searchAssets(params: {
 
 export async function loadFacets(q: string): Promise<Facet[]> {
 	return request<Facet[]>(`/search/facets?${new URLSearchParams({ q })}`);
+}
+
+/**
+ * What somebody is probably about to type (Q.17).
+ *
+ * `q` is the query already in the box, so suggestions narrow as the search narrows — the same reason the facet
+ * rail counts over the current query rather than over the library.
+ */
+export async function loadSuggestions(typed: string, q: string): Promise<Suggestion[]> {
+	return request<Suggestion[]>(`/search/suggest?${new URLSearchParams({ typed, q })}`);
 }
 
 /**

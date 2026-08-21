@@ -268,3 +268,69 @@ export function narrow(query: string, addition: string): string {
 		/\bOR\b/.test(existing) && !/^\(.*\)$/.test(existing) ? `(${existing})` : existing;
 	return `${grouped} AND ${extra}`;
 }
+
+/**
+ * The word being typed at the end of the query — what a type-ahead is about (Q.17).
+ *
+ * The *last* token, and only when the caret is at the end of it, because that is what a type-ahead means: a
+ * suggestion for a word somebody has finished typing in the middle of a query would replace text they are not
+ * looking at. Returns the empty string when the query ends in whitespace: they have moved on.
+ */
+export function trailingWord(query: string): string {
+	// No guard for a trailing space or an empty query: splitting on whitespace leaves an empty final token in
+	// exactly those cases, which is already "nothing to complete". A guard here would be a branch no test could
+	// tell from its absence.
+	const tokens = query.split(/\s+/);
+	const last = tokens[tokens.length - 1] ?? '';
+	// A `key:value` token being typed is a value, and that is the part to complete: somebody typing
+	// `brand:acm` wants brands, not fields.
+	const colon = last.lastIndexOf(':');
+	return colon === -1 ? last : last.slice(colon + 1);
+}
+
+/**
+ * `query` with its trailing token replaced by `fragment`.
+ *
+ * The whole token, not just the part that was typed: a suggestion is `brand:acme`, and appending it after a
+ * half-typed `brand:acm` would leave two clauses where the user made one.
+ */
+export function completeWith(query: string, fragment: string): string {
+	const trimmedEnd = query.replace(/\s+$/, '');
+	if (trimmedEnd === '') return fragment;
+	const tokens = trimmedEnd.split(/\s+/);
+	if (/\s$/.test(query)) return `${trimmedEnd} ${fragment}`;
+	tokens[tokens.length - 1] = fragment;
+	return tokens.join(' ');
+}
+
+/**
+ * `query` with the name at `column` replaced by `suggestion` — the one-click fix beside a parse refusal.
+ *
+ * `column` is the parser's own 1-based character position, and which half of a `key:value` token it points at
+ * is the whole signal: the start of the token means the *key* was not recognised (`brnad:acme`), anywhere
+ * further in means the *value* was not (`is:favourit`). Getting that wrong produces `brand:favourite` from
+ * either, which is a correction nobody can make sense of.
+ *
+ * Returns the query unchanged when the column falls outside it, rather than guessing at a token.
+ */
+export function correctAt(query: string, column: number, suggestion: string): string {
+	const index = column - 1;
+	if (index < 0 || index >= query.length) return query;
+
+	// Token boundaries around the column, by whitespace — the same unit the parser lexes.
+	let start = index;
+	while (start > 0 && !/\s/.test(query[start - 1])) start -= 1;
+	let end = index;
+	while (end < query.length && !/\s/.test(query[end])) end += 1;
+
+	const token = query.slice(start, end);
+	const colon = token.indexOf(':');
+	// The column points at the key when it is at the token's start, or when the token has no `:` at all.
+	const replacingKey = index === start || colon === -1;
+	const replacement = replacingKey
+		? colon === -1
+			? suggestion
+			: `${suggestion}${token.slice(colon)}`
+		: `${token.slice(0, colon + 1)}${suggestion}`;
+	return `${query.slice(0, start)}${replacement}${query.slice(end)}`;
+}

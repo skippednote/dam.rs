@@ -24,6 +24,7 @@ pub mod sealed;
 pub mod secret;
 pub mod shorthand;
 pub mod signed_url;
+pub mod similar;
 pub mod storage;
 pub mod tenant;
 

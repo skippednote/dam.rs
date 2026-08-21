@@ -21,6 +21,8 @@
 	import { resolve } from '$app/paths';
 	import AssetGrid from '$lib/components/grid/AssetGrid.svelte';
 	import AdvancedSearch from '$lib/components/filter/AdvancedSearch.svelte';
+	import TypeAhead from '$lib/components/filter/TypeAhead.svelte';
+	import { correctAt } from '$lib/search/query';
 	import CategoryTree from '$lib/components/filter/CategoryTree.svelte';
 	import FilterRail from '$lib/components/filter/FilterRail.svelte';
 	import DetailPanel from '$lib/components/detail/DetailPanel.svelte';
@@ -62,6 +64,10 @@
 	let ranked = $state(false);
 	let showUpload = $state(false);
 	let showAdvanced = $state(false);
+	/** The type-ahead beside the box (Q.17). The box stays here; the list is the component's. */
+	let typeAhead = $state<ReturnType<typeof TypeAhead> | undefined>();
+	/** A parse refusal's suggested name, and the column to apply it at. */
+	let correction = $state<{ suggestion: string; at: number } | null>(null);
 	/** Whether the tenant has turned natural-language search on. Read once; the button is hidden until it is. */
 	let canAsk = $state(false);
 	let asking = $state(false);
@@ -116,6 +122,7 @@
 			// old inference — "we searched, so it is ranked" — is the best answer available in that case.
 			ranked = assets.ranked ?? searching;
 			if (mine !== generation) return;
+			correction = null;
 			result = assets;
 			facets = counted;
 			if (defined.length > 0) fields = defined;
@@ -127,6 +134,12 @@
 				error = caught.query.at
 					? `${caught.query.message} (at character ${caught.query.at})`
 					: caught.query.message;
+				// A refusal that names what was meant is a refusal somebody can act on. The query is still
+				// refused — the fix is offered, not applied.
+				correction =
+					caught.query.suggestion && caught.query.at
+						? { suggestion: caught.query.suggestion, at: caught.query.at }
+						: null;
 			}
 		} finally {
 			if (mine === generation) loading = false;
@@ -301,12 +314,39 @@
 		<h1 class="text-sm font-semibold tracking-tight">Assets</h1>
 		<form class="flex flex-1 items-center gap-2" onsubmit={submit} role="search">
 			<label class="sr-only" for="q">Search assets</label>
-			<input
-				id="q"
-				class="min-w-0 flex-1 rounded-md border border-line bg-bg px-3 py-1.5 text-sm"
-				bind:value={query}
-				placeholder="brand:acme &quot;spring campaign&quot; year:>2024"
-			/>
+			<!--
+				`relative`, because the suggestion list is positioned against this box rather than against the
+				toolbar: a list that hangs off the toolbar drifts away from the box the moment the toolbar wraps.
+			-->
+			<div class="relative min-w-0 flex-1">
+				<input
+					id="q"
+					class="w-full rounded-md border border-line bg-bg px-3 py-1.5 text-sm"
+					bind:value={query}
+					placeholder="brand:acme &quot;spring campaign&quot; year:>2024"
+					role="combobox"
+					aria-expanded={typeAhead?.isOpen() ?? false}
+					aria-controls="search-suggestions"
+					aria-activedescendant={typeAhead?.activeId()}
+					aria-autocomplete="list"
+					autocomplete="off"
+					oninput={() => typeAhead?.typed()}
+					onkeydown={(event) => {
+						// The type-ahead gets first refusal on the navigation keys, and says whether it used
+						// one. Without that, Enter would submit the form *and* accept a suggestion.
+						if (typeAhead?.key(event)) event.preventDefault();
+					}}
+					onblur={() => typeAhead?.close()}
+				/>
+				<TypeAhead
+					bind:this={typeAhead}
+					{query}
+					onquery={(next) => {
+						query = next;
+						load();
+					}}
+				/>
+			</div>
 			<button
 				type="submit"
 				class="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg"
@@ -416,6 +456,25 @@
 			{#if !session.connected}
 				<a class="underline" href={resolve('/settings')}>Open Settings</a>
 			{/if}
+			{#if correction}
+				{@const fix = correction}
+				<!--
+					A button rather than an automatic correction. Answering `brnad:acme` as `brand:acme` would be
+					a filter nobody asked for, and the first time the guess is wrong somebody has results they
+					cannot explain.
+				-->
+				<button
+					type="button"
+					class="ml-1 underline"
+					onclick={() => {
+						query = correctAt(query, fix.at, fix.suggestion);
+						correction = null;
+						load();
+					}}
+				>
+					Did you mean <code class="font-mono">{correction.suggestion}</code>?
+				</button>
+			{/if}
 		</p>
 	{/if}
 
@@ -447,8 +506,32 @@
 				<p class="mb-2 text-xs text-muted" aria-live="polite">
 					{result.total}
 					{result.total === 1 ? 'asset' : 'assets'}
-					{#if ranked}
+					{#if ranked && result.total > 0}
+						<!--
+							Only when something was found. "0 assets · ranked by relevance, capped at the first
+							1,000" describes the ordering of nothing, and next to a did-you-mean it is a sentence
+							of noise between the count and the one thing worth clicking. Seen on the dev stack.
+						-->
 						· ranked by relevance, capped at the first 1,000
+					{/if}
+					{#if result?.did_you_mean}
+						{@const nearer = result.did_you_mean}
+						<!--
+							Only ever on an empty page, and only for a value that really exists in this library —
+							so it is an offer to run something that will work rather than a guess. "No results"
+							with nothing beside it is an honest answer; this appears when there is a better one.
+						-->
+						·
+						<button
+							type="button"
+							class="underline"
+							onclick={() => {
+								query = nearer;
+								load();
+							}}
+						>
+							Did you mean <code class="font-mono">{nearer}</code>?
+						</button>
 					{/if}
 				</p>
 				<!--

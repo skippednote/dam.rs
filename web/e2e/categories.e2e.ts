@@ -142,7 +142,7 @@ test('clicking a branch writes in: into the one query string', async ({ page }) 
 
 	// The search box holds the whole filter — that is the rail's rule, and it is why categories are a selector
 	// rather than a separate parameter: "copy this search" has to copy all of it.
-	await expect(page.getByRole('textbox', { name: /Assets/i })).toHaveValue('in:exterior');
+	await expect(page.getByRole('combobox', { name: /Search assets/i })).toHaveValue('in:exterior');
 	await expect(page).toHaveURL(/q=in%3Aexterior/);
 });
 
@@ -156,7 +156,7 @@ test('selecting a second branch replaces the first rather than asking for both',
 	await tree.getByRole('button', { name: 'Interior, 0 assets' }).click();
 
 	// `in:exterior in:interior` means "filed in both", which returns nothing and looks like a broken tree.
-	const box = page.getByRole('textbox', { name: /Assets/i });
+	const box = page.getByRole('combobox', { name: /Search assets/i });
 	await expect(box).toHaveValue('in:interior');
 	await expect(box).not.toHaveValue(/exterior/);
 
@@ -188,7 +188,7 @@ test('a branch can be expanded and collapsed without changing the query', async 
 	await tree.getByRole('button', { name: 'Expand Exterior' }).click();
 	await expect(tree.getByRole('button', { name: 'Yellow, 5 assets' })).toBeVisible();
 	// Disclosure is not selection: opening a branch to look inside must not filter the library.
-	await expect(page.getByRole('textbox', { name: /Assets/i })).toHaveValue('');
+	await expect(page.getByRole('combobox', { name: /Search assets/i })).toHaveValue('');
 
 	await tree.getByRole('button', { name: 'Collapse Exterior' }).click();
 	await expect(tree.getByRole('button', { name: 'Yellow, 5 assets' })).toHaveCount(0);

@@ -790,3 +790,256 @@ async fn matching(pool: &PgPool, query: Query, group_id: Uuid) -> Vec<Uuid> {
         .await
         .expect("select")
 }
+
+// ─── predictive suggestions (Q.17) ──────────────────────────────────────────
+
+#[tokio::test]
+async fn suggestions_do_not_disclose_what_a_caller_cannot_see() {
+    // The property this whole module exists for, one step sharper. A facet count needs a reader to infer
+    // something from a number; a suggestion *names* the value, so a type-ahead offering "Northwind" to
+    // somebody with no access to Northwind's assets hands them the fact directly.
+    let (_pg, pool) = db().await;
+    let mine = group(&pool, "suggest-mine").await;
+    let theirs = group(&pool, "suggest-theirs").await;
+
+    asset(
+        &pool,
+        "mine-acme",
+        serde_json::json!({"brand": "Acme Corp"}),
+        &[mine],
+        false,
+    )
+    .await;
+    asset(
+        &pool,
+        "theirs-northwind",
+        serde_json::json!({"brand": "Northwind"}),
+        &[theirs],
+        false,
+    )
+    .await;
+
+    let scoped = plan(Query::All, Some(&[mine]));
+    let labels = suggested(&pool, &scoped, "no").await;
+    assert!(
+        labels.is_empty(),
+        "a value only the other group can see was suggested: {labels:?}"
+    );
+
+    // And the caller's own value is offered, with the fragment that filters by it.
+    let found = dam_db::suggest::for_prefix(
+        &mut pool.acquire().await.expect("conn"),
+        &scoped,
+        &defs(),
+        "acm",
+    )
+    .await
+    .expect("suggest");
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].label, "Acme Corp");
+    assert_eq!(found[0].within.as_deref(), Some("brand"));
+    // Quoted, because `brand:Acme Corp` is a brand filter plus the free text "Corp" — the same rule the
+    // client's composer follows, and it has to be the same or a suggestion changes the query when clicked.
+    assert_eq!(found[0].fragment, "brand:\"Acme Corp\"");
+    assert_eq!(found[0].count, 1);
+}
+
+#[tokio::test]
+async fn a_suggestion_is_a_prefix_narrowed_by_the_query_already_typed() {
+    let (_pg, pool) = db().await;
+    let group_id = group(&pool, "suggest-prefix").await;
+    asset(
+        &pool,
+        "sunrise",
+        serde_json::json!({"brand": "acme", "colours": ["cerulean", "cedar"]}),
+        &[group_id],
+        false,
+    )
+    .await;
+    asset(
+        &pool,
+        "sunset",
+        serde_json::json!({"brand": "globex", "colours": ["cerulean"]}),
+        &[group_id],
+        false,
+    )
+    .await;
+
+    let everything = plan(Query::All, Some(&[group_id]));
+    // A prefix, not a substring: somebody four letters into a word wants what starts that way, and substring
+    // matching puts the thing they are typing fourth in the list.
+    let mut ceruleans = suggested(&pool, &everything, "ce").await;
+    ceruleans.sort();
+    assert_eq!(ceruleans, vec!["cedar", "cerulean"]);
+    assert!(
+        suggested(&pool, &everything, "erulean").await.is_empty(),
+        "a substring is not a prefix"
+    );
+
+    // Narrowed by the query already in the box, exactly as the facet rail narrows: two clauses into a search,
+    // the offer is what is left rather than what the library holds.
+    let narrowed = plan(
+        Query::Field {
+            key: "brand".to_owned(),
+            op: Comparison::Equals(Literal::Text("globex".to_owned())),
+        },
+        Some(&[group_id]),
+    );
+    assert_eq!(
+        suggested(&pool, &narrowed, "ce").await,
+        vec!["cerulean"],
+        "`cedar` belongs to the asset the query excluded"
+    );
+    assert!(
+        suggested(&pool, &narrowed, "ced").await.is_empty(),
+        "the excluded asset's own value is not offered either"
+    );
+
+    // One character offers nothing: it is every value in the library, ordered by count, at the cost of three
+    // queries.
+    assert!(suggested(&pool, &everything, "c").await.is_empty());
+}
+
+#[tokio::test]
+async fn a_filename_and_a_term_are_suggested_with_the_fragments_that_filter_by_them() {
+    let (_pg, pool) = db().await;
+    let group_id = group(&pool, "suggest-sources").await;
+    let id = asset(&pool, "DSC_0043", serde_json::json!({}), &[group_id], false).await;
+
+    // A confirmed tag under a real taxonomy, because a suggested one is a proposal in a review queue and
+    // offering it as a filter would put unreviewed machine output in front of somebody as a curator's word.
+    let taxonomy: Uuid = sqlx::query_scalar(
+        "INSERT INTO taxonomies (id, key, label, kind) \
+         VALUES (gen_random_uuid(), 'places', 'Places', 'category') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("taxonomy");
+    let term: Uuid = sqlx::query_scalar(
+        "INSERT INTO taxonomy_terms (id, taxonomy_id, label, slug, path) \
+         VALUES (gen_random_uuid(), $1, 'Harbourside', 'harbourside', 'harbourside') RETURNING id",
+    )
+    .bind(taxonomy)
+    .fetch_one(&pool)
+    .await
+    .expect("term");
+    sqlx::query(
+        "INSERT INTO asset_tags (asset_id, term_id, state, source) \
+         VALUES ($1, $2, 'confirmed', 'human')",
+    )
+    .bind(id)
+    .bind(term)
+    .execute(&pool)
+    .await
+    .expect("tag");
+    let pending: Uuid = sqlx::query_scalar(
+        "INSERT INTO taxonomy_terms (id, taxonomy_id, label, slug, path) \
+         VALUES (gen_random_uuid(), $1, 'Harbinger', 'harbinger', 'harbinger') RETURNING id",
+    )
+    .bind(taxonomy)
+    .fetch_one(&pool)
+    .await
+    .expect("term");
+    sqlx::query(
+        "INSERT INTO asset_tags (asset_id, term_id, state, source) \
+         VALUES ($1, $2, 'suggested', 'zero_shot')",
+    )
+    .bind(id)
+    .bind(pending)
+    .execute(&pool)
+    .await
+    .expect("tag");
+
+    let everything = plan(Query::All, Some(&[group_id]));
+    let found = dam_db::suggest::for_prefix(
+        &mut pool.acquire().await.expect("conn"),
+        &everything,
+        &defs(),
+        "harb",
+    )
+    .await
+    .expect("suggest");
+    let labels: Vec<&str> = found.iter().map(|one| one.label.as_str()).collect();
+    assert_eq!(labels, vec!["Harbourside"], "an unreviewed tag was offered");
+    // `in:` takes the path, not the label: the path is what brings the descendants with it, and a fragment
+    // naming the label would filter by a word rather than by a place in the tree.
+    assert_eq!(found[0].fragment, "in:harbourside");
+    assert_eq!(found[0].within.as_deref(), Some("Places"));
+
+    let by_name = dam_db::suggest::for_prefix(
+        &mut pool.acquire().await.expect("conn"),
+        &everything,
+        &defs(),
+        "dsc_",
+    )
+    .await
+    .expect("suggest");
+    assert_eq!(by_name.len(), 1, "{by_name:?}");
+    assert_eq!(by_name[0].fragment, "filename:DSC_0043.jpg");
+    assert_eq!(by_name[0].within, None, "a filename is its own category");
+}
+
+#[tokio::test]
+async fn the_nearest_value_is_one_that_exists_or_nothing() {
+    // The did-you-mean on an empty page. It is an offer to run something that will work, so the candidate has
+    // to be a value the caller can actually see — which is why it is looked up rather than generated.
+    let (_pg, pool) = db().await;
+    let mine = group(&pool, "nearest-mine").await;
+    let theirs = group(&pool, "nearest-theirs").await;
+    asset(
+        &pool,
+        "near-acme",
+        serde_json::json!({"brand": "acme"}),
+        &[mine],
+        false,
+    )
+    .await;
+    asset(
+        &pool,
+        "near-secret",
+        serde_json::json!({"brand": "northwind"}),
+        &[theirs],
+        false,
+    )
+    .await;
+
+    let visible = plan(Query::All, Some(&[mine]));
+    let brand = defs().into_iter().find(|d| d.key == "brand").expect("def");
+    let mut conn = pool.acquire().await.expect("conn");
+    assert_eq!(
+        dam_db::suggest::nearest_value(&mut conn, &visible, &brand, "acmee")
+            .await
+            .expect("nearest"),
+        Some("acme".to_owned())
+    );
+    // Not the other group's value, even though it is the nearest thing in the table.
+    assert_eq!(
+        dam_db::suggest::nearest_value(&mut conn, &visible, &brand, "northwnd")
+            .await
+            .expect("nearest"),
+        None,
+        "a value only another group can see must not be suggested"
+    );
+    // And nothing when nothing is close: a guess sends somebody round a second empty loop.
+    assert_eq!(
+        dam_db::suggest::nearest_value(&mut conn, &visible, &brand, "photographer")
+            .await
+            .expect("nearest"),
+        None
+    );
+}
+
+/// The labels `for_prefix` offers, in the order it offers them.
+async fn suggested(pool: &PgPool, planned: &Planned, typed: &str) -> Vec<String> {
+    dam_db::suggest::for_prefix(
+        &mut pool.acquire().await.expect("conn"),
+        planned,
+        &defs(),
+        typed,
+    )
+    .await
+    .expect("suggest")
+    .into_iter()
+    .map(|one| one.label)
+    .collect()
+}

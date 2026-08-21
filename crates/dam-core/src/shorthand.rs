@@ -151,6 +151,26 @@ impl Schema {
     }
 
     /// Resolves a key or alias to a definition.
+    /// Every name a field clause may be written with: keys, aliases, and the reserved selectors.
+    ///
+    /// The selectors are in the list because `stars:` is as likely a typo target as `brand:` — somebody typing
+    /// `star:4` has made the same kind of mistake, and a suggestion that only knew about fields would tell
+    /// them nothing.
+    fn nameable(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self.fields.iter().map(|def| def.key.as_str()).collect();
+        names.extend(self.aliases.keys().map(String::as_str));
+        names.extend([
+            CATEGORY_SELECTOR,
+            PERSONAL_SELECTOR,
+            RATING_SELECTOR,
+            STATUS_SELECTOR,
+            ORIENTATION_SELECTOR,
+            PRESENCE_SELECTOR,
+            FILENAME_SELECTOR,
+        ]);
+        names
+    }
+
     fn resolve(&self, name: &str) -> Option<&FieldDef> {
         let key = self.aliases.get(name).map_or(name, String::as_str);
         self.fields.iter().find(|def| def.key == key)
@@ -166,6 +186,14 @@ pub struct ParseError {
     /// 1-based, in characters.
     pub column: usize,
     pub detail: String,
+    /// The name somebody probably meant, when one is close enough (Q.17).
+    ///
+    /// A suggestion, not a correction: the query is still refused. Answering `brnad:acme` as `brand:acme`
+    /// would be a filter nobody asked for, and the first wrong guess leaves a user with results they cannot
+    /// explain. This is the one-click fix beside the refusal, and it is `None` rather than a stretch when
+    /// nothing is close — suggesting `year` for `photographer` reads as a system that does not know what its
+    /// own fields are called.
+    pub suggestion: Option<String>,
 }
 
 impl std::fmt::Display for ParseError {
@@ -182,7 +210,18 @@ impl ParseError {
             code,
             column,
             detail: detail.into(),
+            suggestion: None,
         }
+    }
+
+    /// The same error, carrying the name somebody probably meant.
+    fn suggesting<'a>(
+        mut self,
+        candidates: impl IntoIterator<Item = &'a str>,
+        typed: &str,
+    ) -> Self {
+        self.suggestion = crate::similar::closest(candidates, typed).map(str::to_owned);
+        self
     }
 }
 
@@ -517,7 +556,8 @@ impl<'a> Parser<'a> {
                     format!(
                         "{PERSONAL_SELECTOR}: takes favourite, watched or rated — {what:?} is none of them"
                     ),
-                ));
+                )
+                .suggesting(["favourite", "watched", "rated"], what));
             };
             return Ok(Query::Mine(state));
         }
@@ -614,7 +654,8 @@ impl<'a> Parser<'a> {
                         "{ORIENTATION_SELECTOR}: takes landscape, portrait or square — {value:?} is none of \
                          them"
                     ),
-                ));
+                )
+                .suggesting(["landscape", "portrait", "square"], value));
             };
             return Ok(Query::Orientation(shape));
         }
@@ -632,7 +673,8 @@ impl<'a> Parser<'a> {
                     format!(
                         "{PRESENCE_SELECTOR}: takes attachment — {value:?} is not something it knows"
                     ),
-                )),
+                )
+                .suggesting(["attachment"], &value)),
             };
         }
 
@@ -650,6 +692,7 @@ impl<'a> Parser<'a> {
                     ),
                 ));
             }
+            let known_paths = self.schema.category_paths();
             let Some(term_id) = self.schema.resolve_category(path) else {
                 return Err(ParseError::new(
                     "unknown_category",
@@ -658,6 +701,11 @@ impl<'a> Parser<'a> {
                         "no category at path {path:?}; treating a typo as free text would return \
                          nothing and explain nothing"
                     ),
+                )
+                .suggesting(
+                    // Sorted, so the suggestion for an ambiguous typo is the same one every time.
+                    known_paths.iter().map(String::as_str),
+                    path,
                 ));
             };
             return Ok(Query::Term {
@@ -676,7 +724,8 @@ impl<'a> Parser<'a> {
                     "no field or alias named {name:?}; a typo treated as free text would return \
                      nothing and explain nothing"
                 ),
-            ));
+            )
+            .suggesting(self.schema.nameable(), name));
         };
         // Cloned so the borrow on `self.schema` ends before the value is parsed, which may consult the
         // next token for a quoted value.

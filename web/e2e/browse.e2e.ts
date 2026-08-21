@@ -218,6 +218,34 @@ async function connect(page: Page): Promise<Recorder> {
 		if (path.pathname === '/search/facets') {
 			return route.fulfill({ json: FACETS });
 		}
+		if (path.pathname === '/search/suggest') {
+			// Q.17. The server sends the fragment to insert; the client's job is to put a string in a box.
+			const typed = path.searchParams.get('typed') ?? '';
+			recorder.urls.push(url);
+			const all = [
+				{ source: 'field', label: 'acme', within: 'brand', fragment: 'brand:acme', count: 74 },
+				{
+					source: 'field',
+					label: 'Acme Corp',
+					within: 'brand',
+					fragment: 'brand:"Acme Corp"',
+					count: 12
+				},
+				{
+					source: 'filename',
+					label: 'acme-logo.png',
+					within: null,
+					fragment: 'filename:acme-logo.png',
+					count: 1
+				}
+			];
+			return route.fulfill({
+				json:
+					typed.length < 2
+						? []
+						: all.filter((one) => one.label.toLowerCase().startsWith(typed.toLowerCase()))
+			});
+		}
 		if (path.pathname === '/fields') {
 			return route.fulfill({ json: FIELDS });
 		}
@@ -524,6 +552,119 @@ test('the advanced form has no axe violations', async ({ page }) => {
 	await page.goto('/assets');
 	await page.getByRole('button', { name: 'Advanced' }).click();
 	await expect(page.getByRole('heading', { name: 'Advanced search' })).toBeVisible();
+	const results = await new AxeBuilder({ page }).analyze();
+	expect(results.violations).toEqual([]);
+});
+
+test('the type-ahead completes a word with the keyboard alone', async ({ page }) => {
+	// Q.17. The box is where somebody's hands already are; reaching for a pointer to accept a completion is
+	// slower than finishing the word, so the whole interaction has to work from the keyboard.
+	await connect(page);
+	await page.goto('/assets');
+
+	const box = page.getByLabel('Search assets');
+	await box.fill('acm');
+	const list = page.getByRole('listbox', { name: 'Suggestions' });
+	await expect(list).toBeVisible();
+	await expect(box).toHaveAttribute('aria-expanded', 'true');
+	await expect(page.getByRole('option', { name: /acme/ }).first()).toBeVisible();
+
+	// Arrow keys move the active option without moving focus out of the box — the caret stays where the
+	// user is typing.
+	await box.press('ArrowDown');
+	await expect(box).toHaveAttribute('aria-activedescendant', 'suggestion-0');
+	await expect(box).toBeFocused();
+	await box.press('Enter');
+	// The whole token is replaced rather than appended: `acm` plus `brand:acme` would be two clauses.
+	await expect(box).toHaveValue('brand:acme');
+	await expect(list).toBeHidden();
+});
+
+test('a suggestion with a space arrives already quoted', async ({ page }) => {
+	// The fragment comes from the server verbatim. A client that assembled `brand:Acme Corp` itself would
+	// produce a brand filter plus the free text "Corp" — a query that changes when it is clicked.
+	await connect(page);
+	await page.goto('/assets');
+	await page.getByLabel('Search assets').fill('Acme');
+	await page.getByRole('option', { name: /Acme Corp/ }).click();
+	await expect(page.getByLabel('Search assets')).toHaveValue('brand:"Acme Corp"');
+});
+
+test('one character offers nothing', async ({ page }) => {
+	// Every value in the library, ordered by count, at the cost of three queries per keystroke.
+	await connect(page);
+	await page.goto('/assets');
+	await page.getByLabel('Search assets').fill('a');
+	await expect(page.getByRole('listbox', { name: 'Suggestions' })).toBeHidden();
+});
+
+test('a misspelled field offers the name it meant, and applies it in place', async ({ page }) => {
+	// The refusal is still a refusal: the fix is offered, not applied. Answering `brnad:acme` as `brand:acme`
+	// would be a filter nobody asked for.
+	const recorder = await connect(page);
+	// A predicate rather than a glob: the query string is what distinguishes this request, and a glob over a
+	// `?` is matching a wildcard against the thing that separates the path from the part that matters.
+	await page.route(
+		(url) => url.pathname === '/search' && (url.searchParams.get('q') ?? '').startsWith('brnad'),
+		(route) =>
+			route.fulfill({
+				status: 400,
+				json: {
+					message: 'no field or alias named "brnad"',
+					code: 'unknown_field',
+					at: 1,
+					suggestion: 'brand'
+				}
+			})
+	);
+	await page.goto('/assets?q=brnad:acme');
+
+	// Filtered, because the page carries more than one alert region and the parse refusal is the one this
+	// case is about.
+	await expect(
+		page.getByRole('alert').filter({ hasText: 'no field or alias named' })
+	).toBeVisible();
+	await page.getByRole('button', { name: /Did you mean/ }).click();
+	// The key is replaced and the value is kept: the column the parser gave says which half was wrong.
+	await expect(page.getByLabel('Search assets')).toHaveValue('brand:acme');
+	expect(recorder.urls.some((url) => url.includes('q=brand%3Aacme'))).toBe(true);
+});
+
+test('an empty page does not describe the ordering of nothing', async ({ page }) => {
+	// "0 assets · ranked by relevance, capped at the first 1,000" is a sentence about the ordering of an empty
+	// list, and beside a did-you-mean it sits between the count and the one thing worth clicking.
+	await connect(page);
+	await page.route(
+		(url) => url.pathname === '/search' && url.searchParams.get('q') === 'brand:nothing',
+		(route) => route.fulfill({ json: { items: [], total: 0, offset: 0, ranked: true } })
+	);
+	await page.goto('/assets?q=brand:nothing');
+	await expect(page.getByText('No assets match this search.')).toBeVisible();
+	await expect(page.getByText(/ranked by relevance/)).toBeHidden();
+});
+
+test('an empty page offers a query that would work', async ({ page }) => {
+	await connect(page);
+	await page.route(
+		(url) => url.pathname === '/search' && url.searchParams.get('q') === 'brand:acmee',
+		(route) =>
+			route.fulfill({
+				json: { items: [], total: 0, offset: 0, ranked: true, did_you_mean: 'brand:acme' }
+			})
+	);
+	await page.goto('/assets?q=brand:acmee');
+
+	// The button is the assertion: "0 assets" appears twice on the page — once for the eye and once for a
+	// screen reader — and the offer beside it is what this case is about.
+	await page.getByRole('button', { name: /Did you mean/ }).click();
+	await expect(page.getByLabel('Search assets')).toHaveValue('brand:acme');
+});
+
+test('the type-ahead has no axe violations', async ({ page }) => {
+	await connect(page);
+	await page.goto('/assets');
+	await page.getByLabel('Search assets').fill('acm');
+	await expect(page.getByRole('listbox', { name: 'Suggestions' })).toBeVisible();
 	const results = await new AxeBuilder({ page }).analyze();
 	expect(results.violations).toEqual([]);
 });

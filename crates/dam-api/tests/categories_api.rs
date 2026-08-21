@@ -256,6 +256,128 @@ async fn the_category_http_contract_holds() {
     a_category_query_is_answered_rather_than_refused(&f, tree, exterior, yellow).await;
     a_category_tree_is_not_also_a_flat_facet(&f, tree).await;
     the_builtin_facets_are_offered_and_their_buckets_filter(&f).await;
+    a_typo_is_named_rather_than_guessed_at(&f).await;
+    a_type_ahead_offers_what_the_caller_can_see(&f).await;
+}
+
+/// Did-you-mean, in both places it can happen (Q.17).
+///
+/// A misspelled *field* is a parse refusal, and the suggestion travels with it. A misspelled *value* parses
+/// fine and matches nothing, and the suggestion travels with the empty page. Both are offers, not corrections:
+/// answering `brnad:acme` as `brand:acme` would be a filter nobody asked for, and the first wrong guess leaves
+/// somebody with results they cannot explain.
+async fn a_typo_is_named_rather_than_guessed_at(f: &Fixture) {
+    // `caption` is this tenant's one field, defined by the query case above. The facetable flag is what a
+    // type-ahead needs, and it is set here rather than in that case because faceting is not what it is about.
+    sqlx::query("UPDATE field_defs SET facetable = true WHERE key = 'caption'")
+        .execute(&f.acme)
+        .await
+        .expect("facetable");
+
+    let (status, body) = call(f, "GET", "/search?q=captoin:dawn", &f.key, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["code"], "unknown_field", "{body}");
+    assert_eq!(
+        body["suggestion"], "caption",
+        "the refusal must name the field somebody meant: {body}"
+    );
+
+    // A value nobody has. The query parses, matches nothing, and the page carries a query that would work —
+    // the asset with `a harbour at dawn` is the one the correction finds.
+    let (status, body) = call(
+        f,
+        "GET",
+        "/search?q=caption:%22a%20harbour%20at%20dwan%22",
+        &f.key,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["total"], 0, "{body}");
+    assert_eq!(
+        body["did_you_mean"], "caption:\"a harbour at dawn\"",
+        "an empty page must offer a query that works: {body}"
+    );
+
+    // A second, short caption value. Without one, an ambiguous query has nothing close enough to be wrongly
+    // corrected to, and the case below would pass whether or not the ambiguity was respected.
+    let dusk = asset(f, "dusk-shot", true).await;
+    sqlx::query("INSERT INTO asset_metadata (asset_id, values) VALUES ($1, $2)")
+        .bind(dusk)
+        .bind(serde_json::json!({"caption": "dusk"}))
+        .execute(&f.acme)
+        .await
+        .expect("metadata");
+
+    // A page that found something carries no suggestion at all — and does not pay for one. A substring, so
+    // this goes through SQL: an equality on a text field is answered by the index, where a long value is a row
+    // of tokens rather than one term, and it would return nothing here for a reason that has nothing to do
+    // with did-you-mean.
+    let (status, body) = call(f, "GET", "/search?q=caption:*harbour*", &f.key, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["total"], 1, "{body}");
+    assert!(
+        body.get("did_you_mean").is_none() || body["did_you_mean"].is_null(),
+        "a search with results must not be second-guessed: {body}"
+    );
+
+    // Two clauses, no matches, and no suggestion: there are two candidates and no way to know which one was
+    // mistyped, so offering either is offering a query the user did not ask for.
+    let (status, body) = call(
+        f,
+        "GET",
+        "/search?q=caption:dusc%20caption:dawn",
+        &f.key,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["total"], 0, "{body}");
+    assert!(
+        body.get("did_you_mean").is_none() || body["did_you_mean"].is_null(),
+        "an ambiguous query must not be corrected: {body}"
+    );
+
+    // And a search that simply has no matches carries no suggestion: "no results" is an honest answer, and a
+    // guess sends somebody round a second empty loop.
+    let (status, body) = call(f, "GET", "/search?q=caption:zeppelin", &f.key, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["total"], 0, "{body}");
+    assert!(
+        body.get("did_you_mean").is_none() || body["did_you_mean"].is_null(),
+        "nothing was close, so nothing should be offered: {body}"
+    );
+}
+
+/// The type-ahead, and the disclosure rule it lives under.
+async fn a_type_ahead_offers_what_the_caller_can_see(f: &Fixture) {
+    // The value on the one asset with metadata, offered with the fragment that filters by it — quoted,
+    // because `caption:a harbour at dawn` is a caption filter plus three words of free text.
+    let (status, body) = call(f, "GET", "/search/suggest?typed=a%20harb", &f.key, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body.as_array().expect("array").iter().any(|row| {
+            row["label"] == "a harbour at dawn"
+                && row["fragment"] == "caption:\"a harbour at dawn\""
+        }),
+        "the value and the fragment that filters by it: {body}"
+    );
+
+    // A filename is a source of its own, so a name is offered as a name.
+    let (status, body) = call(f, "GET", "/search/suggest?typed=answers", &f.key, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body.as_array().expect("array").iter().any(|row| {
+            row["source"] == "filename"
+                && row["fragment"] == "filename:answers-a-category-query.jpg"
+        }),
+        "{body}"
+    );
+
+    // One character offers nothing: it is every value in the library, at the cost of three queries.
+    let (status, body) = call(f, "GET", "/search/suggest?typed=a", &f.key, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.as_array().expect("array").is_empty(), "{body}");
 }
 
 async fn a_tree_is_built_over_http(f: &Fixture) -> (Uuid, Uuid, Uuid) {
@@ -672,6 +794,19 @@ async fn a_category_query_is_answered_rather_than_refused(
         body["total"], 0,
         "the text clause must narrow, not be ignored: {body}"
     );
+
+    // Q.16's wildcards over a *metadata* field are relational too, and this is the case that found it: the
+    // parser produces the clause, the index refuses substring matching by name — an `ILIKE` and a Tantivy
+    // automaton disagree at the margins — and before this the caller got a 501 for a query the database can
+    // answer exactly.
+    let (status, body) = call(f, "GET", "/search?q=caption:*arbour*", &f.key, None).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a substring over a field must be answered in SQL: {body}"
+    );
+    assert_eq!(body["ranked"], false, "{body}");
+    assert_eq!(body["total"], 1, "{body}");
 
     // Q.16's `filename:` is relational for the same reason: the index holds a filename as tokens, so a
     // substring over the column is a question it cannot answer. If this were sent to the index the request

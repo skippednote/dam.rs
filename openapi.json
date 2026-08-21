@@ -3524,6 +3524,67 @@
         }
       }
     },
+    "/search/suggest": {
+      "get": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Suggestions for a partially typed word, over the caller's visible library.",
+        "description": "Access-filtered, and that is the point rather than a detail. A facet count needs a reader to infer\nsomething from a number; a suggestion *names* the value, so offering one for an asset somebody cannot see\nhands them the fact directly — which is the disclosure §7 is about.",
+        "operationId": "suggest",
+        "parameters": [
+          {
+            "name": "typed",
+            "in": "query",
+            "description": "The word being typed. Fewer than two characters returns nothing — one character is every value in the\nlibrary, which is a list nobody reads and three queries to produce it.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "The query already in the box, so suggestions narrow as the search narrows. Empty is the whole visible\nlibrary.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What to offer, most common first within each source",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Suggestion"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The query already in the box does not parse",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueryProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential"
+          },
+          "403": {
+            "description": "Authenticated, and holds no read scope"
+          }
+        }
+      }
+    },
     "/share/{token}": {
       "post": {
         "tags": [
@@ -4533,6 +4594,13 @@
           "offset"
         ],
         "properties": {
+          "did_you_mean": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A query worth trying instead, when this one matched nothing (Q.17).\n\nOnly ever set on an empty result set, and only when a value close to one the caller typed really exists\nin their visible library — so it is an offer to run something that will work, not a guess. Absent\notherwise, including when the search simply has no matches: \"no results\" with no suggestion is an\nhonest answer, and inventing one would send somebody round a second empty loop."
+          },
           "items": {
             "type": "array",
             "items": {
@@ -6897,6 +6965,13 @@
           },
           "message": {
             "type": "string"
+          },
+          "suggestion": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name the parser thinks was meant, when one is close enough (Q.17).\n\nA suggestion beside a refusal, not a correction of it: the query still failed. The client offers it as\na one-click fix, which is the difference between \"no field named `brnad`\" and a search somebody can\nfinish."
           }
         }
       },
@@ -7279,6 +7354,42 @@
             "type": "integer",
             "format": "int32",
             "description": "How many generators proposed it independently."
+          }
+        }
+      },
+      "Suggestion": {
+        "type": "object",
+        "description": "What somebody is probably about to type (Q.17).",
+        "required": [
+          "source",
+          "label",
+          "fragment",
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many visible assets carry it. The list is ordered by this within each source."
+          },
+          "fragment": {
+            "type": "string",
+            "description": "The query fragment to insert. The client's job is to put a string in a box; a suggestion it had to\nassemble would be a second place where the query language is spoken and can be got wrong."
+          },
+          "label": {
+            "type": "string",
+            "description": "What to show."
+          },
+          "source": {
+            "type": "string",
+            "description": "`field`, `term` or `filename` — what the client groups by."
+          },
+          "within": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The field key or taxonomy label it came from. Absent for a filename."
           }
         }
       },

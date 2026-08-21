@@ -98,6 +98,12 @@ pub struct QueryProblem {
     /// One-based column the parser stopped at, when it has one. A filter rail underlines from here; without it
     /// a user gets "invalid query" and no idea which word.
     pub at: Option<usize>,
+    /// The name the parser thinks was meant, when one is close enough (Q.17).
+    ///
+    /// A suggestion beside a refusal, not a correction of it: the query still failed. The client offers it as
+    /// a one-click fix, which is the difference between "no field named `brnad`" and a search somebody can
+    /// finish.
+    pub suggestion: Option<String>,
 }
 
 /// The search routes.
@@ -110,6 +116,7 @@ pub fn router_from(state: Arc<SearchState>) -> Router {
     Router::new()
         .route("/search", get(search))
         .route("/search/facets", get(facets))
+        .route("/search/suggest", get(suggest))
         .with_state(state)
 }
 
@@ -185,10 +192,17 @@ pub async fn run(
             total: page.total,
             offset,
             ranked: false,
+            // No value suggestion on this path, and it is not an omission. A did-you-mean is only made for a
+            // lone field equality (see `sole_text_equality`), and an equality is never what sends a query
+            // here — this path exists for the clauses the index cannot answer. Computing one would be a query
+            // per empty page that could not produce an answer.
+            did_you_mean: None,
         });
     }
 
-    let index_schema = IndexSchema::new(defs);
+    // Cloned rather than moved: the did-you-mean below needs the definitions to find the field a value
+    // belonged to, and a search that matched nothing is the only path that reads them again.
+    let index_schema = IndexSchema::new(defs.clone());
     let open = state
         .indexes
         .get(&caller.tenant_slug, &index_schema)
@@ -233,6 +247,15 @@ pub async fn run(
             ));
         }
     }
+    // A cost guard rather than a behaviour one, and worth saying so before somebody simplifies it away
+    // expecting a difference: `nearer_query` refuses to suggest a value that already exists, so a page with
+    // results would come back with `None` anyway. What this saves is the lookup — a query per search that
+    // could not produce an answer.
+    let did_you_mean = if total == 0 {
+        nearer_query(conn.executor(), caller, &planned, &defs, &params.q).await?
+    } else {
+        None
+    };
     conn.commit().await?;
 
     Ok(AssetPage {
@@ -243,7 +266,77 @@ pub async fn run(
         total,
         offset,
         ranked: true,
+        did_you_mean,
     })
+}
+
+/// A query worth trying instead, for a search that matched nothing (Q.17).
+///
+/// Only for the shape where a suggestion can be *checked*: exactly one clause comparing a field to a literal
+/// piece of text. That is the typo people actually make — `brand:acmee`, `client:northwnd` — and it is the only
+/// one where a candidate can be looked up and confirmed to exist in the caller's own library before being
+/// offered. Anything else returns `None`, because "no results" with no suggestion is an honest answer and a
+/// guess sends somebody round a second empty loop.
+///
+/// The rewrite is textual, on the query the caller sent. The value came *from* that string, so replacing its
+/// first occurrence puts the correction exactly where the clause was — and the caller gets back something they
+/// can read and edit rather than a reconstruction of their query in the parser's own spelling.
+async fn nearer_query(
+    conn: &mut sqlx::PgConnection,
+    caller: &caller::Caller,
+    planned: &Planned,
+    defs: &[dam_core::fields::FieldDef],
+    asked: &str,
+) -> Result<Option<String>, Failure> {
+    let Some((key, typed)) = sole_text_equality(planned.query()) else {
+        return Ok(None);
+    };
+    let Some(def) = defs.iter().find(|def| def.key == key) else {
+        return Ok(None);
+    };
+
+    // Over the whole visible library rather than this query's results, which are empty by definition. Somebody
+    // who typed `brand:acmee` is asking about the brands they can see.
+    let everything = Planned::new(dam_core::query::Query::All, caller.predicate.clone(), defs)
+        .map_err(|_| Failure::Internal)?;
+    let Some(nearest) = dam_db::suggest::nearest_value(conn, &everything, def, &typed).await?
+    else {
+        return Ok(None);
+    };
+    if nearest.eq_ignore_ascii_case(&typed) {
+        // The value already exists and the search still found nothing, so suggesting it back would send
+        // somebody to the same empty page. Case-insensitively, which was tried the other way first: offering
+        // the correctly-cased value looked like a kindness until the corrected query was run and came back
+        // empty too, because an equality on a text field is answered by the *index* and a long value is a row
+        // of tokens there rather than one term. A suggestion that leads to a second empty page is worse than
+        // none.
+        //
+        // Hard to reach through the single-clause shape above — if a value is visible to this lookup it is
+        // visible to the search — and kept because the alternative is a silent absurdity if that ever stops
+        // being true.
+        return Ok(None);
+    }
+    Ok(Some(asked.replacen(&typed, &nearest, 1)))
+}
+
+/// The one clause a value suggestion can be made for, or `None`.
+///
+/// Deliberately narrow. A conjunction of two field clauses has two candidates and no way to know which one was
+/// mistyped, and offering both would be two queries neither of which the user asked for.
+fn sole_text_equality(query: &dam_core::query::Query) -> Option<(String, String)> {
+    use dam_core::query::{Comparison, Literal, Query as Q};
+    match query {
+        Q::Field {
+            key,
+            op: Comparison::Equals(Literal::Text(value)),
+        } => Some((key.clone(), value.clone())),
+        // A single-clause `and` is what a one-term query parses to in some shapes, so it is followed; anything
+        // with two children is ambiguous and is left alone.
+        Q::And(children) | Q::Or(children) if children.len() == 1 => {
+            sole_text_equality(&children[0])
+        }
+        _ => None,
+    }
 }
 
 /// Whether a query contains a clause the index cannot answer.
@@ -252,7 +345,7 @@ pub async fn run(
 /// an `or` or a `not` is still relational — and a check that only looked at the top level would send
 /// `in:exterior harbour` to the index, where the category clause would be refused rather than answered.
 fn is_relational(query: &dam_core::query::Query) -> bool {
-    use dam_core::query::Query as Q;
+    use dam_core::query::{Comparison, Query as Q};
     // No wildcard arm, deliberately: a new `Query` variant should not silently default to "the index can
     // answer this", because the consequence of being wrong in that direction is a refused clause rather than a
     // filtered one. `InCollection` is unreachable *through this endpoint* today — the shorthand has no
@@ -274,6 +367,15 @@ fn is_relational(query: &dam_core::query::Query) -> bool {
         | Q::Filename(_) => true,
         Q::And(children) | Q::Or(children) => children.iter().any(is_relational),
         Q::Not(inner) => is_relational(inner),
+        // A substring or a prefix over a metadata field goes to SQL, which is where the only agreed answer
+        // lives: the index refuses these by name because an `ILIKE` and a Tantivy automaton disagree at the
+        // margins, and §12 forbids an approximate answer that differs between back ends. Found by running
+        // `caption:*harbour*` through this endpoint after Q.16 added the syntax — the parser produced the
+        // clause, the index refused it, and the caller got a 501 for a query the database can answer exactly.
+        Q::Field {
+            op: Comparison::Contains(_) | Comparison::StartsWith(_),
+            ..
+        } => true,
         Q::All | Q::Text(_) | Q::Field { .. } => false,
     }
 }
@@ -374,6 +476,81 @@ pub async fn facets(
     ))
 }
 
+/// What somebody is probably about to type (Q.17).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct Suggestion {
+    /// `field`, `term` or `filename` — what the client groups by.
+    pub source: String,
+    /// What to show.
+    pub label: String,
+    /// The field key or taxonomy label it came from. Absent for a filename.
+    pub within: Option<String>,
+    /// The query fragment to insert. The client's job is to put a string in a box; a suggestion it had to
+    /// assemble would be a second place where the query language is spoken and can be got wrong.
+    pub fragment: String,
+    /// How many visible assets carry it. The list is ordered by this within each source.
+    pub count: i64,
+}
+
+/// Query parameters for a type-ahead.
+#[derive(Debug, Clone, Deserialize, IntoParams)]
+pub struct SuggestParams {
+    /// The word being typed. Fewer than two characters returns nothing — one character is every value in the
+    /// library, which is a list nobody reads and three queries to produce it.
+    #[serde(default)]
+    pub typed: String,
+    /// The query already in the box, so suggestions narrow as the search narrows. Empty is the whole visible
+    /// library.
+    #[serde(default)]
+    pub q: String,
+}
+
+/// Suggestions for a partially typed word, over the caller's visible library.
+///
+/// Access-filtered, and that is the point rather than a detail. A facet count needs a reader to infer
+/// something from a number; a suggestion *names* the value, so offering one for an asset somebody cannot see
+/// hands them the fact directly — which is the disclosure §7 is about.
+#[utoipa::path(
+    get,
+    path = "/search/suggest",
+    params(SuggestParams),
+    responses(
+        (status = 200, description = "What to offer, most common first within each source", body = Vec<Suggestion>),
+        (status = 400, description = "The query already in the box does not parse", body = QueryProblem),
+        (status = 401, description = "No usable credential"),
+        (status = 403, description = "Authenticated, and holds no read scope"),
+    ),
+    tag = "search",
+)]
+pub async fn suggest(
+    State(state): State<Arc<SearchState>>,
+    headers: HeaderMap,
+    Query(params): Query<SuggestParams>,
+) -> Result<Json<Vec<Suggestion>>, Failure> {
+    let caller = caller::authorize(&state.global, &headers, Action::Read).await?;
+    let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
+
+    // The query already in the box, so a type-ahead two clauses into a search offers what is left rather than
+    // what the library holds — the same reason the facet rail counts over the current query.
+    let (planned, defs) = plan(conn.executor(), &caller, &params.q).await?;
+    let found =
+        dam_db::suggest::for_prefix(conn.executor(), &planned, &defs, &params.typed).await?;
+    conn.commit().await?;
+
+    Ok(Json(
+        found
+            .into_iter()
+            .map(|one| Suggestion {
+                source: one.source.as_str().to_owned(),
+                label: one.label,
+                within: one.within,
+                fragment: one.fragment,
+                count: one.count,
+            })
+            .collect(),
+    ))
+}
+
 /// How many buckets a facet returns.
 ///
 /// A rail shows a handful and a "more" affordance, and `truncated` says when there were others — a rail that
@@ -403,6 +580,7 @@ async fn plan(
                 message: e.detail.clone(),
                 code: Some(e.code.to_owned()),
                 at: Some(e.column),
+                suggestion: e.suggestion.clone(),
             })
         })?
     };
@@ -422,6 +600,9 @@ async fn plan(
                 .join("; "),
             code: rejections.first().map(|r| r.code.to_owned()),
             at: None,
+            // Validation refusals are about a comparison being wrong for a kind, not about a name being
+            // misspelled — there is nothing to suggest, and inventing something would be noise.
+            suggestion: None,
         })
     })?;
     let planned = match caller.identity_id {
@@ -478,6 +659,8 @@ impl From<dam_search::Error> for Failure {
                 message: reason,
                 code: Some("unsupported_clause".to_owned()),
                 at: None,
+                // Nothing was misspelled: the clause is well formed and the index cannot answer it.
+                suggestion: None,
             }),
             other => {
                 tracing::error!(error = %other, "search index error");

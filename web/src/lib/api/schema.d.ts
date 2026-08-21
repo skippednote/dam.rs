@@ -1217,6 +1217,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/search/suggest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Suggestions for a partially typed word, over the caller's visible library.
+         * @description Access-filtered, and that is the point rather than a detail. A facet count needs a reader to infer
+         *     something from a number; a suggestion *names* the value, so offering one for an asset somebody cannot see
+         *     hands them the fact directly — which is the disclosure §7 is about.
+         */
+        get: operations["suggest"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/share/{token}": {
         parameters: {
             query?: never;
@@ -1609,6 +1631,15 @@ export interface components {
          *     of a hundred thousand.
          */
         AssetPage: {
+            /**
+             * @description A query worth trying instead, when this one matched nothing (Q.17).
+             *
+             *     Only ever set on an empty result set, and only when a value close to one the caller typed really exists
+             *     in their visible library — so it is an offer to run something that will work, not a guess. Absent
+             *     otherwise, including when the search simply has no matches: "no results" with no suggestion is an
+             *     honest answer, and inventing one would send somebody round a second empty loop.
+             */
+            did_you_mean?: string | null;
             items: components["schemas"]["AssetSummary"][];
             /**
              * Format: int64
@@ -2727,6 +2758,14 @@ export interface components {
              */
             code?: string | null;
             message: string;
+            /**
+             * @description The name the parser thinks was meant, when one is close enough (Q.17).
+             *
+             *     A suggestion beside a refusal, not a correction of it: the query still failed. The client offers it as
+             *     a one-click fix, which is the difference between "no field named `brnad`" and a search somebody can
+             *     finish.
+             */
+            suggestion?: string | null;
         };
         /** @description A rating to set. */
         RatingRequest: {
@@ -2883,6 +2922,25 @@ export interface components {
              * @description How many generators proposed it independently.
              */
             votes: number;
+        };
+        /** @description What somebody is probably about to type (Q.17). */
+        Suggestion: {
+            /**
+             * Format: int64
+             * @description How many visible assets carry it. The list is ordered by this within each source.
+             */
+            count: number;
+            /**
+             * @description The query fragment to insert. The client's job is to put a string in a box; a suggestion it had to
+             *     assemble would be a second place where the query language is spoken and can be got wrong.
+             */
+            fragment: string;
+            /** @description What to show. */
+            label: string;
+            /** @description `field`, `term` or `filename` — what the client groups by. */
+            source: string;
+            /** @description The field key or taxonomy label it came from. Absent for a filename. */
+            within?: string | null;
         };
         /** @description A decision about a suggested tag. */
         TagDecision: {
@@ -5998,6 +6056,60 @@ export interface operations {
                 };
             };
             /** @description The query does not parse */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueryProblem"];
+                };
+            };
+            /** @description No usable credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authenticated, and holds no read scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    suggest: {
+        parameters: {
+            query?: {
+                /**
+                 * @description The word being typed. Fewer than two characters returns nothing — one character is every value in the
+                 *     library, which is a list nobody reads and three queries to produce it.
+                 */
+                typed?: string;
+                /**
+                 * @description The query already in the box, so suggestions narrow as the search narrows. Empty is the whole visible
+                 *     library.
+                 */
+                q?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description What to offer, most common first within each source */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Suggestion"][];
+                };
+            };
+            /** @description The query already in the box does not parse */
             400: {
                 headers: {
                     [name: string]: unknown;

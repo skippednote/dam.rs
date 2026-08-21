@@ -26,14 +26,14 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M0–M3c** Foundation, ingest, metadata/search/rights, delivery/sharing/restore | complete |
 | **F** The UI: browse, detail, upload, filter rail, lightbox, bulk bar, design pass | complete |
 | **F.11b** Share/portal UI, schema administration, metadata types | complete except restore UX |
-| **Q** Acquia parity, 20 slices | Q.1–Q.16 done; Q.14b and Q.17–Q.20 open |
+| **Q** Acquia parity, 20 slices | Q.1–Q.17 done; Q.14b and Q.18–Q.20 open |
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | **done** — two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query, the MCP server |
 | **M6** Workflow/proofing, annotations, analytics | not started |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** Q.17–Q.19 search → Q.14b collections in the app → Q.20 sundries → M4 local AI → M6 → M3d → Pre-GA.
+**Next up, in order:** Q.18–Q.19 search → Q.14b collections in the app → Q.20 sundries → M4 local AI → M6 → M3d → Pre-GA.
 M5 is complete. M5a and M5b are done and verified against the running stack: both
 hosted clients reach their real vendor endpoints, and a full enrichment ran end to end through the worker against
 a local OpenAI-compatible endpoint — values written with provenance, a disclosure row, tags suggested, 0.75¢
@@ -2190,7 +2190,57 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
       Driven live against the dev stack, which is where the last fix came from: every pasted filename was
       coming back as `filename:"sample-003.jpg"`, correct and unreadable, because the quoting rule treated an
       interior hyphen as structure.
-- [ ] **Q.17 Predictive search and did-you-mean.**
+- [x] **Q.17 Predictive search and did-you-mean.**
+
+      **A suggestion is a disclosure, and a sharper one than a facet count.** A count needs a reader to infer
+      something from a number; a suggestion *names* the value, so offering "Northwind" to somebody who may see
+      none of Northwind's assets hands them the fact directly. Every source — field values, confirmed terms,
+      filenames — is counted over the caller's own access-filtered library through the same `push_where` every
+      other read uses, and narrowed by the query already in the box, so a type-ahead two clauses into a search
+      offers what is left rather than what the library holds.
+
+      **A suggestion carries the query fragment it composes into**, for the same reason a facet key is a
+      selector: the client's job is to put a string in a box, and a suggestion it has to assemble is a second
+      place where the query language is spoken and can be got wrong. The place it would be got wrong is
+      quoting, where the symptom is a query that changes when it is clicked.
+
+      **No history and no popularity.** Suggesting what other people searched for is a cross-caller disclosure
+      with no access filter available — the search that produced it belonged to somebody with different grants
+      — and ranking by frequency across a tenant leaks which clients are busy. What is offered is what this
+      caller can already see, ordered by how much of it there is.
+
+      **Did-you-mean is offered, never applied.** A refusal that names what was meant is actionable; a refusal
+      silently *corrected* is a filter nobody asked for, and the first wrong guess leaves somebody with results
+      they cannot explain. Two places it appears: a parse refusal carries the closest known name — fields,
+      aliases and the reserved selectors, plus the closed vocabularies suggesting from their own values — and an
+      empty page carries a whole query worth trying instead. The distance cap is scaled by length, because one
+      wrong letter in `id` is a different word and one wrong letter in `photographer` is a typo; suggesting
+      `year` for `photographer` reads as a system that does not know its own field names.
+
+      The value suggestion is deliberately narrow: exactly one clause comparing a field to a literal, which is
+      the typo people make and the only shape where a candidate can be *checked* to exist in the caller's own
+      library before being offered. A two-clause query has two candidates and no way to know which was mistyped.
+      One thing tried and reverted: offering the correctly-cased value when only the case differs. It looked
+      like a kindness until the corrected query was run and came back empty too, because an equality on a text
+      field is answered by the index, where a long value is a row of tokens rather than one term. A suggestion
+      that leads to a second empty page is worse than none.
+
+      **A Q.16 bug this slice found.** `caption:*harbour*` answered **501**. The parser produced the clause, the
+      index refused substring matching by name — an `ILIKE` and a Tantivy automaton disagree at the margins, and
+      §12 forbids an approximate answer that differs between back ends — and nothing routed it to the database
+      that can answer it exactly. Q.16's wildcards worked for `filename:` and for nothing else, because
+      `filename:` was already relational. Field substrings and prefixes now route to SQL like every other clause
+      the index cannot answer, and say they are unranked.
+
+      Twenty-four mutations caught. Two survivors are documented rather than tested, because both are
+      unobservable by construction: the `total == 0` check before the value lookup is a *cost* guard whose
+      behaviour the "value already exists" check below it already implies, and the empty-result lookup on the
+      SQL path was dead code — the lone-field-equality shape a value suggestion needs is never the shape that
+      routes to SQL — so it was removed. A third was a redundant whitespace guard in `trailingWord`, deleted:
+      splitting on whitespace already leaves an empty final token. Driven live end to end, which is where the
+      last fix came from: an empty page was announcing "0 assets · ranked by relevance, capped at the first
+      1,000", a sentence about the ordering of nothing, sitting between the count and the one thing worth
+      clicking.
 - [ ] **Q.18 Export search results to CSV.**
 - [ ] **Q.19 Refine-search configuration**, including dependent metadata fields.
 - [ ] **Q.20 Site branding, webhook delivery, the admin worklists, tag vocabulary administration.** The

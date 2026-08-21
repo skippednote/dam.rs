@@ -83,6 +83,14 @@ pub struct AssetPage {
     /// rather than capped by the ranking overfetch.
     #[serde(default = "ranked_by_default")]
     pub ranked: bool,
+    /// A query worth trying instead, when this one matched nothing (Q.17).
+    ///
+    /// Only ever set on an empty result set, and only when a value close to one the caller typed really exists
+    /// in their visible library — so it is an offer to run something that will work, not a guess. Absent
+    /// otherwise, including when the search simply has no matches: "no results" with no suggestion is an
+    /// honest answer, and inventing one would send somebody round a second empty loop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub did_you_mean: Option<String>,
 }
 
 /// Ranked unless a response says otherwise: every path but the relational one ranks, and a client reading an

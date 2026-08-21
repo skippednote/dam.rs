@@ -996,3 +996,65 @@ fn a_rating_outside_the_scale_is_refused_by_the_ir() {
         "{rejections:?}"
     );
 }
+
+// ─── did-you-mean (Q.17) ────────────────────────────────────────────────────
+
+#[test]
+fn a_misspelled_field_carries_the_name_it_probably_meant() {
+    // The refusal was already correct and unhelpful: "no field named `brnad`" leaves somebody staring at a
+    // query they cannot see the flaw in. The suggestion makes it a one-click fix, and the query is still
+    // refused — answering it as `brand:acme` would be a filter nobody asked for.
+    let error = parse_err("brnad:acme");
+    assert_eq!(error.code, "unknown_field");
+    assert_eq!(error.suggestion.as_deref(), Some("brand"));
+
+    // A prefix is somebody who stopped typing, not somebody who misspelled — and it outranks any number of
+    // substitutions.
+    assert_eq!(parse_err("cat:x").suggestion.as_deref(), Some("category"));
+
+    // An alias is a name a clause may be written with, so it is a candidate like any other.
+    assert_eq!(parse_err("brz:acme").suggestion.as_deref(), Some("bra"));
+
+    // And nothing is suggested when nothing is close. `year` for `photographer` reads as a system that does
+    // not know what its own fields are called.
+    assert_eq!(parse_err("photographer:ada").suggestion, None);
+
+    // `drabn` is three edits from `brand` with a two-edit budget, and every row of the distance table keeps a
+    // minimum inside that budget — the letters line up too well for the walk's own bail-out to fire. So the
+    // final comparison against the cap is the only thing standing between this and a wrong suggestion.
+    assert_eq!(parse_err("drabn:x").suggestion, None);
+}
+
+#[test]
+fn a_selector_is_a_typo_target_too() {
+    // `stars:` is as likely to be mistyped as `brand:`, and a suggestion that only knew about fields would
+    // tell somebody who typed `star:4` nothing at all.
+    assert_eq!(parse_err("star:4").suggestion.as_deref(), Some("stars"));
+    assert_eq!(
+        parse_err("orientatoin:landscape").suggestion.as_deref(),
+        Some("orientation")
+    );
+
+    // The closed vocabularies suggest from their own values rather than from the field list.
+    assert_eq!(
+        parse_err("is:favourit").suggestion.as_deref(),
+        Some("favourite")
+    );
+    assert_eq!(
+        parse_err("orientation:landscap").suggestion.as_deref(),
+        Some("landscape")
+    );
+    assert_eq!(
+        parse_err("has:attachmnt").suggestion.as_deref(),
+        Some("attachment")
+    );
+}
+
+#[test]
+fn a_misspelled_category_suggests_a_path_that_exists() {
+    // A path rather than a field name: the candidate list is the tree the tenant actually built, so a typo in
+    // a browse-tree link resolves to something that exists rather than to the nearest field key.
+    let error = parse_err("in:exterior.yelow");
+    assert_eq!(error.code, "unknown_category");
+    assert_eq!(error.suggestion.as_deref(), Some("exterior.yellow"));
+}

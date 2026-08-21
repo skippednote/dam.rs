@@ -1287,6 +1287,9 @@ pub async fn ask_query(
             message: error.detail.clone(),
             code: Some(error.code.to_owned()),
             at: Some(error.column),
+            // The model produced this query, so the suggestion is for whoever reads the failure — the same
+            // one-click fix a hand-typed query gets.
+            suggestion: error.suggestion.clone(),
         }),
     };
 
