@@ -288,6 +288,7 @@ fn serialise(query: &Query) -> Result<serde_json::Value, Error> {
         }),
         Query::InCollection(id) => serde_json::json!({"kind": "collection", "id": id}),
         Query::Rating(op) => serde_json::json!({"kind": "rating", "op": serialise_op(op)?}),
+        Query::Filename(op) => serde_json::json!({"kind": "filename", "op": serialise_op(op)?}),
         Query::Status(status) => serde_json::json!({"kind": "status", "status": status}),
         Query::Orientation(shape) => {
             serde_json::json!({"kind": "orientation", "shape": shape.as_str()})
@@ -393,6 +394,7 @@ fn deserialise(value: &serde_json::Value) -> Result<Query, Error> {
                 .map_err(|_| bad("collection without a uuid"))?,
         ),
         "rating" => Query::Rating(deserialise_op(&value["op"])?),
+        "filename" => Query::Filename(deserialise_op(&value["op"])?),
         "status" => Query::Status(
             value["status"]
                 .as_str()

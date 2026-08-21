@@ -531,6 +531,11 @@ fn clauses_the_index_cannot_answer_are_refused_rather_than_dropped() {
             Query::Orientation(dam_core::query::Orientation::Landscape),
         ),
         ("attachment", Query::HasAttachment),
+        // Q.16. The index holds a filename as tokens, which is why free text finds `DSC_0043` and not `0043`.
+        (
+            "filename",
+            Query::Filename(Comparison::Contains("0043".to_owned())),
+        ),
     ] {
         let planned = Planned::new(shape, access(None), &defs()).expect("valid");
         let outcome = dam_search::query::render(&planned, &schema);

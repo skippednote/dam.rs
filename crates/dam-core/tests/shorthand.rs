@@ -781,6 +781,139 @@ fn the_builtin_selectors_name_what_they_accept() {
 }
 
 #[test]
+fn a_wildcard_is_a_substring_or_a_prefix() {
+    // Q.16. `Contains` and `StartsWith` have been in the IR since 2.4 with nothing able to produce them: the
+    // SQL renderer knew how to answer a substring and no query could ask for one.
+    assert_eq!(
+        parse("brand:*cme*"),
+        Query::Field {
+            key: "brand".to_owned(),
+            op: Comparison::Contains("cme".to_owned()),
+        }
+    );
+    assert_eq!(
+        parse("brand:acme*"),
+        Query::Field {
+            key: "brand".to_owned(),
+            op: Comparison::StartsWith("acme".to_owned()),
+        }
+    );
+    // A bare `*` keeps its older meaning, which is the one a rail's "any value" bucket writes.
+    assert_eq!(
+        parse("brand:*"),
+        Query::Field {
+            key: "brand".to_owned(),
+            op: Comparison::Exists,
+        }
+    );
+    // An interior star is not a pattern this supports, so it stays part of the value — a filename really can
+    // contain one, and inventing a meaning for it would answer a different question than the one typed.
+    assert_eq!(
+        parse("brand:a*b"),
+        Query::Field {
+            key: "brand".to_owned(),
+            op: Comparison::Equals(Literal::Text("a*b".to_owned())),
+        }
+    );
+    // A star on both ends *and* inside is not a pattern either: `*a*b*` would otherwise become a substring
+    // search for "a*b", which is not what the person who typed three stars meant and is not something they
+    // could see going wrong.
+    assert_eq!(
+        parse("brand:*a*b*"),
+        Query::Field {
+            key: "brand".to_owned(),
+            op: Comparison::Equals(Literal::Text("*a*b*".to_owned())),
+        }
+    );
+    // And a pattern with nothing in it stays literal rather than matching the whole library — the widest
+    // possible answer is the wrong one to reach for when a value is missing.
+    assert_eq!(
+        parse("brand:**"),
+        Query::Field {
+            key: "brand".to_owned(),
+            op: Comparison::Equals(Literal::Text("**".to_owned())),
+        }
+    );
+    // Quoted, the star is text: the escape hatch for searching for the character itself.
+    assert_eq!(
+        parse("brand:\"*cme*\""),
+        Query::Field {
+            key: "brand".to_owned(),
+            op: Comparison::Equals(Literal::Text("*cme*".to_owned())),
+        }
+    );
+}
+
+#[test]
+fn a_wildcard_says_no_where_it_would_mean_nothing() {
+    // A leading star alone asks for a suffix, which is almost always a substring search typed one star short.
+    // Named rather than widened, because widening returns more than was asked for.
+    let suffix = parse_err("brand:*cme");
+    assert_eq!(suffix.code, "suffix_wildcard");
+    assert!(suffix.detail.contains("*text*"), "{suffix:?}");
+
+    // And over a number or a date it has no meaning that is not an accident of formatting.
+    let numeric = parse_err("year:202*");
+    assert_eq!(numeric.code, "not_matchable");
+    assert!(numeric.detail.contains("int"), "{numeric:?}");
+}
+
+#[test]
+fn filename_is_its_own_selector_with_wildcards() {
+    // Q.16's multiple-asset search rests on this: free text is *ranked* text, so the index tokenises a
+    // filename and `DSC_0043` is findable while `0043` is not. Somebody holding a list of names needs the
+    // substring, and a substring over a column is a SQL query.
+    assert_eq!(
+        parse("filename:DSC_0043.jpg"),
+        Query::Filename(Comparison::Equals(Literal::Text("DSC_0043.jpg".to_owned())))
+    );
+    assert_eq!(
+        parse("filename:DSC*"),
+        Query::Filename(Comparison::StartsWith("DSC".to_owned()))
+    );
+    assert_eq!(
+        parse("filename:*0043*"),
+        Query::Filename(Comparison::Contains("0043".to_owned()))
+    );
+    // A filename is the value most likely to contain a space, and a quoted value lexes as its own token.
+    assert_eq!(
+        parse("filename:\"my photo.jpg\""),
+        Query::Filename(Comparison::Equals(Literal::Text("my photo.jpg".to_owned())))
+    );
+    assert_eq!(parse_err("filename:").code, "empty_filename");
+
+    // A list of names is an OR group, which is what a paste of filenames composes into.
+    assert_eq!(
+        parse("(filename:a.jpg OR filename:b.jpg)"),
+        Query::Or(vec![
+            Query::Filename(Comparison::Equals(Literal::Text("a.jpg".to_owned()))),
+            Query::Filename(Comparison::Equals(Literal::Text("b.jpg".to_owned()))),
+        ])
+    );
+}
+
+#[test]
+fn a_filename_comparison_that_text_cannot_answer_is_refused_by_the_ir() {
+    use dam_core::fields::FieldDef;
+
+    // A range over a filename sorts bytes and answers a question nobody asked; every asset has a filename, so
+    // `filename:*` matches everything. Both are refused by validation rather than rendered into SQL.
+    let defs: Vec<FieldDef> = Vec::new();
+    let range = Query::Filename(Comparison::Range {
+        lower: Endpoint::Inclusive(Literal::Text("a".to_owned())),
+        upper: Endpoint::Inclusive(Literal::Text("m".to_owned())),
+    })
+    .validate(&defs)
+    .expect_err("a range over a filename must be refused");
+    assert_eq!(range[0].code, "filename_range");
+
+    let always = Query::Filename(Comparison::Exists)
+        .validate(&defs)
+        .expect_err("every asset has a filename");
+    assert_eq!(always[0].code, "filename_always");
+}
+
+#[test]
 fn a_field_cannot_shadow_the_engagement_selectors() {
     // Same reservation as `in:`, for the same reason: a tenant field called `is` or `stars` would take over the
     // selector and the rail's own links would stop working.
@@ -791,6 +924,7 @@ fn a_field_cannot_shadow_the_engagement_selectors() {
             def("status", FieldKind::Text, None),
             def("orientation", FieldKind::Text, None),
             def("has", FieldKind::Text, None),
+            def("filename", FieldKind::Text, None),
         ],
         HashMap::new(),
     );
@@ -815,6 +949,10 @@ fn a_field_cannot_shadow_the_engagement_selectors() {
     assert_eq!(
         shorthand::parse("has:attachment", &shadowing).expect("parses"),
         Query::HasAttachment,
+    );
+    assert_eq!(
+        shorthand::parse("filename:a.jpg", &shadowing).expect("parses"),
+        Query::Filename(Comparison::Equals(Literal::Text("a.jpg".to_owned()))),
     );
 }
 

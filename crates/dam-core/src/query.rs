@@ -191,6 +191,13 @@ pub enum Query {
     /// reindex. An asset with no dimensions — a PDF, an audio file — matches no orientation rather than
     /// defaulting to one.
     Orientation(Orientation),
+    /// The asset's filename, compared (Q.16).
+    ///
+    /// A column, so a clause of its own rather than a metadata field. It exists because free text is *ranked*
+    /// text: the index tokenises a filename, so `DSC_0043` is findable and `0043` is not. Somebody holding a
+    /// list of filenames — the case Q.16 calls multiple-asset search — needs the substring, and a substring
+    /// over a column is a SQL query rather than an index one.
+    Filename(Comparison),
     /// Whether paperwork is attached to the asset (Q.15).
     ///
     /// `has:attachment`. Relational — it is an `EXISTS` over the assets that name this one as their parent —
@@ -275,6 +282,7 @@ impl Query {
             | Self::Term { .. }
             | Self::InCollection(_)
             | Self::Rating(_)
+            | Self::Filename(_)
             | Self::Status(_)
             | Self::Orientation(_)
             | Self::HasAttachment
@@ -362,6 +370,7 @@ impl Query {
             // Nothing to check against the schema: who "mine" refers to is caller context, not a field.
             Self::Mine(_) => {}
             Self::Rating(op) => check_rating(op, rejections),
+            Self::Filename(op) => check_filename(op, rejections),
             Self::And(children) | Self::Or(children) => {
                 for child in children {
                     child.check_fields(defs, rejections);
@@ -397,6 +406,44 @@ impl Query {
 ///
 /// `Missing` and `Exists` are allowed and mean "unrated" and "rated by anyone" — the two facts a rail needs
 /// beside the star buckets, and neither is expressible any other way.
+/// A filename comparison has to be one text can answer.
+///
+/// A range over a filename would be `filename:a..m`, which sorts bytes and answers a question nobody asked; a
+/// missing filename is not a state this system has, since the column is `NOT NULL`. Both are refused here
+/// rather than rendered into SQL that quietly returns something.
+fn check_filename(op: &Comparison, rejections: &mut Vec<Rejection>) {
+    let refuse = |code: &'static str, detail: String, rejections: &mut Vec<Rejection>| {
+        rejections.push(Rejection {
+            key: "filename".to_owned(),
+            code,
+            detail,
+        });
+    };
+    match op {
+        Comparison::Equals(Literal::Text(_))
+        | Comparison::NotEquals(Literal::Text(_))
+        | Comparison::Contains(_)
+        | Comparison::StartsWith(_) => {}
+        Comparison::Equals(other) | Comparison::NotEquals(other) => refuse(
+            "filename_type",
+            format!("a filename is text, not {}", other.describe()),
+            rejections,
+        ),
+        Comparison::Range { .. } => refuse(
+            "filename_range",
+            "a filename has no ordering worth ranging over; use a prefix (`name*`) or a substring \
+             (`*name*`)"
+                .to_owned(),
+            rejections,
+        ),
+        Comparison::Exists | Comparison::Missing => refuse(
+            "filename_always",
+            "every asset has a filename, so this matches everything or nothing".to_owned(),
+            rejections,
+        ),
+    }
+}
+
 fn check_rating(op: &Comparison, rejections: &mut Vec<Rejection>) {
     let refuse = |code: &'static str, detail: String, rejections: &mut Vec<Rejection>| {
         rejections.push(Rejection {

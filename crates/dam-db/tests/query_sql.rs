@@ -718,6 +718,105 @@ async fn the_sql_renderer_invariants_hold() {
     the_count_matches_the_row_set_so_pagination_cannot_leak(&pool).await;
     a_taxonomy_query_includes_descendants_and_only_confirmed_tags(&pool).await;
     a_free_text_search_reaches_array_values(&pool).await;
+    a_filename_clause_matches_names_case_insensitively(&pool).await;
+    a_wildcard_in_a_filename_stays_a_literal_character(&pool).await;
+}
+
+/// Q.16: the filename clause, over the column rather than the index.
+async fn a_filename_clause_matches_names_case_insensitively(pool: &PgPool) {
+    let camera = asset_with(pool, "DSC_0043", serde_json::json!({})).await;
+    let other = asset_with(pool, "DSC_0044", serde_json::json!({})).await;
+    let unrelated = asset_with(pool, "harbour", serde_json::json!({})).await;
+    // Two names that make the operators tell each other apart. `copy-of-DSC_0044` *contains* the prefix
+    // without starting with it, and `DSC_0043.jpg.bak` starts with the exact name without being it — without
+    // both, a prefix rendered as a substring and an equality rendered as a prefix return the same rows as the
+    // correct ones and the test cannot see the difference.
+    let copy = asset_with(pool, "copy-of-DSC_0044", serde_json::json!({})).await;
+    let backup = asset_with(pool, "DSC_0043.jpg.bak", serde_json::json!({})).await;
+
+    // A filename is something a person half-remembers, so the case they type is not the case on disk.
+    let exact = plan(
+        Query::Filename(Comparison::Equals(Literal::Text("dsc_0043.jpg".to_owned()))),
+        admin_access(),
+    );
+    assert_eq!(
+        run(pool, &exact).await,
+        vec![camera],
+        "an equality must not behave like a prefix: `DSC_0043.jpg.bak` starts with this name"
+    );
+
+    // The substring is the whole point: `0043` is a token the index does not hold, and it is what somebody
+    // reading a filename off a delivery note actually has.
+    let substring = plan(
+        Query::Filename(Comparison::Contains("0043".to_owned())),
+        admin_access(),
+    );
+    // Both of them: `DSC_0043.jpg.bak` contains the number too, and a substring that quietly stopped at the
+    // first match would be the bug this operator exists to avoid.
+    let mut containing_number = vec![camera, backup];
+    containing_number.sort_unstable();
+    assert_eq!(run(pool, &substring).await, containing_number);
+
+    let prefix = plan(
+        Query::Filename(Comparison::StartsWith("dsc_00".to_owned())),
+        admin_access(),
+    );
+    let mut expected = vec![camera, other, backup];
+    expected.sort_unstable();
+    assert_eq!(
+        run(pool, &prefix).await,
+        expected,
+        "a prefix must not behave like a substring: `copy-of-DSC_0044.jpg` contains this and does not \
+         start with it"
+    );
+
+    // And the substring does reach it, which is the difference between the two operators.
+    let anywhere = plan(
+        Query::Filename(Comparison::Contains("dsc_0044".to_owned())),
+        admin_access(),
+    );
+    let mut containing = vec![other, copy];
+    containing.sort_unstable();
+    assert_eq!(run(pool, &anywhere).await, containing);
+
+    // The negation. Everything but that one asset, and the `NOT` has to wrap the whole `ILIKE` — without it
+    // the clause reads as the positive one and the result is the exact complement of what was asked for.
+    let excluded = plan(
+        Query::Filename(Comparison::NotEquals(Literal::Text(
+            "dsc_0043.jpg".to_owned(),
+        ))),
+        admin_access(),
+    );
+    let found = run(pool, &excluded).await;
+    assert!(!found.contains(&camera), "{found:?}");
+    assert!(found.contains(&other), "{found:?}");
+    assert!(found.contains(&backup), "{found:?}");
+
+    // A list of names, which is what a paste of filenames composes into.
+    let listed = plan(
+        Query::Or(vec![
+            Query::Filename(Comparison::Equals(Literal::Text("dsc_0044.jpg".to_owned()))),
+            Query::Filename(Comparison::Equals(Literal::Text("harbour.jpg".to_owned()))),
+        ]),
+        admin_access(),
+    );
+    let mut listed_ids = vec![other, unrelated];
+    listed_ids.sort_unstable();
+    assert_eq!(run(pool, &listed).await, listed_ids);
+}
+
+/// A `%` or `_` in a filename is a character, not a pattern.
+async fn a_wildcard_in_a_filename_stays_a_literal_character(pool: &PgPool) {
+    // `50%-off` is a real filename, and without the ESCAPE clause its `%` would match anything — so searching
+    // for it would find every asset whose name starts with "50".
+    let discounted = asset_with(pool, "50%-off", serde_json::json!({})).await;
+    asset_with(pool, "50-pence", serde_json::json!({})).await;
+
+    let planned = plan(
+        Query::Filename(Comparison::StartsWith("50%".to_owned())),
+        admin_access(),
+    );
+    assert_eq!(run(pool, &planned).await, vec![discounted]);
 }
 
 // ─── engagement clauses (Q.5b·2) ────────────────────────────────────────────

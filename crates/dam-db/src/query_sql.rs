@@ -65,6 +65,7 @@ fn push_query(
             include_descendants,
         } => push_term(builder, *term_id, *include_descendants),
         Query::Rating(op) => push_rating(builder, op)?,
+        Query::Filename(op) => push_filename(builder, op)?,
         Query::Status(status) => {
             builder.push("assets.status = ");
             builder.push_bind(status.clone());
@@ -397,12 +398,34 @@ fn push_term(builder: &mut QueryBuilder<Postgres>, term_id: uuid::Uuid, descenda
     }
 }
 
-/// The asset's average rating, compared.
+/// The asset's own name, compared (Q.16).
 ///
-/// `avg` over `asset_ratings`, in a correlated subquery rather than a join: a join would multiply the asset rows
-/// by their ratings and every count downstream would be wrong. Unrated assets have a null average, so they fall
-/// out of every comparison — which is what "3 stars and up" means and is not what `Missing` means, hence the two
-/// being separate branches.
+/// `ILIKE` throughout, because a filename is something a person half-remembers: `DSC_0043.JPG` typed as
+/// `dsc_0043` should find it. The `ESCAPE` clause is what keeps a literal `%` or `_` in somebody's filename
+/// from becoming a wildcard — the same escaping the free-text path does, for the same reason.
+fn push_filename(builder: &mut QueryBuilder<Postgres>, op: &Comparison) -> Result<(), Error> {
+    let (pattern, negated) = match op {
+        Comparison::Equals(Literal::Text(text)) => (escape_like(text), false),
+        Comparison::NotEquals(Literal::Text(text)) => (escape_like(text), true),
+        Comparison::Contains(text) => (format!("%{}%", escape_like(text)), false),
+        Comparison::StartsWith(text) => (format!("{}%", escape_like(text)), false),
+        // Refused rather than rendered: the IR validates the same set, and a comparison that reached here
+        // unsupported would be a clause nobody can see the shape of.
+        other => {
+            return Err(Error::Unsupported(format!(
+                "a filename cannot be compared this way: {other:?}"
+            )));
+        }
+    };
+    if negated {
+        builder.push("NOT ");
+    }
+    builder.push("(assets.filename ILIKE ");
+    builder.push_bind(pattern);
+    builder.push(" ESCAPE '\\')");
+    Ok(())
+}
+
 /// The frame's shape, from the dimensions already stored.
 ///
 /// Both dimensions must be present and positive. An asset with none — a PDF, a WAV — matches no orientation
@@ -421,6 +444,12 @@ fn push_orientation(builder: &mut QueryBuilder<Postgres>, shape: dam_core::query
     ));
 }
 
+/// The asset's average rating, compared.
+///
+/// `avg` over `asset_ratings`, in a correlated subquery rather than a join: a join would multiply the asset rows
+/// by their ratings and every count downstream would be wrong. Unrated assets have a null average, so they fall
+/// out of every comparison — which is what "3 stars and up" means and is not what `Missing` means, hence the two
+/// being separate branches.
 fn push_rating(builder: &mut QueryBuilder<Postgres>, op: &Comparison) -> Result<(), Error> {
     const AVERAGE: &str = "(SELECT avg(stars) FROM asset_ratings r WHERE r.asset_id = assets.id)";
     const RATED: &str = "EXISTS (SELECT 1 FROM asset_ratings r WHERE r.asset_id = assets.id)";

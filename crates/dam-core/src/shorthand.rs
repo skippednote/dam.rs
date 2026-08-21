@@ -66,6 +66,12 @@ pub const STATUS_SELECTOR: &str = "status";
 /// The selector that filters by the shape of the frame: `orientation:landscape`.
 pub const ORIENTATION_SELECTOR: &str = "orientation";
 
+/// The selector that filters by filename: `filename:DSC_0043.jpg`, `filename:DSC*`, `filename:*0043*` (Q.16).
+///
+/// Reserved. `assets.filename` is a column, and a tenant field called `filename` would shadow the one thing
+/// every asset has whether or not the tenant defined any schema at all.
+pub const FILENAME_SELECTOR: &str = "filename";
+
 /// The selector for what is attached to an asset: `has:attachment`.
 ///
 /// One value today, and a selector rather than `is:attached` because the two read about different things:
@@ -540,6 +546,47 @@ impl<'a> Parser<'a> {
             return Ok(Query::Rating(op));
         }
 
+        // `filename:` is the asset's own name, with wildcards (Q.16).
+        if name.eq_ignore_ascii_case(FILENAME_SELECTOR) {
+            let value_column = column + name.chars().count() + 1;
+            // A quoted value lexes as the *next* token, exactly as it does for a field — and a filename is the
+            // value most likely to contain a space, so this branch is the one that matters here.
+            let (spec, quoted) = if rest.is_empty() {
+                match self.tokens.get(self.position + 1) {
+                    Some(Token {
+                        kind: TokenKind::Word { text, quoted: true },
+                        ..
+                    }) => {
+                        let value = text.clone();
+                        self.position += 1;
+                        (value, true)
+                    }
+                    _ => {
+                        return Err(ParseError::new(
+                            "empty_filename",
+                            column,
+                            format!(
+                                "{FILENAME_SELECTOR}: needs a name, a prefix like \
+                                 {FILENAME_SELECTOR}:DSC*, or a substring like {FILENAME_SELECTOR}:*0043*"
+                            ),
+                        ));
+                    }
+                }
+            } else {
+                (rest.to_owned(), false)
+            };
+            // Through the same operator parser a text field uses, so a wildcard means the same thing here as
+            // there rather than being a second dialect for one column.
+            let op = self.operator(
+                FieldKind::Text,
+                FILENAME_SELECTOR,
+                &spec,
+                quoted,
+                value_column,
+            )?;
+            return Ok(Query::Filename(op));
+        }
+
         // `status:` is the asset's lifecycle column.
         if name.eq_ignore_ascii_case(STATUS_SELECTOR) {
             let value = rest.trim().trim_matches('"');
@@ -734,6 +781,36 @@ impl<'a> Parser<'a> {
                 Endpoint::Exclusive(parse_literal(kind, rest, column)?),
                 column,
             )?
+        } else if let Some(pattern) = wildcard(value) {
+            // Substring and prefix (Q.16). Text only: a wildcard over a date or a number has no meaning that
+            // is not a coincidence of formatting, and answering one would return whatever the ISO spelling
+            // happened to allow.
+            if kind != FieldKind::Text {
+                return Err(ParseError::new(
+                    "not_matchable",
+                    column,
+                    format!(
+                        "{label} is a {} field; a wildcard only means something over text",
+                        kind.as_str()
+                    ),
+                ));
+            }
+            match pattern {
+                Wildcard::Contains(inner) => Comparison::Contains(inner.to_owned()),
+                Wildcard::Prefix(inner) => Comparison::StartsWith(inner.to_owned()),
+                // A leading wildcard alone asks for a suffix, which no index and no `LIKE` prefix can serve
+                // and which is almost always a substring search typed one star short. Named rather than
+                // widened, because widening it would return more than was asked for.
+                Wildcard::Suffix => {
+                    return Err(ParseError::new(
+                        "suffix_wildcard",
+                        column,
+                        format!(
+                            "{label}:*text asks for a suffix; write *text* for a substring search"
+                        ),
+                    ));
+                }
+            }
         } else if let Some((lower, upper)) = split_range(value) {
             let lower = match lower {
                 "" => Endpoint::Unbounded,
@@ -784,6 +861,47 @@ fn range(
         ));
     }
     Ok(Comparison::Range { lower, upper })
+}
+
+/// What a wildcard value asks for (Q.16).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Wildcard<'a> {
+    /// `*text*`
+    Contains(&'a str),
+    /// `text*`
+    Prefix(&'a str),
+    /// `*text`
+    Suffix,
+}
+
+/// Reads a wildcard value, or `None` when there is no wildcard to read.
+///
+/// A bare `*` is [`Comparison::Exists`] and is handled before this is reached, so a pattern here always has
+/// something to match. An interior star — `a*b` — is not a pattern this supports and is left to fall through
+/// to equality, where it matches a filename that really does contain a star.
+fn wildcard(value: &str) -> Option<Wildcard<'_>> {
+    let starts = value.starts_with('*');
+    let ends = value.ends_with('*');
+    if !starts && !ends {
+        return None;
+    }
+    let inner = value.trim_matches('*');
+    if inner.is_empty() {
+        // `**`, `***`: a pattern with nothing in it, which equality will refuse more usefully than a match
+        // over everything would.
+        return None;
+    }
+    // An interior star is not a supported pattern, and treating `a*b` as a substring for "a" would answer a
+    // different question than the one typed.
+    if inner.contains('*') {
+        return None;
+    }
+    Some(match (starts, ends) {
+        (true, true) => Wildcard::Contains(inner),
+        (false, true) => Wildcard::Prefix(inner),
+        (true, false) => Wildcard::Suffix,
+        (false, false) => return None,
+    })
 }
 
 /// Splits `a..b` on the range separator.

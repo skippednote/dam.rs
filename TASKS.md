@@ -26,14 +26,14 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M0–M3c** Foundation, ingest, metadata/search/rights, delivery/sharing/restore | complete |
 | **F** The UI: browse, detail, upload, filter rail, lightbox, bulk bar, design pass | complete |
 | **F.11b** Share/portal UI, schema administration, metadata types | complete except restore UX |
-| **Q** Acquia parity, 20 slices | Q.1–Q.15 done; Q.14b and Q.16–Q.20 open |
+| **Q** Acquia parity, 20 slices | Q.1–Q.16 done; Q.14b and Q.17–Q.20 open |
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | **done** — two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query, the MCP server |
 | **M6** Workflow/proofing, annotations, analytics | not started |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** Q.16–Q.19 search → Q.14b collections in the app → Q.20 sundries → M4 local AI → M6 → M3d → Pre-GA.
+**Next up, in order:** Q.17–Q.19 search → Q.14b collections in the app → Q.20 sundries → M4 local AI → M6 → M3d → Pre-GA.
 M5 is complete. M5a and M5b are done and verified against the running stack: both
 hosted clients reach their real vendor endpoints, and a full enrichment ran end to end through the worker against
 a local OpenAI-compatible endpoint — values written with provenance, a disclosure row, tags suggested, 0.75¢
@@ -2147,7 +2147,49 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
       form it created was outside the caller's group, so the access filter hid it and `LIBRARY_ROWS` had
       nothing to do. Driven live against the dev stack — clicking Portrait in the rail wrote
       `orientation:portrait`, narrowed the grid to one asset, and re-narrowed the rail's own counts with it.
-- [ ] **Q.16 Search-within, substring, advanced search, multiple-asset search.**
+- [x] **Q.16 Search-within, substring, advanced search, multiple-asset search.**
+
+      **`Contains` and `StartsWith` had been in the IR since 2.4 with nothing able to produce them.** The SQL
+      renderer knew how to answer a substring and no query could ask for one. `*text*` and `text*` are that
+      syntax, through the same operator parser a field already used, so a wildcard means the same thing
+      everywhere rather than being a second dialect for one clause. Text only: over a date or a number a
+      wildcard has no meaning that is not an accident of formatting, so it is refused with the kind named.
+
+      **A leading star alone is refused, not widened.** `*text` asks for a suffix, and the refusal says to write
+      `*text*` instead. Widening it would return more than was asked for — the wrong direction for a filter to
+      be wrong in. (`filename:*.pdf` is the case somebody will type; `*.pdf*` answers it, and a media class
+      answers it better. A real `EndsWith` is a variant in five places for a question `mime:` already holds.)
+
+      **`filename:` is its own selector**, because free text is *ranked* text: the index tokenises a filename,
+      so `DSC_0043` is findable through the box and `0043` is not. Somebody holding a list of names off a
+      delivery note has the substring, and a substring over a column is a SQL query. Reserved like `in:` and
+      `is:` — a tenant field of that name would shadow the one thing every asset has.
+
+      **The advanced form writes the query string; it is not a second way to search.** Conditions, a pasted
+      list of filenames, and "search within results" all compose shorthand and hand it back to the same box, so
+      "copy this search" copies all of it and what the user sees is what the server got. A form posting its own
+      structured payload would be a second query language with its own bugs and a box beside it that lies.
+      Operators are named for what they ask ("starts with") rather than for the syntax they produce, and each
+      kind is offered only the ones it can answer — the form does not suggest a query the server refuses.
+
+      "Search within results" is an `AND` onto what the box holds, and nothing more. A separate result set to
+      narrow would be a second thing to keep in step with the first, and the URL would stop describing the
+      page. The existing query is parenthesised when it carries a top-level `OR`, or narrowing `(a OR b)` with
+      `c` would widen it rather than narrow it.
+
+      Twenty-three mutations caught, and the sweep itself needed fixing first. Four survivors were tests that
+      could not tell two operators apart: the fixture had no filename that *contained* a prefix without
+      starting with it, so a prefix rendered as a substring passed, and none that started with an exact name, so
+      an equality rendered as a prefix passed too. Adding those two names then broke a third assertion — and
+      because the baseline was red, the next sweep reported every mutation as caught. **A mutation sweep over a
+      failing suite says nothing at all**, so the harness now checks each target is green before it mutates
+      anything, and the whole set was re-run. Two real gaps only that re-run could see: nothing tested a negated
+      filename, and nothing tested that a `filename:` query is *answered* — the index refuses it by name and
+      the handler surfaces the refusal, so routing it wrong is a failed request rather than a slow one.
+
+      Driven live against the dev stack, which is where the last fix came from: every pasted filename was
+      coming back as `filename:"sample-003.jpg"`, correct and unreadable, because the quoting rule treated an
+      interior hyphen as structure.
 - [ ] **Q.17 Predictive search and did-you-mean.**
 - [ ] **Q.18 Export search results to CSV.**
 - [ ] **Q.19 Refine-search configuration**, including dependent metadata fields.

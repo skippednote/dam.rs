@@ -152,6 +152,15 @@ fn render_query(query: &Query, schema: &IndexSchema) -> Result<Box<dyn TantivyQu
                 "a rating is an aggregate over `asset_ratings` and is not in the index".to_owned(),
             ));
         }
+        Query::Filename(_) => {
+            // The index holds a filename as *tokens*, which is why `DSC_0043` is findable through free text
+            // and `0043` is not. A substring over the column is precisely the question the index cannot
+            // answer, and answering the equality case from the index while sending the substring case to SQL
+            // would make one selector mean two different things depending on its value.
+            return Err(Error::Unsupported(
+                "a filename comparison is a substring over a column, not a token match".to_owned(),
+            ));
+        }
         Query::Status(_) => {
             // `assets.status` is not an index field, and making it one would mean reindexing an asset every
             // time it was archived. Refused rather than dropped, like every other clause the index cannot

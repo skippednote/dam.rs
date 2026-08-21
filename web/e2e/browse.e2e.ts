@@ -469,6 +469,65 @@ test('the built-in facets are named and their buckets filter', async ({ page }) 
 	await expect(page.getByLabel('Search assets')).toHaveValue('has:attachment stars:5');
 });
 
+test('the advanced form writes the query and can narrow it', async ({ page }) => {
+	// Q.16. The form is not a second way to search: it composes the same string the box holds, so what the
+	// user sees is still what the server got.
+	const recorder = await connect(page);
+	await page.goto('/assets');
+
+	await page.getByRole('button', { name: 'Advanced' }).click();
+	await expect(page.getByRole('heading', { name: 'Advanced search' })).toBeVisible();
+
+	// The first row defaults to a filename substring, which is the case this slice exists for: `0043` is not a
+	// token the index holds, and it is what somebody reading a filename off a delivery note has.
+	await page.getByLabel('Value').fill('0043');
+	await expect(page.getByText('filename:*0043*')).toBeVisible();
+
+	// A second condition, joined. A timestamp is offered a range and not a wildcard: the server refuses
+	// `ingested_at:202*`, so the form does not suggest it.
+	await page.getByRole('button', { name: 'Add a condition' }).click();
+	await page.locator('#field-1').selectOption('ingested_at');
+	await expect(page.locator('#operator-1')).not.toContainText('contains');
+	await page.locator('#operator-1').selectOption('at_least');
+	await page.locator('#value-1').fill('2024-01-01');
+	await expect(page.getByText('filename:*0043* AND ingested_at:>=2024-01-01')).toBeVisible();
+
+	await page.getByRole('button', { name: 'Search', exact: true }).last().click();
+	await expect(page.getByLabel('Search assets')).toHaveValue(
+		'filename:*0043* AND ingested_at:>=2024-01-01'
+	);
+	expect(recorder.urls.some((url) => url.includes('filename%3A*0043*'))).toBe(true);
+
+	// And "search within results" ANDs onto what the box already holds rather than replacing it.
+	await page.getByRole('button', { name: 'Advanced' }).click();
+	await page.getByLabel('Many assets at once').fill('a.jpg, b.jpg');
+	await page.getByRole('button', { name: 'Search within results' }).click();
+	await expect(page.getByLabel('Search assets')).toHaveValue(
+		'filename:*0043* AND ingested_at:>=2024-01-01 AND (filename:a.jpg OR filename:b.jpg)'
+	);
+});
+
+test('a pasted filename with a hyphen is not quoted', async ({ page }) => {
+	// Found by driving the real stack: `filename:"sample-003.jpg"` is correct and reads like an escape somebody
+	// should worry about, in the one box on the page whose job is to be readable.
+	await connect(page);
+	await page.goto('/assets');
+	await page.getByRole('button', { name: 'Advanced' }).click();
+	await page.getByLabel('Many assets at once').fill('sample-003.jpg, sample-004.jpg');
+	await expect(
+		page.getByText('(filename:sample-003.jpg OR filename:sample-004.jpg)')
+	).toBeVisible();
+});
+
+test('the advanced form has no axe violations', async ({ page }) => {
+	await connect(page);
+	await page.goto('/assets');
+	await page.getByRole('button', { name: 'Advanced' }).click();
+	await expect(page.getByRole('heading', { name: 'Advanced search' })).toBeVisible();
+	const results = await new AxeBuilder({ page }).analyze();
+	expect(results.violations).toEqual([]);
+});
+
 test('a truncated facet says so', async ({ page }) => {
 	// A rail that silently cuts off makes "no other brands" and "ninety other brands" look identical, and a
 	// user filters on the wrong assumption.

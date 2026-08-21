@@ -7,14 +7,20 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+	composeConditions,
+	composeFilenames,
 	hasTerm,
+	narrow,
+	operatorsFor,
 	parse,
+	renderCondition,
 	renderTerm,
 	selectedValue,
 	toggleTerm,
 	withOnlyTerm,
 	withTerm,
-	withoutTerm
+	withoutTerm,
+	type Condition
 } from './query';
 
 describe('rendering a term', () => {
@@ -26,6 +32,19 @@ describe('rendering a term', () => {
 		// `brand:Acme Corp` parses as a brand filter plus the free text "Corp", which returns the wrong
 		// assets and looks like a search bug rather than a quoting one.
 		expect(renderTerm({ key: 'brand', value: 'Acme Corp' })).toBe('brand:"Acme Corp"');
+	});
+
+	it('leaves an interior hyphen unquoted, because it is an ordinary character', () => {
+		// Found live: every pasted filename came back as `filename:"sample-003.jpg"`, which reads like an escape
+		// somebody should worry about in a box whose whole job is to be readable.
+		expect(renderTerm({ key: 'filename', value: 'sample-003.jpg' })).toBe(
+			'filename:sample-003.jpg'
+		);
+		// A leading one is the "is empty" operator, so it still gets quoted.
+		expect(renderTerm({ key: 'brand', value: '-acme' })).toBe('brand:"-acme"');
+		expect(renderTerm({ key: 'brand', value: '-' })).toBe('brand:"-"');
+		// And a leading star would be read as a wildcard rather than as the value it is.
+		expect(renderTerm({ key: 'brand', value: '*acme' })).toBe('brand:"*acme"');
 	});
 
 	it('escapes a quote inside a value', () => {
@@ -136,5 +155,101 @@ describe('browsing a hierarchy, as against ticking facets', () => {
 	it('reports which branch is selected, so the tree can highlight it', () => {
 		expect(selectedValue('brand:acme in:exterior.yellow', 'in')).toBe('exterior.yellow');
 		expect(selectedValue('brand:acme', 'in')).toBeNull();
+	});
+});
+
+describe('the advanced form (Q.16)', () => {
+	it('writes the shorthand each operator means', () => {
+		expect(renderCondition({ key: 'brand', operator: 'is', value: 'acme' })).toBe('brand:acme');
+		// Quoted, because `brand:Acme Corp` is a brand filter plus the free text "Corp".
+		expect(renderCondition({ key: 'brand', operator: 'is', value: 'Acme Corp' })).toBe(
+			'brand:"Acme Corp"'
+		);
+		expect(renderCondition({ key: 'brand', operator: 'is_not', value: 'acme' })).toBe(
+			'NOT brand:acme'
+		);
+		// The star sits outside the quotes: quoting is what suppresses operator meaning, and a wildcard is one.
+		expect(renderCondition({ key: 'brand', operator: 'contains', value: 'cme' })).toBe(
+			'brand:*cme*'
+		);
+		expect(renderCondition({ key: 'brand', operator: 'starts_with', value: 'ac' })).toBe(
+			'brand:ac*'
+		);
+		expect(renderCondition({ key: 'year', operator: 'at_least', value: '2024' })).toBe(
+			'year:>=2024'
+		);
+		expect(renderCondition({ key: 'year', operator: 'at_most', value: '2026' })).toBe(
+			'year:<=2026'
+		);
+		expect(
+			renderCondition({ key: 'year', operator: 'between', value: '2024', upper: '2026' })
+		).toBe('year:2024..2026');
+		expect(renderCondition({ key: 'brand', operator: 'any', value: '' })).toBe('brand:*');
+		expect(renderCondition({ key: 'brand', operator: 'empty', value: '' })).toBe('brand:-');
+	});
+
+	it('says nothing for a row somebody is still filling in', () => {
+		// A preview that showed `brand:` while the user was mid-thought would report an error against their own
+		// unfinished work.
+		expect(renderCondition({ key: 'brand', operator: 'is', value: '' })).toBeNull();
+		expect(renderCondition({ key: '', operator: 'is', value: 'acme' })).toBeNull();
+		expect(renderCondition({ key: 'year', operator: 'between', value: '2024' })).toBeNull();
+	});
+
+	it('offers only the operators a kind can answer', () => {
+		expect(operatorsFor('text')).toContain('contains');
+		expect(operatorsFor('text')).not.toContain('between');
+		expect(operatorsFor('int')).toContain('between');
+		// A wildcard over a number has no meaning that is not an accident of formatting, and the server
+		// refuses it — so the form does not offer it.
+		expect(operatorsFor('int')).not.toContain('contains');
+		expect(operatorsFor('bool')).toEqual(['is', 'any', 'empty']);
+		// An unknown kind falls back to the text operators rather than to none: a newer schema should leave the
+		// form usable rather than empty.
+		expect(operatorsFor('colour-wheel')).toEqual(operatorsFor('text'));
+	});
+
+	it('parenthesises an OR join but not an AND', () => {
+		const rows: Condition[] = [
+			{ key: 'brand', operator: 'is', value: 'acme' },
+			{ key: 'year', operator: 'at_least', value: '2024' }
+		];
+		// The word rather than juxtaposition: both parse as an AND, and a user reading the box should see the
+		// join the form used rather than having to know that a space is one.
+		expect(composeConditions(rows, 'AND')).toBe('brand:acme AND year:>=2024');
+		// `a OR b c` binds differently than the form reads, and the result would be a query that looks like the
+		// form and returns something else.
+		expect(composeConditions(rows, 'OR')).toBe('(brand:acme OR year:>=2024)');
+		expect(composeConditions([], 'AND')).toBe('');
+		expect(composeConditions([{ key: 'brand', operator: 'is', value: 'acme' }], 'OR')).toBe(
+			'brand:acme'
+		);
+	});
+
+	it('turns a pasted list of filenames into one OR group', () => {
+		expect(composeFilenames('a.jpg\nb.jpg')).toBe('(filename:a.jpg OR filename:b.jpg)');
+		// A hyphenated name — the usual shape of a filename — reads as itself rather than as an escaped string.
+		expect(composeFilenames('sample-003.jpg')).toBe('filename:sample-003.jpg');
+		// Commas too: a list arrives from a spreadsheet column or from a sentence.
+		expect(composeFilenames('a.jpg, b.jpg')).toBe('(filename:a.jpg OR filename:b.jpg)');
+		expect(composeFilenames('  DSC_0043.jpg  ')).toBe('filename:DSC_0043.jpg');
+		// A name with a space is quoted like any other value.
+		expect(composeFilenames('my photo.jpg')).toBe('filename:"my photo.jpg"');
+		expect(composeFilenames('\n\n')).toBe('');
+	});
+
+	it('narrows a query without changing what it already meant', () => {
+		expect(narrow('brand:acme', 'year:2026')).toBe('brand:acme AND year:2026');
+		// The existing query is grouped when it holds a top-level OR: narrowing `(a OR b)` with `c` has to mean
+		// `(a OR b) AND c`, or the result is wider than what the user was looking at.
+		expect(narrow('brand:acme OR brand:globex', 'year:2026')).toBe(
+			'(brand:acme OR brand:globex) AND year:2026'
+		);
+		// Already parenthesised, it is left alone rather than wrapped twice.
+		expect(narrow('(brand:acme OR brand:globex)', 'year:2026')).toBe(
+			'(brand:acme OR brand:globex) AND year:2026'
+		);
+		expect(narrow('', 'year:2026')).toBe('year:2026');
+		expect(narrow('brand:acme', '   ')).toBe('brand:acme');
 	});
 });

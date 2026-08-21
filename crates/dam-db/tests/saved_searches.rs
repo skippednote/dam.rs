@@ -311,6 +311,10 @@ async fn every_query_shape_survives_being_saved_and_loaded(pool: &PgPool) {
         ),
         ("has attachment", Query::HasAttachment),
         (
+            "filename substring",
+            Query::Filename(Comparison::Contains("0043".to_owned())),
+        ),
+        (
             "mine favourite",
             Query::Mine(dam_core::query::Personal::Favourite),
         ),

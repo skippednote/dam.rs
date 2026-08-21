@@ -20,6 +20,7 @@
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import AssetGrid from '$lib/components/grid/AssetGrid.svelte';
+	import AdvancedSearch from '$lib/components/filter/AdvancedSearch.svelte';
 	import CategoryTree from '$lib/components/filter/CategoryTree.svelte';
 	import FilterRail from '$lib/components/filter/FilterRail.svelte';
 	import DetailPanel from '$lib/components/detail/DetailPanel.svelte';
@@ -60,6 +61,7 @@
 	let error = $state('');
 	let ranked = $state(false);
 	let showUpload = $state(false);
+	let showAdvanced = $state(false);
 	/** Whether the tenant has turned natural-language search on. Read once; the button is hidden until it is. */
 	let canAsk = $state(false);
 	let asking = $state(false);
@@ -312,6 +314,18 @@
 			>
 				{loading ? 'Searching…' : 'Search'}
 			</button>
+			<!--
+				Q.16. A form beside the box rather than instead of it: the form writes the query, and what the
+				box shows is still what the server got.
+			-->
+			<button
+				type="button"
+				class="rounded-md border border-line px-3 py-1.5 text-sm"
+				aria-expanded={showAdvanced}
+				onclick={() => (showAdvanced = !showAdvanced)}
+			>
+				Advanced
+			</button>
 			{#if canAsk}
 				<!--
 					A separate button rather than guessing which of the two the box holds. A heuristic that
@@ -370,6 +384,18 @@
 			Upload
 		</button>
 	</div>
+
+	{#if showAdvanced}
+		<AdvancedSearch
+			{fields}
+			{query}
+			onquery={(next) => {
+				query = next;
+				load();
+			}}
+			onclose={() => (showAdvanced = false)}
+		/>
+	{/if}
 
 	{#if showUpload}
 		<div class="border-b border-line px-4 py-3">

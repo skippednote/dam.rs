@@ -2469,3 +2469,28 @@ Reversible: no.
 **Orientation is derived at query time rather than stored.** `width` and `height` are already probed, so a
 column would be a third value that has to agree with two others, plus a backfill and a reindex. An asset with
 no dimensions matches no orientation rather than defaulting to one. Reversible: yes.
+
+**A wildcard is `*text*` or `text*`, and a leading star alone is refused.** The IR has had `Contains` and
+`StartsWith` since 2.4 with no syntax able to produce them. A suffix match is the one shape not offered: it is
+what somebody typing `filename:*.pdf` means, and answering it by widening to a substring would return more than
+they asked for, so the refusal names the spelling that works. Reversible: yes — an `EndsWith` variant is five
+small changes, deferred because `mime:` answers the case that motivates it.
+
+**`filename:` is a reserved selector rather than a field.** Free text is ranked text: the index tokenises a
+filename, so `0043` cannot be found through the box. A substring over a column is a SQL query, and it is the
+question somebody holding a list of names actually has. Reversible: no.
+
+**The advanced form writes the query string.** Conditions, pasted filename lists and "search within results"
+all compose shorthand into the one box every other control edits. A structured payload would be a second query
+language with its own bugs, and the box beside it would stop telling the truth about what was asked.
+Reversible: no.
+
+**An interior hyphen does not get quoted.** The rule errs towards quoting because under-quoting silently
+changes a query — but quoting for a hyphen turned every pasted filename into `filename:"sample-003.jpg"` in the
+one box on the page whose job is to be readable. A leading `-` or `*` is still quoted: those are operators.
+Reversible: yes.
+
+**A mutation sweep checks its baseline first.** A survivor and a green suite mean something; a survivor and a
+*red* suite mean nothing, and a red baseline reports every mutation as caught. Q.16's sweep did exactly that
+after a new fixture broke an unrelated assertion, and two real gaps hid behind the false all-clear. The harness
+now probes each target before mutating and refuses to report verdicts it cannot support. Reversible: n/a.

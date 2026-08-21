@@ -21,11 +21,18 @@ export type Term = {
 /**
  * Whether a value needs quoting.
  *
- * Anything with whitespace or a character the parser treats as structure. Over-quoting is harmless — the
- * parser strips quotes — and under-quoting silently changes the query, so this errs towards quoting.
+ * Whitespace and the characters the parser treats as structure. Under-quoting silently changes the query, so
+ * this errs towards quoting — but not blindly: a hyphen *inside* a value is an ordinary character, and quoting
+ * for it turned every pasted filename into `filename:"sample-003.jpg"`. That reads like an escape somebody
+ * should worry about, in a box whose whole job is to be readable. A leading hyphen or a lone one is different:
+ * `-` on its own is the "is empty" operator.
  */
 function needsQuotes(value: string): boolean {
-	return /[\s:"()>=<|-]/.test(value) || value.length === 0;
+	if (value.length === 0) return true;
+	if (/[\s:"()>=<|]/.test(value)) return true;
+	// A leading `-` or `*` is an operator; anywhere else they are characters. `*` in particular has to stay
+	// unquoted when the caller means it as a wildcard, which is why those callers build the term themselves.
+	return /^[-*]/.test(value) || value === '-';
 }
 
 /** One term as the parser expects it. */
@@ -135,4 +142,129 @@ export function hasTerm(query: string, term: Term): boolean {
  */
 function compose(terms: Term[], text: string): string {
 	return [...terms.map(renderTerm), text].filter((part) => part.length > 0).join(' ');
+}
+
+/**
+ * The operators the advanced form offers, and the shorthand each one writes (Q.16).
+ *
+ * Named for what they ask rather than for the syntax they produce: somebody building a filter is thinking
+ * "starts with", not `key:value*`. The mapping lives here with the rest of the query-writing so a second call
+ * site cannot invent a different spelling for the same question.
+ */
+export type Operator =
+	| 'is'
+	| 'is_not'
+	| 'contains'
+	| 'starts_with'
+	| 'at_least'
+	| 'at_most'
+	| 'between'
+	| 'any'
+	| 'empty';
+
+/** Which operators make sense for a field of this kind. */
+export function operatorsFor(kind: string): Operator[] {
+	if (kind === 'bool') return ['is', 'any', 'empty'];
+	if (kind === 'int' || kind === 'decimal' || kind === 'date' || kind === 'datetime') {
+		return ['is', 'is_not', 'at_least', 'at_most', 'between', 'any', 'empty'];
+	}
+	// Text, and anything this build does not know: equality and matching are the operators every kind of text
+	// answers, and offering a range over a name would produce a query the server refuses.
+	return ['is', 'is_not', 'contains', 'starts_with', 'any', 'empty'];
+}
+
+/** One row of the advanced form. */
+export type Condition = {
+	key: string;
+	operator: Operator;
+	value: string;
+	/** The second bound, for `between`. */
+	upper?: string;
+};
+
+/**
+ * One condition as the parser expects it, or `null` when it has nothing to say yet.
+ *
+ * `null` rather than a broken string: a half-filled row in a form is a row the user is still typing, and
+ * emitting `brand:` for it would make the preview show an error against their own work in progress.
+ */
+export function renderCondition(condition: Condition): string | null {
+	const { key, operator, value, upper } = condition;
+	if (!key) return null;
+	const needsValue = !['any', 'empty'].includes(operator);
+	if (needsValue && value.trim() === '') return null;
+
+	// The star has to sit *outside* the quotes or the parser reads it as part of the value — quoting is what
+	// suppresses operator meaning, which is exactly what a wildcard is.
+	const quoted = renderTerm({ key, value: value.trim() });
+	const bare = value.trim();
+	switch (operator) {
+		case 'is':
+			return quoted;
+		case 'is_not':
+			return `NOT ${quoted}`;
+		case 'contains':
+			return `${key}:*${bare}*`;
+		case 'starts_with':
+			return `${key}:${bare}*`;
+		case 'at_least':
+			return `${key}:>=${bare}`;
+		case 'at_most':
+			return `${key}:<=${bare}`;
+		case 'between':
+			return upper && upper.trim() !== '' ? `${key}:${bare}..${upper.trim()}` : null;
+		case 'any':
+			return `${key}:*`;
+		case 'empty':
+			return `${key}:-`;
+	}
+}
+
+/**
+ * The conditions as one query, joined by `AND` or `OR`.
+ *
+ * Parenthesised when there is more than one and the join is `OR`, because `a OR b c` binds differently than
+ * anybody reading the form expects — and the result would be a query that looks like the form and returns
+ * something else.
+ */
+export function composeConditions(conditions: Condition[], join: 'AND' | 'OR'): string {
+	const parts = conditions.map(renderCondition).filter((part): part is string => part !== null);
+	if (parts.length === 0) return '';
+	if (parts.length === 1) return parts[0];
+	const joined = parts.join(` ${join} `);
+	return join === 'OR' ? `(${joined})` : joined;
+}
+
+/**
+ * A pasted list of filenames as one query (Q.16's multiple-asset search).
+ *
+ * Splits on newlines and commas, because a list arrives from a spreadsheet column or from a sentence. Each
+ * name is an exact `filename:` term and the group is an `OR`: somebody holding forty names wants the forty
+ * assets, not the assets that somehow match all forty names at once.
+ */
+export function composeFilenames(pasted: string): string {
+	const names = pasted
+		.split(/[\n,]/)
+		.map((name) => name.trim())
+		.filter((name) => name.length > 0);
+	if (names.length === 0) return '';
+	const terms = names.map((name) => renderTerm({ key: 'filename', value: name }));
+	return terms.length === 1 ? terms[0] : `(${terms.join(' OR ')})`;
+}
+
+/**
+ * `query` narrowed by `addition` — the "search within these results" move.
+ *
+ * An `AND` of the two, with the existing query parenthesised when it contains a top-level `OR`: narrowing
+ * `(a OR b)` with `c` has to mean `(a OR b) AND c` and not `a OR (b AND c)`, which returns *more* than the
+ * user was looking at rather than less.
+ */
+export function narrow(query: string, addition: string): string {
+	const existing = query.trim();
+	const extra = addition.trim();
+	if (extra === '') return existing;
+	if (existing === '') return extra;
+	const grouped =
+		/\bOR\b/.test(existing) && !/^\(.*\)$/.test(existing) ? `(${existing})` : existing;
+	return `${grouped} AND ${extra}`;
 }

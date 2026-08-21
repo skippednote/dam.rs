@@ -673,6 +673,37 @@ async fn a_category_query_is_answered_rather_than_refused(
         "the text clause must narrow, not be ignored: {body}"
     );
 
+    // Q.16's `filename:` is relational for the same reason: the index holds a filename as tokens, so a
+    // substring over the column is a question it cannot answer. If this were sent to the index the request
+    // would *fail* rather than fall back — the index refuses by name, and the handler surfaces the refusal —
+    // so "is it answered at all" is the property, and `ranked: false` is how the SQL path identifies itself.
+    let (status, body) = call(
+        f,
+        "GET",
+        "/search?q=filename:*category-query*",
+        &f.key,
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a filename substring must be answered rather than refused: {body}"
+    );
+    assert_eq!(body["ranked"], false, "{body}");
+    let by_name: Vec<&str> = body["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter_map(|item| item["filename"].as_str())
+        .collect();
+    assert!(
+        by_name
+            .iter()
+            .any(|name| name == &"answers-a-category-query.jpg"),
+        "the substring did not reach the filename: {body}"
+    );
+
     // A query with no relational clause still goes to the index and still claims its ranking.
     let (status, body) = call(f, "GET", "/search?q=answers", &f.key, None).await;
     assert_eq!(status, StatusCode::OK, "{body}");

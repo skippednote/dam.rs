@@ -270,7 +270,8 @@ fn is_relational(query: &dam_core::query::Query) -> bool {
         | Q::Mine(_)
         | Q::Status(_)
         | Q::Orientation(_)
-        | Q::HasAttachment => true,
+        | Q::HasAttachment
+        | Q::Filename(_) => true,
         Q::And(children) | Q::Or(children) => children.iter().any(is_relational),
         Q::Not(inner) => is_relational(inner),
         Q::All | Q::Text(_) | Q::Field { .. } => false,
