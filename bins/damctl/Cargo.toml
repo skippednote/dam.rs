@@ -13,6 +13,7 @@ dam-core = { path = "../../crates/dam-core" }
 dam-telemetry = { path = "../../crates/dam-telemetry" }
 dam-db = { path = "../../crates/dam-db" }
 dam-store = { path = "../../crates/dam-store" }
+dam-backup = { path = "../../crates/dam-backup" }
 dam-search = { path = "../../crates/dam-search" }
 anyhow = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

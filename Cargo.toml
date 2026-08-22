@@ -11,6 +11,7 @@ members = [
     "crates/dam-connect",
     "crates/dam-telemetry",
     "crates/dam-api",
+    "crates/dam-backup",
     "crates/dam-mcp",
     "bins/damd",
     "bins/dam-worker",

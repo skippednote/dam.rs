@@ -71,7 +71,6 @@ carries a known version — and it is not done.
 
 Named honestly, because an image is not a deployment:
 
-- **Backups and restore drills** (G11). Nothing here backs up Postgres or the bucket.
 - **Metrics and a readiness probe.** `/health` exists. There is no `/metrics`, no `/ready`, and nothing
   scrapes the OTLP exporter `dam-telemetry` can configure.
 - **Rate limiting.** `governor` is a declared dependency of `dam-api` and is never called, including on the
@@ -80,6 +79,41 @@ Named honestly, because an image is not a deployment:
 - **TLS and a reverse proxy.** `damd` speaks plain HTTP and expects something in front of it.
 - **Human authentication.** The API authenticates bearer keys; there is no login, no session, and no SSO, so
   every person using the app needs a key minted for them with `damctl issue-key`.
+
+## Backups (§17, G11)
+
+```sh
+docker run --rm damrs:TAG damctl backup                      # every active tenant
+docker run --rm damrs:TAG damctl backup --tenant acme        # one
+docker run --rm damrs:TAG damctl restore-drill --tenant acme # prove one can be restored
+docker run --rm damrs:TAG damctl dr-report                   # exits non-zero if any is unverified
+```
+
+`backup` takes a per-tenant logical dump with `pg_dump --format=custom` and uploads it to
+`backups/<slug>/<timestamp>-<assets>.dump`, outside every tenant prefix so a lifecycle policy cannot tier a
+backup into Glacier. Backups accumulate rather than overwrite: a corruption found on Thursday needs Tuesday's
+copy.
+
+`restore-drill` downloads the latest, replays it into a scratch schema, counts the assets against the number
+recorded in the key, and drops the scratch schema — then writes `dr_state.last_verified_restore_at`. It is the
+only thing that writes that column. A successful backup deliberately does not, because §17's whole argument is
+that the gap between "we take backups" and "we have restored one" is where DR plans fail.
+
+The live schema is renamed aside and back rather than restored over, so a drill cannot damage the thing it is
+verifying — a dangerous drill is one nobody runs on the data that matters. Verified against a 185-asset
+tenant: restored, counted, live schema intact, no leftover schemas.
+
+`dr-report` exits non-zero while any tenant has never been verified, so it works as a check rather than only
+as something to read.
+
+**What this is not.** It is not point-in-time recovery. §17's five-minute RPO comes from WAL archiving to S3,
+which is infrastructure — a managed Postgres, or `wal-g` alongside it — and an application that reimplemented
+it would be a worse version of both. Nor does it back up the bucket: that is S3 versioning and cross-region
+replication, which are bucket configuration. What is here is the per-tenant half, which is the half a physical
+backup cannot do at all and the reason schema-per-tenant (D2) was chosen.
+
+Run `backup` on a schedule and `restore-drill` on a slower one — weekly is a defensible starting point, since
+the number it produces is the RTO you would publish.
 
 ## Volumes
 

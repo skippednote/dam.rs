@@ -989,6 +989,17 @@ and replaying only the delta from the event log turns the common case into minut
 with full rebuild retained as the correctness backstop. `dr_state.index_rebuild_seconds`
 is **measured per tenant**, not estimated, so the published RTO is defensible.
 
+**As built.** `damctl backup` and `damctl restore-drill` (crate `dam-backup`) do the per-tenant half: a
+`pg_dump --format=custom` of one schema uploaded outside every tenant prefix, and a replay into a scratch
+schema that counts what arrived before writing `last_verified_restore_at`. The live schema is renamed aside
+and back rather than restored over, because a drill that can damage what it verifies is one nobody runs on
+production. `damctl dr-report` exits non-zero while any tenant is unverified.
+
+WAL archiving, PITR, S3 versioning and cross-region replication are **not** built and are not going to be:
+they are infrastructure, and the five-minute RPO in the table above comes from them rather than from anything
+in this repository. The Tantivy snapshot half of the table is also unbuilt; a rebuild from Postgres is the
+only index recovery today, which is the slow path the snapshot was meant to avoid.
+
 `dr_state.last_verified_restore_at` is set only by an actual restore drill, never
 by a successful backup. The gap between "we take backups" and "we have restored
 one" is where DR plans fail, and per-tenant restore is a genuine schema-per-tenant

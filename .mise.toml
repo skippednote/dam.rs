@@ -15,6 +15,14 @@ pnpm = "10"
 "conda:libvips" = "8.18.5"
 # ffmpeg for M3 (video, HLS, loudness normalisation).
 "conda:ffmpeg" = "9.0.1"
+# `pg_dump` and `pg_restore` for backups and restore drills (§17, G11). Client tools only — the server is a
+# container.
+#
+# Pinned to a 17.x client because the dev and CI servers are Postgres 17 (pgvector/pgvector:pg17) and pg_dump
+# refuses a server newer than itself. A client *older* than the server is the failure mode to avoid; a 17
+# client against a future 18 server will need this bumped, and it will say so rather than produce a partial
+# dump.
+"conda:postgresql" = "17.11"
 
 [env]
 # Points sqlx's compile-time macros at the migrated template schema so

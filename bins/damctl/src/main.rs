@@ -66,6 +66,30 @@ enum Command {
     /// Postgres is the record and the index is derived, so this is the command that regenerates the
     /// derived thing. It replaces the index in one commit: a reader sees the old index or the new one,
     /// never a fraction of the library.
+    /// Take a logical backup of one tenant's schema and upload it (§17, G11).
+    ///
+    /// A dump, not a base backup: per-tenant restore is the case worth having, and a physical backup cannot
+    /// do it at all. This complements WAL archiving rather than replacing it — the five-minute RPO comes from
+    /// the WAL, and this is the half that makes a single customer recoverable without touching anyone else.
+    Backup {
+        /// The tenant to back up. Omit for every active tenant.
+        #[arg(long)]
+        tenant: Option<String>,
+    },
+    /// Restore the latest backup into a scratch schema and check it (§17, G11).
+    ///
+    /// The only thing that writes `dr_state.last_verified_restore_at`, because §17's argument is that "the gap
+    /// between 'we take backups' and 'we have restored one' is where DR plans fail". A successful backup must
+    /// never claim a verified restore.
+    RestoreDrill {
+        #[arg(long)]
+        tenant: String,
+    },
+    /// Report which tenants have never had a restore verified.
+    ///
+    /// Unverified first, because §17 says that list "should be short" and a report that buries them among the
+    /// healthy rows is one nobody reads to the end.
+    DrReport,
     Reindex {
         #[arg(long)]
         tenant: String,
@@ -295,6 +319,100 @@ async fn main() -> anyhow::Result<()> {
             println!("{}", key.into_plaintext());
         }
 
+        Command::Backup { tenant } => {
+            let url = cfg.database.url.expose();
+            let pool = connect(url, &cfg).await?;
+            let store = build_store(&cfg).await?;
+            let tools = dam_backup::tools::Toolchain::discover().context(
+                "locating pg_dump; it is pinned in .mise.toml and in the container image",
+            )?;
+
+            let slugs = match tenant {
+                Some(one) => vec![TenantSlug::new(&one).context("tenant slug")?],
+                None => active_tenants(&pool).await?,
+            };
+            if slugs.is_empty() {
+                println!("no active tenants");
+            }
+            // Each tenant on its own, and a failure on one does not abandon the rest: a backup run that
+            // stops at the first problem leaves every tenant after it in the alphabet unprotected, and
+            // whichever one failed is the one an operator needs to hear about rather than the only one they
+            // hear about.
+            let mut failed = 0;
+            for slug in &slugs {
+                match dam_backup::backup_tenant(
+                    &pool,
+                    &store,
+                    &tools,
+                    url,
+                    slug,
+                    chrono::Utc::now(),
+                )
+                .await
+                {
+                    Ok(backup) => println!(
+                        "{}\t{}\t{} bytes\t{} assets",
+                        backup.slug, backup.key, backup.bytes, backup.asset_count
+                    ),
+                    Err(error) => {
+                        failed += 1;
+                        eprintln!("{}\tFAILED\t{error}", slug.as_str());
+                    }
+                }
+            }
+            if failed > 0 {
+                bail!("{failed} of {} tenants failed to back up", slugs.len());
+            }
+        }
+
+        Command::RestoreDrill { tenant } => {
+            let slug = TenantSlug::new(&tenant).context("tenant slug")?;
+            let url = cfg.database.url.expose();
+            let pool = connect(url, &cfg).await?;
+            let store = build_store(&cfg).await?;
+            let tools = dam_backup::tools::Toolchain::discover().context("locating pg_restore")?;
+
+            let drill =
+                dam_backup::restore_drill(&pool, &store, &tools, url, &slug, chrono::Utc::now())
+                    .await
+                    .context("the restore drill failed — this is the outcome that matters")?;
+            println!("restored from\t{}", drill.from_key);
+            println!("assets\t{}", drill.restored_assets);
+            println!("seconds\t{}", drill.duration_seconds);
+        }
+
+        Command::DrReport => {
+            let pool = connect(cfg.database.url.expose(), &cfg).await?;
+            let rows = dam_backup::state::report(&pool)
+                .await
+                .context("reading dr_state")?;
+            println!("tenant\tlast_backup\tlast_verified_restore\tseconds");
+            for row in &rows {
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    row.slug,
+                    row.last_backup_at
+                        .map_or_else(|| "never".to_owned(), |at| at.to_rfc3339()),
+                    row.last_verified_restore_at
+                        .map_or_else(|| "NEVER".to_owned(), |at| at.to_rfc3339()),
+                    row.verified_restore_duration_s
+                        .map_or_else(|| "-".to_owned(), |s| s.to_string()),
+                );
+            }
+            let unverified = rows
+                .iter()
+                .filter(|row| row.last_verified_restore_at.is_none())
+                .count();
+            if unverified > 0 {
+                // A non-zero exit, so this is usable as a check rather than only as a thing to read. A DR
+                // report that cannot fail a pipeline is a DR report that gets skimmed.
+                bail!(
+                    "{unverified} of {} tenants have never had a restore verified",
+                    rows.len()
+                );
+            }
+        }
+
         Command::Reindex { tenant, batch } => {
             let slug = TenantSlug::new(&tenant).context("tenant slug")?;
             let url = cfg.database.url.expose();
@@ -478,4 +596,50 @@ async fn bootstrap(pool: &sqlx::PgPool) -> anyhow::Result<()> {
             .with_context(|| format!("bootstrap: {stmt}"))?;
     }
     Ok(())
+}
+
+/// The blob store, from configuration.
+///
+/// The same construction `damd` and the worker do, and deliberately a copy rather than a shared helper: it is
+/// twelve lines, and the alternative is a crate that exists so three binaries can agree on something they
+/// each read from the same config. If it grows a third case it should move.
+async fn build_store(cfg: &Config) -> anyhow::Result<dam_store::S3Store> {
+    match cfg.storage.endpoint.as_deref() {
+        None => Ok(dam_store::S3Store::aws(&cfg.storage.bucket, &cfg.storage.region).await),
+        Some(endpoint) => {
+            let (Some(access), Some(secret)) = (
+                cfg.storage.access_key_id.as_ref(),
+                cfg.storage.secret_access_key.as_ref(),
+            ) else {
+                bail!(
+                    "storage.endpoint is set to {endpoint} but no credentials are configured; set \
+                     storage.access_key_id and storage.secret_access_key"
+                );
+            };
+            Ok(dam_store::S3Store::seaweedfs(
+                endpoint,
+                &cfg.storage.bucket,
+                access.expose(),
+                secret.expose(),
+            ))
+        }
+    }
+}
+
+/// Every tenant a backup run should cover.
+///
+/// Suspended tenants are included and only deleted ones are not: a tenant suspended for non-payment still has
+/// data somebody may be entitled to get back, and the day they are deleted is the day a backup stops being
+/// their business.
+async fn active_tenants(pool: &sqlx::PgPool) -> anyhow::Result<Vec<TenantSlug>> {
+    let slugs: Vec<String> = sqlx::query_scalar(
+        "SELECT slug FROM dam_global.tenants WHERE status <> 'deleted' ORDER BY slug",
+    )
+    .fetch_all(pool)
+    .await
+    .context("listing tenants")?;
+    slugs
+        .into_iter()
+        .map(|slug| TenantSlug::new(&slug).context("a stored tenant slug is not valid"))
+        .collect()
 }

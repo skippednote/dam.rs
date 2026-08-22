@@ -27,6 +27,7 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **F** The UI: browse, detail, upload, filter rail, lightbox, bulk bar, design pass | complete |
 | **F.11b** Share/portal UI, schema administration, metadata types | complete, restore UX included |
 | **Q** Acquia parity, 20 slices | Q.1–Q.19 done; Q.14b and Q.20 open |
+| **Go-live Tier 1** Deployment image, backups + restore drills | image and `docker/DEPLOY.md` done; backups and drills done; metrics, rate limiting, virus scan, C2PA open |
 | **Archival** Tiering engine, restores, the storage screen | **done** — the sweep and poll jobs, the plan/quote/request/approve API, delivery's 202, bulk archive and restore, the restore panel |
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
@@ -2341,6 +2342,61 @@ storage and usage reports are G19. Entries (the PIM) is a new application and la
 
 Not building: Hootsuite, Mobile, Templates, Video Creator, Syndicate, Digimarc, Google Analytics linkage —
 third-party or separate products, reached through the API and webhooks, which are on the list.
+
+
+## Go-live — the things standing between the code and anybody using it
+
+Asked for after the go-live gap analysis. Ordered cheapest-first among items that actually block use.
+
+- [x] **L.1 A deployment image.** One image carrying `damd`, `dam-worker`, `damctl` and the media toolchain the
+      pipeline shells out to, plus `docker/DEPLOY.md` with the deploy order and an honest list of what an image
+      is not. Not distroless, because `dam-media` *executes* vips and ffmpeg rather than linking them.
+
+      Building it found a total failure no test could have: `vipsthumbnail`'s ICC flag is `--output-profile`
+      from vips 8.18 and `--export-profile` before it, and the code hard-coded the newer name — so on any
+      Debian base **every** vips-rendered derivative failed. Invisible for PNG and JPEG, which the pure-Rust
+      path decodes; total for HEIC, which only vips can. Discovery now asks the binary its version.
+
+      Also found: the presigned-URL host is signed, so the endpoint the server signs with must be the one the
+      browser connects to, and there is no way to configure an internal connect endpoint separately. And three
+      places in the repo described committed `.sqlx/` offline query metadata for `query!` macros that do not
+      exist anywhere in the tree.
+
+- [x] **L.2 Backups and restore drills (§17, G11).** `dr_state` had existed since the first enterprise
+      migration — including a column whose own comment says it "is set only by an actual restore drill" — with
+      nothing writing a single field of it and nothing taking a backup. The table was an argument, not a
+      mechanism.
+
+      `dam-backup` does the per-tenant half: `pg_dump --format=custom` of one schema uploaded outside every
+      tenant prefix (so a lifecycle policy cannot tier a backup into Glacier), and a replay into a scratch
+      schema that counts what arrived against the count recorded in the object key. The live schema is renamed
+      aside and back rather than restored over, because a drill that can damage what it verifies is one nobody
+      runs on production. `damctl dr-report` exits non-zero while any tenant is unverified, so it works as a
+      check and not only as something to read.
+
+      A backup deliberately does **not** move `last_verified_restore_at`; only a drill does. There is a case
+      asserting exactly that, and one asserting a drill *fails* when the restore comes back with the wrong
+      count — `pg_restore` exiting zero proves the file parsed, not that the data arrived.
+
+      Verified against the real 185-asset library and then again from inside the container image. That second
+      run found a bug the laptop could not: Debian's `pg_dump` is a symlink to `pg_wrapper`, a multi-call
+      program that dispatches on `argv[0]`, so canonicalising the path — copied from the vips toolchain, where
+      it defends against a swapped symlink — left it unable to tell which tool was wanted. Every backup taken
+      in the image failed with `os error 2` while the conda-installed binaries on the laptop, which are not
+      wrappers, worked perfectly.
+
+      Not built, and not going to be: WAL archiving, PITR, S3 versioning, cross-region replication. Those are
+      infrastructure and §17's five-minute RPO comes from them. The Tantivy snapshot half of §17's table is
+      also unbuilt, so index recovery today is a full rebuild from Postgres — the slow path the snapshot was
+      meant to avoid.
+
+- [ ] **L.3 Metrics and a readiness probe.** `/health` exists; there is no `/metrics`, no `/ready`, and
+      nothing scrapes the OTLP exporter `dam-telemetry` can already configure.
+- [ ] **L.4 Rate limiting.** `governor` is a declared dependency of `dam-api` and is never called, including
+      on the public delivery routes.
+- [ ] **L.5 A virus scan on ingest.** Listed in M1 as done; not implemented.
+- [ ] **L.6 C2PA (task 1.9, G1).** Unblocked since 2026-08-21 and still unbuilt. GAPS.md calls the current
+      behaviour "a bug in the current design, not a missing feature": every derivative strips provenance.
 
 
 ## Archival — tiering, restores, and the storage screen (§6.4, §6.5)

@@ -70,13 +70,20 @@ RUN apt-get update \
       ca-certificates \
       libvips-tools \
       ffmpeg \
+      postgresql-client \
  && rm -rf /var/lib/apt/lists/*
 
-# The formats the probe will claim. Printed at build time so a base-image bump that silently drops the HEIC
-# loader shows up in the build log rather than in a user's failed upload.
+# `postgresql-client` is for backups: `damctl backup` and `damctl restore-drill` shell out to `pg_dump` and
+# `pg_restore` (§17). Its major version must be at least the server's — pg_dump refuses a newer server — which
+# is why the version is printed below rather than assumed.
+
+# The formats the probe will claim, and the client versions the backups depend on. Printed at build time so a
+# base-image bump that silently drops the HEIC loader, or moves pg_dump behind the server, shows up in the
+# build log rather than in a user's failed upload or a failed restore.
 RUN set -eu; \
     echo "vips:   $(vips --version)"; \
     echo "ffmpeg: $(ffmpeg -version | head -1)"; \
+    echo "pg_dump: $(pg_dump --version)"; \
     for loader in jpegload pngload webpload heifload tiffload; do \
       if vips -l 2>/dev/null | grep -q "$loader"; then echo "  loader $loader: yes"; \
       else echo "  loader $loader: NO"; fi; \
