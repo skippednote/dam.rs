@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Fail on warnings everywhere, not just where a lint attribute happens to be set.
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # Cheap checks first so a formatting slip does not wait behind a container build.
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # mise supplies libvips and ffmpeg, pinned in .mise.toml. Without it the media
+      # suites fail here while passing locally, because vips lives under
+      # ~/.local/share/mise and a bare `cargo test` cannot see it. Installing the
+      # same pinned versions CI and laptop alike is the point — an apt libvips would
+      # be a different build with a different loader set, which is exactly what
+      # `the_loaders_this_build_provides_are_asserted_not_assumed` refuses to guess at.
+      - uses: jdx/mise-action@v2
+        with:
+          install: true
+          cache: true
+      # No `services:` block. Every database and object-store test starts its own
+      # container through testcontainers (D17), so the suites stay parallel and no
+      # test depends on a shared fixture's state. Docker is present on the runner
+      # by default, which is all testcontainers needs.
+      - run: mise exec -- cargo test --workspace --all-features
+        env:
+          # testcontainers is quiet by default; this surfaces image pulls and wait
+          # strategies when a CI-only container failure needs diagnosing.
+          RUST_LOG: testcontainers=info
+
+  # The frontend gate. D10 makes WCAG 2.1 AA a release gate "from the first UI commit",
+  # so axe runs here from the same commit that introduces the UI rather than being added
+  # once violations have accumulated — retrofitting an accessibility gate means fixing a
+  # backlog before the gate can go green, which is how gates end up disabled.
+  web:
+    name: web (typecheck + lint + unit + a11y)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      # Drift is a build error (§14.1). The Rust suite already asserts openapi.json matches the
+      # code; this asserts the checked-in TypeScript client matches openapi.json. Without it a
+      # stale client type-checks happily against an out-of-date union and the UI is confidently
+      # wrong about what the API can return.
+      - run: pnpm run gen:api
+      - name: fail if the generated API client is stale
+        run: git diff --exit-code -- src/lib/api/schema.d.ts
+      - run: pnpm run check
+      - run: pnpm run lint
+      - run: pnpm exec vitest run
+      # Only chromium: the a11y assertions are about the accessibility tree and the DOM, which
+      # do not vary by engine. Cross-browser rendering is a separate concern and a separate cost.
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm exec playwright test
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: web/playwright-report/
+          retention-days: 7
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans licenses sources
+
+  # The migrations are the compliance floor (D12-D15). This job applies them to a real
+  # Postgres exactly as `damctl migrate` does and asserts the object counts, so a
+  # migration that silently drops a constraint fails here rather than in production.
+  schema:
+    name: schema counts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p dam-db --test migrate --test compliance_gates -- --nocapture

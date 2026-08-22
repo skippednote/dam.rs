@@ -1,0 +1,40 @@
+name: Nightly AWS conformance
+
+# The only place real Glacier semantics are exercised end to end (ARCHITECTURE §20.2).
+# SeaweedFS gives the wire protocol and object lock; FakeS3Store gives the tiering
+# state machine with a controllable clock; neither can prove an actual RestoreObject
+# against Deep Archive.
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  s3-conformance:
+    name: S3 conformance against AWS
+    runs-on: ubuntu-latest
+    # Skips silently rather than failing on a fork or before credentials exist —
+    # a red nightly that nobody can fix trains people to ignore the nightly.
+    if: ${{ github.repository_owner == 'skippednote' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run the conformance suite against real S3
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'ap-south-1' }}
+          DAMRS_TEST_BUCKET: ${{ secrets.DAMRS_TEST_BUCKET }}
+        run: |
+          # A skip needs BOTH halves stated, because this job spent months exiting here for the wrong
+          # reason: `--features aws-conformance` named a feature that did not exist, and the credential
+          # check returned 0 before cargo could say so. Green, every night, having run nothing.
+          if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$DAMRS_TEST_BUCKET" ]; then
+            echo "::warning::AWS credentials or DAMRS_TEST_BUCKET not configured — the only coverage of \
+              real Glacier semantics did NOT run"
+            exit 0
+          fi
+          # Named target, not `-- --ignored` across the package: that form also builds and filters every
+          # other suite in the crate, which is how a missing feature hid behind nine "0 tests" lines.
+          cargo test -p dam-store --features aws-conformance --test aws_conformance -- --ignored --nocapture

@@ -1,0 +1,11 @@
+{
+  "identities": [
+    {
+      "name": "damrs-dev",
+      "credentials": [
+        { "accessKey": "damrsdev", "secretKey": "damrsdevsecret" }
+      ],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}

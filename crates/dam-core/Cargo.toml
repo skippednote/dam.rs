@@ -1,0 +1,45 @@
+[package]
+name = "dam-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+# Derives the OpenAPI schemas for the wire vocabulary. In dam-core rather than dam-api because a
+# second definition of these enums is exactly the drift F.3 exists to make impossible.
+utoipa = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+url = { workspace = true }
+regex = { workspace = true }
+base64 = { workspace = true }
+chacha20poly1305 = { workspace = true }
+# Key derivation for sealing, and already the workspace's content-addressing hash.
+blake3 = { workspace = true }
+# The nonce. ChaCha20-Poly1305's nonce must not repeat under one key, so it comes from the CSPRNG.
+rand = { workspace = true }
+subtle = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+figment = { workspace = true }
+
+[dev-dependencies]
+figment = { workspace = true }
+serde_json = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+todo = "warn"
+dbg_macro = "deny"
+unwrap_used = "deny"
+expect_used = "warn"

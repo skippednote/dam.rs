@@ -1,0 +1,27 @@
+//! Probe and derivative pipeline: image, video, PDF, office, audio.
+//!
+//! Ingest starts here: [`sniff`] decides what a file actually is, because the client's
+//! declaration is evidence and not authority.
+
+// Unit tests assert on values that are known-good by construction, so the panic lints that keep
+// production code honest only add noise there. Matches dam-store.
+#![cfg_attr(test, allow(clippy::expect_used, clippy::unwrap_used, clippy::panic))]
+
+pub mod antivirus;
+pub mod avprobe;
+pub mod derive;
+pub mod embedded;
+pub mod ingest;
+pub mod probe;
+pub mod profiles;
+pub mod provenance;
+pub mod proxy;
+pub mod sandbox;
+pub mod sniff;
+/// Fixtures for tests in this crate and in the crates that ingest what it produces.
+#[cfg(feature = "testing")]
+pub mod testing;
+pub mod video;
+pub mod vips;
+
+pub use sniff::{MediaClass, Sniffed};

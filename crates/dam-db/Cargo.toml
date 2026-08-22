@@ -1,0 +1,61 @@
+[package]
+name = "dam-db"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+dam-core = { path = "../dam-core" }
+# The resumable-upload session type. dam-store does not depend on dam-db, so there is no
+# cycle: the session is storage vocabulary, and a second definition here is how the two
+# would drift out of step with the CHECK constraints in 0009_uploads.sql.
+dam-store = { path = "../dam-store" }
+# The rendition type and the cache-key derivation, for tenant-defined conversions (Q.11). dam-media knows
+# nothing about the database, so the direction is one-way — and the alternative was a second copy of
+# "these columns mean this Rendition" in whichever crate needed it next.
+dam-media = { path = "../dam-media" }
+thiserror = { workspace = true }
+sqlx = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+blake3 = { workspace = true }
+# The CSPRNG behind API-key generation. rand 0.9's thread RNG is ChaCha-based and
+# CryptoRng, which is the bar a credential needs.
+rand = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+# The container harness ships behind a feature so other crates' dev-dependencies
+# can reuse it (`dam-db = { path = "...", features = ["testing"] }`) without
+# testcontainers landing in a production build.
+testcontainers = { workspace = true, optional = true }
+
+argon2 = { workspace = true }
+
+[features]
+testing = ["dep:testcontainers"]
+
+[dev-dependencies]
+blake3 = { workspace = true }
+dam-db = { path = ".", features = ["testing"] }
+# The reaper aborts a real multipart upload, which is exactly what a fake cannot prove.
+dam-store = { path = "../dam-store", features = ["testing"] }
+bytes = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+todo = "warn"
+dbg_macro = "deny"
+unwrap_used = "deny"
+expect_used = "warn"

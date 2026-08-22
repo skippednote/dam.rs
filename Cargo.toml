@@ -6,9 +6,12 @@ members = [
     "crates/dam-db",
     "crates/dam-search",
     "crates/dam-media",
+    "crates/dam-pipeline",
     "crates/dam-ai",
     "crates/dam-connect",
+    "crates/dam-telemetry",
     "crates/dam-api",
+    "crates/dam-backup",
     "crates/dam-mcp",
     "bins/damd",
     "bins/dam-worker",
@@ -18,28 +21,37 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"   # raised from 1.85 by c2pa 0.90; see DECISIONS.md
 license = "Apache-2.0"
 repository = "https://github.com/skippednote/damrs"
+# Internal crates. Marking them unpublishable prevents an accidental `cargo publish`
+# and is what makes cargo-deny's `allow-wildcard-paths` apply to our path deps.
+publish = false
 
-# Version pins below are the majors intended at design time. Verify each against
-# crates.io before the first `cargo build` — several are moving fast (`ort`,
-# `tantivy`, `rmcp`) and one is pre-1.0 by policy (`ort`).
+# Versions verified against crates.io 2026-08-17 (task 0.1). Notable drift from the
+# design-time pins: tantivy 0.22 -> 0.26, rmcp 0.8 -> 3.1, sqlx 0.8 -> 0.9,
+# winnow 0.7 -> 1.0, opentelemetry 0.27 -> 0.32, testcontainers 0.23 -> 0.28.
+# `ort` has no stable release; rc.13 is pinned exactly.
 [workspace.dependencies]
 
 # ── async runtime + web ───────────────────────────────────────────────────────
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "process", "signal", "time", "sync"] }
 tokio-util = { version = "0.7", features = ["io"] }
 axum = { version = "0.8", features = ["macros", "multipart"] }
+# The bare HTTP types, for a crate that reads request parts without owning a server: rmcp hands the parts to a
+# tool handler, which is where the MCP server's API key comes from.
+http = "1"
 axum-extra = { version = "0.10", features = ["typed-header"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["trace", "cors", "compression-br", "limit", "timeout"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "compression-br", "limit", "timeout", "set-header"] }
 hyper = "1"
+utoipa = { version = "5.5", features = ["axum_extras", "uuid", "chrono"] }
+utoipa-axum = "0.2"
 
 # ── database ──────────────────────────────────────────────────────────────────
 # `migrate` drives both migrations/global and migrations/tenant (see §5.3).
-sqlx = { version = "0.8", default-features = false, features = [
-    "runtime-tokio-rustls", "postgres", "macros", "migrate",
+sqlx = { version = "0.9", default-features = false, features = [
+    "runtime-tokio", "tls-rustls-ring", "postgres", "macros", "migrate",
     "uuid", "chrono", "json", "bigdecimal",
 ] }
 pgvector = { version = "0.4", features = ["sqlx"] }
@@ -47,40 +59,60 @@ pgvector = { version = "0.4", features = ["sqlx"] }
 # ── object storage (D1: S3 only for now) ──────────────────────────────────────
 # aws-sdk-s3 rather than `object_store`: we need StorageClass, RestoreObject and
 # the x-amz-restore header, all of which object_store abstracts away (D3).
-aws-config = { version = "1", features = ["behavior-version-latest"] }
-aws-sdk-s3 = "1"
+# default-features = false to keep the LEGACY TLS stack out: the default feature set
+# activates aws-smithy-http-client's `hyper-014` -> `legacy-rustls-ring`, which pins
+# rustls 0.21 / hyper-rustls 0.24 and carries three rustls-webpki advisories. The
+# modern client (`rustls-aws-lc`) is what we actually use.
+aws-config = { version = "1", default-features = false, features = [
+    "behavior-version-latest", "rt-tokio", "sso", "credentials-process",
+    "default-https-client",
+] }
+aws-sdk-s3 = { version = "1", default-features = false, features = [
+    "behavior-version-latest", "rt-tokio", "default-https-client", "sigv4a",
+] }
 aws-credential-types = "1"
 aws-smithy-types = "1"
+# For a TLS-free HTTP client on plain-http:// endpoints. The SDK's default client loads the platform root
+# store even for an endpoint that can never use it; on macOS that load is slow and, under concurrency, a
+# failure source that poisons every later client in the process. See dam-store/src/s3.rs.
+#
+# `default-client` only — deliberately not a `rustls-*` feature, since the point is to build a connector
+# that has no TLS at all.
+aws-smithy-http-client = { version = "1", default-features = false, features = ["default-client"] }
 
 # ── search ────────────────────────────────────────────────────────────────────
-tantivy = "0.22"
-winnow = "0.7"          # Widen-compatible shorthand query parser -> query IR
+tantivy = "0.26"
+winnow = "1.0"          # Widen-compatible shorthand query parser -> query IR
 
 # ── media ─────────────────────────────────────────────────────────────────────
 # libvips is the primary image path; `image` + fast_image_resize is the fallback
 # and the only path used when libvips is unavailable at build time.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "tiff", "gif", "avif"] }
-fast_image_resize = { version = "5", features = ["image"] }
-libvips = { version = "1", optional = true }
+fast_image_resize = { version = "6", features = ["image"] }
+# libvips is used through its CLI inside dam_media::sandbox, not through a Rust binding —
+# see DECISIONS.md. An in-process binding would put a libvips CVE in damd's own address
+# space, and libvips marks 14 of its own loaders "untrusted", including the RAW, PSD, PDF
+# and SVG ones a DAM needs most. Out of process, a malformed file kills a subprocess the
+# sandbox already bounds.
 kamadak-exif = "0.5"
-image_hasher = "3"      # pHash / dHash for near-duplicate detection
-symphonia = { version = "0.5", features = ["all-codecs"] }
-pdfium-render = { version = "0.8", optional = true }
-infer = "0.16"          # magic-byte sniffing; never trust client Content-Type
+image_hasher = "3.1"      # pHash / dHash for near-duplicate detection
+symphonia = { version = "0.6", features = ["all-codecs"] }
+pdfium-render = { version = "0.9" }  # members mark this optional
+infer = "0.22"          # magic-byte sniffing; never trust client Content-Type
 
 # ── AI ────────────────────────────────────────────────────────────────────────
 # ort = ONNX Runtime bindings: SigLIP/CLIP embeddings, OCR, face detect+embed,
 # saliency. Pre-1.0 and the API still shifts between rcs — pin exactly.
-ort = { version = "2.0.0-rc.10", optional = true }
-ndarray = "0.16"
-tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
-whisper-rs = { version = "0.14", optional = true }
+ort = { version = "2.0.0-rc.13" }      # members mark this optional
+ndarray = "0.17"
+tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
+whisper-rs = { version = "0.16" }      # members mark this optional
 # No official Anthropic Rust SDK — dam-ai speaks raw HTTP to /v1/messages.
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "multipart"] }
 eventsource-stream = "0.2"   # SSE for streaming Claude responses
 
 # ── MCP ───────────────────────────────────────────────────────────────────────
-rmcp = { version = "0.8", features = ["server", "transport-streamable-http-server"] }
+rmcp = { version = "3.1", features = ["server", "transport-streamable-http-server"] }
 
 # ── auth ──────────────────────────────────────────────────────────────────────
 openidconnect = { version = "4", default-features = false, features = ["reqwest", "rustls-tls"] }
@@ -88,6 +120,10 @@ jsonwebtoken = "9"
 argon2 = "0.5"
 hmac = "0.12"
 sha2 = "0.10"
+# Encryption at rest for a tenant's own provider credentials (M5). RustCrypto, like argon2/hmac/sha2 above,
+# so the dependency tree gains no new C and no new licence. ChaCha20-Poly1305 rather than AES-GCM because it
+# needs no hardware acceleration to be fast and has no timing-sensitive software fallback to get wrong.
+chacha20poly1305 = "0.10"
 subtle = "2"            # constant-time comparison for signatures and passcodes
 
 # ── serialization + core types ────────────────────────────────────────────────
@@ -98,6 +134,15 @@ uuid = { version = "1", features = ["v4", "v7", "serde"] }   # v7 for time-order
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
 blake3 = "1"            # content addressing
 base64 = "0.22"
+# Provenance (D13). Two features are pointedly absent.
+#
+# `openssl` is the default and is replaced by `rust_native_crypto`: a system OpenSSL is a build-time
+# dependency on every machine and container that compiles this, and the pure-Rust backend removes it.
+#
+# `fetch_remote_manifests` would make the reader dereference a URL found *inside an uploaded file*.
+# On an ingest path that is a server-side request forgery primitive handed to anyone who can upload,
+# and it is on by opt-in for exactly that reason. Cloud manifests are not worth it.
+c2pa = { version = "0.90", default-features = false, features = ["rust_native_crypto"] }
 url = { version = "2", features = ["serde"] }
 bytes = "1"
 mime = "0.3"
@@ -105,20 +150,22 @@ mime = "0.3"
 # ── observability ─────────────────────────────────────────────────────────────
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-tracing-opentelemetry = "0.28"
-opentelemetry = "0.27"
-opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
-opentelemetry-otlp = "0.27"
+tracing-opentelemetry = "0.33"
+opentelemetry = "0.32"
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = [
+    "trace", "http-proto", "reqwest-client",
+] }
 metrics = "0.24"
-metrics-exporter-prometheus = "0.16"
+metrics-exporter-prometheus = "0.18"
 
 # ── errors, config, CLI, misc ─────────────────────────────────────────────────
 thiserror = "2"
 anyhow = "1"
-figment = { version = "0.10", features = ["toml", "env"] }
+figment = { version = "0.10", features = ["toml", "env", "test"] }
 clap = { version = "4", features = ["derive", "env"] }
 moka = { version = "0.12", features = ["future"] }
-governor = "0.7"        # per-tenant rate limiting
+governor = "0.10"        # per-tenant rate limiting
 futures = "0.3"
 async-trait = "0.1"
 itertools = "0.14"
@@ -126,24 +173,38 @@ regex = "1"
 tempfile = "3"
 rand = "0.9"
 
-# ── dev / test ────────────────────────────────────────────────────────────────
-[workspace.dev-dependencies]
+# ── dev / test (inherited via `dev-dependencies` in members) ──────────────────
 insta = { version = "1", features = ["json", "redactions"] }
 proptest = "1"
 criterion = "0.5"
 wiremock = "0.6"        # stub the Anthropic API in tests
 # Every test that touches Postgres or S3 runs against a real container (D17).
-# Garage has no testcontainers module, so it uses the GenericImage API — see
-# crates/dam-store/tests/support/garage.rs. Garage does NOT implement storage
-# classes, RestoreObject, versioning, or object lock, so the tiering state
-# machine is tested against FakeS3Store instead (ARCHITECTURE §20.2).
-testcontainers = "0.23"
-testcontainers-modules = { version = "0.11", features = ["postgres"] }
+# Three S3 backends, none of them optional (ARCHITECTURE §20.2-20.3):
+#   Garage      wire protocol — multipart, presign, SigV4, ranged GET
+#   SeaweedFS   object lock + versioning, which a fake cannot credibly prove
+#   FakeS3Store tiering state machine, needs a controllable clock
+# Neither Garage nor SeaweedFS has a testcontainers module; both use GenericImage.
+testcontainers = "0.28"
+testcontainers-modules = { version = "0.15", features = ["postgres"] }
 
 [profile.release]
 lto = "thin"
 codegen-units = 1
 panic = "abort"
+
+# `line-tables-only` rather than full debug info. Measured: the target directory reached **125 GB** and
+# filled a 460 GB disk, which broke a build mid-run. Full debug info for every dependency in every test
+# binary is most of that — aws-sdk-s3, tantivy and c2pa alone are a very large type graph, duplicated into
+# each of ~30 test executables.
+#
+# Line tables keep what the tests actually use: a panic still reports its file and line, which is what every
+# assertion message depends on. What is lost is stepping through dependency internals in a debugger, and
+# `debug = 2` is one flag away when somebody needs that.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
 
 # Media and AI workers are CPU-bound; debug builds of image/vips/ort are
 # unusably slow, so optimise dependencies even in dev.

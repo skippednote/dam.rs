@@ -2,23 +2,118 @@
 rust = "1.94.0"          # edition 2024 needs >= 1.85; pinned to what's installed
 node = "24"              # for the Svelte app in web/
 pnpm = "10"
+# Media tools, via mise's conda backend rather than Homebrew.
+#
+# Not a preference — a necessity here. `brew install vips` wants /opt/homebrew/opt/freetype,
+# and on this machine a Codex runtime has placed a symlink there pointing into its own
+# bundled poppler. The two cannot share the path, and taking it would silently repoint
+# another tool's dependency. mise installs under ~/.local/share/mise instead and touches
+# nothing shared.
+#
+# Pinned, because a loader appearing or disappearing between vips builds changes which
+# formats the probe claims to support.
+"conda:libvips" = "8.18.5"
+# ffmpeg for M3 (video, HLS, loudness normalisation).
+"conda:ffmpeg" = "9.0.1"
+# `pg_dump` and `pg_restore` for backups and restore drills (§17, G11). Client tools only — the server is a
+# container.
+#
+# Pinned to a 17.x client because the dev and CI servers are Postgres 17 (pgvector/pgvector:pg17) and pg_dump
+# refuses a server newer than itself. A client *older* than the server is the failure mode to avoid; a 17
+# client against a future 18 server will need this bumped, and it will say so rather than produce a partial
+# dump.
+"conda:postgresql" = "17.11"
 
 [env]
 # Points sqlx's compile-time macros at the migrated template schema so
 # query! can resolve tenant tables. See ARCHITECTURE.md §5.5.
-DATABASE_URL = "postgres://damrs:damrs@localhost:5433/damrs?options=-c%20search_path%3Dtenant_template,extensions,public"
+DATABASE_URL = "postgres://damrs:damrs@localhost:5440/damrs?options=-c%20search_path%3Dtenant_template,extensions,public"
 SQLX_OFFLINE = "true"    # CI and normal builds use .sqlx/; unset to regenerate
-RUST_LOG = "damrs=debug,sqlx=warn,tower_http=debug"
+# Crate names, not the project name: `damrs` is not a crate, so the old value silenced every binary while
+# looking like it configured them — the worker started and logged nothing at all.
+RUST_LOG = "damd=info,dam_worker=info,dam_api=info,dam_pipeline=info,dam_db=info,sqlx=warn"
 
 # Local dev stack (docker/compose.dev.yml). Tests use testcontainers on random
 # ports instead and ignore these.
-DAMRS_S3_ENDPOINT = "http://localhost:3900"
-DAMRS_S3_REGION = "garage"
-DAMRS_S3_BUCKET = "damrs-dev"
-DAMRS_S3_FORCE_PATH_STYLE = "true"
+#
+# The `__` is the section separator (figment `Env::prefixed("DAMRS_").split("__")`),
+# and the config denies unknown fields — so `DAMRS_S3_BUCKET` is not a loose
+# alias for `storage.bucket`, it is a hard startup failure. Every name here must
+# match a real field in dam_core::config.
+DAMRS_STORAGE__ENDPOINT = "http://localhost:8333"
+DAMRS_STORAGE__REGION = "us-east-1"
+DAMRS_STORAGE__BUCKET = "damrs-dev"
+DAMRS_STORAGE__FORCE_PATH_STYLE = "true"
+DAMRS_STORAGE__ACCESS_KEY_ID = "damrsdev"
+DAMRS_STORAGE__SECRET_ACCESS_KEY = "damrsdevsecret"
+# `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are deliberately NOT set here.
+#
+# They used to be, "for the aws CLI against the dev endpoint" — and the cost of that convenience is much
+# larger than the convenience. Environment credentials outrank `AWS_PROFILE` in every AWS SDK's chain, so
+# exporting the SeaweedFS dev key here silently hijacks *every* real AWS call made from this directory: the
+# CLI, `damd`, `dam-worker`, the SDK in a test. It presents as `InvalidAccessKeyId` with `AWSAccessKeyId:
+# damrsdev` in the response, which is only obvious once you have already lost twenty minutes to it — and
+# `aws sts get-caller-identity` fails the same way, so the first thing anybody reaches for to debug it is
+# also broken.
+#
+# Use `mise run s3 -- <args>` for the dev endpoint. Everything else then talks to real AWS as configured.
+
+# Where the per-tenant Tantivy indexes live locally. Under the working directory, not
+# /var/lib: a default that needs root to create is a default that fails on a first run.
+DAMRS_SEARCH__INDEX_ROOT = "./data/search"
+
+# Which tenant the delivery routes serve. Named rather than inferred, because a dev database that has
+# grown a second tenant makes the answer ambiguous and `damd` then refuses to start rather than guess.
+DAMRS_SERVER__DELIVERY_TENANT = "acme"
+
+# Where the API is reached from a browser. Set locally because the Svelte dev server is on another port, and a
+# root-relative delivery URL would resolve against *it* — a 404 from the wrong server.
+DAMRS_SERVER__PUBLIC_URL = "http://localhost:8080"
+
+# The dev bucket, from the command line, without poisoning the environment for real AWS.
+#
+# Credentials inline rather than exported, which is the whole point: `mise run s3 -- s3 ls s3://damrs-dev/`
+# talks to SeaweedFS, and a plain `aws s3 ls` in the same shell still talks to whatever your profile says.
+#
+# The arguments are the full CLI ones, service name included — the first `s3` is the task, the second is
+# the AWS service. Written out because the shorter-looking form fails with "invalid choice: ls", which
+# reads like a broken task rather than a missing word.
+[tasks.s3]
+description = "Run the aws CLI against the local SeaweedFS (e.g. mise run s3 -- s3 ls s3://damrs-dev/)"
+run = """
+AWS_ACCESS_KEY_ID=damrsdev \
+AWS_SECRET_ACCESS_KEY=damrsdevsecret \
+AWS_REGION=us-east-1 \
+aws --endpoint-url http://localhost:8333 "$@"
+"""
+
+[tasks.openapi]
+description = "Regenerate openapi.json and the TypeScript client from it"
+run = """
+cargo run -q -p damctl -- openapi --write
+cd web && pnpm exec openapi-typescript ../openapi.json -o src/lib/api/schema.d.ts
+"""
+
+[tasks."check:web"]
+description = "Frontend gate: typecheck, lint, unit tests, and the axe a11y suite"
+dir = "web"
+run = """
+pnpm install --frozen-lockfile
+pnpm run check
+pnpm run lint
+pnpm exec vitest run
+pnpm exec playwright test
+"""
+
+# Deliberately not folded into `check`: the Rust gate runs on every edit and adding a
+# browser install plus a Vite build to it would make the inner loop minutes long. CI runs
+# both, and `check:all` is here for a pre-push sweep.
+[tasks."check:all"]
+description = "Everything CI runs"
+depends = ["check", "check:web"]
 
 [tasks.up]
-description = "Start local Postgres + Garage"
+description = "Start local Postgres + SeaweedFS"
 run = "docker compose -f docker/compose.dev.yml up -d --wait"
 
 [tasks.down]
@@ -29,8 +124,103 @@ run = "docker compose -f docker/compose.dev.yml down -v"
 description = "Apply global + tenant migrations to the local stack"
 run = "cargo run -q -p damctl -- migrate --all"
 
+# ─── driving it by hand ─────────────────────────────────────────────────────
+#
+# `up` → `dev:seed`, then `dev:api`, `dev:worker` and `dev:web` in three terminals, then open
+# http://localhost:5173/settings and paste the key `dev:seed` printed.
+#
+# The worker is not optional: without it an upload lands in staging and never becomes an asset, and no
+# asset gets a thumbnail.
+#
+# Kept as separate tasks rather than one "start everything" script: the API and the Vite
+# server are both long-running, and a single task holding two of them makes Ctrl-C
+# ambiguous about what it stopped.
+
+[tasks."dev:seed"]
+description = "Provision the dev tenant, create the bucket, and print an API key"
+run = """
+set -eu
+cargo run -q -p damctl -- migrate
+cargo run -q -p damctl -- provision-tenant --slug acme --name "Acme Corp" >/dev/null
+
+# The bucket is created by infrastructure in a deployment; locally there is no infrastructure.
+# Idempotent — `weed shell` reports an existing bucket and exits zero.
+docker compose -f docker/compose.dev.yml exec -T seaweedfs \
+  sh -c 'echo "s3.bucket.create -name damrs-dev" | weed shell' >/dev/null 2>&1 || true
+
+echo
+echo "Paste this into http://localhost:5173/settings (it is printed once and only hashed):"
+cargo run -q -p damctl -- issue-key --tenant acme --email dev@example.com --admin
+"""
+
+[tasks."dev:api"]
+description = "Run damd against the local stack"
+run = "cargo run -p damd"
+
+[tasks."dev:worker"]
+description = "Run the job worker: finalise uploads, render derivatives, index"
+# Its own terminal, like the API. Nothing appears in the grid without it: an upload lands in staging and
+# stops there until this finalises it.
+run = "cargo run -p dam-worker"
+
+[tasks."dev:web"]
+description = "Run the Svelte app against the local damd"
+dir = "web"
+run = "pnpm install && pnpm run dev"
+
+[tasks."dev:reindex"]
+description = "Rebuild the dev tenant's search index from Postgres"
+run = "cargo run -q -p damctl -- reindex --tenant acme"
+
+[tasks."dev:eval"]
+description = "Score the dev tenant's relevance judgements against the live index"
+run = "cargo run -q -p damctl -- eval --tenant acme"
+
 [tasks.check]
-description = "The bar: fmt, clippy, test"
+description = "The bar: fmt, clippy, test — Postgres shared, SeaweedFS per harness"
+# The tests share one Postgres and start a SeaweedFS per harness. Both halves are measured, and the
+# asymmetry is the finding rather than an oversight.
+#
+# Startup, in isolation: a Postgres container 6.2s, a SeaweedFS one 14.2s, all twelve migrations 0.5s. With
+# 19 Postgres-backed suites and 8 S3-backed ones — 75 `Harness::start()` call sites — startup was
+# essentially the whole run, and starting twenty at once made each roughly five times slower than alone
+# (`uploads_repo`: 6.2s isolated, 37.3s in the full run).
+#
+# Sharing Postgres works: a database per harness costs milliseconds, isolation is unchanged, and nothing
+# degrades. Sharing SeaweedFS does not. A full run creates ~75 buckets, each a SeaweedFS *collection*, and
+# past some point the instance stops accepting writes to new ones — the same container that had served
+# fifty suites failed eleven of the next twelve. `-volume.max=200` made no difference, so the volume count
+# is not the limit. A gate that fails one run in five is worse than a gate that is slow, so that half was
+# reverted rather than shipped.
+run = """
+set -eu
+PG=damrs-check-postgres
+cleanup() { docker rm -f "$PG" >/dev/null 2>&1 || true; }
+trap cleanup EXIT
+cleanup
+
+docker run -d --rm --name "$PG" -p 0:5432 \
+  -e POSTGRES_USER=damrs -e POSTGRES_PASSWORD=damrs -e POSTGRES_DB=damrs \
+  pgvector/pgvector:pg17 \
+  postgres -c fsync=off -c full_page_writes=off -c max_connections=900 >/dev/null
+
+PG_PORT=$(docker port "$PG" 5432/tcp | head -1 | sed 's/.*://')
+# The log line is necessary but not sufficient — the socket accepts before recovery finishes — so the
+# harness's own connect retry still covers the rest.
+for _ in $(seq 1 60); do
+  if docker exec "$PG" pg_isready -U damrs -q; then break; fi
+  sleep 1
+done
+
+cargo fmt --all --check
+cargo clippy --all-targets --all-features -- -D warnings
+DAM_TEST_PG_URL="postgres://damrs:damrs@127.0.0.1:$PG_PORT/damrs" cargo test --all-features
+"""
+
+# Everything on its own container, including Postgres. Slower, and what CI does where a long-lived side
+# container is awkward.
+[tasks."check:isolated"]
+description = "The same gate with a container per harness, Postgres included"
 run = [
   "cargo fmt --all --check",
   "cargo clippy --all-targets --all-features -- -D warnings",

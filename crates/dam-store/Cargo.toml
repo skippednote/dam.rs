@@ -1,0 +1,64 @@
+[package]
+name = "dam-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+dam-core = { path = "../dam-core" }
+thiserror = { workspace = true }
+aws-config = { workspace = true }
+aws-sdk-s3 = { workspace = true }
+aws-credential-types = { workspace = true }
+aws-smithy-types = { workspace = true }
+aws-smithy-http-client = { workspace = true }
+async-trait = { workspace = true }
+blake3 = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+url = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# The SeaweedFS harness ships behind a feature so testcontainers stays out of a
+# production build, while other crates can still reuse it from dev-dependencies.
+testcontainers = { workspace = true, optional = true }
+
+[features]
+testing = ["dep:testcontainers"]
+# Enables `tests/aws_conformance.rs`, which runs against a real bucket and bills real money. Its own feature
+# rather than only `#[ignore]`, so `cargo test --all-features` on a laptop does not compile a suite whose
+# only purpose is to be run deliberately with credentials.
+aws-conformance = ["testing"]
+
+[dev-dependencies]
+dam-store = { path = ".", features = ["testing"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# Used to prove a presigned URL actually works, not merely that it parses.
+reqwest = { workspace = true }
+blake3 = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+todo = "warn"
+dbg_macro = "deny"
+unwrap_used = "deny"
+expect_used = "warn"
+
+# Bound to its feature, so an ordinary `cargo test` neither compiles nor lists it. Without this the target
+# builds everywhere and shows up as an ignored test in every run, which is an invitation to `--include-ignored`
+# and a surprise bill.
+[[test]]
+name = "aws_conformance"
+required-features = ["aws-conformance"]

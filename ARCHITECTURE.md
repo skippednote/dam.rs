@@ -57,6 +57,24 @@ That set is roughly **0.5 MB per asset** and stays hot forever, in Postgres +
 Tantivy + pgvector + a hot S3 prefix. Only the **original master** tiers to
 cold storage.
 
+Measured while building the proxy (task 1.8), against a photo-like 4000×3000
+master that is 3.1 MB as JPEG — the upper end of what a photo library commonly
+holds:
+
+| Proxy JPEG quality | Proxy size |
+|---|---|
+| 75 | 424 KB |
+| **82 — chosen** | **561 KB** |
+| 88 | 766 KB |
+| 92 | 999 KB |
+
+The 0.5 MB figure is an average, not a ceiling: 561 KB is the 12-megapixel end,
+and the many assets below that size are not upscaled so their proxies are
+smaller. Quality 88 does not fit — 766 KB for the proxy alone, before embeddings,
+text and thumbnails. Below 82 would still satisfy the *model* half of the proxy's
+job, since embeddings downsample to 224–448px and never see JPEG artifacts, but
+not the *preview* half, where a designer zooms in.
+
 The **master proxy** is what makes this work: a deliberately generous
 derivative (2048px JPEG / 720p H.264 / extracted text) good enough to serve
 every future preview *and* to re-run every future AI model. When the tagging
@@ -396,6 +414,35 @@ Two billing traps the engine must encode:
 
 Both are `object_placements.min_duration_until`, checked before any transition.
 
+**Verified against real AWS**, 2026-08-22, in `ap-south-1`: ten objects uploaded to S3, one original
+transitioned `STANDARD → GLACIER` by the sweep (AWS agreeing, and the 90-day counter written forward),
+an Expedited restore issued and observed completing in 1 m 26 s, the tier reading `restored`, and the
+original fetched back byte-identical through the signed-URL chokepoint. Three defects only that run could
+have found are recorded below and in TASKS.md.
+
+**As built.** `tier_sweep` runs daily per tenant, self-chaining. Two departures
+from the design above, both deliberate and both refusals rather than
+approximations:
+
+- **Cross-pool moves are not performed.** S3 has no transition API — changing a
+  class is a self-copy — so a same-pool class change is the only move this
+  executes. A policy naming a different target pool is asking for a copy between
+  buckets, which halts as unsupported rather than tiering in place: "moved, but
+  not where you said" is worse than "did nothing, and said so". Cross-provider
+  tiering, the reason §6.4 drives transitions itself, therefore remains designed
+  and unbuilt.
+- **`pinned` is derived, not trusted.** The column exists with an index built for
+  the candidate scan, and nothing has ever written it. The scan reads
+  `assets.legal_hold` and `pin_hot` collection membership directly and ORs the
+  column on top, because a column nobody maintains says `false` for a legal-hold
+  asset and archiving one of those is the worst thing this engine can do.
+
+The predicate column is still unimplemented, so "not referenced by a live portal"
+is not yet expressible; `applies_to`, `derivative_roles`, `idle_days`,
+`min_age_days` and `from_storage_class` are. Eviction and replication are
+planned and not performed, and `only_superseded` halts as unsupported because
+`object_placements` has no version dimension to identify a superseded copy with.
+
 ### 6.5 Restore flow
 
 1. A download request resolves to a placement whose `latency_class > Instant`.
@@ -419,6 +466,33 @@ expiry.
 Cost guardrails, because Expedited vs Bulk is roughly a 10× spread: per-request
 and per-month restore budgets per tenant, admin approval above a threshold, and
 the estimate shown to the user before they confirm.
+
+**As built.** Step 3 is `HeadObject` polling only; the S3 event notification is
+not wired, and the poll runs every two minutes because Expedited lands in one to
+five and a person is waiting. Step 4 mints nothing and notifies nobody yet — the
+placement is marked and the UI reads it, which is what makes the tier badge
+change; `paths` (G9) is where the notification belongs and it has no consumer.
+Step 5's batch groups the decision, the estimate and the approval, *not* the S3
+calls: `RestoreObject` is per object, so four hundred assets are four hundred
+calls whatever the grouping.
+
+Showing the estimate before the confirmation needed a read that records nothing,
+which is `GET /assets/{id}/restore/quote` — it prices all three tiers in one
+response, because the comparison is the reason to show a number at all. A tier
+the class does not offer is returned refused-with-a-reason rather than omitted.
+
+Two things that fall out of the arithmetic and are worth knowing before somebody
+reports them as bugs. Below roughly a megabyte all three tiers quote the same
+figure, because the per-1000-requests charge dominates and the per-GB term rounds
+away — the tier chooser is genuinely meaningless for small objects. And a pool
+with no prices recorded estimates zero, which reads as "this deployment does not
+know" rather than "free"; prices are an operator's fact about their own account,
+so nothing seeds them.
+
+The poll claims in one transaction and issues outside it, making a lost claim
+possible and a double charge impossible. That trade is closed by reconciling
+against S3: a row claiming a restore over an object with none in progress is a
+call that never landed, and is re-issued.
 
 ### 6.6 Cost model
 
@@ -915,6 +989,17 @@ and replaying only the delta from the event log turns the common case into minut
 with full rebuild retained as the correctness backstop. `dr_state.index_rebuild_seconds`
 is **measured per tenant**, not estimated, so the published RTO is defensible.
 
+**As built.** `damctl backup` and `damctl restore-drill` (crate `dam-backup`) do the per-tenant half: a
+`pg_dump --format=custom` of one schema uploaded outside every tenant prefix, and a replay into a scratch
+schema that counts what arrived before writing `last_verified_restore_at`. The live schema is renamed aside
+and back rather than restored over, because a drill that can damage what it verifies is one nobody runs on
+production. `damctl dr-report` exits non-zero while any tenant is unverified.
+
+WAL archiving, PITR, S3 versioning and cross-region replication are **not** built and are not going to be:
+they are infrastructure, and the five-minute RPO in the table above comes from them rather than from anything
+in this repository. The Tantivy snapshot half of the table is also unbuilt; a rebuild from Postgres is the
+only index recovery today, which is the slow path the snapshot was meant to avoid.
+
 `dr_state.last_verified_restore_at` is set only by an actual restore drill, never
 by a successful backup. The gap between "we take backups" and "we have restored
 one" is where DR plans fail, and per-tenant restore is a genuine schema-per-tenant
@@ -950,6 +1035,17 @@ rendition.
 | 3D (glTF, USDZ, FBX) | Turntable render via a headless renderer; treated as a rendition profile | M6 |
 | Fonts (OTF, TTF, WOFF2) | Specimen sheet render; family/weight metadata extraction | M6 |
 | Subtitles (SRT, VTT) | First-class derivative, indexed as text, optional burn-in | M3 |
+
+Two format classes carry a **delivery** constraint rather than a processing one, established
+while building the sniffer:
+
+- **SVG and HTML** execute when served. Both are legitimate assets — icon libraries and HTML5
+  creatives — so they are stored and previewed, but never served inline unsanitised, because
+  they run with the privileges of the origin serving them. `Sniffed::carries_active_content`
+  is the flag the delivery path reads.
+- **Executables** are refused by default. `infer` does not detect ELF, so damrs carries that
+  signature itself; without it a Linux binary reads as opaque bytes and would be stored and
+  served happily from the customer's own asset domain.
 
 ### 18.3 Large files (G21)
 
@@ -1020,9 +1116,9 @@ running dev stack.
 | Layer | Tooling |
 |---|---|
 | Toolchain | mise — Rust 1.94, Node 24, pnpm 10 (`.mise.toml`) |
-| Dev stack | `docker/compose.dev.yml` — pgvector/pg17 on 5433, Garage on 3900 |
-| Test infra | testcontainers-rs — Postgres + Garage per suite |
-| Local S3 | **Garage** (Deuxfleurs) — see §20.2 |
+| Dev stack | `docker/compose.dev.yml` — pgvector/pg17 on 5433, SeaweedFS on 8333 |
+| Test infra | testcontainers-rs — Postgres + SeaweedFS per suite |
+| Local S3 | **SeaweedFS** (Apache 2.0) — see §20.2 |
 | Commands | `mise run up` / `migrate` / `check` |
 
 ### 20.1 TDD order
@@ -1045,35 +1141,91 @@ keeps each layer honest:
 5. **Then the feature layers**, each starting from a failing integration test that
    exercises the HTTP surface rather than the function.
 
-### 20.2 Garage's limits, and why there are two S3 drivers
+### 20.2 Two S3 drivers, and why no local server can be the only one
 
-Garage implements the S3 data plane well — multipart upload, presigned URLs,
-prefix listing, SigV4, path-style addressing. It does **not** implement storage
-classes, `RestoreObject`, object versioning, or object lock.
-
-Those are precisely the four features the tiering design (§6) is built on, so
-Garage alone cannot test the thing most likely to break. Two drivers behind the
-one `BlobStore` trait:
+No S3-compatible server that is practical as a test dependency implements
+storage-class semantics or `RestoreObject`. SeaweedFS accepts the storage-class
+header and ignores it, which for testing is *worse* than rejecting it — a test
+would pass while proving nothing. Two drivers behind the one `BlobStore` trait:
 
 | Driver | Backed by | Proves |
 |---|---|---|
-| `S3Store` | Garage in testcontainers | Wire protocol: SigV4, endpoint/path-style config, multipart, presign, ranged GET, checksums |
+| `S3Store` | SeaweedFS in testcontainers | Wire protocol: SigV4, path-style, multipart, presign, ranged GET, versioning, object lock (GOVERNANCE / COMPLIANCE / legal hold) |
 | `FakeS3Store` | In-process, controllable clock | Tiering state machine: class transitions, `InvalidObjectState` on a cold GET, `RestoreObject`, `x-amz-restore` polling, restore expiry, minimum-duration charges |
 
-The fake is the better tool for the second column regardless of Garage — you
-cannot wait twelve hours for a Deep Archive restore in a unit test, and LocalStack's
-Glacier emulation is neither fast nor faithful. A controllable clock makes
-"restore expires while a download is in flight" a deterministic test instead of a
-production incident.
+The fake is the right tool for the second column regardless of which server we
+pick — you cannot wait twelve hours for a Deep Archive restore in a unit test, and
+the tests that matter most are timing ones: *the temporary copy expires while a
+download is in flight*, *minimum-duration blocks a re-tier*. A controllable clock
+makes those deterministic instead of a production incident.
 
 Both drivers run the **same conformance suite** for everything they share, so the
-fake cannot quietly diverge from real S3 behaviour. Against AWS proper, the same
-suite runs in CI nightly, gated on credentials, as the only place the real Glacier
-semantics are exercised end to end.
+fake cannot quietly diverge. Against AWS proper, that suite runs in CI nightly,
+gated on credentials, as the only place real Glacier semantics are exercised end
+to end.
 
-Consequence worth stating: **object lock is unavailable locally**, so the
-immutable-pool and legal-hold paths are covered by the fake plus the nightly AWS
-run, never by the dev stack. That is a known hole, not an oversight.
+### 20.3 Choosing the local S3 — measured, not assumed
+
+The obvious candidates are gone. **MinIO's community edition was archived on
+25 April 2026** — read-only, no releases, no community binaries, admin console
+already stripped, engineering moved to the paid AIStor product. **LocalStack
+archived its open-source repository in March 2026** and consolidated behind a
+single authenticated image; its Glacier restore was Pro-only regardless. Neither
+is a defensible dependency for a project starting now.
+
+What remains, against the features Garage lacks:
+
+| Backend | Object lock | Versioning | Storage classes | RestoreObject | Notes |
+|---|---|---|---|---|---|
+| Garage | ✗ | ✗ (`NotImplemented`) | accepted, ignored | ✗ | Rust, 5 MiB RSS, AGPL |
+| **SeaweedFS** ≥ 4.3x | ✓ GOVERNANCE + COMPLIANCE + legal holds | ✓ | accepted, echoed back | ✗ | Apache 2.0, 66 MiB RSS. Version-sensitive — see below |
+| Ceph RGW | ✓ | ✓ | ✓ | ✓ | Closest to AWS parity; wants 3 nodes at 4+ GB each |
+| moto (server) | ✓ | ✓ | partial | ✓ | Test emulator, not a storage server |
+| AWS S3 | ✓ | ✓ | ✓ | ✓ | Nightly, credential-gated |
+
+**D18: SeaweedFS is the local S3. Garage is dropped.**
+
+An earlier draft of this decision kept Garage as the dev stack on the assumption
+that it was "a single small binary that starts faster". Measuring both killed that
+reasoning:
+
+- **Bootstrap: one command versus six steps.** SeaweedFS is `server -s3` plus a
+  small JSON credentials file, and it worked first try. Garage needs run → wait →
+  read node id → `layout assign` → `layout apply` → `key create` → parse the
+  generated credentials → `bucket create` → `bucket allow`, and took four attempts
+  across three distinct config failures: an `rpc_secret` of 65 hex chars where
+  exactly 64 is required, metadata and data directories that must pre-exist, and a
+  `key import` that fails silently leaving an empty key list.
+- **Credentials can be pinned.** This is the decisive one. SeaweedFS reads a static
+  access key from config; Garage *generates* one and you must scrape it out of CLI
+  output. A testcontainers harness that has to parse credentials from a subprocess
+  on every suite is fragile in a way that has nothing to do with the code under
+  test.
+- **Versioning works — from 4.3x.** `PutBucketVersioning` returns `NotImplemented`
+  on Garage, and object lock requires versioning, so on Garage that whole surface is
+  untestable. It is fair to record that when D18 was written this bullet was an
+  assumption about SeaweedFS rather than a measurement: 3.80, the tag first pinned,
+  *also* answers `PutBucketVersioning` with `501 NotImplemented`. Versioning and
+  object lock are recent S3-gateway additions, verified working on **4.42** (D19).
+  The conclusion stands, but the tag is load-bearing and is pinned in both the
+  harness and the dev stack.
+- **Memory is irrelevant at this scale.** 5 MiB versus 66 MiB decides nothing when
+  the Postgres container alongside it is larger than both.
+
+Consolidating collapses the matrix from three backends to two and removes an AGPL
+dependency in favour of Apache 2.0. It also closes the hole an earlier draft
+flagged as unfixable: object lock's whole point is that the *server* refuses the
+delete, so a fake that refuses proves nothing — that now runs against a real
+server.
+
+Honest limit on the measurement: startup time was **not** cleanly compared. Garage
+never reached a working state on a warm image without config errors, and the
+SeaweedFS timing included an image pull. The claim here is about bootstrap
+complexity and credential pinning, which were measured; not about seconds, which
+were not.
+
+**Noted, not adopted: RustFS**, a Rust MinIO replacement that appeared after the
+wind-down. Philosophically appealing for this project; months old.
 
 ---
 

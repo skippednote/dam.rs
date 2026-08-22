@@ -1,0 +1,1208 @@
+//! The category endpoints (Q.2b).
+//!
+//! `dam_db`'s suite proves the tree, the rollup and the filing rules. This proves the HTTP contract, and two
+//! properties that only exist at this layer:
+//!
+//! - **Reading the tree needs Read; changing it needs Manage.** A browse tree is not secret — every reader
+//!   needs it to navigate — but a read-only integration key must not re-file the library.
+//! - **The counts and the worklist are scoped to the caller.** §7 says counts disclose, so a caller who can
+//!   see nine assets must not be told the branch holds sixty.
+
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode, header};
+use dam_api::categories::{CategoryState, router};
+use dam_db::{auth, migrate, testing::PostgresHarness};
+use dam_search::{IndexPool, PoolConfig};
+use serde_json::{Value, json};
+use sqlx::PgPool;
+use tower::ServiceExt;
+use uuid::Uuid;
+
+struct Fixture {
+    _pg: PostgresHarness,
+    /// Held so the index directory outlives the fixture.
+    _indexes: tempfile::TempDir,
+    app: axum::Router,
+    global: PgPool,
+    acme: PgPool,
+    /// A key whose role sees everything.
+    key: String,
+    /// A key with `asset:read` only.
+    read_only_key: String,
+    /// A key scoped to one asset group, so the count-disclosure case has something to hide.
+    scoped_key: String,
+    group: Uuid,
+}
+
+async fn fixture() -> Fixture {
+    let pg = PostgresHarness::start().await.expect("start postgres");
+    let url = pg.url();
+    migrate::global(&url).await.expect("global");
+    migrate::tenant(&url, "t_acme").await.expect("acme");
+    let global = pg.pool().clone();
+    let acme = pg.pool_for_schema("t_acme").await.expect("acme pool");
+
+    let key = provision(&global, "acme", "a@example.com").await;
+    let read_only_key = plain_key(&global, "acme", &["asset:read"]).await;
+
+    // A group the scoped caller may see, and assets outside it that it may not.
+    let group: Uuid = sqlx::query_scalar(
+        "INSERT INTO asset_groups (id, key, label) VALUES (gen_random_uuid(), 'visible', 'Visible') \
+         RETURNING id",
+    )
+    .fetch_one(&acme)
+    .await
+    .expect("group");
+
+    // Group scoping lives on a *role*, and a tenant admin bypasses it — so the scoped caller needs its own
+    // identity with a non-admin membership naming a role bound to that one group. No API test had built one
+    // before, which is why the count-disclosure case below is new coverage rather than a restatement.
+    sqlx::query(
+        "INSERT INTO roles (id, key, label, permissions, asset_group_ids, all_asset_groups) \
+         VALUES (gen_random_uuid(), 'visible_only', 'Visible only', '{asset:read}', ARRAY[$1], false)",
+    )
+    .bind(group)
+    .execute(&acme)
+    .await
+    .expect("role");
+    let scoped = role_key(&global, "acme", "scoped@example.com", &["visible_only"]).await;
+
+    // The search router is mounted alongside, because the interesting question about a category *query* is
+    // whether `/search` answers it — the parser and the SQL renderer are proven elsewhere, and what was broken
+    // was the routing between them.
+    let index_dir = tempfile::tempdir().expect("index dir");
+    let app = router(CategoryState {
+        global: global.clone(),
+    });
+    // A real signer on the search state, because "does a result page carry a picture" is a question only a
+    // state that can *mint* one can answer — and with `None` here the assertion would pass against the bug.
+    let tenant_id: Uuid =
+        sqlx::query_scalar("SELECT id FROM dam_global.tenants WHERE slug = 'acme'")
+            .fetch_one(&global)
+            .await
+            .expect("tenant id");
+    let delivery = std::sync::Arc::new(dam_api::delivery::DeliveryState::new(
+        acme.clone(),
+        std::sync::Arc::new(dam_store::FakeS3Store::with_test_clock().0),
+        dam_core::signed_url::Keyring::single(
+            "k1",
+            dam_core::Secret::new("a-signing-key".to_owned()),
+        ),
+        tenant_id,
+    ));
+    let app = app
+        .merge(dam_api::search::router(dam_api::search::SearchState {
+            global: global.clone(),
+            indexes: std::sync::Arc::new(IndexPool::new(PoolConfig::new(index_dir.path()))),
+            delivery: Some(std::sync::Arc::clone(&delivery)),
+        }))
+        .merge(dam_api::assets::router(dam_api::assets::AssetState {
+            global: global.clone(),
+            delivery: Some(delivery),
+        }));
+
+    Fixture {
+        _pg: pg,
+        _indexes: index_dir,
+        app,
+        global: global.clone(),
+        acme,
+        key,
+        read_only_key,
+        scoped_key: scoped,
+        group,
+    }
+}
+
+async fn provision(global: &PgPool, slug: &str, email: &str) -> String {
+    let tenant_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO dam_global.tenants \
+         (id, slug, schema_name, display_name, storage_prefix, status) \
+         VALUES (gen_random_uuid(), $1, 't_' || $1, $1, $1 || '/', 'active') RETURNING id",
+    )
+    .bind(slug)
+    .fetch_one(global)
+    .await
+    .expect("tenant");
+    let identity: Uuid = sqlx::query_scalar(
+        "INSERT INTO dam_global.identities (id, email, display_name) \
+         VALUES (gen_random_uuid(), $1, $1) RETURNING id",
+    )
+    .bind(email)
+    .fetch_one(global)
+    .await
+    .expect("identity");
+    sqlx::query(
+        "INSERT INTO dam_global.tenant_members (tenant_id, identity_id, role_names, is_tenant_admin) \
+         VALUES ($1, $2, '{}', true)",
+    )
+    .bind(tenant_id)
+    .bind(identity)
+    .execute(global)
+    .await
+    .expect("membership");
+    issue(global, tenant_id, identity, &[]).await
+}
+
+/// A key for the tenant's existing (admin) identity, with explicit scopes.
+async fn plain_key(global: &PgPool, slug: &str, scopes: &[&str]) -> String {
+    let (tenant_id, identity_id): (Uuid, Uuid) = sqlx::query_as(
+        "SELECT t.id, m.identity_id FROM dam_global.tenants t \
+         JOIN dam_global.tenant_members m ON m.tenant_id = t.id WHERE t.slug = $1 \
+         ORDER BY m.identity_id LIMIT 1",
+    )
+    .bind(slug)
+    .fetch_one(global)
+    .await
+    .expect("tenant and member");
+    issue(global, tenant_id, identity_id, scopes).await
+}
+
+/// A key for a *new* non-admin identity whose membership names `roles`.
+async fn role_key(global: &PgPool, slug: &str, email: &str, roles: &[&str]) -> String {
+    let tenant_id: Uuid = sqlx::query_scalar("SELECT id FROM dam_global.tenants WHERE slug = $1")
+        .bind(slug)
+        .fetch_one(global)
+        .await
+        .expect("tenant");
+    let identity: Uuid = sqlx::query_scalar(
+        "INSERT INTO dam_global.identities (id, email, display_name) \
+         VALUES (gen_random_uuid(), $1, $1) RETURNING id",
+    )
+    .bind(email)
+    .fetch_one(global)
+    .await
+    .expect("identity");
+    sqlx::query(
+        "INSERT INTO dam_global.tenant_members (tenant_id, identity_id, role_names, is_tenant_admin) \
+         VALUES ($1, $2, $3, false)",
+    )
+    .bind(tenant_id)
+    .bind(identity)
+    .bind(roles.iter().map(|r| (*r).to_owned()).collect::<Vec<String>>())
+    .execute(global)
+    .await
+    .expect("membership");
+    // No scopes on the key: the role is what grants, and an empty scope list means "whatever the role says".
+    issue(global, tenant_id, identity, &[]).await
+}
+
+async fn issue(global: &PgPool, tenant: Uuid, identity: Uuid, scopes: &[&str]) -> String {
+    let api_key = auth::ApiKey::generate();
+    sqlx::query(
+        "INSERT INTO dam_global.api_keys \
+         (id, tenant_id, identity_id, name, key_prefix, key_hash, scopes) \
+         VALUES (gen_random_uuid(), $1, $2, 'test', $3, $4, $5)",
+    )
+    .bind(tenant)
+    .bind(identity)
+    .bind(api_key.prefix())
+    .bind(api_key.hash())
+    .bind(
+        scopes
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect::<Vec<String>>(),
+    )
+    .execute(global)
+    .await
+    .expect("key");
+    api_key.into_plaintext()
+}
+
+/// A response read as text, with the two headers that make a download a download.
+struct Raw {
+    text: String,
+    content_type: Option<String>,
+    disposition: Option<String>,
+}
+
+/// `GET` that does not assume JSON — for the CSV export (Q.18).
+async fn raw_call(f: &Fixture, path: &str, key: &str) -> Raw {
+    let request = Request::builder()
+        .method("GET")
+        .uri(path)
+        .header(header::AUTHORIZATION, format!("Bearer {key}"))
+        .body(Body::empty())
+        .expect("request");
+    let response = f.app.clone().oneshot(request).await.expect("response");
+    let header_value = |name: header::HeaderName| {
+        response
+            .headers()
+            .get(&name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+    };
+    let content_type = header_value(header::CONTENT_TYPE);
+    let disposition = header_value(header::CONTENT_DISPOSITION);
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 22)
+        .await
+        .expect("body");
+    Raw {
+        text: String::from_utf8_lossy(&bytes).into_owned(),
+        content_type,
+        disposition,
+    }
+}
+
+async fn call(
+    f: &Fixture,
+    method: &str,
+    path: &str,
+    key: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    let request = Request::builder()
+        .method(method)
+        .uri(path)
+        .header(header::AUTHORIZATION, format!("Bearer {key}"))
+        .header(header::CONTENT_TYPE, "application/json");
+    let request = match &body {
+        Some(json) => request.body(Body::from(json.to_string())).expect("request"),
+        None => request.body(Body::empty()).expect("request"),
+    };
+    let response = f.app.clone().oneshot(request).await.expect("response");
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .expect("body");
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+/// An asset, optionally in a group the scoped key can see.
+async fn asset(f: &Fixture, label: &str, in_group: bool) -> Uuid {
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO assets (id, content_hash, filename, mime, bytes, version_group_id) \
+         VALUES ($1, $2, $3, 'image/jpeg', 10, $1)",
+    )
+    .bind(id)
+    .bind(blake3::hash(label.as_bytes()).to_hex().to_string())
+    .bind(format!("{label}.jpg"))
+    .execute(&f.acme)
+    .await
+    .expect("asset");
+    if in_group {
+        sqlx::query("INSERT INTO asset_group_members (asset_id, group_id) VALUES ($1, $2)")
+            .bind(id)
+            .bind(f.group)
+            .execute(&f.acme)
+            .await
+            .expect("membership");
+    }
+    id
+}
+
+#[tokio::test]
+async fn the_category_http_contract_holds() {
+    let f = fixture().await;
+
+    let (tree, exterior, yellow) = a_tree_is_built_over_http(&f).await;
+    reading_needs_read_and_changing_needs_manage(&f, tree).await;
+    an_asset_is_filed_and_unfiled(&f, yellow).await;
+    the_tree_reports_counts_the_caller_can_see(&f, tree, exterior, yellow).await;
+    the_uncategorised_worklist_is_scoped_too(&f, tree).await;
+    a_vocabulary_is_refused_as_a_tree(&f).await;
+    filing_something_that_is_not_a_category_is_refused(&f).await;
+    a_caller_scoped_to_a_rule_based_group_is_refused_loudly(&f).await;
+    a_category_query_is_answered_rather_than_refused(&f, tree, exterior, yellow).await;
+    a_category_tree_is_not_also_a_flat_facet(&f, tree).await;
+    the_builtin_facets_are_offered_and_their_buckets_filter(&f).await;
+    a_typo_is_named_rather_than_guessed_at(&f).await;
+    a_type_ahead_offers_what_the_caller_can_see(&f).await;
+    an_export_is_the_search_it_came_from(&f).await;
+    an_oversized_export_is_refused_with_its_size(&f).await;
+    a_result_page_draws_the_same_thumbnails_the_grid_does(&f).await;
+}
+
+/// A search result carries the thumbnail a browse result carries.
+///
+/// The bug this pins had been there since search existed: `/assets` filled `thumbnail_url` and `/search` did
+/// not, so every picture in the grid turned into a grey "processing" placeholder the moment somebody typed a
+/// query, and came back when they cleared it. The same assets, the same derivatives, the same page.
+///
+/// Nothing caught it. Every API test passed, because a test asserting the field is *absent* is exactly what
+/// the broken behaviour produced — and the fixtures that mount `/search` had no signer, so the field could
+/// not have been filled in even by correct code. It took driving a browser over a real library to see it,
+/// which is the argument for doing that: this class of bug is invisible from inside the assertions.
+///
+/// Both paths need asserting, because they are separate code: the relational query is answered in SQL and the
+/// text query is answered by the index and hydrated per row. Fixing one and leaving the other would present
+/// as thumbnails that appear for some searches and not others, which is harder to diagnose than none
+/// appearing at all. This case covers the SQL path; `engagement_api` covers the ranked one.
+async fn a_result_page_draws_the_same_thumbnails_the_grid_does(f: &Fixture) {
+    let profile = &dam_media::profiles::THUMB_256;
+    let with: Uuid =
+        sqlx::query_scalar("SELECT id FROM assets WHERE filename = 'answers-a-category-query.jpg'")
+            .fetch_one(&f.acme)
+            .await
+            .expect("the asset the category cases filed");
+    sqlx::query(
+        "INSERT INTO derivatives (id, asset_id, role, profile, op_hash, object_key, mime, bytes) \
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, 'thumb/one.jpg', 'image/jpeg', 5)",
+    )
+    .bind(with)
+    .bind(profile.role)
+    .bind(profile.name)
+    .bind(profile.op_hash())
+    .execute(&f.acme)
+    .await
+    .expect("a rendered thumbnail");
+
+    // The baseline is the detail read rather than a page, because the export cases above seeded six hundred
+    // assets and the one this needs is not in the first page of any order.
+    let (_, browse) = call(f, "GET", &format!("/assets/{with}"), &f.key, None).await;
+    assert!(
+        browse["thumbnail_url"].as_str().is_some(),
+        "the browse path must fill it, or this case proves nothing about the search path: {browse}"
+    );
+
+    // The SQL path.
+    let (status, body) = call(f, "GET", "/search?q=caption:*arbour*", &f.key, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["ranked"], false,
+        "the SQL path, as the case above proves"
+    );
+    assert!(
+        thumbnail_of(&body, with).is_some(),
+        "a relational search result must carry the thumbnail its browse row carries: {body}"
+    );
+
+    // The ranked half of the same property is asserted in `engagement_api`, whose fixture reindexes and so
+    // has a populated index to rank from — this one does not, and a ranked page with no rows would pass this
+    // assertion by never reaching it.
+
+    // And the field still means what it says. An asset with no rendered thumbnail gets no URL — the fix is
+    // "ask which assets have one", not "point every row at a preview and let the delivery route 404" and call
+    // a checkerboard placeholder a picture. Both rows in one page, so the assertion is about the *rows* rather
+    // than about two requests that might have differed for some other reason.
+    let without = asset(f, "thumbless-answers-a-category-query", false).await;
+    let (_, body) = call(
+        f,
+        "GET",
+        "/search?q=filename:*answers-a-category-query*",
+        &f.key,
+        None,
+    )
+    .await;
+    assert!(
+        thumbnail_of(&body, with).is_some(),
+        "the rendered one still carries its URL: {body}"
+    );
+    assert!(
+        thumbnail_of(&body, without).is_none(),
+        "an asset with nothing rendered must still have no thumbnail URL: {body}"
+    );
+}
+
+/// One asset's `thumbnail_url` out of a page, or `None` if the page does not list it.
+fn thumbnail_of(page: &serde_json::Value, asset_id: Uuid) -> Option<String> {
+    page["items"]
+        .as_array()?
+        .iter()
+        .find(|item| item["id"].as_str() == Some(&asset_id.to_string()))?
+        .get("thumbnail_url")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+/// The CSV export (Q.18): the same search, as a file.
+async fn an_export_is_the_search_it_came_from(f: &Fixture) {
+    let raw = raw_call(f, "/search/export.csv?q=caption:*arbour*", &f.key).await;
+    let mut lines = raw.text.lines();
+    let header = lines.next().expect("a header row");
+    assert!(
+        header.starts_with("filename,mime,bytes,width,height"),
+        "the fixed columns come first: {header}"
+    );
+    assert!(
+        header.contains("caption"),
+        "the tenant's own field is a column: {header}"
+    );
+    let rows: Vec<&str> = lines.filter(|line| !line.is_empty()).collect();
+    assert_eq!(rows.len(), 1, "one asset matched the search: {rows:?}");
+    assert!(
+        rows[0].starts_with("answers-a-category-query.jpg,image/jpeg"),
+        "{rows:?}"
+    );
+    assert!(
+        rows[0].contains("a harbour at dawn"),
+        "the stored value is in the row: {rows:?}"
+    );
+
+    // A file, named, rather than a wall of commas rendered in a tab.
+    assert_eq!(raw.content_type.as_deref(), Some("text/csv; charset=utf-8"));
+    assert_eq!(
+        raw.disposition.as_deref(),
+        Some("attachment; filename=\"search-results.csv\"")
+    );
+
+    // A search matching nothing is an empty file with its header, not a 404: a spreadsheet with no rows is a
+    // truthful answer to "export what I am looking at".
+    let empty = raw_call(f, "/search/export.csv?q=caption:zeppelin", &f.key).await;
+    assert_eq!(empty.text.lines().filter(|l| !l.is_empty()).count(), 1);
+
+    // A reader with no scope gets a file with no rows rather than somebody else's metadata.
+    let scoped = raw_call(f, "/search/export.csv?q=caption:*arbour*", &f.scoped_key).await;
+    assert_eq!(
+        scoped.text.lines().filter(|l| !l.is_empty()).count(),
+        1,
+        "an export must be access-filtered like every other read: {}",
+        scoped.text
+    );
+}
+
+/// An export larger than the cap is refused with its size, and one larger than a *page* is still complete
+/// (Q.18).
+///
+/// Two failure modes, both silent. A CSV that stops at the cap opens perfectly in a spreadsheet and the person
+/// who re-imports it never learns what was left out. A CSV that stops at `assets::MAX_LIMIT` does the same
+/// thing five hundred rows earlier — which is what the first version of this endpoint did, because it asked for
+/// ten thousand rows in one call and a page is capped.
+async fn an_oversized_export_is_refused_with_its_size(f: &Fixture) {
+    // More than one page, well under the cap. One statement rather than six hundred inserts.
+    sqlx::query(
+        "INSERT INTO assets (id, content_hash, filename, mime, bytes, version_group_id) \
+         SELECT gen_random_uuid(), lpad(i::text, 64, '0'), 'page-' || i || '.jpg', 'image/jpeg', 10, \
+                gen_random_uuid() \
+         FROM generate_series(1, 600) AS i",
+    )
+    .execute(&f.acme)
+    .await
+    .expect("seed a set larger than one page");
+
+    let paged = raw_call(f, "/search/export.csv?q=filename:page-*", &f.key).await;
+    assert_eq!(
+        paged.text.lines().filter(|line| !line.is_empty()).count(),
+        601,
+        "a set larger than one page must be exported whole, not to the page limit"
+    );
+
+    // And past the cap, the refusal carries the count — the only thing that makes "narrow the query"
+    // actionable.
+    sqlx::query(
+        "INSERT INTO assets (id, content_hash, filename, mime, bytes, version_group_id) \
+         SELECT gen_random_uuid(), lpad((i + 1000)::text, 64, '0'), 'bulk-' || i || '.jpg', 'image/jpeg', 10, \
+                gen_random_uuid() \
+         FROM generate_series(1, $1) AS i",
+    )
+    .bind(i32::try_from(dam_api::search::EXPORT_MAX + 1).expect("cap fits"))
+    .execute(&f.acme)
+    .await
+    .expect("seed past the cap");
+
+    let (status, body) = call(f, "GET", "/search/export.csv", &f.key, None).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let message = body["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains(&dam_api::search::EXPORT_MAX.to_string()),
+        "the refusal must carry the numbers: {message}"
+    );
+    assert!(message.contains("narrow"), "{message}");
+
+    // A narrower search over the same library is still a file.
+    let narrow = raw_call(f, "/search/export.csv?q=caption:*arbour*", &f.key).await;
+    assert_eq!(
+        narrow.text.lines().filter(|line| !line.is_empty()).count(),
+        2
+    );
+}
+
+/// Did-you-mean, in both places it can happen (Q.17).
+///
+/// A misspelled *field* is a parse refusal, and the suggestion travels with it. A misspelled *value* parses
+/// fine and matches nothing, and the suggestion travels with the empty page. Both are offers, not corrections:
+/// answering `brnad:acme` as `brand:acme` would be a filter nobody asked for, and the first wrong guess leaves
+/// somebody with results they cannot explain.
+async fn a_typo_is_named_rather_than_guessed_at(f: &Fixture) {
+    // `caption` is this tenant's one field, defined by the query case above. The facetable flag is what a
+    // type-ahead needs, and it is set here rather than in that case because faceting is not what it is about.
+    sqlx::query("UPDATE field_defs SET facetable = true WHERE key = 'caption'")
+        .execute(&f.acme)
+        .await
+        .expect("facetable");
+
+    let (status, body) = call(f, "GET", "/search?q=captoin:dawn", &f.key, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["code"], "unknown_field", "{body}");
+    assert_eq!(
+        body["suggestion"], "caption",
+        "the refusal must name the field somebody meant: {body}"
+    );
+
+    // A value nobody has. The query parses, matches nothing, and the page carries a query that would work —
+    // the asset with `a harbour at dawn` is the one the correction finds.
+    let (status, body) = call(
+        f,
+        "GET",
+        "/search?q=caption:%22a%20harbour%20at%20dwan%22",
+        &f.key,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["total"], 0, "{body}");
+    assert_eq!(
+        body["did_you_mean"], "caption:\"a harbour at dawn\"",
+        "an empty page must offer a query that works: {body}"
+    );
+
+    // A second, short caption value. Without one, an ambiguous query has nothing close enough to be wrongly
+    // corrected to, and the case below would pass whether or not the ambiguity was respected.
+    let dusk = asset(f, "dusk-shot", true).await;
+    sqlx::query("INSERT INTO asset_metadata (asset_id, values) VALUES ($1, $2)")
+        .bind(dusk)
+        .bind(serde_json::json!({"caption": "dusk"}))
+        .execute(&f.acme)
+        .await
+        .expect("metadata");
+
+    // A page that found something carries no suggestion at all — and does not pay for one. A substring, so
+    // this goes through SQL: an equality on a text field is answered by the index, where a long value is a row
+    // of tokens rather than one term, and it would return nothing here for a reason that has nothing to do
+    // with did-you-mean.
+    let (status, body) = call(f, "GET", "/search?q=caption:*harbour*", &f.key, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["total"], 1, "{body}");
+    assert!(
+        body.get("did_you_mean").is_none() || body["did_you_mean"].is_null(),
+        "a search with results must not be second-guessed: {body}"
+    );
+
+    // Two clauses, no matches, and no suggestion: there are two candidates and no way to know which one was
+    // mistyped, so offering either is offering a query the user did not ask for.
+    let (status, body) = call(
+        f,
+        "GET",
+        "/search?q=caption:dusc%20caption:dawn",
+        &f.key,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["total"], 0, "{body}");
+    assert!(
+        body.get("did_you_mean").is_none() || body["did_you_mean"].is_null(),
+        "an ambiguous query must not be corrected: {body}"
+    );
+
+    // And a search that simply has no matches carries no suggestion: "no results" is an honest answer, and a
+    // guess sends somebody round a second empty loop.
+    let (status, body) = call(f, "GET", "/search?q=caption:zeppelin", &f.key, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["total"], 0, "{body}");
+    assert!(
+        body.get("did_you_mean").is_none() || body["did_you_mean"].is_null(),
+        "nothing was close, so nothing should be offered: {body}"
+    );
+}
+
+/// The type-ahead, and the disclosure rule it lives under.
+async fn a_type_ahead_offers_what_the_caller_can_see(f: &Fixture) {
+    // The value on the one asset with metadata, offered with the fragment that filters by it — quoted,
+    // because `caption:a harbour at dawn` is a caption filter plus three words of free text.
+    let (status, body) = call(f, "GET", "/search/suggest?typed=a%20harb", &f.key, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body.as_array().expect("array").iter().any(|row| {
+            row["label"] == "a harbour at dawn"
+                && row["fragment"] == "caption:\"a harbour at dawn\""
+        }),
+        "the value and the fragment that filters by it: {body}"
+    );
+
+    // A filename is a source of its own, so a name is offered as a name.
+    let (status, body) = call(f, "GET", "/search/suggest?typed=answers", &f.key, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body.as_array().expect("array").iter().any(|row| {
+            row["source"] == "filename"
+                && row["fragment"] == "filename:answers-a-category-query.jpg"
+        }),
+        "{body}"
+    );
+
+    // One character offers nothing: it is every value in the library, at the cost of three queries.
+    let (status, body) = call(f, "GET", "/search/suggest?typed=a", &f.key, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.as_array().expect("array").is_empty(), "{body}");
+}
+
+async fn a_tree_is_built_over_http(f: &Fixture) -> (Uuid, Uuid, Uuid) {
+    let (status, tree) = call(
+        f,
+        "POST",
+        "/categories",
+        &f.key,
+        Some(json!({ "key": "shades", "label": "Designs & Shades" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{tree}");
+    let tree_id: Uuid = tree["id"].as_str().expect("id").parse().expect("uuid");
+
+    let (status, exterior) = call(
+        f,
+        "POST",
+        &format!("/categories/{tree_id}/nodes"),
+        &f.key,
+        Some(json!({ "slug": "exterior", "label": "Exterior" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{exterior}");
+    let exterior_id: Uuid = exterior["id"].as_str().expect("id").parse().expect("uuid");
+
+    let (status, yellow) = call(
+        f,
+        "POST",
+        &format!("/categories/{tree_id}/nodes"),
+        &f.key,
+        Some(json!({ "slug": "yellow", "label": "Yellow", "parent_id": exterior_id })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{yellow}");
+    let yellow_id: Uuid = yellow["id"].as_str().expect("id").parse().expect("uuid");
+    assert_eq!(yellow["path"], "exterior.yellow");
+    assert_eq!(yellow["depth"], 1);
+
+    // A sibling clash is a conflict on something that exists, not a malformed request.
+    let (status, body) = call(
+        f,
+        "POST",
+        &format!("/categories/{tree_id}/nodes"),
+        &f.key,
+        Some(json!({ "slug": "yellow", "label": "Yellow again", "parent_id": exterior_id })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+
+    (tree_id, exterior_id, yellow_id)
+}
+
+async fn reading_needs_read_and_changing_needs_manage(f: &Fixture, tree: Uuid) {
+    // A browse tree is not secret: every reader needs it to navigate, so listing is Read.
+    let (status, body) = call(f, "GET", "/categories", &f.read_only_key, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, _) = call(
+        f,
+        "GET",
+        &format!("/categories/{tree}"),
+        &f.read_only_key,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Everything that changes where things are filed is Manage.
+    for (method, path, payload) in [
+        (
+            "POST",
+            "/categories".to_owned(),
+            Some(json!({ "key": "x", "label": "X" })),
+        ),
+        (
+            "POST",
+            format!("/categories/{tree}/nodes"),
+            Some(json!({ "slug": "sneak", "label": "Sneak" })),
+        ),
+    ] {
+        let (status, _) = call(f, method, &path, &f.read_only_key, payload).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {path}");
+    }
+}
+
+async fn an_asset_is_filed_and_unfiled(f: &Fixture, yellow: Uuid) {
+    let id = asset(f, "filed-over-http", false).await;
+
+    let (status, body) = call(
+        f,
+        "PUT",
+        &format!("/assets/{id}/categories/{yellow}"),
+        &f.key,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // The response is the asset's categories, so a client redraws its chips without a second request.
+    assert_eq!(body[0]["path"], "exterior.yellow");
+
+    // Read-only cannot file.
+    let (status, _) = call(
+        f,
+        "PUT",
+        &format!("/assets/{id}/categories/{yellow}"),
+        &f.read_only_key,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Filing twice is the same state, not an error.
+    let (status, _) = call(
+        f,
+        "PUT",
+        &format!("/assets/{id}/categories/{yellow}"),
+        &f.key,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = call(
+        f,
+        "DELETE",
+        &format!("/assets/{id}/categories/{yellow}"),
+        &f.key,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body.as_array().expect("array").is_empty(),
+        "no categories left"
+    );
+}
+
+async fn the_tree_reports_counts_the_caller_can_see(
+    f: &Fixture,
+    tree: Uuid,
+    exterior: Uuid,
+    yellow: Uuid,
+) {
+    // Two assets under `yellow`: one the scoped key may see, one it may not.
+    let visible = asset(f, "count-visible", true).await;
+    let hidden = asset(f, "count-hidden", false).await;
+    for id in [visible, hidden] {
+        let (status, _) = call(
+            f,
+            "PUT",
+            &format!("/assets/{id}/categories/{yellow}"),
+            &f.key,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    let count_for = |body: &Value, id: Uuid| -> i64 {
+        body.as_array()
+            .expect("array")
+            .iter()
+            .find(|node| node["id"] == id.to_string())
+            .and_then(|node| node["assets"].as_i64())
+            .unwrap_or(-1)
+    };
+
+    let (status, all) = call(f, "GET", &format!("/categories/{tree}"), &f.key, None).await;
+    assert_eq!(status, StatusCode::OK, "{all}");
+    assert!(all.is_array(), "expected a node list, got {all}");
+    assert_eq!(count_for(&all, yellow), 2, "{all}");
+    assert_eq!(
+        count_for(&all, exterior),
+        2,
+        "the branch rolls its descendants up"
+    );
+
+    // The property this case exists for: the scoped key is told 1, not 2. A tree that showed the true total
+    // would disclose the size of the part of the library this caller cannot reach — §7 in its quietest form.
+    // Isolating which layer refuses: the tree list uses the same authorize + TenantConn path.
+    let (probe_status, probe) = call(f, "GET", "/categories", &f.scoped_key, None).await;
+    assert_eq!(
+        probe_status,
+        StatusCode::OK,
+        "the scoped key must authenticate at all: {probe}"
+    );
+
+    let (status, scoped) = call(
+        f,
+        "GET",
+        &format!("/categories/{tree}"),
+        &f.scoped_key,
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the scoped key must be able to read the tree: {scoped}"
+    );
+    assert_eq!(
+        count_for(&scoped, yellow),
+        1,
+        "counts are the caller's own: {scoped}"
+    );
+    assert_eq!(count_for(&scoped, exterior), 1);
+}
+
+async fn the_uncategorised_worklist_is_scoped_too(f: &Fixture, tree: Uuid) {
+    // One unfiled asset the scoped key can see, one it cannot.
+    asset(f, "orphan-visible", true).await;
+    asset(f, "orphan-hidden", false).await;
+
+    let (status, all) = call(
+        f,
+        "GET",
+        &format!("/categories/{tree}/uncategorised"),
+        &f.key,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{all}");
+    let total = all["total"].as_i64().expect("total");
+    assert!(
+        total >= 2,
+        "both orphans, plus whatever earlier cases left: {all}"
+    );
+    assert!(
+        all["sample"].as_array().expect("sample").len() <= total as usize,
+        "the sample is drawn from the total it reports"
+    );
+
+    let (_, scoped) = call(
+        f,
+        "GET",
+        &format!("/categories/{tree}/uncategorised"),
+        &f.scoped_key,
+        None,
+    )
+    .await;
+    assert!(
+        scoped["total"].as_i64().expect("total") < total,
+        "a scoped caller's worklist is their own: {scoped}"
+    );
+}
+
+async fn a_vocabulary_is_refused_as_a_tree(f: &Fixture) {
+    let vocabulary: Uuid = sqlx::query_scalar(
+        "INSERT INTO taxonomies (id, key, label, kind) \
+         VALUES (gen_random_uuid(), 'colours', 'Colours', 'vocabulary') RETURNING id",
+    )
+    .fetch_one(&f.acme)
+    .await
+    .expect("vocabulary");
+
+    // 404 rather than 422: the path names something that is not a category tree, and from the caller's side
+    // "there is no such tree" is the honest answer — it also avoids confirming that a taxonomy by that id
+    // exists for some other purpose.
+    let (status, _) = call(f, "GET", &format!("/categories/{vocabulary}"), &f.key, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+async fn filing_something_that_is_not_a_category_is_refused(f: &Fixture) {
+    let id = asset(f, "cannot-file-nonsense", false).await;
+    let (status, _) = call(
+        f,
+        "PUT",
+        &format!("/assets/{id}/categories/{}", Uuid::new_v4()),
+        &f.key,
+        None,
+    )
+    .await;
+    // 422: the path addresses an asset that exists, and the category segment names something unreal — the
+    // request is wrong rather than the target missing.
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+async fn a_caller_scoped_to_a_rule_based_group_is_refused_loudly(f: &Fixture) {
+    // `authorize` refuses a caller whose groups include a rule-based one, because evaluating such a predicate
+    // needs the query IR (task 2.4) and *ignoring* it would grant less access than the administrator
+    // configured — fail-closed, but silently, so the first anyone would know is an asset that should have been
+    // visible and was not. ARCHITECTURE decision 4 says refuse rather than approximate.
+    //
+    // Asserted here rather than only in `dam_db`, where the function is called directly: nothing proved that
+    // `authorize` still *calls* it, so deleting the call passed the whole suite. Mutation testing said so.
+    let rule_based: Uuid = sqlx::query_scalar(
+        "INSERT INTO asset_groups (id, key, label, predicate) \
+         VALUES (gen_random_uuid(), 'recent', 'Recent', '{\"field\":\"created_at\"}'::jsonb) \
+         RETURNING id",
+    )
+    .fetch_one(&f.acme)
+    .await
+    .expect("rule-based group");
+    sqlx::query(
+        "INSERT INTO roles (id, key, label, permissions, asset_group_ids, all_asset_groups) \
+         VALUES (gen_random_uuid(), 'rule_scoped', 'Rule scoped', '{asset:read}', ARRAY[$1], false)",
+    )
+    .bind(rule_based)
+    .execute(&f.acme)
+    .await
+    .expect("role");
+    let key = role_key(&f.global, "acme", "rule@example.com", &["rule_scoped"]).await;
+
+    let (status, body) = call(f, "GET", "/categories", &key, None).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_IMPLEMENTED,
+        "a rule-based group is refused as an unsupported configuration, not as a crash: {body}"
+    );
+    // With a body, unlike every other refusal here: this one describes the *deployment's* limitation rather
+    // than the tenant's data, and the person who can fix it is the one reading it. It reached callers as a
+    // bare 500 until this case existed.
+    assert!(
+        body["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("recent"),
+        "the refusal names the group an administrator has to change: {body}"
+    );
+}
+
+async fn a_category_query_is_answered_rather_than_refused(
+    f: &Fixture,
+    tree: Uuid,
+    exterior: Uuid,
+    yellow: Uuid,
+) {
+    // The gap this closes: `in:` parsed and rendered SQL correctly, and the *search endpoint* still refused it
+    // with a 501 saying the clause was "routed through SQL" — aspirationally. The rail wrote a query the server
+    // would not answer, so the whole feature was unreachable from the UI.
+    //
+    // Category membership is a join, not an index term, and `dam_search` refuses it by name rather than
+    // dropping it — dropping a filter returns *more* than the caller asked for. So the query goes to SQL.
+    // A searchable text field, and a value on the asset. Without this the tenant has no text fields, so a
+    // composed query emits no reference to `asset_metadata` — and the missing join that broke
+    // `in:exterior harbour` on the dev stack stays invisible. Driving the real thing found it; this keeps it
+    // found.
+    sqlx::query(
+        "INSERT INTO field_defs (id, key, label, kind, searchable, display_order) \
+         VALUES (gen_random_uuid(), 'caption', 'Caption', 'text', true, 1) \
+         ON CONFLICT (key) DO NOTHING",
+    )
+    .execute(&f.acme)
+    .await
+    .expect("field");
+
+    let filed = asset(f, "answers-a-category-query", false).await;
+    sqlx::query("INSERT INTO asset_metadata (asset_id, values) VALUES ($1, $2)")
+        .bind(filed)
+        .bind(serde_json::json!({ "caption": "a harbour at dawn" }))
+        .execute(&f.acme)
+        .await
+        .expect("metadata");
+    let elsewhere = asset(f, "not-in-this-branch", false).await;
+    let (status, _) = call(
+        f,
+        "PUT",
+        &format!("/assets/{filed}/categories/{yellow}"),
+        &f.key,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    for query in ["in:exterior", "in:exterior.yellow"] {
+        let (status, body) = call(f, "GET", &format!("/search?q={query}"), &f.key, None).await;
+        assert_eq!(status, StatusCode::OK, "{query} must be answered: {body}");
+        let ids: Vec<&str> = body["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .filter_map(|item| item["id"].as_str())
+            .collect();
+        assert!(
+            ids.contains(&filed.to_string().as_str()),
+            "{query} should return the filed asset: {body}"
+        );
+        assert!(
+            !ids.contains(&elsewhere.to_string().as_str()),
+            "{query} should not return an unfiled asset: {body}"
+        );
+        // And the response says it is not relevance-ordered, because SQL has no score. A grid claiming
+        // "ranked by relevance" over a recency ordering lies about the one thing a reader might act on.
+        assert_eq!(body["ranked"], false, "{query}");
+    }
+
+    // A relational clause nested under a conjunction still routes to SQL. Without the recursive check this
+    // went to the index, where the category clause was refused rather than answered — so the *composition*
+    // was broken while each half worked.
+    //
+    // The free-text half is a real metadata match, not a filename one: that is what forces the SQL renderer to
+    // reference `asset_metadata`, and therefore what proves the join is there.
+    let (status, body) = call(f, "GET", "/search?q=in:exterior%20harbour", &f.key, None).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a composed relational query must be answered: {body}"
+    );
+    assert_eq!(body["ranked"], false);
+    let ids: Vec<&str> = body["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter_map(|item| item["id"].as_str())
+        .collect();
+    assert!(
+        ids.contains(&filed.to_string().as_str()),
+        "the caption matched in SQL, so the asset is returned: {body}"
+    );
+
+    // And the text half really is filtering: a word in neither the filename nor the metadata returns nothing.
+    let (status, body) = call(f, "GET", "/search?q=in:exterior%20zeppelin", &f.key, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["total"], 0,
+        "the text clause must narrow, not be ignored: {body}"
+    );
+
+    // Q.16's wildcards over a *metadata* field are relational too, and this is the case that found it: the
+    // parser produces the clause, the index refuses substring matching by name — an `ILIKE` and a Tantivy
+    // automaton disagree at the margins — and before this the caller got a 501 for a query the database can
+    // answer exactly.
+    let (status, body) = call(f, "GET", "/search?q=caption:*arbour*", &f.key, None).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a substring over a field must be answered in SQL: {body}"
+    );
+    assert_eq!(body["ranked"], false, "{body}");
+    assert_eq!(body["total"], 1, "{body}");
+
+    // Q.16's `filename:` is relational for the same reason: the index holds a filename as tokens, so a
+    // substring over the column is a question it cannot answer. If this were sent to the index the request
+    // would *fail* rather than fall back — the index refuses by name, and the handler surfaces the refusal —
+    // so "is it answered at all" is the property, and `ranked: false` is how the SQL path identifies itself.
+    let (status, body) = call(
+        f,
+        "GET",
+        "/search?q=filename:*category-query*",
+        &f.key,
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a filename substring must be answered rather than refused: {body}"
+    );
+    assert_eq!(body["ranked"], false, "{body}");
+    let by_name: Vec<&str> = body["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter_map(|item| item["filename"].as_str())
+        .collect();
+    assert!(
+        by_name
+            .iter()
+            .any(|name| name == &"answers-a-category-query.jpg"),
+        "the substring did not reach the filename: {body}"
+    );
+
+    // A query with no relational clause still goes to the index and still claims its ranking.
+    let (status, body) = call(f, "GET", "/search?q=answers", &f.key, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["ranked"], true,
+        "an ordinary text search is still ranked"
+    );
+
+    let _ = (tree, exterior);
+}
+
+/// The four facets every library has, and the queries their buckets write (Q.15).
+///
+/// Asserted through HTTP rather than against `dam_db::facets` alone, because the property is end to end: the
+/// rail reads a bucket from this response and hands the string straight back to `/search`. A key the search
+/// endpoint's parser does not accept is a checkbox that does nothing when clicked.
+async fn the_builtin_facets_are_offered_and_their_buckets_filter(f: &Fixture) {
+    let wide = asset(f, "wide-one", true).await;
+    let tall = asset(f, "tall-one", true).await;
+    sqlx::query("UPDATE assets SET width = 4000, height = 3000 WHERE id = $1")
+        .bind(wide)
+        .execute(&f.acme)
+        .await
+        .expect("landscape");
+    sqlx::query("UPDATE assets SET width = 1000, height = 2000, status = 'archived' WHERE id = $1")
+        .bind(tall)
+        .execute(&f.acme)
+        .await
+        .expect("portrait");
+
+    let (status, body) = call(f, "GET", "/search/facets", &f.key, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let facets = body.as_array().expect("facets");
+    for key in ["status", "orientation", "stars", "has"] {
+        assert!(
+            facets.iter().any(|facet| facet["key"] == key),
+            "{key} is not offered: {body}"
+        );
+    }
+
+    let bucket = |key: &str, value: &str| -> i64 {
+        facets
+            .iter()
+            .find(|facet| facet["key"] == key)
+            .and_then(|facet| facet["buckets"].as_array())
+            .and_then(|buckets| buckets.iter().find(|bucket| bucket["value"] == value))
+            .and_then(|bucket| bucket["count"].as_i64())
+            .unwrap_or_default()
+    };
+    assert_eq!(bucket("orientation", "landscape"), 1, "{body}");
+    assert_eq!(bucket("orientation", "portrait"), 1, "{body}");
+    assert_eq!(bucket("status", "archived"), 1, "{body}");
+
+    // And the same assets come back through the search endpoint, from the query string the rail composes.
+    for (query, expected) in [
+        ("orientation:landscape", vec![wide]),
+        ("orientation:portrait", vec![tall]),
+        ("status:archived", vec![tall]),
+        ("has:attachment", vec![]),
+    ] {
+        let (status, results) = call(f, "GET", &format!("/search?q={query}"), &f.key, None).await;
+        assert_eq!(status, StatusCode::OK, "{query}: {results}");
+        let ids: Vec<String> = results["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .filter_map(|item| item["id"].as_str())
+            .map(str::to_owned)
+            .collect();
+        for id in &expected {
+            assert!(
+                ids.contains(&id.to_string()),
+                "{query} did not return the asset its bucket counted: {results}"
+            );
+        }
+        if expected.is_empty() {
+            assert!(ids.is_empty(), "{query} returned something: {results}");
+        }
+    }
+}
+
+async fn a_category_tree_is_not_also_a_flat_facet(f: &Fixture, tree: Uuid) {
+    // A category tree has its own surface — a hierarchy, with rollup counts and disclosure. Emitting it as a
+    // facet as well rendered it twice in the rail, the second time as a flat list of leaves under a heading
+    // that was the taxonomy's UUID, because a facet key is an id and no label can be derived from one.
+    //
+    // Found by opening the page once a real tree existed. Vocabularies are still facets: that is what a facet
+    // is *for*, and it is the difference `taxonomies.kind` records.
+    let vocabulary: Uuid = sqlx::query_scalar(
+        "INSERT INTO taxonomies (id, key, label, kind) \
+         VALUES (gen_random_uuid(), 'materials', 'Materials', 'vocabulary') RETURNING id",
+    )
+    .fetch_one(&f.acme)
+    .await
+    .expect("vocabulary");
+
+    let (status, body) = call(f, "GET", "/search/facets", &f.key, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let keys: Vec<&str> = body
+        .as_array()
+        .expect("facets")
+        .iter()
+        .filter_map(|facet| facet["key"].as_str())
+        .collect();
+    assert!(
+        !keys.contains(&tree.to_string().as_str()),
+        "the category tree must not appear as a facet: {keys:?}"
+    );
+    assert!(
+        keys.contains(&vocabulary.to_string().as_str()),
+        "a vocabulary still is one: {keys:?}"
+    );
+}
