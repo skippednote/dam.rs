@@ -38,10 +38,17 @@ DAMRS_STORAGE__BUCKET = "damrs-dev"
 DAMRS_STORAGE__FORCE_PATH_STYLE = "true"
 DAMRS_STORAGE__ACCESS_KEY_ID = "damrsdev"
 DAMRS_STORAGE__SECRET_ACCESS_KEY = "damrsdevsecret"
-# Also exported unprefixed for the aws CLI, which the compose stack's healthcheck
-# and any manual `aws s3 ls` against the dev endpoint use.
-AWS_ACCESS_KEY_ID = "damrsdev"
-AWS_SECRET_ACCESS_KEY = "damrsdevsecret"
+# `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are deliberately NOT set here.
+#
+# They used to be, "for the aws CLI against the dev endpoint" — and the cost of that convenience is much
+# larger than the convenience. Environment credentials outrank `AWS_PROFILE` in every AWS SDK's chain, so
+# exporting the SeaweedFS dev key here silently hijacks *every* real AWS call made from this directory: the
+# CLI, `damd`, `dam-worker`, the SDK in a test. It presents as `InvalidAccessKeyId` with `AWSAccessKeyId:
+# damrsdev` in the response, which is only obvious once you have already lost twenty minutes to it — and
+# `aws sts get-caller-identity` fails the same way, so the first thing anybody reaches for to debug it is
+# also broken.
+#
+# Use `mise run s3 -- <args>` for the dev endpoint. Everything else then talks to real AWS as configured.
 
 # Where the per-tenant Tantivy indexes live locally. Under the working directory, not
 # /var/lib: a default that needs root to create is a default that fails on a first run.
@@ -54,6 +61,23 @@ DAMRS_SERVER__DELIVERY_TENANT = "acme"
 # Where the API is reached from a browser. Set locally because the Svelte dev server is on another port, and a
 # root-relative delivery URL would resolve against *it* — a 404 from the wrong server.
 DAMRS_SERVER__PUBLIC_URL = "http://localhost:8080"
+
+# The dev bucket, from the command line, without poisoning the environment for real AWS.
+#
+# Credentials inline rather than exported, which is the whole point: `mise run s3 -- s3 ls s3://damrs-dev/`
+# talks to SeaweedFS, and a plain `aws s3 ls` in the same shell still talks to whatever your profile says.
+#
+# The arguments are the full CLI ones, service name included — the first `s3` is the task, the second is
+# the AWS service. Written out because the shorter-looking form fails with "invalid choice: ls", which
+# reads like a broken task rather than a missing word.
+[tasks.s3]
+description = "Run the aws CLI against the local SeaweedFS (e.g. mise run s3 -- s3 ls s3://damrs-dev/)"
+run = """
+AWS_ACCESS_KEY_ID=damrsdev \
+AWS_SECRET_ACCESS_KEY=damrsdevsecret \
+AWS_REGION=us-east-1 \
+aws --endpoint-url http://localhost:8333 "$@"
+"""
 
 [tasks.openapi]
 description = "Regenerate openapi.json and the TypeScript client from it"

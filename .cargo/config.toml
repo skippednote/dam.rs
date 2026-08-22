@@ -1,0 +1,16 @@
+# Incremental compilation off, for a disk reason rather than a speed one.
+#
+# `target/debug/incremental` reached **36 GB** on a development machine and filled the disk twice in one
+# session, taking the container runtime down with it both times — which then failed the test suite with
+# `No space left on device` in the middle of a `rustc` invocation, an error that looks nothing like its cause.
+#
+# The bulk of it is not the inner loop. A `cargo test --workspace` here builds around 136 separate test
+# binaries, each with its own incremental cache, and almost none of that is reused: the gate runs whole, so
+# the caches are written once and read never. Turning the feature off removes the growth entirely rather
+# than relying on somebody remembering to prune it.
+#
+# The cost is real and worth stating: an edit-then-`cargo check` loop recompiles its crate whole rather than
+# the changed functions. If that becomes the thing that hurts, delete this file — the disk problem is
+# recoverable and a slow inner loop is paid every minute.
+[build]
+incremental = false
