@@ -2390,10 +2390,52 @@ Asked for after the go-live gap analysis. Ordered cheapest-first among items tha
       also unbuilt, so index recovery today is a full rebuild from Postgres — the slow path the snapshot was
       meant to avoid.
 
-- [ ] **L.3 Metrics and a readiness probe.** `/health` exists; there is no `/metrics`, no `/ready`, and
-      nothing scrapes the OTLP exporter `dam-telemetry` can already configure.
-- [ ] **L.4 Rate limiting.** `governor` is a declared dependency of `dam-api` and is never called, including
-      on the public delivery routes.
+- [x] **L.3 Metrics and a readiness probe.** `/ready` checks Postgres and the object store — both, always, so
+      a wide outage does not hide behind the first failure — and names which one broke. It deliberately skips
+      the search index: a tenant's index opens lazily and is rebuildable, so failing readiness over it would
+      pull a replica for something that stops no upload or download.
+
+      `/metrics` is Prometheus text and **fail-closed**: no `server.metrics_token`, no endpoint, and a 404
+      rather than a 401 so a scan cannot tell "off" from "protected". The argument is the one already written
+      against `/health` — it is the first thing anybody scans, and route templates plus per-route counts are a
+      map of the API and a usage profile.
+
+      The registry is hand-written in `dam-telemetry` rather than pulling the `metrics` crates: four series,
+      about two hundred visible lines, no global recorder to install. The design problem is cardinality, so
+      the route label is axum's `MatchedPath` template and never the URI — a label per asset id is a million
+      series and a monitoring outage — with an unmatched request collapsing to one bucket so nobody can create
+      series by requesting random paths. Status is a class, not a code.
+
+      `damrs_jobs` by kind and state is refreshed on scrape rather than on a timer, and a failure reading it
+      does not fail the scrape: an endpoint that 500s because one gauge is unavailable goes dark exactly when
+      the database is the thing going wrong. `state="dead"` is the series worth alerting on — a worker failing
+      every derivative looks identical from outside to one with nothing to do.
+
+      Lock poisoning is recovered from rather than propagated. The worst case is a counter off by one; making
+      the observability layer able to panic the process is backwards.
+
+- [x] **L.4 Rate limiting.** `governor` had been a declared dependency of `dam-api` — commented "per-tenant
+      rate limiting" — and never called.
+
+      Applied to the **public** routes only, keyed by client address. The authenticated API is deliberately not
+      address-keyed: a company sits behind one or two egress addresses, so that would be a limit on the
+      customer as a whole, with one bulk upload starving everybody else's thumbnails. Authenticated traffic is
+      bounded by a revocable credential and by the per-tenant quotas instead.
+
+      Burst separate from sustained rate, because a grid loads sixty thumbnails at once and a limiter tuned
+      only on the rate throttles the first screen every user ever sees. Off by default: a limiter with a
+      guessed number either does nothing or throttles a legitimate page load, and neither is discovered until
+      it is in front of users.
+
+      `X-Forwarded-For` is trusted only as far as `trusted_proxy_hops` says, counting from the **right** —
+      those entries are what proxies appended and a client cannot forge them. Taking the leftmost entry, the
+      usual mistake, lets anybody claim a fresh bucket per request or exhaust somebody else's.
+
+      One correction worth recording: the middleware first took `ConnectInfo` by value while its own comment
+      claimed a missing address was allowed. A required extractor *rejects*, so a forgotten
+      `into_make_service_with_connect_info` would have been a 500 on every public route rather than a lenient
+      one. It reads the extension directly now, and a case asserts both halves — engaged with a peer, allowing
+      without one.
 - [ ] **L.5 A virus scan on ingest.** Listed in M1 as done; not implemented.
 - [ ] **L.6 C2PA (task 1.9, G1).** Unblocked since 2026-08-21 and still unbuilt. GAPS.md calls the current
       behaviour "a bug in the current design, not a missing feature": every derivative strips provenance.

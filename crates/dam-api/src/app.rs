@@ -201,8 +201,20 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
         }))
         .layer(DefaultBodyLimit::max(MAX_JSON_BODY));
 
+    // The registry is created here and handed to both the middleware and the endpoint, so there is exactly one
+    // per process. A second registry would render a second, partial view and nothing would say which.
+    let metrics = dam_telemetry::metrics::Metrics::new();
+
     Router::new()
         .route("/health", get(health))
+        .merge(crate::observability::router(
+            crate::observability::ObservabilityState {
+                global: deps.global.clone(),
+                store: Arc::clone(&deps.delivery_store),
+                metrics: metrics.clone(),
+                metrics_token: cfg.server.metrics_token.clone(),
+            },
+        ))
         .merge(api)
         // Its own body limit, set inside its own router: a resumable upload chunk is megabytes.
         .merge(crate::tus::router(crate::tus::AppState::new(
@@ -213,7 +225,9 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
         // real bug: it was built from the global pool, so every delivery failed with `relation "derivatives"
         // does not exist` while the mint side worked perfectly — and two keyrings would have been the next
         // failure once one rotated.
-        .merge(crate::delivery::router_from(delivery))
+        // The public routes, behind the limiter when one is configured. Layered on this merge rather than on
+        // the whole app, because the authenticated API must not be address-keyed — see `throttle`'s docs.
+        .merge(throttled(crate::delivery::router_from(delivery), cfg))
         // Outside the JSON body limit above, because a protocol router frames its own requests and enforces its
         // own maximum. Mounted here rather than inside `api` for the same reason `tus` is.
         .merge(protocols.unwrap_or_default())
@@ -232,7 +246,38 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
             HeaderValue::from_static("nosniff"),
         ))
         .layer(cors(cfg))
+        // Outermost of the application layers, so the timing it records is what a client experienced —
+        // including the time spent in the timeout layer and in CORS — rather than only the handler. A
+        // middleware placed under the timeout would report a fast request for one the client saw as a 504.
+        .layer(axum::middleware::from_fn_with_state(
+            metrics,
+            crate::observability::record,
+        ))
         .layer(TraceLayer::new_for_http())
+}
+
+/// Wraps a router in the address-keyed limiter, when one is configured.
+///
+/// Returns the router untouched when `rate_limit_per_second` is unset, which is the default. A limiter with a
+/// guessed number either does nothing or throttles a legitimate first page load, and neither is discovered
+/// until it is in front of users — so it is opt-in with the number an operator chose.
+fn throttled(router: Router, cfg: &Config) -> Router {
+    let Some(per_second) = cfg
+        .server
+        .rate_limit_per_second
+        .and_then(std::num::NonZeroU32::new)
+    else {
+        return router;
+    };
+    // A burst below the sustained rate would be a lower ceiling than the rate it is meant to permit, so the
+    // rate is the floor. Stated here rather than validated in config, because the fix is obvious and refusing
+    // to start over it would be worse than quietly doing the sensible thing.
+    let burst = std::num::NonZeroU32::new(cfg.server.rate_limit_burst.max(per_second.get()))
+        .unwrap_or(per_second);
+    router.layer(axum::middleware::from_fn_with_state(
+        crate::throttle::Throttle::new(per_second, burst, cfg.server.trusted_proxy_hops),
+        crate::throttle::limit,
+    ))
 }
 
 /// The CORS policy.

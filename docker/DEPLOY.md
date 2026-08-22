@@ -71,14 +71,47 @@ carries a known version — and it is not done.
 
 Named honestly, because an image is not a deployment:
 
-- **Metrics and a readiness probe.** `/health` exists. There is no `/metrics`, no `/ready`, and nothing
-  scrapes the OTLP exporter `dam-telemetry` can configure.
-- **Rate limiting.** `governor` is a declared dependency of `dam-api` and is never called, including on the
-  public delivery routes.
 - **A virus scan on ingest.** Listed in M1, not implemented.
 - **TLS and a reverse proxy.** `damd` speaks plain HTTP and expects something in front of it.
 - **Human authentication.** The API authenticates bearer keys; there is no login, no session, and no SSO, so
   every person using the app needs a key minted for them with `damctl issue-key`.
+
+## Probes and metrics
+
+| Endpoint | Auth | Answers |
+|---|---|---|
+| `/health` | none | Liveness. Fixed body, discloses nothing — it is the first thing anybody scans. |
+| `/ready` | none | Whether traffic should come here: Postgres and the object store, both checked, each named. `503` with a body saying which failed. |
+| `/metrics` | bearer | Prometheus text. **404 when `server.metrics_token` is unset**, and 404 on a wrong token — a scan cannot tell "off" from "protected". |
+
+`/ready` deliberately does not check the search index: a tenant's index opens lazily and is rebuildable, so
+failing readiness over it would pull a replica out of rotation for something that stops no upload, download or
+metadata write.
+
+Metrics are `damrs_http_requests_total` and `damrs_http_request_duration_seconds` by method and **route
+template**, plus `damrs_jobs` by kind and state. The route label is the template (`/assets/{asset_id}`) and
+never the URI — a label per asset id is a million series and a monitoring outage. Status is a class (`2xx`,
+`4xx`, `5xx`) rather than a code, because the questions asked of it are answered by the class.
+
+`damrs_jobs{state="dead"}` is the one worth alerting on: a worker failing every derivative looks identical
+from outside to one with nothing to do.
+
+## Rate limiting
+
+Off by default. `server.rate_limit_per_second` enables it on the **public** routes only — `/d/{token}`,
+`/share/{token}`, `/portal/{key}` — keyed by client address, with `rate_limit_burst` (default 120) for the
+burst, because a grid loads sixty thumbnails at once and a limiter tuned only on the sustained rate throttles
+the first screen every user sees.
+
+The authenticated API is deliberately **not** address-keyed. A company sits behind one or two egress
+addresses, so that would be a limit on the customer as a whole — the whole art department sharing a bucket, and
+one bulk upload starving everybody's thumbnails. Authenticated traffic is bounded by a revocable credential
+and by the per-tenant quotas instead.
+
+**Behind a proxy, set `server.trusted_proxy_hops`.** It defaults to zero, which trusts nothing but the socket.
+A non-zero value counts entries from the *right* of `X-Forwarded-For`, because those are what proxies appended
+and a client cannot forge them. Trusting the leftmost entry — the usual mistake — lets anybody claim a fresh
+bucket per request, or exhaust somebody else's.
 
 ## Backups (§17, G11)
 

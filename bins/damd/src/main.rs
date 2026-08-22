@@ -107,10 +107,16 @@ async fn main() -> anyhow::Result<()> {
         "damd listening"
     );
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown())
-        .await
-        .context("serving")?;
+    // `ConnectInfo` so the rate limiter can key on the peer address. Without it the extractor fails and
+    // `throttle::limit` allows everything — which is why there is a test asserting a public route is actually
+    // limited, rather than trusting that this line stays here.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown())
+    .await
+    .context("serving")?;
     tracing::info!("damd stopped");
     Ok(())
 }

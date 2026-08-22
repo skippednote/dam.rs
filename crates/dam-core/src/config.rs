@@ -99,6 +99,34 @@ pub struct ServerConfig {
     /// that wants agents talking to its library says so; one that does not should not have to reason about
     /// whether anybody holds a key.
     pub mcp_enabled: bool,
+    /// Bearer token for `/metrics`. **Absent means the endpoint does not exist.**
+    ///
+    /// Fail-closed, and for the reason `/health` is deliberately mute: "a health endpoint that reported
+    /// version, tenant counts or database state would be an unauthenticated disclosure endpoint, and it is the
+    /// first thing anybody scans". Metrics are worse than that — route templates map the whole API surface,
+    /// and request counts per route are a usage profile.
+    ///
+    /// A missing token answers **404 rather than 401**, so a scan cannot tell a deployment that has metrics
+    /// switched off from one that has them behind a credential. The alternative default — serve it openly and
+    /// tell operators to firewall it — is the one that ends up on the public internet.
+    pub metrics_token: Option<Secret<String>>,
+    /// Sustained requests per second per client address on the **public** routes. `None` disables the limiter.
+    ///
+    /// Public means `/d/{token}`, `/share/{token}` and `/portal/{key}` — the routes that take no API key. The
+    /// authenticated API is deliberately not limited by address: a company sits behind one or two egress
+    /// addresses, so an address-keyed limit there is a limit on the customer as a whole.
+    pub rate_limit_per_second: Option<u32>,
+    /// Requests allowed in a burst, which should exceed the sustained rate.
+    ///
+    /// A grid loads sixty thumbnails at once. Tuned on the sustained rate alone, a limiter throttles the first
+    /// screen every user ever sees.
+    pub rate_limit_burst: u32,
+    /// How many reverse proxies sit in front, for reading `X-Forwarded-For`.
+    ///
+    /// Zero — the default — trusts nothing but the socket. Anything else counts entries from the *right* of
+    /// the header, because those are the ones proxies appended and a client could not forge. Trusting the
+    /// leftmost entry would let anybody claim a fresh bucket per request, or exhaust somebody else's.
+    pub trusted_proxy_hops: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -278,6 +306,12 @@ impl Default for ServerConfig {
             delivery_tenant: None,
             allowed_origins: Vec::new(),
             mcp_enabled: false,
+            metrics_token: None,
+            // Off by default. A limiter with a guessed number is one that either does nothing or throttles a
+            // legitimate first page load, and neither failure is discovered until it is in front of users.
+            rate_limit_per_second: None,
+            rate_limit_burst: 120,
+            trusted_proxy_hops: 0,
         }
     }
 }

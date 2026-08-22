@@ -11,6 +11,7 @@ publish.workspace = true
 dam-core = { path = "../dam-core" }
 dam-db = { path = "../dam-db" }
 dam-store = { path = "../dam-store" }
+dam-telemetry = { path = "../dam-telemetry" }
 dam-media = { path = "../dam-media" }
 dam-pipeline = { path = "../dam-pipeline" }
 dam-search = { path = "../dam-search" }

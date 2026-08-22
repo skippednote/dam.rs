@@ -26,6 +26,8 @@
     allow(clippy::expect_used, clippy::unwrap_used, clippy::result_large_err)
 )]
 
+pub mod metrics;
+
 use dam_core::config::{LogFormat, TelemetryConfig};
 use std::{
     io,

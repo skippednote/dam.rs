@@ -1918,6 +1918,7 @@ dependencies = [
  "dam-pipeline",
  "dam-search",
  "dam-store",
+ "dam-telemetry",
  "governor",
  "hmac 0.12.1",
  "jsonwebtoken",
