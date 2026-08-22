@@ -1171,3 +1171,27 @@ export async function requestRestore(assetId: string, tier: string): Promise<Res
 		method: 'POST'
 	});
 }
+
+export type LifecyclePolicy = components['schemas']['PolicyView'];
+export type LifecyclePlan = components['schemas']['PlanView'];
+export type RunQueued = components['schemas']['RunQueued'];
+
+/** The tiering rules, in the order the engine applies them. */
+export async function listLifecyclePolicies(): Promise<LifecyclePolicy[]> {
+	return request<LifecyclePolicy[]>('/lifecycle/policies');
+}
+
+/**
+ * What one policy would do, without doing it.
+ *
+ * A `POST` for a read, because it is a full scan of the tenant's placements and because caching it would be
+ * actively wrong: the answer changes as objects age into eligibility.
+ */
+export async function planLifecyclePolicy(id: string): Promise<LifecyclePlan> {
+	return request<LifecyclePlan>(`/lifecycle/policies/${id}/plan`, { method: 'POST' });
+}
+
+/** Queues a sweep. Whether anything moves is each policy's own `dry_run` to decide. */
+export async function runLifecycleSweep(): Promise<RunQueued> {
+	return request<RunQueued>('/lifecycle/runs', { method: 'POST' });
+}

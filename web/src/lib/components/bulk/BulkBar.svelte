@@ -168,6 +168,12 @@
 		// asset on a page anybody can reach, and a confirmation reading "Update 40 assets" hides that.
 		if (kind === 'publish') return `Publish ${assets}`;
 		if (kind === 'unpublish') return `Unpublish ${assets}`;
+		// Named for the two different things they do, because the words are close enough to confuse and the
+		// consequences are not: archiving takes assets out of circulation and leaves them instantly
+		// fetchable, while restoring asks a storage provider for a copy and is billed per gigabyte.
+		if (kind === 'archive') return `Archive ${assets}`;
+		if (kind === 'unarchive') return `Return ${assets} to the active library`;
+		if (kind === 'restore') return `Restore ${assets} from cold storage`;
 		return `Update ${assets}`;
 	}
 </script>
@@ -282,6 +288,32 @@
 				onclick={() => preview('unpublish', {})}
 			>
 				Unpublish…
+			</button>
+
+			<!--
+				Archiving is the curation status: out of circulation, off the default grid, still instantly
+				fetchable. Deliberately beside Unpublish rather than beside Delete, because that is the
+				company it keeps — a reversible decision about visibility, not about existence.
+			-->
+			<button
+				type="button"
+				class="rounded-md border border-line px-2.5 py-1 hover:bg-raised"
+				onclick={() => preview('archive', {})}
+			>
+				Archive…
+			</button>
+
+			<!--
+				And the storage half, which is a different act with a bill attached. Named "Restore" rather
+				than "Unarchive" precisely so the two do not read as a pair: this one asks a provider for
+				temporary copies and is charged per gigabyte, and the confirmation says so.
+			-->
+			<button
+				type="button"
+				class="rounded-md border border-line px-2.5 py-1 hover:bg-raised"
+				onclick={() => preview('restore', { tier: 'standard' })}
+			>
+				Restore…
 			</button>
 
 			<button

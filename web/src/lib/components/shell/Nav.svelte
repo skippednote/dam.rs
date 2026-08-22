@@ -22,6 +22,7 @@
 		{ href: resolve('/shares'), label: 'Shares' },
 		{ href: resolve('/orders'), label: 'Orders' },
 		{ href: resolve('/schema'), label: 'Schema' },
+		{ href: resolve('/storage'), label: 'Storage' },
 		// Next to Schema because it is the same kind of work: deciding what the library's own vocabulary means.
 		{ href: resolve('/review'), label: 'Review' },
 		{ href: resolve('/style'), label: 'Style' },
