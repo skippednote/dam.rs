@@ -77,6 +77,7 @@ pub async fn upload(
     slug: &dam_core::TenantSlug,
     tenant_id: Uuid,
     upload_id: &str,
+    scanner: Option<&dam_media::antivirus::Scanner>,
 ) -> Result<Finalised> {
     let mut conn = TenantConn::begin(global, slug).await?;
     let session = dam_db::uploads::load(conn.executor(), tenant_id, upload_id).await?;
@@ -142,6 +143,15 @@ pub async fn upload(
     let promoted = match declared.content_hash.as_deref() {
         Some(hash) => Promoted::already(tenant_id, hash, store).await?,
         None => {
+            // Scanned before promotion, so infected bytes never reach a content-addressed key and never
+            // become an asset. The alternative — promote, then quarantine the asset row — leaves the object
+            // in the library's own namespace and makes "is this asset safe" a question about a column.
+            //
+            // Skipped for the already-promoted branch above: those bytes were scanned by the attempt that
+            // promoted them, and re-reading a 200 GB master to re-scan it on every retry would make a
+            // transient failure expensive.
+            scan(store, &staging, upload_id, scanner).await?;
+
             let finished = dam_media::ingest::finalize(
                 store,
                 tenant_id,
@@ -441,6 +451,70 @@ async fn default_pool(global: &sqlx::PgPool) -> Result<Uuid> {
                 .to_owned(),
         )
     })
+}
+
+/// Scans a staged upload, refusing anything the scanner objects to.
+///
+/// Three outcomes, three different kinds of failure:
+///
+/// - **Infected** is permanent. The signature does not change on a retry, and the bytes must not be promoted.
+/// - **Unreachable** is transient. The upload stays in staging and finalises when `clamd` returns; failing
+///   open here would be a security control that switches itself off during an outage.
+/// - **Unintelligible** is permanent too, and deliberately not treated as clean: a reply this code cannot
+///   read means a version or configuration mismatch, and guessing "clean" would turn a protocol change into a
+///   silent bypass.
+///
+/// No scanner configured is a no-op. That is the default, because requiring `clamd` on every developer
+/// machine to accept an upload would make the dev stack a three-container affair — but it means a deployment
+/// that never sets it never scans anything, which is why `docker/DEPLOY.md` lists it as required rather than
+/// optional.
+async fn scan(
+    store: &dyn ResumableStore,
+    staging: &dam_store::Key,
+    upload_id: &str,
+    scanner: Option<&dam_media::antivirus::Scanner>,
+) -> Result<()> {
+    let Some(scanner) = scanner else {
+        return Ok(());
+    };
+    let bytes = match store.get(staging, None).await? {
+        dam_store::GetOutcome::Bytes(bytes) => bytes,
+        // A staged object is minutes old and in the hot pool by construction, so this is unreachable rather
+        // than a case to handle — but reading it as "nothing to scan" would be a bypass.
+        dam_store::GetOutcome::NotAvailable(ticket) => {
+            return Err(Error::Transient(format!(
+                "upload {upload_id} cannot be scanned: staging object is {}",
+                ticket.class
+            )));
+        }
+    };
+
+    match scanner.scan(&bytes).await {
+        Ok(dam_media::antivirus::Verdict::Clean) => Ok(()),
+        Ok(dam_media::antivirus::Verdict::Infected(signature)) => {
+            tracing::warn!(%upload_id, %signature, "upload refused: infected");
+            Err(Error::Permanent(format!(
+                "upload {upload_id} refused: {signature}"
+            )))
+        }
+        Ok(dam_media::antivirus::Verdict::TooLarge { bytes, limit }) => {
+            // Accepted, and said out loud. A DAM cannot refuse every video master, and a silent skip is how
+            // an operator comes to believe everything is scanned.
+            tracing::warn!(
+                %upload_id,
+                bytes,
+                limit,
+                "upload accepted WITHOUT a virus scan: larger than the scanner accepts",
+            );
+            Ok(())
+        }
+        Err(error @ dam_media::antivirus::Error::Unreachable { .. }) => {
+            Err(Error::Transient(error.to_string()))
+        }
+        Err(error @ dam_media::antivirus::Error::Unintelligible(_)) => {
+            Err(Error::Permanent(error.to_string()))
+        }
+    }
 }
 
 /// A promoted object, however it got there.

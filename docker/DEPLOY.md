@@ -71,7 +71,6 @@ carries a known version — and it is not done.
 
 Named honestly, because an image is not a deployment:
 
-- **A virus scan on ingest.** Listed in M1, not implemented.
 - **TLS and a reverse proxy.** `damd` speaks plain HTTP and expects something in front of it.
 - **Human authentication.** The API authenticates bearer keys; there is no login, no session, and no SSO, so
   every person using the app needs a key minted for them with `damctl issue-key`.
@@ -112,6 +111,40 @@ and by the per-tenant quotas instead.
 A non-zero value counts entries from the *right* of `X-Forwarded-For`, because those are what proxies appended
 and a client cannot forge them. Trusting the leftmost entry — the usual mistake — lets anybody claim a fresh
 bucket per request, or exhaust somebody else's.
+
+## Virus scanning (M1)
+
+**Required for a real deployment, and off unless configured.** Set `security.clamd_address` to a `clamd`
+endpoint. With it unset nothing is scanned, and the startup line saying scanning is enabled is absent — which
+is the thing to check after a deploy.
+
+```sh
+docker run -d --name clamav -p 3310:3310 clamav/clamav:stable   # or a sidecar in the same pod
+# then, on damd and dam-worker:
+DAMRS_SECURITY__CLAMD_ADDRESS=clamav:3310
+```
+
+Uploads are scanned **before promotion**, so infected bytes never reach a content-addressed key and never
+become an asset. Three outcomes:
+
+| Verdict | Result |
+|---|---|
+| Clean | Promoted as normal. |
+| Infected | Upload refused **permanently**, with the signature in the log. The job does not retry — a signature does not change. |
+| Unreachable, or a reply we cannot parse | Refused **transiently**. The upload waits in staging and finalises when `clamd` returns. |
+
+A scanner outage therefore **stops ingest** rather than accepting unscanned files. That is deliberate: a
+configurable fail-open is the setting that is still switched on a year later. Nothing is lost — verified by
+pointing the worker at a dead port, watching the job re-queue with no asset created, then pointing it back and
+watching the same upload finalise itself.
+
+**Files larger than `security.max_scan_bytes` (default 100 MB, matching `clamd`'s own `StreamMaxLength`) are
+accepted unscanned**, with a warning naming the size. A DAM whose purpose is video masters and layered PSDs
+cannot refuse every large file. Say this out loud when somebody asks whether uploads are scanned: the large
+ones are not, and what protects them instead is that nothing is executed, derivatives render in a sandbox with
+the environment cleared, and delivery is a signed redirect rather than a served file.
+
+Not built: re-scanning existing assets when signatures update. Today a scan happens once, at ingest.
 
 ## Backups (§17, G11)
 

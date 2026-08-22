@@ -166,6 +166,7 @@ async fn each_pass_leaves_the_next_one_behind_it(f: &Fixture) {
             std::env::temp_dir().join("damrs-tiering-index"),
         ))),
         ai: None,
+        scanner: None,
         worker: "tiering-test".to_owned(),
     };
 

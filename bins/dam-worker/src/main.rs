@@ -58,6 +58,12 @@ async fn main() -> anyhow::Result<()> {
         store,
         indexes,
         ai: Some(ai),
+        // Built from configuration here rather than inside the pipeline, like the store. `None` when no
+        // `clamd` is configured, which scans nothing — see `security.clamd_address`.
+        scanner: cfg.security.clamd_address.as_deref().map(|address| {
+            tracing::info!(%address, "virus scanning enabled");
+            dam_media::antivirus::Scanner::new(address, cfg.security.max_scan_bytes)
+        }),
         worker: worker.clone(),
     };
 

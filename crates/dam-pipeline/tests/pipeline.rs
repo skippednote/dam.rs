@@ -218,6 +218,7 @@ async fn a_staged_upload_becomes_an_asset(f: &Fixture) {
         &f.slug,
         f.tenant_id,
         "finalise001",
+        None,
     )
     .await
     .expect("finalise");
@@ -367,6 +368,7 @@ async fn embedded_metadata_is_imported_and_beats_a_blanket_default(f: &Fixture) 
         &f.slug,
         f.tenant_id,
         "finalise-exif",
+        None,
     )
     .await
     .expect("finalise");
@@ -411,6 +413,7 @@ async fn finalising_twice_produces_one_asset(f: &Fixture) {
         &f.slug,
         f.tenant_id,
         "finalise002",
+        None,
     )
     .await
     .expect("first");
@@ -420,6 +423,7 @@ async fn finalising_twice_produces_one_asset(f: &Fixture) {
         &f.slug,
         f.tenant_id,
         "finalise002",
+        None,
     )
     .await
     .expect("second");
@@ -452,6 +456,7 @@ async fn two_uploads_of_one_file_share_an_object_and_are_two_assets(f: &Fixture)
         &f.slug,
         f.tenant_id,
         "dedupe001",
+        None,
     )
     .await
     .expect("first");
@@ -461,6 +466,7 @@ async fn two_uploads_of_one_file_share_an_object_and_are_two_assets(f: &Fixture)
         &f.slug,
         f.tenant_id,
         "dedupe002",
+        None,
     )
     .await
     .expect("second");
@@ -523,6 +529,7 @@ async fn an_incomplete_upload_is_a_permanent_refusal_not_a_retry(f: &Fixture) {
         &f.slug,
         f.tenant_id,
         "short001",
+        None,
     )
     .await
     .expect_err("an incomplete upload cannot be finalised");
@@ -539,6 +546,7 @@ async fn an_upload_with_no_session_is_permanent(f: &Fixture) {
         &f.slug,
         f.tenant_id,
         "neverexisted",
+        None,
     )
     .await
     .expect_err("no session");
@@ -561,6 +569,7 @@ async fn a_promotion_that_lost_its_asset_row_resumes(f: &Fixture) {
         &f.slug,
         f.tenant_id,
         "resume001",
+        None,
     )
     .await
     .expect("finalise");
@@ -588,6 +597,7 @@ async fn a_promotion_that_lost_its_asset_row_resumes(f: &Fixture) {
         &f.slug,
         f.tenant_id,
         "resume001",
+        None,
     )
     .await
     .expect("a promoted upload with no asset row must be recoverable");
@@ -653,6 +663,7 @@ async fn a_video_is_measured_even_though_nothing_renders_it(f: &Fixture) {
         &f.slug,
         f.tenant_id,
         "measure001",
+        None,
     )
     .await
     .expect("finalise");
@@ -699,6 +710,7 @@ async fn a_video_is_measured_even_though_nothing_renders_it(f: &Fixture) {
         &f.slug,
         f.tenant_id,
         "measure006",
+        None,
     )
     .await
     .expect("finalise");
@@ -726,6 +738,7 @@ async fn an_asset_whose_derivatives_all_exist_is_still_measured(f: &Fixture) {
         &f.slug,
         f.tenant_id,
         "measure002",
+        None,
     )
     .await
     .expect("finalise");
@@ -783,6 +796,7 @@ async fn a_quarter_turn_swaps_the_axes_in_the_measurement(f: &Fixture) {
         &f.slug,
         f.tenant_id,
         "measure004",
+        None,
     )
     .await
     .expect("finalise");
@@ -825,6 +839,7 @@ async fn a_quarter_turn_swaps_the_axes_in_the_measurement(f: &Fixture) {
         &f.slug,
         f.tenant_id,
         "measure005",
+        None,
     )
     .await
     .expect("finalise");
@@ -862,6 +877,7 @@ async fn a_measurement_never_overwrites_one_that_already_exists(f: &Fixture) {
         &f.slug,
         f.tenant_id,
         "measure003",
+        None,
     )
     .await
     .expect("finalise");
@@ -896,6 +912,7 @@ async fn an_asset_gets_a_thumbnail_a_preview_and_a_proxy(f: &Fixture) {
         &f.slug,
         f.tenant_id,
         "derive001",
+        None,
     )
     .await
     .expect("finalise");
@@ -968,6 +985,7 @@ async fn deriving_twice_records_one_row_per_profile(f: &Fixture) {
         &f.slug,
         f.tenant_id,
         "derive002",
+        None,
     )
     .await
     .expect("finalise");
@@ -1012,6 +1030,7 @@ async fn deriving_a_deleted_asset_is_permanent(f: &Fixture) {
         &f.slug,
         f.tenant_id,
         "derive003",
+        None,
     )
     .await
     .expect("finalise");
@@ -1075,6 +1094,7 @@ async fn a_file_no_renderer_can_read_is_not_a_failure(f: &Fixture) {
         &f.slug,
         f.tenant_id,
         "textfile001",
+        None,
     )
     .await
     .expect("a text file is a perfectly good asset");
@@ -1130,6 +1150,7 @@ async fn indexing_twice_leaves_one_document(f: &Fixture, context: &dam_pipeline:
         &f.slug,
         f.tenant_id,
         "reindex001",
+        None,
     )
     .await
     .expect("finalise");
@@ -1256,6 +1277,7 @@ async fn a_named_format_is_rendered_and_recorded(f: &Fixture) {
         &f.slug,
         f.tenant_id,
         "conv001",
+        None,
     )
     .await
     .expect("finalise");
@@ -1324,6 +1346,7 @@ async fn rendering_the_same_format_twice_records_one_row(f: &Fixture) {
         &f.slug,
         f.tenant_id,
         "conv002",
+        None,
     )
     .await
     .expect("finalise");
@@ -1410,6 +1433,7 @@ async fn a_conversion_for_the_wrong_class_is_permanent(f: &Fixture) {
         &f.slug,
         f.tenant_id,
         "conv003",
+        None,
     )
     .await
     .expect("finalise");
@@ -1448,6 +1472,7 @@ async fn an_unknown_conversion_is_permanent(f: &Fixture) {
         &f.slug,
         f.tenant_id,
         "conv004",
+        None,
     )
     .await
     .expect("finalise");
@@ -1480,6 +1505,7 @@ async fn a_withdrawn_conversion_still_renders(f: &Fixture) {
         &f.slug,
         f.tenant_id,
         "conv005",
+        None,
     )
     .await
     .expect("finalise");
@@ -1514,6 +1540,7 @@ async fn the_whole_chain_runs_through_the_worker() {
     let context = dam_pipeline::worker::Context {
         // No hosted-model context: these suites are about the queue and the render stages.
         ai: None,
+        scanner: None,
         global: f.global.clone(),
         store: Arc::clone(&f.store),
         indexes: Arc::new(dam_search::IndexPool::new(dam_search::PoolConfig::new(

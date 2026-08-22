@@ -2436,7 +2436,32 @@ Asked for after the go-live gap analysis. Ordered cheapest-first among items tha
       `into_make_service_with_connect_info` would have been a 500 on every public route rather than a lenient
       one. It reads the extension directly now, and a case asserts both halves — engaged with a peer, allowing
       without one.
-- [ ] **L.5 A virus scan on ingest.** Listed in M1 as done; not implemented.
+- [x] **L.5 A virus scan on ingest.** M1 listed it; nothing existed. `dam_media::antivirus` talks `clamd`'s
+      `INSTREAM` over a socket — four lines of framing, so no dependency — rather than shelling out to
+      `clamscan`, which reloads the whole signature database per invocation and would need the bytes written to
+      a shared filesystem before we have decided to accept them.
+
+      Scanned **before promotion**, so infected bytes never reach a content-addressed key and never become an
+      asset. Quarantining an asset row afterwards was the alternative, and it leaves the object inside the
+      library's own namespace while making "is this safe" a question about a column.
+
+      An unreachable scanner refuses the upload **transiently** — fail closed, and recoverable: the upload
+      waits in staging and finalises when `clamd` returns. A configurable fail-open is the setting that is
+      still switched on a year later. An unparseable reply is permanent and deliberately not read as clean,
+      because a parser that fell through to `Clean` would turn a future protocol change into a silent bypass
+      of the only thing between an upload and the library.
+
+      **Files past `max_scan_bytes` (default 100 MB, matching `clamd`'s own ceiling) are accepted unscanned**,
+      with a warning naming the size. A DAM for video masters cannot refuse every large file; the honest thing
+      is to say so rather than imply coverage. Written down in `docker/DEPLOY.md` in those words.
+
+      Eight unit cases including a fake `clamd` that asserts the wire framing from the server's side — the
+      zero-length terminator is the mistake that presents as "the scanner is down". Then verified against a
+      real ClamAV: EICAR refused permanently with its signature and no asset created, a clean PNG through to
+      three derivatives, a dead port producing a re-queued job and no asset, and that same upload finalising
+      itself once the scanner came back.
+
+      Not built: re-scanning existing assets when signatures update. A scan happens once, at ingest.
 - [ ] **L.6 C2PA (task 1.9, G1).** Unblocked since 2026-08-21 and still unbuilt. GAPS.md calls the current
       behaviour "a bug in the current design, not a missing feature": every derivative strips provenance.
 

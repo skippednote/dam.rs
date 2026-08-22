@@ -798,6 +798,7 @@ fn context(f: &Fixture, transport: Arc<Recorded>) -> dam_pipeline::worker::Conte
     dam_pipeline::worker::Context {
         global: f.global.clone(),
         store: Arc::new(dam_store::FakeS3Store::with_test_clock().0),
+        scanner: None,
         indexes: Arc::new(dam_search::IndexPool::new(dam_search::PoolConfig::new(
             std::path::Path::new("/tmp/damrs-backfill-chain"),
         ))),

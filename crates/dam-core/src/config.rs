@@ -54,6 +54,8 @@ pub struct Config {
     pub storage: StorageConfig,
     pub search: SearchConfig,
     pub telemetry: TelemetryConfig,
+    #[serde(default)]
+    pub security: SecurityConfig,
     pub ai: AiConfig,
 }
 
@@ -172,6 +174,25 @@ pub struct StorageConfig {
     pub multipart_part_mib: u64,
 }
 
+/// Scanning uploads before they become assets (M1).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SecurityConfig {
+    /// `host:port` of a `clamd`. **`None` scans nothing.**
+    ///
+    /// Off by default because requiring `clamd` on every developer machine to accept an upload would make the
+    /// dev stack a three-container affair — and a security control that blocks the inner loop is one somebody
+    /// disables permanently. The cost is that a deployment which never sets it never scans, which is why
+    /// `docker/DEPLOY.md` lists it as required rather than optional.
+    pub clamd_address: Option<String>,
+    /// The largest upload to send to the scanner.
+    ///
+    /// Defaults to `clamd`'s own `StreamMaxLength`. Anything larger is **accepted unscanned** with a warning:
+    /// a DAM whose purpose is video masters cannot refuse every large file, and the honest thing is to say so
+    /// rather than to imply coverage that does not exist.
+    pub max_scan_bytes: u64,
+}
+
 /// Where the per-tenant Tantivy indexes live (§19).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -261,6 +282,7 @@ impl Default for Config {
             environment: Environment::Development,
             server: ServerConfig::default(),
             database: DatabaseConfig::default(),
+            security: SecurityConfig::default(),
             storage: StorageConfig::default(),
             search: SearchConfig::default(),
             telemetry: TelemetryConfig::default(),
@@ -339,6 +361,15 @@ impl Default for StorageConfig {
             access_key_id: None,
             secret_access_key: None,
             multipart_part_mib: 16,
+        }
+    }
+}
+
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        Self {
+            clamd_address: None,
+            max_scan_bytes: 100 * 1024 * 1024,
         }
     }
 }

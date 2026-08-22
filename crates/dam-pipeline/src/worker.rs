@@ -73,6 +73,13 @@ pub struct Context {
     pub global: sqlx::PgPool,
     pub store: Arc<dyn ResumableStore>,
     pub indexes: Arc<dam_search::IndexPool>,
+    /// The virus scanner, when one is configured.
+    ///
+    /// `None` scans nothing, which is the default and is why `docker/DEPLOY.md` lists `clamd` as required for
+    /// a deployment rather than optional. Held on the context rather than read from configuration inside
+    /// `finalise`, for the same reason the store is: the pipeline has no business knowing how the deployment
+    /// is configured.
+    pub scanner: Option<dam_media::antivirus::Scanner>,
     /// What a hosted-model call needs: the sealing keyring, the price list, and the transport.
     ///
     /// `None` disables the enrichment kind outright, which is what a deployment without a model configuration
@@ -203,6 +210,7 @@ pub async fn handle(context: &Context, job: &Job) -> Result<()> {
                 &slug,
                 job.tenant_id,
                 &upload_id,
+                context.scanner.as_ref(),
             )
             .await?;
 
