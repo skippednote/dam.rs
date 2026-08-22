@@ -414,6 +414,35 @@ Two billing traps the engine must encode:
 
 Both are `object_placements.min_duration_until`, checked before any transition.
 
+**Verified against real AWS**, 2026-08-22, in `ap-south-1`: ten objects uploaded to S3, one original
+transitioned `STANDARD → GLACIER` by the sweep (AWS agreeing, and the 90-day counter written forward),
+an Expedited restore issued and observed completing in 1 m 26 s, the tier reading `restored`, and the
+original fetched back byte-identical through the signed-URL chokepoint. Three defects only that run could
+have found are recorded below and in TASKS.md.
+
+**As built.** `tier_sweep` runs daily per tenant, self-chaining. Two departures
+from the design above, both deliberate and both refusals rather than
+approximations:
+
+- **Cross-pool moves are not performed.** S3 has no transition API — changing a
+  class is a self-copy — so a same-pool class change is the only move this
+  executes. A policy naming a different target pool is asking for a copy between
+  buckets, which halts as unsupported rather than tiering in place: "moved, but
+  not where you said" is worse than "did nothing, and said so". Cross-provider
+  tiering, the reason §6.4 drives transitions itself, therefore remains designed
+  and unbuilt.
+- **`pinned` is derived, not trusted.** The column exists with an index built for
+  the candidate scan, and nothing has ever written it. The scan reads
+  `assets.legal_hold` and `pin_hot` collection membership directly and ORs the
+  column on top, because a column nobody maintains says `false` for a legal-hold
+  asset and archiving one of those is the worst thing this engine can do.
+
+The predicate column is still unimplemented, so "not referenced by a live portal"
+is not yet expressible; `applies_to`, `derivative_roles`, `idle_days`,
+`min_age_days` and `from_storage_class` are. Eviction and replication are
+planned and not performed, and `only_superseded` halts as unsupported because
+`object_placements` has no version dimension to identify a superseded copy with.
+
 ### 6.5 Restore flow
 
 1. A download request resolves to a placement whose `latency_class > Instant`.
@@ -437,6 +466,33 @@ expiry.
 Cost guardrails, because Expedited vs Bulk is roughly a 10× spread: per-request
 and per-month restore budgets per tenant, admin approval above a threshold, and
 the estimate shown to the user before they confirm.
+
+**As built.** Step 3 is `HeadObject` polling only; the S3 event notification is
+not wired, and the poll runs every two minutes because Expedited lands in one to
+five and a person is waiting. Step 4 mints nothing and notifies nobody yet — the
+placement is marked and the UI reads it, which is what makes the tier badge
+change; `paths` (G9) is where the notification belongs and it has no consumer.
+Step 5's batch groups the decision, the estimate and the approval, *not* the S3
+calls: `RestoreObject` is per object, so four hundred assets are four hundred
+calls whatever the grouping.
+
+Showing the estimate before the confirmation needed a read that records nothing,
+which is `GET /assets/{id}/restore/quote` — it prices all three tiers in one
+response, because the comparison is the reason to show a number at all. A tier
+the class does not offer is returned refused-with-a-reason rather than omitted.
+
+Two things that fall out of the arithmetic and are worth knowing before somebody
+reports them as bugs. Below roughly a megabyte all three tiers quote the same
+figure, because the per-1000-requests charge dominates and the per-GB term rounds
+away — the tier chooser is genuinely meaningless for small objects. And a pool
+with no prices recorded estimates zero, which reads as "this deployment does not
+know" rather than "free"; prices are an operator's fact about their own account,
+so nothing seeds them.
+
+The poll claims in one transaction and issues outside it, making a lost claim
+possible and a double charge impossible. That trade is closed by reconciling
+against S3: a row claiming a restore over an object with none in progress is a
+call that never landed, and is re-issued.
 
 ### 6.6 Cost model
 

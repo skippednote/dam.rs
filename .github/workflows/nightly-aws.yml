@@ -22,14 +22,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run the conformance suite against real S3
         env:
-          DAMRS_TEST_AWS: "1"
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REGION: us-east-1
+          AWS_REGION: ${{ vars.AWS_REGION || 'ap-south-1' }}
           DAMRS_TEST_BUCKET: ${{ secrets.DAMRS_TEST_BUCKET }}
         run: |
-          if [ -z "$AWS_ACCESS_KEY_ID" ]; then
-            echo "::notice::AWS credentials not configured — skipping"
+          # A skip needs BOTH halves stated, because this job spent months exiting here for the wrong
+          # reason: `--features aws-conformance` named a feature that did not exist, and the credential
+          # check returned 0 before cargo could say so. Green, every night, having run nothing.
+          if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$DAMRS_TEST_BUCKET" ]; then
+            echo "::warning::AWS credentials or DAMRS_TEST_BUCKET not configured — the only coverage of \
+              real Glacier semantics did NOT run"
             exit 0
           fi
-          cargo test -p dam-store --features aws-conformance -- --ignored
+          # Named target, not `-- --ignored` across the package: that form also builds and filters every
+          # other suite in the crate, which is how a missing feature hid behind nine "0 tests" lines.
+          cargo test -p dam-store --features aws-conformance --test aws_conformance -- --ignored --nocapture

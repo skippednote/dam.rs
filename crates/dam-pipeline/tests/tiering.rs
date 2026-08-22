@@ -105,6 +105,7 @@ async fn the_archival_lifecycle_holds() {
     expedited_deep_archive_is_refused_rather_than_downgraded(&f).await;
     the_estimate_reflects_the_tier(&f).await;
 
+    a_pinned_object_does_not_consume_the_run_cap(&f).await;
     a_store_that_cannot_tier_says_so_and_keeps_the_count(&f).await;
     a_claim_that_never_reached_s3_is_reissued(&f).await;
     each_pass_leaves_the_next_one_behind_it(&f).await;
@@ -634,6 +635,59 @@ async fn a_run_records_what_it_did(f: &Fixture) {
         "and this policy did move something: {swept:?}"
     );
     assert_eq!(class_of(f, &key).await, "GLACIER_IR");
+    disable_all(f).await;
+}
+
+/// The cap bounds what moves, not what is looked at.
+///
+/// Found against a real library on AWS: a tenant with 136 pinned placements and `max_objects_per_run = 1`
+/// planned nothing, run after run. The scan fetched cap-plus-one rows in key order, both happened to be
+/// pinned, and the planner correctly reported two skips and no transitions — so a policy that looked
+/// configured could never reach a movable object. Ordering movable rows first is the fix; this is the case
+/// that would have caught it.
+async fn a_pinned_object_does_not_consume_the_run_cap(f: &Fixture) {
+    // Keys chosen so the pinned one sorts *first*: without the ordering fix it takes the whole budget.
+    let pinned = object(
+        f,
+        "acme/o/aa/aa/pinned-first",
+        4096,
+        origin() - Duration::days(300),
+    )
+    .await;
+    let movable = object(
+        f,
+        "acme/o/zz/zz/movable-last",
+        4096,
+        origin() - Duration::days(300),
+    )
+    .await;
+    sqlx::query("UPDATE object_placements SET pinned = true WHERE object_key = $1")
+        .bind(pinned.as_str())
+        .execute(&f.tenant)
+        .await
+        .expect("pin");
+
+    let id = policy(f, "one at a time", false).await;
+    sqlx::query("UPDATE lifecycle_policies SET max_objects_per_run = 1 WHERE id = $1")
+        .bind(id)
+        .execute(&f.tenant)
+        .await
+        .expect("cap");
+
+    let swept = dam_pipeline::tiering::sweep(&f.global, &f.store, &f.slug, origin())
+        .await
+        .expect("sweep");
+
+    assert!(
+        swept.moved >= 1,
+        "a cap of one must move one, not spend its budget on a row it was never going to move: {swept:?}",
+    );
+    assert_eq!(
+        class_of(f, &movable).await,
+        "GLACIER_IR",
+        "and the movable object is the one that moved",
+    );
+    assert_eq!(class_of(f, &pinned).await, "STANDARD", "while the pin held",);
     disable_all(f).await;
 }
 

@@ -25,15 +25,16 @@ Updated with every slice. The detail is in the sections below; this is the part 
 |---|---|
 | **M0–M3c** Foundation, ingest, metadata/search/rights, delivery/sharing/restore | complete |
 | **F** The UI: browse, detail, upload, filter rail, lightbox, bulk bar, design pass | complete |
-| **F.11b** Share/portal UI, schema administration, metadata types | complete except restore UX |
-| **Q** Acquia parity, 20 slices | Q.1–Q.18 and Q.19a done; Q.14b, Q.19b and Q.20 open |
+| **F.11b** Share/portal UI, schema administration, metadata types | complete, restore UX included |
+| **Q** Acquia parity, 20 slices | Q.1–Q.19 done; Q.14b and Q.20 open |
+| **Archival** Tiering engine, restores, the storage screen | **done** — the sweep and poll jobs, the plan/quote/request/approve API, delivery's 202, bulk archive and restore, the restore panel |
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | **done** — two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query, the MCP server |
 | **M6** Workflow/proofing, annotations, analytics | not started |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** Q.19b dependent fields → Q.14b collections in the app → Q.20 sundries → M4 local AI → M6 → M3d → Pre-GA.
+**Next up, in order:** Q.14b collections in the app → Q.20 sundries → M4 local AI → M6 → M3d → Pre-GA.
 
 **`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
 note carried; `DECISIONS.md` records what was chosen. Two of them needed code: a portal may now be backed by a
@@ -1216,7 +1217,10 @@ the grid against sample data; these wire it to the API and make it a thing a per
   axe-clean in both states; the run caught a real bug — the shared API client read `message` where the
   server sends `reason`, so *every* reason-carrying refusal in the app was reaching users as "Request
   failed (409)". Driven against the live stack end to end.
-- [ ] **F.11b·2b Restore UX.** The remaining surface.
+- [x] **F.11b·2b Restore UX.** Done with the archival slice: the detail panel quotes all three tiers with
+      their ETAs before the button, shows the unavailable one refused with its reason rather than hidden, and
+      becomes a status once a restore is running. `/storage` is the administrator's half — every rule with its
+      dry-run state and a Plan button, skips grouped by reason with the pins spelled out.
 
 **The gap the UI runs into, stated plainly:** `dam-worker` has no queue consumer, so nothing generates a
 derivative and nothing finalises an upload into an asset. An upload lands in staging and stops there — the
@@ -2325,8 +2329,8 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
       rail, moving a row in the browser moved it again, and the screen was reading field *keys* where the tenant
       had written labels — the catalogue, not the definitions, is what a person-facing list needs.
 
-- [ ] **Q.19b Dependent metadata fields.** A field whose relevance depends on another field's value: shown when
-      the parent matches, and required only when shown.
+- [x] **Q.19b Dependent metadata fields.** A field whose relevance depends on another field's value: shown when
+      the parent matches, and required only when shown. (Shipped in `0461f0f`; the box was never ticked.)
 - [ ] **Q.20 Site branding, webhook delivery, the admin worklists, tag vocabulary administration.** The
   worklists are the cheapest real value on this list: they are queries over data damrs already holds.
 
@@ -2337,6 +2341,88 @@ storage and usage reports are G19. Entries (the PIM) is a new application and la
 
 Not building: Hootsuite, Mobile, Templates, Video Creator, Syndicate, Digimarc, Google Analytics linkage —
 third-party or separate products, reached through the API and webhooks, which are on the list.
+
+
+## Archival — tiering, restores, and the storage screen (§6.4, §6.5)
+
+Raised as "do we have archival in place?". The answer was: every hard part, and none of the wiring. The
+planner, the restore arithmetic, the S3 calls (conformance-tested against real Glacier nightly), the
+bookkeeping and the whole schema existed; nothing called any of it. So every asset stayed in the class it was
+uploaded to, permanently, `restore_requests` was a table with no writer, and `restore_requests_poll_idx` had
+been indexing for a poll query that did not exist.
+
+- [x] **A.1 The executor.** `tier_sweep` plans every enabled policy and executes what is not a dry run;
+      `restore_poll` issues what is queued, checks what is in flight, and expires what has lapsed. Separate
+      kinds because they fail differently — a sweep can skip a day, while a restore is a person waiting.
+      Both re-queue themselves under M5c's pattern and deliberately without a dedupe key, which the note on
+      `requeue_backfill_collect` explains at length.
+
+      Three findings. `object_placements.pinned` has never been written by anything, so trusting it would have
+      archived assets under legal hold — the scan derives pinning from the facts that mean it and ORs the
+      column on top. `dam_db::restores` took a `&PgPool`, which is *why* it was dead code: its tables are
+      tenant tables needing a tenant `search_path`, so from the worker every function in it was unreachable.
+      And `storage_pools` had one retrieval price, so the tier chooser §6.5 turns on would have quoted the same
+      number three times.
+
+- [x] **A.2 The API and the two places the rest of the system had to learn about cold bytes.** Plan, run,
+      quote, request, read, approve. Quoting had to become a read that records nothing, because §6.5 wants the
+      estimate *before* the confirmation and the only thing producing a plan was the POST that also creates the
+      request.
+
+      Delivery answers `202` with the class, the ETA and where to ask, rather than redirecting to a GET that
+      S3 refuses with an XML document damrs never sees. The download mint reports `archived` rather than
+      `ready`, above the ledger write, because nothing was distributed and a cold asset that consumed a
+      download per click would exhaust a capped licence without delivering a byte.
+
+      `archive`/`unarchive` joined the bulk vocabulary — `assets.status` has accepted `'archived'` since 0001
+      and `status:archived` has been a live selector since Q.15, with nothing anywhere able to set it — and
+      `restore` finally gave `restores::in_batch` a caller.
+
+      **The bug worth remembering:** the archival check read the original's placement for *every* delivery, so
+      the first thing on screen after archiving one asset was a badge saying Archived beside a blank square.
+      The comment above the function said that could not happen. Same shape as the search-thumbnail bug: no
+      test archived anything, so nothing caught it, and driving the real thing found both.
+
+- [x] **A.3 The screens.** The detail panel quotes all three tiers before the button and becomes a status once
+      a restore is running; `/storage` is the administrator's half, with every rule's dry-run state and a plan
+      whose skips are grouped by reason and whose pins are named. Ten e2e cases, two of them axe.
+
+- [x] **A.4 Proven against real AWS, which found three defects nothing local could.** The nightly job that
+      was supposed to cover Glacier semantics had never run: it invoked `--features aws-conformance`, a feature
+      that did not exist, and exited early every night because the credential secret was unset. Green forever,
+      having executed nothing — and both skip messages in the shared conformance suite pointed at it as the
+      thing that covered them. The feature and the `#[ignore]`d target now exist; against a real bucket the
+      suite reports **20 passed, 0 skipped**, and the workflow's skip is a warning that names what did not run.
+
+      Then the full stack against the same bucket, which found:
+
+      1. **A deployment against real AWS was inexpressible.** `storage.endpoint` defaulted to the dev
+         SeaweedFS, `S3Store::aws` is chosen only when it is `None`, and neither an environment variable nor a
+         TOML file can put an `Option` back to `None`. Every reachable configuration produced *some* endpoint.
+         The default is now `None` — production shape, failing in the honest direction — and an empty string
+         reads as "no endpoint" for the case where something upstream already set one.
+      2. **Pinned rows consumed the run cap.** A tenant with 136 pinned placements and
+         `max_objects_per_run = 1` planned nothing, run after run: the scan fetched cap-plus-one rows and both
+         were pinned. Two attempts to order the unmovable rows last each missed a case — collection pins,
+         then cold-to-warm — because each was an incomplete reimplementation of the planner in SQL. The cap
+         bounds what *moves*; a separate, much wider window bounds what is *read*. Conflating the two is what
+         produced a policy that silently did nothing forever.
+      3. **Credential refresh timed out at five seconds.** A worker up for twenty minutes failed every
+         `CopyObject` with `ConnectorError { TimedOutError(5s) }` while the same copy took 0.58 s from the CLI
+         and a restarted worker succeeded at once. The five was `DEFAULT_LOAD_TIMEOUT` in the SDK's identity
+         cache — an SSO exchange or an IMDS call behind a refresh does not always fit in it. Now thirty
+         seconds, stated rather than defaulted. This one would have hit any long-lived deployment an hour
+         after deploy and blamed the network.
+
+      One number worth keeping: our `expires_at` for a restored copy is seven days from availability, while
+      AWS reported `expiry-date` a day later — it rounds to a day boundary. Ours is the conservative side, so
+      delivery stops before the bytes do, which is the direction to be wrong in.
+
+**Not built, and deliberately.** A cross-pool move: S3 transitions are a self-copy, so a policy naming a
+different target pool asks for a copy between buckets and halts as unsupported rather than tiering in place —
+"moved, but not where you said" is worse than "did nothing, and said so". Eviction and replication likewise:
+representable in the schema, planned, not performed. And `only_superseded`, which `object_placements` has no
+version dimension to express.
 
 
 ## M5 — Hosted-model enrichment

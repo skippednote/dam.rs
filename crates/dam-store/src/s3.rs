@@ -55,6 +55,23 @@ const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long to wait for the connection itself. Short, because a wrong endpoint should fail fast.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long a credential *refresh* may take before the operation carrying it fails.
+///
+/// The SDK's own default is five seconds (`DEFAULT_LOAD_TIMEOUT` in `aws-smithy-runtime`), and five seconds is
+/// not much for the things that sit behind a credential refresh: an SSO token exchange, an STS
+/// `AssumeRoleWithWebIdentity`, or IMDS on a loaded instance. It is also invisible until it happens, because a
+/// freshly-started process has warm credentials and only starts refreshing an hour later.
+///
+/// Found against real AWS. A worker that had been up twenty minutes failed every `CopyObject` with
+/// `ConnectorError { source: TimedOutError(5s) }` while `PutObject` from earlier in its life had succeeded and
+/// the same copy took 0.58 s from the CLI. The five in the error message was this default, not anything about
+/// the request — and a restarted worker succeeded immediately, which is the shape of a credential problem
+/// wearing a network problem's error.
+///
+/// Thirty seconds because the failure mode of waiting too long is a slow operation, and the failure mode of
+/// waiting too little is a tiering run that dies an hour after it was deployed and blames the network.
+const CREDENTIAL_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Whether `endpoint` is plain HTTP, and therefore has no use for a certificate store.
 ///
 /// Not a style question. The SDK's default HTTP client enables the platform native root store, and
@@ -117,6 +134,14 @@ impl S3Store {
             .region(Region::new(region.to_owned()))
             .retry_config(retry)
             .timeout_config(timeout)
+            // A credential cache that allows a refresh longer than five seconds. Stated rather than
+            // defaulted for the same reason `resilience` is stated: see `CREDENTIAL_LOAD_TIMEOUT` for the
+            // failure this prevents, which took a real AWS run to see at all.
+            .identity_cache(
+                aws_config::identity::IdentityCache::lazy()
+                    .load_timeout(CREDENTIAL_LOAD_TIMEOUT)
+                    .build(),
+            )
             .load()
             .await;
         Self {

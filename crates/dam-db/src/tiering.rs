@@ -141,20 +141,49 @@ fn policy_of(row: sqlx::postgres::PgRow) -> Result<Policy, Error> {
 
 /// The placements one policy could act on.
 ///
-/// Ordered by key so a plan is stable between runs: an operator comparing two dry runs is comparing text, and
-/// a set query that returned rows in a different order every time would make every diff useless.
+/// Movable rows first, then by key. Both halves matter:
 ///
-/// The limit is the policy's own `max_objects_per_run` plus one. Plus one, because the planner reports
-/// `ObjectLimit { remaining }` and a query that fetched exactly the limit could never tell a run that ended
-/// at its cap from one that ran out of candidates — which the module docs call out as the failure that looks
-/// like success.
+/// Ordered by key so a plan is stable between runs: an operator comparing two dry runs is comparing text, and
+/// a set query returning rows in a different order every time would make every diff useless.
+///
+/// ## The window is much wider than the run cap, and that is the fix for a real bug
+///
+/// The first version fetched `max_objects_per_run + 1` rows. Against a real library on AWS that meant a tenant
+/// with 136 pinned placements and a cap of 1 planned nothing at all, run after run: the two rows it fetched
+/// were both pinned, the planner correctly reported two skips and no transitions, and a policy that looked
+/// perfectly configured could never reach a movable object.
+///
+/// Two attempts at ordering the unmovable rows last both failed, and instructively. Demoting `pinned` missed
+/// pins that come from a `pin_hot` collection rather than the column; adding "already in the target class"
+/// then missed cold-to-warm, which is a refusal only a class ordering can see. Every version of that fix was
+/// an incomplete reimplementation of the planner in SQL, which is the wrong shape: `lifecycle::plan` applies
+/// rules no predicate can express — a size floor, a minimum-duration counter, a warming direction — and it is
+/// the only thing that should be deciding.
+///
+/// So the query stops trying to be clever. The **cap bounds what moves**, because that is what costs money and
+/// makes S3 calls; the **window bounds what is read**, which is one indexed scan. They are different budgets
+/// and conflating them is what produced a policy that silently did nothing forever.
+pub fn scan_window(max_objects_per_run: Option<u32>) -> i64 {
+    // Fifty rows read per row moved, floored at a thousand and ceilinged at fifty thousand. The floor is
+    // there so a cap of one still gets a real look at the library; the ceiling so a cap of ten thousand does
+    // not turn one sweep into a half-million-row read. Between them, a policy whose candidates are almost all
+    // pinned still finds the few that are not.
+    let per_move = i64::from(max_objects_per_run.unwrap_or(10_000)).saturating_mul(50);
+    per_move.clamp(1_000, 50_000)
+}
+
+/// The placements one policy could act on.
+///
+/// Ordered by key so a plan is stable between runs: an operator comparing two dry runs is comparing text, and
+/// a set query returning rows in a different order every time would make every diff useless. Read at
+/// [`scan_window`] width rather than at the run cap — see there for why those are different budgets.
 pub async fn candidates(
     conn: &mut sqlx::PgConnection,
     policy: &Policy,
     now: DateTime<Utc>,
 ) -> Result<Vec<Candidate>, Error> {
     let horizon = now - chrono::Duration::days(i64::from(policy.min_age_days.max(0)));
-    let limit = i64::from(policy.engine.max_objects_per_run.unwrap_or(10_000)) + 1;
+    let limit = scan_window(policy.engine.max_objects_per_run);
 
     let rows = sqlx::query(
         "SELECT p.object_key, p.pool_id, p.size_bytes, p.state, p.storage_class, \

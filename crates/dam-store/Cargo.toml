@@ -33,6 +33,10 @@ testcontainers = { workspace = true, optional = true }
 
 [features]
 testing = ["dep:testcontainers"]
+# Enables `tests/aws_conformance.rs`, which runs against a real bucket and bills real money. Its own feature
+# rather than only `#[ignore]`, so `cargo test --all-features` on a laptop does not compile a suite whose
+# only purpose is to be run deliberately with credentials.
+aws-conformance = ["testing"]
 
 [dev-dependencies]
 dam-store = { path = ".", features = ["testing"] }
@@ -51,3 +55,10 @@ todo = "warn"
 dbg_macro = "deny"
 unwrap_used = "deny"
 expect_used = "warn"
+
+# Bound to its feature, so an ordinary `cargo test` neither compiles nor lists it. Without this the target
+# builds everywhere and shows up as an ignored test in every run, which is an invitation to `--include-ignored`
+# and a surprise bill.
+[[test]]
+name = "aws_conformance"
+required-features = ["aws-conformance"]

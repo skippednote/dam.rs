@@ -117,6 +117,22 @@ pub struct DatabaseConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct StorageConfig {
+    /// The S3-compatible endpoint, or `None` for real AWS.
+    ///
+    /// **Defaults to `None`, and that is a deliberate change from defaulting to the dev SeaweedFS.** The old
+    /// default made AWS unreachable: `S3Store::aws` is chosen exactly when this is `None`, figment cannot
+    /// unset an `Option` back to `None` through an environment variable, and TOML has no null to write — so
+    /// every possible configuration produced *some* endpoint, and a deployment against real S3 could not be
+    /// expressed at all. Found by trying to point the dev stack at a real bucket and watching it insist on
+    /// `http://localhost:8333` with the variable unset.
+    ///
+    /// An empty string also means `None`, which is the escape hatch when a file or a higher-precedence
+    /// variable has already set one: `DAMRS_STORAGE__ENDPOINT=` reads as "no endpoint, use AWS" rather than
+    /// as an unusable empty URL.
+    ///
+    /// A default describing production rather than a laptop also fails in the right direction. Running `damd`
+    /// with no storage configuration now asks AWS for a bucket named `damrs-dev` and says so; before, it
+    /// quietly talked to a SeaweedFS that may not be there.
     pub endpoint: Option<String>,
     pub region: String,
     pub bucket: String,
@@ -282,7 +298,7 @@ impl Default for DatabaseConfig {
 impl Default for StorageConfig {
     fn default() -> Self {
         Self {
-            endpoint: Some("http://localhost:8333".into()),
+            endpoint: None,
             region: "us-east-1".into(),
             bucket: "damrs-dev".into(),
             force_path_style: true,
@@ -352,6 +368,15 @@ impl Config {
                 };
                 Error::Config(format!("{e}{where_}"))
             })?;
+
+        let mut cfg = cfg;
+        // An explicitly-empty endpoint means "no endpoint": use real AWS. The escape hatch exists because
+        // precedence only ever *adds* — a variable or a file can set an endpoint, and nothing downstream
+        // could previously take one away. Normalised here rather than at each of the two call sites that
+        // branch on it, so `damd` and `dam-worker` cannot disagree about what an empty string means.
+        if cfg.storage.endpoint.as_deref().is_some_and(str::is_empty) {
+            cfg.storage.endpoint = None;
+        }
 
         cfg.validate()?;
         Ok(cfg)
@@ -440,6 +465,52 @@ mod tests {
                 cfg.database.url.expose().starts_with("postgres://"),
                 "default database URL must be a real URL, got {:?}",
                 cfg.database.url.expose()
+            );
+            Ok(())
+        });
+    }
+
+    /// The configuration must be able to say "real AWS", which for a while it could not.
+    ///
+    /// `S3Store::aws` is chosen exactly when `storage.endpoint` is `None`. The default used to be the dev
+    /// SeaweedFS endpoint, and neither an environment variable nor a TOML file can put an `Option` back to
+    /// `None` — env vars only set, and TOML has no null. So every reachable configuration produced some
+    /// endpoint and a deployment against real S3 was inexpressible. Found by trying to point the dev stack at
+    /// a real bucket and watching it keep insisting on `localhost:8333` with the variable unset.
+    /// Asserted against `Default` rather than through `load`, because `Jail` sets environment variables and
+    /// does not clear the ones already there — and a developer with the dev stack's variables exported would
+    /// see a different answer from CI. A test whose result depends on the shell it was run from is worse than
+    /// no test, and this one found that out the honest way.
+    #[test]
+    fn a_deployment_against_real_aws_is_expressible() {
+        assert_eq!(
+            StorageConfig::default().endpoint,
+            None,
+            "the default must describe production, not a laptop: an endpoint here is a deployment that \
+             cannot reach AWS at all, since `S3Store::aws` is chosen only when this is `None`"
+        );
+    }
+
+    /// And an endpoint already set by something else can be taken away again.
+    ///
+    /// Precedence only ever adds: a file or a higher-precedence variable can set an endpoint, and before this
+    /// nothing downstream could clear one. An empty string is the escape hatch, and it must not survive as an
+    /// unusable empty URL.
+    #[test]
+    fn an_empty_endpoint_means_aws_rather_than_an_empty_url() {
+        Jail::expect_with(|jail| {
+            jail.set_env("DAMRS_STORAGE__ENDPOINT", "http://localhost:8333");
+            let dev = Config::load(None::<&str>).expect("load");
+            assert_eq!(
+                dev.storage.endpoint.as_deref(),
+                Some("http://localhost:8333")
+            );
+
+            jail.set_env("DAMRS_STORAGE__ENDPOINT", "");
+            let aws = Config::load(None::<&str>).expect("load");
+            assert_eq!(
+                aws.storage.endpoint, None,
+                "an empty endpoint is how a deployment says AWS when something upstream already named one"
             );
             Ok(())
         });
