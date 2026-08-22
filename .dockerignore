@@ -1,0 +1,16 @@
+# The build context is the source, not the working tree.
+#
+# `target/` is the big one: 40+ GB of local build artefacts that would be uploaded to the daemon and then
+# ignored, and whose presence also lets a stale local binary shadow a fresh build if a COPY ever widens.
+target/
+web/node_modules/
+web/.svelte-kit/
+web/build/
+web/test-results/
+web/playwright-report/
+data/
+.git/
+.github/
+.mise.toml
+.cargo/
+*.log

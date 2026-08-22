@@ -42,12 +42,24 @@ pub enum Error {
 
 type Result<T> = std::result::Result<T, Error>;
 
-/// Absolute paths to the vips binaries.
+/// Absolute paths to the vips binaries, and what this build of them calls things.
 #[derive(Debug, Clone)]
 pub struct Toolchain {
     vips: PathBuf,
     vipsheader: PathBuf,
     vipsthumbnail: PathBuf,
+    /// `vipsthumbnail`'s flag for an output ICC profile, which is not the same word in every release.
+    ///
+    /// 8.18 calls it `--output-profile`; 8.16 and earlier call it `--export-profile`. Nothing in the code
+    /// owns that name, so nothing in the code should hard-code it: the container image ships whatever the
+    /// base distribution has, and that moves independently of this repository.
+    ///
+    /// Found by building the image and re-rendering one HEIC in it. Debian trixie has 8.16, the hard-coded
+    /// `--output-profile` was refused as an unknown option, and *every* vips-rendered derivative failed. It
+    /// was invisible for PNG and JPEG, which the pure-Rust path handles, and total for HEIC, which only vips
+    /// can decode — so the image served a library where every iPhone photograph was stuck without a
+    /// thumbnail, while the same code was fine on the developer's 8.18.5.
+    profile_flag: &'static str,
 }
 
 impl Toolchain {
@@ -72,6 +84,12 @@ impl Toolchain {
         Self::from_dir(dir)
     }
 
+    /// The oldest release that spells the profile flag the new way.
+    ///
+    /// Only the minor version matters: the rename landed in 8.18, and vips has never renamed a flag inside a
+    /// minor series.
+    const PROFILE_FLAG_RENAMED_IN: (u32, u32) = (8, 18);
+
     fn from_dir(dir: &Path) -> Result<Self> {
         let vips = dir.join("vips");
         let vipsheader = dir.join("vipsheader");
@@ -84,13 +102,43 @@ impl Toolchain {
                 )));
             }
         }
+        let profile_flag = Self::profile_flag_for(&vips);
         Ok(Self {
             // Canonicalised so the path handed to a subprocess cannot be redirected by a symlink
             // swapped in between discovery and use.
             vips: vips.canonicalize().unwrap_or(vips),
             vipsheader: vipsheader.canonicalize().unwrap_or(vipsheader),
             vipsthumbnail: vipsthumbnail.canonicalize().unwrap_or(vipsthumbnail),
+            profile_flag,
         })
+    }
+
+    /// Asks the binary what version it is, once, at discovery.
+    ///
+    /// Synchronous and blocking, which is fine because discovery happens at startup rather than per render —
+    /// and asking per render would be one process spawn per thumbnail to learn something that cannot change
+    /// while the process is running.
+    ///
+    /// An unreadable or unparseable version assumes the *newer* spelling. That is the deliberate direction:
+    /// the pinned development toolchain and everything released since 2025 use it, so a parse failure on some
+    /// future `vips --version` format should not silently downgrade every deployment to a flag that release
+    /// may have dropped.
+    fn profile_flag_for(vips: &Path) -> &'static str {
+        let reported = std::process::Command::new(vips)
+            .arg("--version")
+            .output()
+            .ok()
+            .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+            .unwrap_or_default();
+        match parse_version(&reported) {
+            Some(version) if version < Self::PROFILE_FLAG_RENAMED_IN => "--export-profile",
+            _ => "--output-profile",
+        }
+    }
+
+    /// `vipsthumbnail`'s flag for an output ICC profile in this build.
+    pub fn profile_flag(&self) -> &'static str {
+        self.profile_flag
     }
 
     pub fn vips(&self) -> &Path {
@@ -104,6 +152,20 @@ impl Toolchain {
     pub fn vipsthumbnail(&self) -> &Path {
         &self.vipsthumbnail
     }
+}
+
+/// The `(major, minor)` out of a `vips --version` line such as `vips-8.18.5`.
+///
+/// Tolerant of the prefix and of anything after the minor, because the only thing being decided is which side
+/// of one rename this build sits on.
+fn parse_version(reported: &str) -> Option<(u32, u32)> {
+    let digits = reported
+        .trim()
+        .trim_start_matches(|c: char| !c.is_ascii_digit());
+    let mut parts = digits.split(['.', '-', ' ']);
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    Some((major, minor))
 }
 
 /// Minimal `which`, for the parent process only.
@@ -358,7 +420,7 @@ pub async fn render_with_limits(
         args.push("attention".to_owned());
     }
     if let Some(profile) = &spec.output_profile {
-        args.push("--output-profile".to_owned());
+        args.push(tools.profile_flag().to_owned());
         args.push(profile.clone());
         args.push("--intent".to_owned());
         args.push(spec.intent.as_str().to_owned());
@@ -510,5 +572,64 @@ mod tests {
         let probed =
             parse_header("width: 1\nheight: 1\nfilename: /tmp/a:b/c.png\n").expect("parse");
         assert_eq!((probed.width, probed.height), (1, 1));
+    }
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+
+    /// The rename is real and this is the table that proves the boundary is where it is.
+    ///
+    /// 8.18 introduced `--output-profile`; 8.16 and earlier want `--export-profile`. Hard-coding the newer
+    /// name made every vips-rendered derivative fail on a Debian trixie image — invisibly for PNG, which the
+    /// pure-Rust path decodes, and totally for HEIC, which nothing else can.
+    #[test]
+    fn the_profile_flag_follows_the_version() {
+        for (reported, expected) in [
+            ("vips-8.18.5", (8, 18)),
+            ("vips-8.16.1", (8, 16)),
+            ("8.14.1\n", (8, 14)),
+            ("vips-9.0.0", (9, 0)),
+        ] {
+            assert_eq!(parse_version(reported), Some(expected), "{reported}");
+        }
+        // Unparseable assumes the newer spelling: a future `--version` format must not silently downgrade
+        // every deployment to a flag that release may have dropped.
+        assert_eq!(parse_version("who knows"), None);
+    }
+
+    #[test]
+    fn the_boundary_is_eight_eighteen() {
+        assert!((8, 16) < Toolchain::PROFILE_FLAG_RENAMED_IN);
+        assert!((8, 17) < Toolchain::PROFILE_FLAG_RENAMED_IN);
+        assert!((8, 18) >= Toolchain::PROFILE_FLAG_RENAMED_IN);
+        assert!((9, 0) >= Toolchain::PROFILE_FLAG_RENAMED_IN);
+    }
+
+    /// The discovered toolchain agrees with the binary it found, whichever that is.
+    ///
+    /// Runs against whatever vips is on this machine rather than asserting one answer, so it passes on the
+    /// pinned 8.18.5 and inside a trixie container without a cfg flag deciding which truth to expect.
+    #[test]
+    fn discovery_picks_the_flag_this_build_accepts() {
+        let Ok(tools) = Toolchain::discover() else {
+            // No vips here; the integration suites are where its absence is a failure.
+            return;
+        };
+        let help = std::process::Command::new(tools.vipsthumbnail())
+            .arg("--help")
+            .output()
+            .expect("vipsthumbnail --help");
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&help.stdout),
+            String::from_utf8_lossy(&help.stderr)
+        );
+        assert!(
+            text.contains(tools.profile_flag()),
+            "discovery chose {} but this vipsthumbnail does not list it",
+            tools.profile_flag()
+        );
     }
 }
