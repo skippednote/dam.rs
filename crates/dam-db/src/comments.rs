@@ -118,6 +118,14 @@ pub enum CommentRefusal {
     #[error("a private comment needs at least one recipient, or nobody but you will see it")]
     PrivateWithNoRecipients,
 
+    /// A region or timecode the picture cannot contain (M6).
+    ///
+    /// Its own variant rather than a generic refusal, because the likely cause is specific: coordinates sent
+    /// as pixels instead of fractions, which produces numbers far outside 0..1 and a mark nobody can see. The
+    /// message says so.
+    #[error("{0}")]
+    BadRegion(String),
+
     #[error(transparent)]
     Database(#[from] Error),
 }
@@ -133,10 +141,75 @@ pub struct NewComment {
     pub recipients: Vec<Uuid>,
     /// The comment this replies to, if any.
     pub parent_id: Option<Uuid>,
+    /// Where on the picture, and when in the track, this comment points (M6).
+    pub anchor: Anchor,
+}
+
+/// Where a comment points.
+///
+/// A comment with an anchor is an annotation; one without is a remark about the asset as a whole. Both are the
+/// same row, because a thread mixes them freely — "the logo is wrong" pinned to a corner, and "approved" about
+/// the whole thing, belong in one conversation.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Anchor {
+    /// The rectangle, as fractions of the image: `(x, y, w, h)`, origin top-left.
+    ///
+    /// **Never pixels.** One asset has a thumbnail, a preview, a proxy and an original at four different sizes,
+    /// so a mark stored in pixels lands correctly on exactly one of them. Migration 0037 says the same in the
+    /// column comment, because this is the decision somebody will be tempted to undo.
+    pub region: Option<[f32; 4]>,
+    /// Where in a video or audio track, in milliseconds.
+    ///
+    /// Independent of the region: a moment with no rectangle ("the music stops here") and a rectangle with no
+    /// moment (a watermark present throughout) are both ordinary.
+    pub at_ms: Option<i64>,
+}
+
+impl Anchor {
+    /// Whether this comment points at anything in particular.
+    #[must_use]
+    pub const fn is_annotation(self) -> bool {
+        self.region.is_some() || self.at_ms.is_some()
+    }
+
+    /// Refuses a rectangle the CHECK constraint would refuse, by name.
+    ///
+    /// Checked here as well as in the column because the constraint's message names a constraint and this one
+    /// names the mistake — and a rectangle running past the edge means the coordinates were computed against
+    /// the wrong element, which is worth saying out loud rather than reporting as a database error.
+    pub fn validate(self) -> Result<(), CommentRefusal> {
+        if let Some([x, y, w, h]) = self.region {
+            let sane = [x, y, w, h].iter().all(|value| value.is_finite());
+            if !sane || x < 0.0 || y < 0.0 || w <= 0.0 || h <= 0.0 {
+                return Err(CommentRefusal::BadRegion(format!(
+                    "a region needs a positive extent inside the picture; got x={x} y={y} w={w} h={h}"
+                )));
+            }
+            // The same slack the constraint allows, for a rounding error at the far edge of a drag.
+            if x + w > 1.0001 || y + h > 1.0001 {
+                return Err(CommentRefusal::BadRegion(format!(
+                    "a region must fit inside the picture as fractions of it;                      x+w={} and y+h={} — were these pixels rather than fractions?",
+                    x + w,
+                    y + h
+                )));
+            }
+        }
+        if let Some(at) = self.at_ms
+            && !(0..=86_400_000).contains(&at)
+        {
+            return Err(CommentRefusal::BadRegion(format!(
+                "{at}ms is outside any asset's duration; a timecode is milliseconds into the track,                  not a timestamp"
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// A comment as stored.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `PartialEq` without `Eq`: the anchor carries floats, and claiming a total equality on a type holding an
+/// `f32` would be claiming more than the type offers.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Comment {
     pub id: Uuid,
     pub asset_id: Uuid,
@@ -151,6 +224,8 @@ pub struct Comment {
     /// Set when the words changed after posting, so a screen can say so rather than silently showing different
     /// text than whoever replied to it read.
     pub edited_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Where this comment points, when it points anywhere (M6).
+    pub anchor: Anchor,
 }
 
 type Row = (
@@ -164,10 +239,16 @@ type Row = (
     Option<Uuid>,
     chrono::DateTime<chrono::Utc>,
     Option<chrono::DateTime<chrono::Utc>>,
+    Option<f32>,
+    Option<f32>,
+    Option<f32>,
+    Option<f32>,
+    Option<i64>,
 );
 
 const COLUMNS: &str = "c.id, c.asset_id, c.author_id, c.body, c.visibility, c.status, c.parent_id, \
-                       c.status_by, c.created_at, c.edited_at";
+                       c.status_by, c.created_at, c.edited_at, \
+                       c.region_x, c.region_y, c.region_w, c.region_h, c.at_ms";
 
 fn comment(row: Row, recipients: Vec<Uuid>) -> Result<Comment, Error> {
     let (
@@ -181,6 +262,11 @@ fn comment(row: Row, recipients: Vec<Uuid>) -> Result<Comment, Error> {
         status_by,
         created_at,
         edited_at,
+        region_x,
+        region_y,
+        region_w,
+        region_h,
+        at_ms,
     ) = row;
     Ok(Comment {
         id,
@@ -198,6 +284,15 @@ fn comment(row: Row, recipients: Vec<Uuid>) -> Result<Comment, Error> {
         status_by,
         created_at,
         edited_at,
+        anchor: Anchor {
+            // All four or none — the constraint guarantees it, so a partial row here means the database and
+            // this module disagree, and `zip` would silently produce a rectangle from three numbers.
+            region: match (region_x, region_y, region_w, region_h) {
+                (Some(x), Some(y), Some(w), Some(h)) => Some([x, y, w, h]),
+                _ => None,
+            },
+            at_ms,
+        },
     })
 }
 
@@ -230,7 +325,7 @@ fn push_readable(builder: &mut QueryBuilder<Postgres>, reader: Uuid) {
     builder.push("))");
 }
 
-/// Posts a comment.
+/// Posts a comment, or an annotation — the same thing with an anchor.
 pub async fn post(
     conn: &mut sqlx::PgConnection,
     spec: NewComment,
@@ -245,6 +340,9 @@ pub async fn post(
     if spec.visibility == Visibility::Private && spec.recipients.is_empty() {
         return Err(CommentRefusal::PrivateWithNoRecipients);
     }
+    // Before the write too, so a bad rectangle is a sentence rather than a constraint violation — and so the
+    // caller's transaction is not aborted by one, which would surface later and somewhere else.
+    spec.anchor.validate()?;
 
     require_visible_asset(&mut *conn, spec.asset_id, planned).await?;
 
@@ -263,9 +361,12 @@ pub async fn post(
     }
 
     let id = Uuid::new_v4();
+    let region = spec.anchor.region;
     sqlx::query(
-        "INSERT INTO asset_comments (id, asset_id, author_id, body, visibility, parent_id) \
-         VALUES ($1, $2, $3, $4, $5, $6)",
+        "INSERT INTO asset_comments \
+           (id, asset_id, author_id, body, visibility, parent_id, \
+            region_x, region_y, region_w, region_h, at_ms) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
     )
     .bind(id)
     .bind(spec.asset_id)
@@ -273,6 +374,11 @@ pub async fn post(
     .bind(&spec.body)
     .bind(spec.visibility.as_str())
     .bind(spec.parent_id)
+    .bind(region.map(|r| r[0]))
+    .bind(region.map(|r| r[1]))
+    .bind(region.map(|r| r[2]))
+    .bind(region.map(|r| r[3]))
+    .bind(spec.anchor.at_ms)
     .execute(&mut *conn)
     .await
     .map_err(Error::from)?;

@@ -103,6 +103,9 @@ fn note(asset_id: Uuid, author: Uuid, body: &str) -> NewComment {
         visibility: Visibility::Public,
         recipients: vec![],
         parent_id: None,
+        // A remark about the asset as a whole. Annotations — the same row with an anchor — have their own
+        // suite; this one is about the conversation, and every case in it predates M6.
+        anchor: dam_db::comments::Anchor::default(),
     }
 }
 

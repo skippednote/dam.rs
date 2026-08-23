@@ -2615,6 +2615,11 @@ export interface components {
         CommentView: {
             /** Format: uuid */
             asset_id: string;
+            /**
+             * Format: int64
+             * @description Where in a video or audio track, in milliseconds. Independent of the region.
+             */
+            at_ms?: number | null;
             author: components["schemas"]["PersonView"];
             body: string;
             /** Format: date-time */
@@ -2634,6 +2639,13 @@ export interface components {
             parent_id?: string | null;
             /** @description Who this was addressed to. Routing — and, on a private comment, also who may read it. */
             recipients: components["schemas"]["PersonView"][];
+            /**
+             * @description Where on the picture this comment points, as `[x, y, w, h]` fractions of it — origin top-left (M6).
+             *
+             *     **Fractions, not pixels.** One asset is rendered at four sizes (thumbnail, preview, proxy, original),
+             *     so a client multiplies these by whatever it is displaying. Absent on a comment about the whole asset.
+             */
+            region?: number[] | null;
             /** @description `open`, `resolved`, `approved` or `changes_requested`. */
             status: string;
             status_by?: null | components["schemas"]["PersonView"];
@@ -3545,11 +3557,23 @@ export interface components {
         };
         /** @description A comment to post. */
         PostCommentRequest: {
+            /**
+             * Format: int64
+             * @description Pin it to a moment in a video or audio track, in milliseconds.
+             */
+            at_ms?: number | null;
             body: string;
             /** Format: uuid */
             parent_id?: string | null;
             /** @description Who to route it to. Required when `visibility` is `private`. */
             recipients?: string[];
+            /**
+             * @description Pin the comment to a region: `[x, y, w, h]` as fractions of the image, origin top-left (M6).
+             *
+             *     All four or none. Fractions rather than pixels, because the client that drew the box and the client
+             *     that renders it may be looking at different derivatives of the same asset.
+             */
+            region?: number[] | null;
             /** @description Defaults to public. Private is the deliberate choice, so it is the one you have to name. */
             visibility?: string;
         };

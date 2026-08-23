@@ -6879,6 +6879,14 @@
             "type": "string",
             "format": "uuid"
           },
+          "at_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Where in a video or audio track, in milliseconds. Independent of the region."
+          },
           "author": {
             "$ref": "#/components/schemas/PersonView"
           },
@@ -6915,6 +6923,17 @@
               "$ref": "#/components/schemas/PersonView"
             },
             "description": "Who this was addressed to. Routing — and, on a private comment, also who may read it."
+          },
+          "region": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number",
+              "format": "float"
+            },
+            "description": "Where on the picture this comment points, as `[x, y, w, h]` fractions of it — origin top-left (M6).\n\n**Fractions, not pixels.** One asset is rendered at four sizes (thumbnail, preview, proxy, original),\nso a client multiplies these by whatever it is displaying. Absent on a comment about the whole asset."
           },
           "status": {
             "type": "string",
@@ -8972,6 +8991,14 @@
           "body"
         ],
         "properties": {
+          "at_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Pin it to a moment in a video or audio track, in milliseconds."
+          },
           "body": {
             "type": "string"
           },
@@ -8989,6 +9016,17 @@
               "format": "uuid"
             },
             "description": "Who to route it to. Required when `visibility` is `private`."
+          },
+          "region": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number",
+              "format": "float"
+            },
+            "description": "Pin the comment to a region: `[x, y, w, h]` as fractions of the image, origin top-left (M6).\n\nAll four or none. Fractions rather than pixels, because the client that drew the box and the client\nthat renders it may be looking at different derivatives of the same asset."
           },
           "visibility": {
             "type": "string",

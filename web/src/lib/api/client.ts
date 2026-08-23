@@ -581,6 +581,16 @@ export async function postComment(
 		visibility?: 'public' | 'private';
 		recipients?: string[];
 		parent_id?: string | null;
+		/**
+		 * Pin the comment to a region: `[x, y, w, h]` as **fractions** of the image, origin top-left (M6).
+		 *
+		 * Fractions rather than pixels, because the element somebody drew the box on and the element that
+		 * renders it later are different sizes — a preview, a thumbnail, the original. Divide by the rendered
+		 * box, never by the natural size, or a letterboxed image puts the mark in the wrong place.
+		 */
+		region?: [number, number, number, number] | null;
+		/** Pin it to a moment in a video or audio track, in milliseconds. */
+		at_ms?: number | null;
 	}
 ): Promise<Comment> {
 	return request<Comment>(`/assets/${assetId}/comments`, {

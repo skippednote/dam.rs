@@ -135,7 +135,11 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             // 268 since 0036: `site_branding`'s primary key, which is also its singleton lock. 0035 added no
             // index of its own — it replaced the outbox ordering index rather than adding one, because an
             // index on the timestamp it stopped comparing would still have been scanned.
-            268,
+            //
+            // 269 since 0037: the annotation overlay's partial index on `asset_comments`. Partial because most
+            // comments are not annotations, so an index over all of them would be mostly rows the overlay
+            // never asks for.
+            269,
         ),
         (
             "check constraints",
@@ -192,7 +196,12 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             // that earns its keep: that value is interpolated into a stylesheet, so the constraint *is* the
             // sanitiser rather than a second opinion about one — a Rust check guards the endpoint, and this
             // guards every path including one nobody has written yet.
-            139,
+            //
+            // 142 since 0037: an annotation's three. All-four-or-none on the rectangle, inside-the-picture on
+            // its bounds, and a sane range on the timecode. The first is the one a hand-written statement can
+            // reach that Rust cannot — three-quarters of a rectangle is not a smaller rectangle, it is a mark
+            // in the wrong place.
+            142,
         ),
         (
             "hnsw indexes",

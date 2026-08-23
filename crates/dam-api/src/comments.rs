@@ -89,6 +89,13 @@ pub struct CommentView {
     /// Set when the words changed after posting, so a thread can say "edited" rather than silently showing
     /// different text than whoever replied to it read.
     pub edited_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Where on the picture this comment points, as `[x, y, w, h]` fractions of it — origin top-left (M6).
+    ///
+    /// **Fractions, not pixels.** One asset is rendered at four sizes (thumbnail, preview, proxy, original),
+    /// so a client multiplies these by whatever it is displaying. Absent on a comment about the whole asset.
+    pub region: Option<[f32; 4]>,
+    /// Where in a video or audio track, in milliseconds. Independent of the region.
+    pub at_ms: Option<i64>,
 }
 
 /// A comment to post.
@@ -103,6 +110,15 @@ pub struct PostCommentRequest {
     pub recipients: Vec<Uuid>,
     #[serde(default)]
     pub parent_id: Option<Uuid>,
+    /// Pin the comment to a region: `[x, y, w, h]` as fractions of the image, origin top-left (M6).
+    ///
+    /// All four or none. Fractions rather than pixels, because the client that drew the box and the client
+    /// that renders it may be looking at different derivatives of the same asset.
+    #[serde(default)]
+    pub region: Option<[f32; 4]>,
+    /// Pin it to a moment in a video or audio track, in milliseconds.
+    #[serde(default)]
+    pub at_ms: Option<i64>,
 }
 
 fn public() -> String {
@@ -173,6 +189,10 @@ pub async fn post_comment(
             visibility,
             recipients: request.recipients,
             parent_id: request.parent_id,
+            anchor: dam_db::comments::Anchor {
+                region: request.region,
+                at_ms: request.at_ms,
+            },
         },
         &planned,
     )
@@ -403,6 +423,8 @@ async fn present_all(
                 recipients: comment.recipients.into_iter().map(name).collect(),
                 created_at: comment.created_at,
                 edited_at: comment.edited_at,
+                region: comment.anchor.region,
+                at_ms: comment.anchor.at_ms,
             })
             .collect(),
     ))
@@ -450,9 +472,13 @@ impl From<Refused> for Failure {
             // 403: the request is fine and the caller is the problem. Reachable only for a comment they can
             // already read, so it discloses nothing they did not know.
             CommentRefusal::NotYours => Self::Refused(caller::Refusal::Forbidden),
+            // 422 with the refusal's own words. `BadRegion` in particular says *why* it is likely wrong —
+            // coordinates sent as pixels rather than fractions — which is the mistake a client integrating
+            // this will actually make, and a generic "unprocessable" would leave them guessing.
             CommentRefusal::BadLength(_)
             | CommentRefusal::TooDeep
-            | CommentRefusal::PrivateWithNoRecipients => Self::Unprocessable(refusal.to_string()),
+            | CommentRefusal::PrivateWithNoRecipients
+            | CommentRefusal::BadRegion(_) => Self::Unprocessable(refusal.to_string()),
             CommentRefusal::Database(error) => error.into(),
         }
     }
