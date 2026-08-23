@@ -68,13 +68,14 @@ async fn provisioning_creates_the_row_the_schema_and_the_migrations() {
     // `upload_profiles`; 63 since 0018 added `auto_import_mappings`; 66 since 0019 added ratings,
     // favourites and watches; 68 since 0020 added comments and their routing; 73 since 0027 added a tenant's sealed provider credentials; 72 since 0025 added orders and their items; 70 since 0023 added `conversions`; 69 since 0021 added the
     // events default partition; 74 since 0028 added `enrichment_settings`; 75 since 0030 added `portals`;
-    // 76 since 0032 added `search_facets`; 77 since 0036 added `site_branding`.
+    // 76 since 0032 added `search_facets`; 77 since 0036 added `site_branding`; 80 since 0038 added
+    // `proof_rounds` and its two lists.
     //
     // The same number as `migrate.rs` asserts, and deliberately duplicated: that suite proves a migration run
     // produces the schema, and this one proves *provisioning* produces the same schema. A tenant created
     // through `provision` and one migrated by hand diverging is the failure this pair exists to catch, so the
     // two counts agreeing is the assertion — sharing a constant would only prove they were the same constant.
-    assert_eq!(tables, 77);
+    assert_eq!(tables, 80);
 }
 
 /// D14. The whole point of the flag is that it starts off.

@@ -79,7 +79,13 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             // singleton like `enrichment_settings`, and in the tenant schema rather than
             // `dam_global.tenants.settings` because a logo is an asset here and 0002 forbids the cross-schema
             // foreign key that would need.
-            77,
+            //
+            // 80 since 0038: `proof_rounds` and its two lists. The assets are a snapshot rather than a saved
+            // search, for 0025's reason word for word — an approver who agreed to forty photographs must not
+            // find they agreed to four hundred — and the reviewers are a separate table because a verdict is
+            // per person, not per asset. 0037 added no table: an annotation is five columns on
+            // `asset_comments`, since a thread mixes annotations and plain remarks freely.
+            80,
         ),
         (
             "view count",
@@ -139,7 +145,13 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             // 269 since 0037: the annotation overlay's partial index on `asset_comments`. Partial because most
             // comments are not annotations, so an index over all of them would be mostly rows the overlay
             // never asks for.
-            269,
+            //
+            // 277 since 0038: eight for proofing. Three primary keys, and five reads that each start from a
+            // different direction — the open rounds, the ones with a deadline, the supersession chain, the
+            // rounds an asset is in, and "what is waiting for me". The last is the only one that starts from a
+            // person rather than a round, which is why it is a partial index on the reviewer rather than a
+            // second use of the primary key.
+            277,
         ),
         (
             "check constraints",
@@ -201,7 +213,13 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             // its bounds, and a sane range on the timecode. The first is the one a hand-written statement can
             // reach that Rust cannot — three-quarters of a rectangle is not a smaller rectangle, it is a mark
             // in the wrong place.
-            142,
+            //
+            // 150 since 0038: proofing's eight. Bounds on the title, brief and note; a positive round number;
+            // the verdict and its enum; and the two that keep a pair of columns from contradicting each other —
+            // a cancelled round is closed, and a decision has a moment while a pending reviewer has not. Those
+            // last two are stated as constraints because either column alone would let the row disagree with
+            // itself about whether the round is over.
+            150,
         ),
         (
             "hnsw indexes",
