@@ -12,6 +12,8 @@ dam-core = { path = "../dam-core" }
 dam-db = { path = "../dam-db" }
 thiserror = { workspace = true }
 reqwest = { workspace = true }
+# The browse token is base64url in a query parameter, as the delivery token is in a path.
+base64 = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
 subtle = { workspace = true }

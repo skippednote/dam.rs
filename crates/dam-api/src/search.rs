@@ -178,7 +178,11 @@ pub async fn run(
     // the wrong direction to be wrong in over a governed library. So they are answered in SQL instead, which
     // can express the whole query language; the cost is that SQL has no relevance score, so the page comes
     // back in browse order and says so.
-    if is_relational(planned.query()) {
+    // An empty query goes to SQL as well, and for a reason of its own rather than as a special case: there is
+    // nothing to rank. The index would answer it with whatever it happens to contain, so a document not yet
+    // written — a fresh upload, a reindex in progress — is simply missing from a listing that claims to be the
+    // library. The picker (§11.1) opens on exactly this, and so does anything else that lists before filtering.
+    if params.q.trim().is_empty() || is_relational(planned.query()) {
         let page = assets::page_matching(
             conn.executor(),
             &planned,
@@ -440,12 +444,25 @@ pub async fn facets(
     Query(params): Query<SearchParams>,
 ) -> Result<Json<Vec<Facet>>, Failure> {
     let caller = caller::authorize(&state.global, &headers, Action::Read).await?;
+    Ok(Json(facets_for(&state, &caller, &params.q).await?))
+}
+
+/// Counts the rail for a caller who has already been authorised.
+///
+/// Split out from the route for the same reason [`run`] is: the connector browse endpoint draws the same rail
+/// for an embedded picker (§11.1), and a second implementation of it would be a second answer to "how many
+/// outdoor assets can this caller see". The MCP server took `run` for exactly this argument.
+pub async fn facets_for(
+    state: &SearchState,
+    caller: &caller::Caller,
+    q: &str,
+) -> Result<Vec<Facet>, Failure> {
     let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
 
     // The *same* query the results were narrowed by, which is what makes the numbers mean anything: a rail
     // counting the whole library beside a filtered result set tells a user there are 240 outdoor assets and
     // then shows them three.
-    let (planned, defs) = plan(conn.executor(), &caller, &params.q).await?;
+    let (planned, defs) = plan(conn.executor(), caller, q).await?;
 
     // Every facetable field, plus every taxonomy — each paired with the rail entry that names it, so the
     // tenant's own order can be applied below (Q.19). Which fields are facetable is the tenant's decision,
@@ -501,24 +518,22 @@ pub async fn facets(
     let counted = dam_db::facets::count_on(conn.executor(), &planned, &defs, &requests).await?;
     conn.commit().await?;
 
-    Ok(Json(
-        counted
-            .into_iter()
-            .map(|facet| Facet {
-                key: facet.key,
-                truncated: facet.truncated,
-                buckets: facet
-                    .buckets
-                    .into_iter()
-                    .map(|bucket| Bucket {
-                        value: bucket.value,
-                        id: bucket.id,
-                        count: bucket.count,
-                    })
-                    .collect(),
-            })
-            .collect(),
-    ))
+    Ok(counted
+        .into_iter()
+        .map(|facet| Facet {
+            key: facet.key,
+            truncated: facet.truncated,
+            buckets: facet
+                .buckets
+                .into_iter()
+                .map(|bucket| Bucket {
+                    value: bucket.value,
+                    id: bucket.id,
+                    count: bucket.count,
+                })
+                .collect(),
+        })
+        .collect())
 }
 
 /// What somebody is probably about to type (Q.17).

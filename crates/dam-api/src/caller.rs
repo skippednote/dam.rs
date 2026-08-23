@@ -144,16 +144,58 @@ pub async fn authorize(
     .map_err(dam_db::Error::from)?
     .unwrap_or_default();
 
-    let scopes: Vec<&str> = authenticated.scopes.iter().map(String::as_str).collect();
+    authorize_as(
+        global,
+        &Authorized {
+            tenant_id: authenticated.tenant_id,
+            tenant_slug: authenticated.tenant_slug,
+            identity_id: identity,
+            api_key_id: authenticated.api_key_id,
+            scopes: authenticated.scopes,
+            role_names,
+        },
+        action,
+    )
+    .await
+}
+
+/// An identity established by *something* — a bearer key, or a credential a connected site signed.
+///
+/// The split exists because §11.1's browse endpoint authenticates with a token a site minted itself, and the
+/// grant loading, predicate compilation and both guards below must be the same code for both. A second path
+/// that resolved a scope for a connector would be a second place access is decided, and the two would drift in
+/// exactly the way this codebase keeps refusing to allow.
+#[derive(Debug, Clone)]
+pub struct Authorized {
+    pub tenant_id: Uuid,
+    pub tenant_slug: dam_core::TenantSlug,
+    /// Required, not optional. A caller with no identity has no membership and therefore no grants (see the
+    /// module docs), so there is nothing for this function to compile — `authorize` refuses that case before
+    /// getting here.
+    pub identity_id: Uuid,
+    pub api_key_id: Uuid,
+    /// Scopes narrowing the key, if any. A signed browse token carries none: it says which connector is
+    /// calling and nothing about what that connector may see.
+    pub scopes: Vec<String>,
+    pub role_names: Vec<String>,
+}
+
+/// Compiles the scope an established identity holds for `action`.
+pub async fn authorize_as(
+    global: &PgPool,
+    who: &Authorized,
+    action: Action,
+) -> Result<Caller, Refusal> {
+    let scopes: Vec<&str> = who.scopes.iter().map(String::as_str).collect();
     // The role definitions live in the tenant schema and the membership in the global one, which is the D2
     // boundary rather than an accident — and the tenant side has to be a `TenantConn`, because an
     // unqualified `FROM roles` resolves through that transaction's `search_path`.
-    let mut conn = dam_db::TenantConn::begin(global, &authenticated.tenant_slug).await?;
+    let mut conn = dam_db::TenantConn::begin(global, &who.tenant_slug).await?;
     let grants = auth::grants_for(
         global,
         conn.executor(),
-        authenticated.tenant_id,
-        identity,
+        who.tenant_id,
+        who.identity_id,
         &scopes,
     )
     .await?;
@@ -180,12 +222,12 @@ pub async fn authorize(
     conn.commit().await?;
 
     Ok(Caller {
-        tenant_id: authenticated.tenant_id,
-        tenant_slug: authenticated.tenant_slug,
-        identity_id: authenticated.identity_id,
-        api_key_id: authenticated.api_key_id,
+        tenant_id: who.tenant_id,
+        tenant_slug: who.tenant_slug.clone(),
+        identity_id: Some(who.identity_id),
+        api_key_id: who.api_key_id,
         predicate,
-        role_names,
+        role_names: who.role_names.clone(),
         permissions,
     })
 }

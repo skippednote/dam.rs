@@ -2059,6 +2059,79 @@
         }
       }
     },
+    "/browse": {
+      "get": {
+        "tags": [
+          "connectors"
+        ],
+        "operationId": "browse",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "description": "The shorthand query. Empty lists the library, newest first, which is what a picker opens on.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          },
+          {
+            "name": "token",
+            "in": "query",
+            "description": "A token the site signed itself, for a browser-side picker. Omit it and the `Authorization` header is\nused instead.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowseResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential, or a token that does not verify"
+          },
+          "403": {
+            "description": "Authenticated, and holds no read scope"
+          }
+        }
+      }
+    },
     "/bulk": {
       "post": {
         "tags": [
@@ -3468,6 +3541,97 @@
           },
           "403": {
             "description": "The key has no person behind it"
+          }
+        }
+      }
+    },
+    "/oembed": {
+      "get": {
+        "tags": [
+          "connectors"
+        ],
+        "operationId": "oembed",
+        "parameters": [
+          {
+            "name": "url",
+            "in": "query",
+            "description": "The asset's page URL, as an editor pasted it: `<origin>/assets/<id>`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "maxwidth",
+            "in": "query",
+            "description": "The consumer's maximum width. Used to choose a rendition, not to scale one.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "maxheight",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "description": "`json` only. XML is in the spec and nothing has asked for it; a stub returning JSON under an XML content\ntype would be worse than a refusal.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "token",
+            "in": "query",
+            "description": "A token the site signed, for a browser-side editor plugin. Omit it and the `Authorization` header is used.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Oembed"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not an asset URL from this library, or a format other than json"
+          },
+          "401": {
+            "description": "No usable credential"
+          },
+          "404": {
+            "description": "No such asset, or not one this caller may see"
           }
         }
       }
@@ -7076,6 +7240,26 @@
           }
         }
       },
+      "BrowseResult": {
+        "type": "object",
+        "description": "What a picker draws.",
+        "required": [
+          "results",
+          "facets"
+        ],
+        "properties": {
+          "facets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Facet"
+            },
+            "description": "The rail, counted over the same query — so a facet saying 40 and a grid showing 3 cannot happen."
+          },
+          "results": {
+            "$ref": "#/components/schemas/AssetPage"
+          }
+        }
+      },
       "Bucket": {
         "type": "object",
         "description": "One facet bucket.",
@@ -9146,6 +9330,89 @@
           },
           "slug": {
             "type": "string"
+          }
+        }
+      },
+      "Oembed": {
+        "type": "object",
+        "description": "An oEmbed response.\n\nField names are the spec's, including the snake_case ones, because a consumer reads them by name.",
+        "required": [
+          "type",
+          "version",
+          "title",
+          "provider_name",
+          "cache_age"
+        ],
+        "properties": {
+          "cache_age": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Seconds a consumer may cache this. Below the `url`'s own lifetime, deliberately.",
+            "minimum": 0
+          },
+          "height": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "provider_name": {
+            "type": "string"
+          },
+          "provider_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "thumbnail_height": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "thumbnail_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "thumbnail_width": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "description": "`photo` for an image, `link` for anything else. Never `video` — see the module docs."
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The image itself, for a `photo`. A signed delivery URL, so it expires — see `cache_age`."
+          },
+          "version": {
+            "type": "string"
+          },
+          "width": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
           }
         }
       },

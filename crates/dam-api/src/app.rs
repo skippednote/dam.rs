@@ -203,6 +203,29 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
         .merge(crate::versions::router(crate::versions::VersionState {
             global: deps.global.clone(),
         }))
+        // The picker's endpoint, sharing the search state so it cannot answer differently from `/search`.
+        .merge(crate::browse::router(crate::browse::BrowseState {
+            search: Arc::clone(&search_state),
+            global: deps.global.clone(),
+            connectors: Some(crate::browse::ConnectorAuth {
+                sealing: cfg.sealing_keyring(),
+                tenant_slug: deps.delivery_tenant_slug.clone(),
+            }),
+        }))
+        // The oEmbed provider, over the same two credentials — it shares the browse state rather than building
+        // a second one, because a second one would be a second place a connector's identity is established.
+        .merge(crate::oembed::router(crate::oembed::OembedState {
+            browse: Arc::new(crate::browse::BrowseState {
+                search: Arc::clone(&search_state),
+                global: deps.global.clone(),
+                connectors: Some(crate::browse::ConnectorAuth {
+                    sealing: cfg.sealing_keyring(),
+                    tenant_slug: deps.delivery_tenant_slug.clone(),
+                }),
+            }),
+            delivery: Some(Arc::clone(&delivery)),
+            public_url: cfg.server.public_url.clone(),
+        }))
         .merge(crate::connectors::router(
             crate::connectors::ConnectorState {
                 global: deps.global.clone(),

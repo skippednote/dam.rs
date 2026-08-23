@@ -29,13 +29,13 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **Q** Acquia parity, 20 slices | **complete** — Q.1–Q.20, including Q.14b collections and Q.20a–d |
 | **Go-live Tier 1** Deployment image, backups, metrics, rate limiting, virus scan, C2PA | **done** — all six, each verified against the running stack |
 | **Archival** Tiering engine, restores, the storage screen | **done** — the sweep and poll jobs, the plan/quote/request/approve API, delivery's 202, bulk archive and restore, the restore panel |
-| **M3d** Drupal 11 connector | registry and signed delivery done (M3d·1, M3d·2); browse/oEmbed, usage index and the module open |
+| **M3d** Drupal 11 connector | registry, signed delivery, browse and oEmbed done (M3d·1–·3); usage index and the module open |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, colour | dedup and colour **done** (M4a); the rest needs model files — see M4 below |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | **done** — two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query, the MCP server |
 | **M6** Workflow/proofing, annotations, analytics | **done** — annotations (M6a), proofing (M6b), analytics (M6c) |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** M3d·3 browse/oEmbed → M3d·4 usage index → M3d·5 the Drupal module → Pre-GA (G7 import, G10 SCIM/BYOK/audit, G19 metering enforcement, quotas). M4b (local ONNX models) stays parked on the model-distribution question.
+**Next up, in order:** M3d·4 usage index → M3d·5 the Drupal module → Pre-GA (G7 import, G10 SCIM/BYOK/audit, G19 metering enforcement, quotas). M4b (local ONNX models) stays parked on the model-distribution question.
 M4b (local models) is parked on a distribution decision — see the M4 section.
 
 **`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
@@ -1408,8 +1408,50 @@ API that does not exist yet is a module written twice.
   6 delivery cases, 6 new `signed_url` cases, 14 browser cases, and the screen covering M3d·1 and M3d·2
   together.
 
-- [ ] **M3d·3 Browse and oEmbed.** `GET /browse` (CORS-enabled search + facets for the embedded picker) and
-  `GET /oembed` (provider, for CKEditor inline embeds).
+- [x] **M3d·3 Browse and oEmbed.**
+
+  **The decision this slice turned on: how a browser-side picker authenticates.** §11.1 asks for a
+  CORS-enabled browse endpoint "for the embedded asset picker", which implies a browser holding a credential —
+  and it cannot be the connector's API key. That key is long-lived, grants every read the site has, and putting
+  it in JavaScript hands it to every editor, every browser extension and every page the picker is embedded in.
+
+  The answer needed no new mechanism: **the site signs a short-lived token itself**, in PHP, with the same
+  secret it signs render URLs with. No endpoint to mint one, no round trip in the path of opening a dialog, and
+  rotation and the grace window work on it for free because it is verified with the same keyring. Ten minutes
+  maximum, enforced at *verification* — the site chooses the expiry, so a ceiling only whoever verifies can
+  hold is the only kind that means anything. It carries no scope of its own, deliberately: a token that could
+  widen what the picker sees would let a site mint itself reach it was never granted.
+
+  **`GET /browse`** answers with results and the facet rail in one call — two would let the rail's counts
+  disagree with the grid beside them. Both credentials resolve through `caller::authorize_as`, which is new:
+  `authorize` was split so the grant loading, predicate compilation and both of its guards are one code path
+  for a bearer key and a signed token alike. A connector-shaped scope resolver would have been a second place
+  access is decided.
+
+  CORS is the connector's own `site_url`, never a wildcard, and **only on the token path** — a cross-origin
+  request carrying `Authorization` would be a site putting its key in a browser, and answering it would endorse
+  that. A mismatched origin gets `null` rather than a refusal: the browser blocks the read, which is what CORS
+  is for, and a 403 would tell a page it guessed wrong.
+
+  **One change with a reason beyond this slice.** An empty query now goes to SQL rather than the index. There is
+  nothing to rank, so the index would answer with whatever it happens to contain — a document not yet written,
+  a reindex in progress — and a listing that claims to be the library would quietly be missing rows. The picker
+  opens on exactly this, and so does anything else that lists before filtering.
+
+  **`GET /oembed`** is authenticated, which the spec does not contemplate — an unauthenticated endpoint that
+  turns an asset id into a filename, a size and a preview URL is an enumeration API for the whole library. The
+  deviation costs nothing: CKEditor's fetch happens in Drupal's server-side code, which holds the key.
+
+  Its statuses are the spec's, not this codebase's usual mapping, because a consumer implements against them:
+  404 for a URL the provider does not recognise *and* for an asset the caller cannot see (one answer, or the 404
+  confirms existence), 400 for a URL belonging to another provider, 501 for a format it will not emit. Only an
+  image is a `photo`; a video would need an embeddable player this does not have, so everything else is a
+  `link`. And an asset whose rendition has not been rendered yet is a `link` too, not a 500 — a fresh upload is
+  an ordinary state, and a consumer that pasted a real URL is better served by a card than by a server error it
+  can do nothing about. `cache_age` sits below the signed URL's own lifetime, or a caching consumer serves a
+  broken image for most of a day.
+
+  9 token cases, 9 browse cases, 8 oEmbed cases.
 
 - [ ] **M3d·4 The usage index.** `connector_asset_refs` — "this asset appears on 12 pages of site X". Three
   things depend on it: usage reporting, takedown impact before pulling an asset, and a pin-hot signal for the
