@@ -484,7 +484,7 @@ async fn filing_under_a_retired_category_is_refused(pool: &PgPool, tree: Uuid) {
         .await
         .expect("path")
         .expect("green");
-    dam_db::taxonomy::deprecate(pool, green.id)
+    dam_db::taxonomy::deprecate(&mut *conn(pool).await, green.id)
         .await
         .expect("deprecate");
 

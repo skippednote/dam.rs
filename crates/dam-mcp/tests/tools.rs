@@ -569,8 +569,14 @@ async fn the_guidance_and_the_vocabulary_are_what_an_agent_is_told_to_read_first
     .await
     .expect("settings");
 
+    // `kind` and `ai_taggable` are both stated rather than left to their defaults, because since 0034 the
+    // vocabulary an agent is handed is the *governed* one: a taxonomy that is not a vocabulary, or one nobody
+    // opened to machine use, is offered to nobody. That coupling is deliberate — this tool tells an agent which
+    // words to use, and it must be the same closed set the zero-shot pass scores against, or the two would
+    // disagree about the library's own language.
     let taxonomy: Uuid = sqlx::query_scalar(
-        "INSERT INTO taxonomies (id, key, label) VALUES (gen_random_uuid(), 'subject', 'Subject') RETURNING id",
+        "INSERT INTO taxonomies (id, key, label, kind, ai_taggable) \
+         VALUES (gen_random_uuid(), 'subject', 'Subject', 'vocabulary', true) RETURNING id",
     )
     .fetch_one(&f.acme)
     .await

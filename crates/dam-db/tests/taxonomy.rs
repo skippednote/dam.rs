@@ -18,6 +18,16 @@ use dam_db::{migrate, testing::PostgresHarness};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+/// One connection out of the pool.
+///
+/// These functions take a connection rather than a pool because in production they run inside a tenant
+/// transaction — the `search_path` that makes `taxonomy_terms` mean `t_acme.taxonomy_terms` is set on that
+/// transaction, which is also what makes a half-applied merge impossible. The tests borrow one per statement,
+/// which is a superset of what any single call needs.
+async fn held(pool: &PgPool) -> sqlx::pool::PoolConnection<sqlx::Postgres> {
+    pool.acquire().await.expect("acquire")
+}
+
 async fn db() -> (PostgresHarness, PgPool) {
     let pg = PostgresHarness::start().await.expect("start postgres");
     let url = pg.url();
@@ -107,9 +117,11 @@ async fn a_deprecated_term_stays_resolvable_and_keeps_its_assets(pool: &PgPool) 
     let outdoor = term(pool, vocabulary, "outdoor", None).await;
     let asset = tag(pool, outdoor, "beach").await;
 
-    taxonomy::deprecate(pool, outdoor).await.expect("deprecate");
+    taxonomy::deprecate(&mut *held(pool).await, outdoor)
+        .await
+        .expect("deprecate");
 
-    let resolved = taxonomy::resolve(pool, outdoor)
+    let resolved = taxonomy::resolve(&mut *held(pool).await, outdoor)
         .await
         .expect("resolve")
         .expect("a deprecated term must still resolve");
@@ -132,9 +144,11 @@ async fn a_deprecated_term_is_excluded_from_the_assignable_set(pool: &PgPool) {
     let vocabulary = taxonomy_named(pool, "v2").await;
     let live = term(pool, vocabulary, "live2", None).await;
     let retired = term(pool, vocabulary, "retired2", None).await;
-    taxonomy::deprecate(pool, retired).await.expect("deprecate");
+    taxonomy::deprecate(&mut *held(pool).await, retired)
+        .await
+        .expect("deprecate");
 
-    let assignable = taxonomy::assignable(pool, vocabulary)
+    let assignable = taxonomy::assignable(&mut *held(pool).await, vocabulary)
         .await
         .expect("assignable");
     let ids: Vec<Uuid> = assignable.iter().map(|t| t.id).collect();
@@ -154,7 +168,7 @@ async fn deprecating_a_parent_with_live_children_is_refused(pool: &PgPool) {
     let parent = term(pool, vocabulary, "parent3", None).await;
     let child = term(pool, vocabulary, "parent3.child3", Some(parent)).await;
 
-    let refused = taxonomy::deprecate(pool, parent)
+    let refused = taxonomy::deprecate(&mut *held(pool).await, parent)
         .await
         .expect_err("must refuse while a child is live");
     assert!(
@@ -164,8 +178,12 @@ async fn deprecating_a_parent_with_live_children_is_refused(pool: &PgPool) {
 
     // Retire the child first and the parent becomes retirable, which is the order an operator would
     // work in anyway.
-    taxonomy::deprecate(pool, child).await.expect("child");
-    taxonomy::deprecate(pool, parent).await.expect("parent");
+    taxonomy::deprecate(&mut *held(pool).await, child)
+        .await
+        .expect("child");
+    taxonomy::deprecate(&mut *held(pool).await, parent)
+        .await
+        .expect("parent");
 }
 
 // ─── merge ──────────────────────────────────────────────────────────────────
@@ -179,7 +197,9 @@ async fn merging_moves_the_assets_and_leaves_the_old_id_resolvable(pool: &PgPool
     let dogs = term(pool, vocabulary, "dogs4", None).await;
     let asset = tag(pool, dog, "spaniel").await;
 
-    taxonomy::merge(pool, dog, dogs).await.expect("merge");
+    taxonomy::merge(&mut *held(pool).await, dog, dogs)
+        .await
+        .expect("merge");
 
     assert_eq!(
         terms_on(pool, asset).await,
@@ -187,7 +207,7 @@ async fn merging_moves_the_assets_and_leaves_the_old_id_resolvable(pool: &PgPool
         "the asset must now be tagged with the surviving term"
     );
 
-    let resolved = taxonomy::resolve(pool, dog)
+    let resolved = taxonomy::resolve(&mut *held(pool).await, dog)
         .await
         .expect("resolve")
         .expect("the merged-away id must still resolve");
@@ -218,7 +238,7 @@ async fn merging_an_asset_tagged_with_both_terms_does_not_conflict(pool: &PgPool
     .await
     .expect("second tag");
 
-    taxonomy::merge(pool, dog, dogs)
+    taxonomy::merge(&mut *held(pool).await, dog, dogs)
         .await
         .expect("a doubly-tagged asset must not fail the merge");
     assert_eq!(terms_on(pool, asset).await, vec![dogs]);
@@ -233,7 +253,7 @@ async fn merging_across_taxonomies_is_refused(pool: &PgPool) {
     let outdoor = term(pool, categories, "outdoor6", None).await;
     let red = term(pool, colours, "red6", None).await;
 
-    let refused = taxonomy::merge(pool, outdoor, red)
+    let refused = taxonomy::merge(&mut *held(pool).await, outdoor, red)
         .await
         .expect_err("must refuse a cross-taxonomy merge");
     assert!(
@@ -250,10 +270,14 @@ async fn a_merge_chain_resolves_to_the_end_and_a_cycle_is_refused(pool: &PgPool)
     let b = term(pool, vocabulary, "b7", None).await;
     let c = term(pool, vocabulary, "c7", None).await;
 
-    taxonomy::merge(pool, a, b).await.expect("a into b");
-    taxonomy::merge(pool, b, c).await.expect("b into c");
+    taxonomy::merge(&mut *held(pool).await, a, b)
+        .await
+        .expect("a into b");
+    taxonomy::merge(&mut *held(pool).await, b, c)
+        .await
+        .expect("b into c");
 
-    let resolved = taxonomy::resolve(pool, a)
+    let resolved = taxonomy::resolve(&mut *held(pool).await, a)
         .await
         .expect("resolve")
         .expect("present");
@@ -262,7 +286,7 @@ async fn a_merge_chain_resolves_to_the_end_and_a_cycle_is_refused(pool: &PgPool)
         "a two-hop chain must resolve to the surviving term"
     );
 
-    let refused = taxonomy::merge(pool, c, a)
+    let refused = taxonomy::merge(&mut *held(pool).await, c, a)
         .await
         .expect_err("closing the loop must be refused");
     assert!(
@@ -278,9 +302,11 @@ async fn merging_into_a_deprecated_term_is_refused(pool: &PgPool) {
     let vocabulary = taxonomy_named(pool, "v8").await;
     let a = term(pool, vocabulary, "a8", None).await;
     let retired = term(pool, vocabulary, "retired8", None).await;
-    taxonomy::deprecate(pool, retired).await.expect("deprecate");
+    taxonomy::deprecate(&mut *held(pool).await, retired)
+        .await
+        .expect("deprecate");
 
-    let refused = taxonomy::merge(pool, a, retired)
+    let refused = taxonomy::merge(&mut *held(pool).await, a, retired)
         .await
         .expect_err("must refuse a deprecated survivor");
     assert!(
@@ -301,7 +327,7 @@ async fn moving_a_term_reparents_its_whole_subtree(pool: &PgPool) {
     let beach = term(pool, vocabulary, "outdoor9.beach9", Some(outdoor)).await;
     let sand = term(pool, vocabulary, "outdoor9.beach9.sand9", Some(beach)).await;
 
-    taxonomy::move_term(pool, beach, Some(indoor))
+    taxonomy::move_term(&mut *held(pool).await, beach, Some(indoor))
         .await
         .expect("move");
 
@@ -325,7 +351,9 @@ async fn moving_a_term_to_the_root_is_allowed(pool: &PgPool) {
     let outdoor = term(pool, vocabulary, "outdoor10", None).await;
     let beach = term(pool, vocabulary, "outdoor10.beach10", Some(outdoor)).await;
 
-    taxonomy::move_term(pool, beach, None).await.expect("move");
+    taxonomy::move_term(&mut *held(pool).await, beach, None)
+        .await
+        .expect("move");
     assert_eq!(path_of(pool, beach).await, "beach10");
 }
 
@@ -337,7 +365,7 @@ async fn moving_a_term_under_its_own_descendant_is_refused(pool: &PgPool) {
     let outdoor = term(pool, vocabulary, "outdoor11", None).await;
     let beach = term(pool, vocabulary, "outdoor11.beach11", Some(outdoor)).await;
 
-    let refused = taxonomy::move_term(pool, outdoor, Some(beach))
+    let refused = taxonomy::move_term(&mut *held(pool).await, outdoor, Some(beach))
         .await
         .expect_err("must refuse");
     assert!(
@@ -346,7 +374,7 @@ async fn moving_a_term_under_its_own_descendant_is_refused(pool: &PgPool) {
     );
 
     // And under itself, which is the same mistake one level shorter.
-    let refused = taxonomy::move_term(pool, outdoor, Some(outdoor))
+    let refused = taxonomy::move_term(&mut *held(pool).await, outdoor, Some(outdoor))
         .await
         .expect_err("must refuse");
     assert!(matches!(refused, TaxonomyError::WouldCycle { .. }));
@@ -358,7 +386,7 @@ async fn moving_a_term_across_taxonomies_is_refused(pool: &PgPool) {
     let term_a = term(pool, a, "x12", None).await;
     let term_b = term(pool, b, "y12", None).await;
 
-    let refused = taxonomy::move_term(pool, term_a, Some(term_b))
+    let refused = taxonomy::move_term(&mut *held(pool).await, term_a, Some(term_b))
         .await
         .expect_err("must refuse");
     assert!(
@@ -406,7 +434,7 @@ async fn one_slug_under_two_parents_is_allowed_and_makes_the_move_guard_reachabl
     .fetch_one(pool)
     .await
     .expect("the term to move");
-    let refused = taxonomy::move_term(pool, moving, Some(outdoor))
+    let refused = taxonomy::move_term(&mut *held(pool).await, moving, Some(outdoor))
         .await
         .expect_err("the destination path is taken");
     assert!(
@@ -433,7 +461,7 @@ async fn a_refused_move_leaves_the_subtree_exactly_as_it_was(pool: &PgPool) {
     let sand = term(pool, vocabulary, "outdoor13b.beach13b.sand13b", Some(beach)).await;
 
     // Refused as a cycle: the new parent is inside the subtree being moved.
-    let refused = taxonomy::move_term(pool, outdoor, Some(sand))
+    let refused = taxonomy::move_term(&mut *held(pool).await, outdoor, Some(sand))
         .await
         .expect_err("must refuse");
     assert!(
@@ -452,9 +480,11 @@ async fn moving_a_deprecated_term_is_refused(pool: &PgPool) {
     let vocabulary = taxonomy_named(pool, "v14").await;
     let retired = term(pool, vocabulary, "retired14", None).await;
     let live = term(pool, vocabulary, "live14", None).await;
-    taxonomy::deprecate(pool, retired).await.expect("deprecate");
+    taxonomy::deprecate(&mut *held(pool).await, retired)
+        .await
+        .expect("deprecate");
 
-    let refused = taxonomy::move_term(pool, retired, Some(live))
+    let refused = taxonomy::move_term(&mut *held(pool).await, retired, Some(live))
         .await
         .expect_err("must refuse");
     assert!(
@@ -470,7 +500,7 @@ async fn an_unknown_term_resolves_to_absent_rather_than_erroring(pool: &PgPool) 
     // "retired, here is where it went" from "gone", and an error for the second would make an ordinary
     // stale reference look like a fault.
     assert!(
-        taxonomy::resolve(pool, Uuid::new_v4())
+        taxonomy::resolve(&mut *held(pool).await, Uuid::new_v4())
             .await
             .expect("resolve")
             .is_none()
@@ -480,7 +510,7 @@ async fn an_unknown_term_resolves_to_absent_rather_than_erroring(pool: &PgPool) 
 async fn a_live_term_resolves_to_itself(pool: &PgPool) {
     let vocabulary = taxonomy_named(pool, "v15").await;
     let live = term(pool, vocabulary, "live15", None).await;
-    let resolved = taxonomy::resolve(pool, live)
+    let resolved = taxonomy::resolve(&mut *held(pool).await, live)
         .await
         .expect("resolve")
         .expect("present");

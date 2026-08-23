@@ -577,7 +577,14 @@ pub async fn save_settings(
     settings(conn).await
 }
 
-/// The vocabulary to offer a model: every term that is not deprecated, as `(slug, label, synonyms)`.
+/// The vocabulary to offer a model: every live term of a taggable taxonomy, as `(slug, label, synonyms)`.
+///
+/// **Gated on `taxonomies.ai_taggable`**, which until 0034 was a column nothing read. Two consequences of that
+/// gap, and both are the reason the flag exists: an administrator who marked a vocabulary off-limits to machine
+/// tagging changed nothing, and *category trees* were offered to the model — a filing structure is not a label
+/// set, and inviting an LLM to file assets into somebody's browse hierarchy is a different and much larger
+/// claim than inviting it to suggest tags. §8.2's "a closed vocabulary is what keeps AI tags governable" is
+/// only true if something closes it.
 ///
 /// Ordered by slug so the instruction text is byte-identical between assets — prompt caching matches on bytes,
 /// and a set iterated in a different order is a cache miss on every call.
@@ -589,12 +596,26 @@ pub async fn vocabulary(
     conn: &mut sqlx::PgConnection,
     limit: i64,
 ) -> Result<(Vec<(String, String, Vec<String>)>, i64), Error> {
-    let total: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM taxonomy_terms WHERE deprecated_at IS NULL")
-            .fetch_one(&mut *conn)
-            .await?;
+    // The count is over the same set as the rows, deliberately: it is what tells the caller the prompt was
+    // truncated, and counting a wider set would report a truncation that did not happen.
+    // Two conditions, not one. `ai_taggable` is the administrator's switch; `kind = 'vocabulary'` is the
+    // structural rule that a *filing tree* is never a label set, whatever the flag on it says. Both, because
+    // the flag can be set by hand — 0034's own backfill set it on every existing taxonomy to preserve
+    // behaviour, and on the dev tenant that was a category tree. Without the kind filter this query would
+    // then have offered a browse hierarchy to the model, which is the half of the defect the flag alone does
+    // not close.
+    let total: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM taxonomy_terms t \
+         JOIN taxonomies x ON x.id = t.taxonomy_id \
+         WHERE t.deprecated_at IS NULL AND x.ai_taggable AND x.kind = 'vocabulary'",
+    )
+    .fetch_one(&mut *conn)
+    .await?;
     let rows: Vec<(String, String, Vec<String>)> = sqlx::query_as(
-        "SELECT slug, label, synonyms FROM taxonomy_terms           WHERE deprecated_at IS NULL ORDER BY slug LIMIT $1",
+        "SELECT t.slug, t.label, t.synonyms FROM taxonomy_terms t \
+         JOIN taxonomies x ON x.id = t.taxonomy_id \
+         WHERE t.deprecated_at IS NULL AND x.ai_taggable AND x.kind = 'vocabulary' \
+         ORDER BY t.slug LIMIT $1",
     )
     .bind(limit)
     .fetch_all(&mut *conn)

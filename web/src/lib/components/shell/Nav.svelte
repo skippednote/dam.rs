@@ -31,6 +31,9 @@
 		{ href: resolve('/worklists'), label: 'Worklists' },
 		// Next to Schema because it is the same kind of work: deciding what the library's own vocabulary means.
 		{ href: resolve('/review'), label: 'Review' },
+		// Beside Review for the same reason, and because the review queue is where a badly-set threshold shows
+		// up: the terms a model proposes come from here.
+		{ href: resolve('/vocabularies'), label: 'Vocabularies' },
 		{ href: resolve('/style'), label: 'Style' },
 		{ href: resolve('/settings'), label: 'Settings' }
 	];

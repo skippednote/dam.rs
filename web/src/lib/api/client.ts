@@ -1292,3 +1292,77 @@ export async function worklistPage(key: string, offset = 0, limit = 60): Promise
 	return request<AssetPage>(`/worklists/${key}?offset=${offset}&limit=${limit}`);
 }
 
+// ─── tag vocabularies (Q.20b) ───────────────────────────────────────────────
+
+export type Vocabulary = components['schemas']['VocabularyView'];
+export type VocabularyTerm = components['schemas']['TermView'];
+
+export async function listVocabularies(): Promise<Vocabulary[]> {
+	return request<Vocabulary[]>('/vocabularies');
+}
+
+export async function createVocabulary(key: string, label: string): Promise<Vocabulary> {
+	return request<Vocabulary>('/vocabularies', {
+		method: 'POST',
+		body: JSON.stringify({ key, label })
+	});
+}
+
+/**
+ * Opens a vocabulary to machine tagging, or closes it.
+ *
+ * Its own call, not a field on an update: this decides what an LLM is told about the library, and it should
+ * not be possible to change it while editing a label.
+ */
+export async function setVocabularyAi(id: string, aiTaggable: boolean): Promise<Vocabulary> {
+	return request<Vocabulary>(`/vocabularies/${id}/ai`, {
+		method: 'POST',
+		body: JSON.stringify({ ai_taggable: aiTaggable })
+	});
+}
+
+/** Every term, retired ones included — an administrator has to see what was retired and where it went. */
+export async function vocabularyTerms(id: string): Promise<VocabularyTerm[]> {
+	return request<VocabularyTerm[]>(`/vocabularies/${id}/terms`);
+}
+
+export async function addVocabularyTerm(
+	id: string,
+	body: { slug: string; label: string; synonyms?: string[]; parent_id?: string }
+): Promise<VocabularyTerm> {
+	return request<VocabularyTerm>(`/vocabularies/${id}/terms`, {
+		method: 'POST',
+		body: JSON.stringify(body)
+	});
+}
+
+/** Changes the label, synonyms and threshold. Never the slug — a model answers with it. */
+export async function amendVocabularyTerm(
+	id: string,
+	termId: string,
+	body: { label: string; synonyms: string[]; ai_threshold: number }
+): Promise<VocabularyTerm> {
+	return request<VocabularyTerm>(`/vocabularies/${id}/terms/${termId}`, {
+		method: 'PATCH',
+		body: JSON.stringify(body)
+	});
+}
+
+/** Retires a term from new assignment. Its assets keep it and its id still resolves. */
+export async function retireVocabularyTerm(id: string, termId: string): Promise<VocabularyTerm> {
+	return request<VocabularyTerm>(`/vocabularies/${id}/terms/${termId}/retire`, {
+		method: 'POST'
+	});
+}
+
+/** Merges a term into another: the assets move and this one retires pointing at it. */
+export async function mergeVocabularyTerm(
+	id: string,
+	termId: string,
+	into: string
+): Promise<VocabularyTerm> {
+	return request<VocabularyTerm>(`/vocabularies/${id}/terms/${termId}/merge`, {
+		method: 'POST',
+		body: JSON.stringify({ into })
+	});
+}

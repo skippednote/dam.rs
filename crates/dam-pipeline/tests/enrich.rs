@@ -88,11 +88,17 @@ async fn fixture() -> Fixture {
     }
 
     let taxonomy_id = Uuid::now_v7();
-    sqlx::query("INSERT INTO taxonomies (id, key, label) VALUES ($1, 'subject', 'Subject')")
-        .bind(taxonomy_id)
-        .execute(&tenant)
-        .await
-        .expect("taxonomy");
+    // Opened to machine tagging, and stated rather than defaulted: since 0034 the vocabulary offered to a model
+    // is the governed one, so a taxonomy nobody opened contributes no terms and the enrichment pass would have
+    // nothing to suggest from. Which is the point of the gate — but it makes this fixture's intent explicit.
+    sqlx::query(
+        "INSERT INTO taxonomies (id, key, label, kind, ai_taggable) \
+         VALUES ($1, 'subject', 'Subject', 'vocabulary', true)",
+    )
+    .bind(taxonomy_id)
+    .execute(&tenant)
+    .await
+    .expect("taxonomy");
     for slug in ["footwear", "outdoor"] {
         sqlx::query(
             "INSERT INTO taxonomy_terms (id, taxonomy_id, path, slug, label) \

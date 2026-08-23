@@ -2363,7 +2363,7 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
 
 - [x] **Q.19b Dependent metadata fields.** A field whose relevance depends on another field's value: shown when
       the parent matches, and required only when shown. (Shipped in `0461f0f`; the box was never ticked.)
-- [ ] **Q.20 Site branding, webhook delivery, tag vocabulary administration.** Worklists done — Q.20a below.
+- [ ] **Q.20 Site branding, webhook delivery.** Worklists done (Q.20a); tag vocabulary done (Q.20b).
 - [x] **Q.20a The admin worklists.** Ten lists, each one SQL over data damrs already holds: no table, no queue,
   no state to fall out of date, so an asset leaves a list the moment somebody fixes the thing. `Read`, not
   `Manage` — the person who files an uncategorised asset is whoever can edit it, and gating the *finding* behind
@@ -2397,6 +2397,46 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
       cannot forget it. 12 db cases, 6 API cases, 10 browser cases including axe. Verified against the running
       stack: every count cross-checked by hand against SQL, and the three "Licence coverage ending" assets each
       carry the matching badge in the grid the list opens into.
+- [x] **Q.20b Tag vocabulary administration, and the fifth guard rail with no road.** A vocabulary is the label
+  set zero-shot tagging scores against, and §8.2's claim that "a closed vocabulary is what keeps AI tags
+  governable" was not true: `taxonomies.ai_taggable` had existed since migration 0001 and **nothing read it**,
+  so the enrichment query offered a model every non-deprecated term in the tenant — including the terms of
+  *category trees*, which are filing structure rather than a label set. Inviting an LLM to file assets into
+  somebody's browse hierarchy is a much larger claim than inviting it to suggest a tag, and nobody chose it.
+
+      **The sixth `&PgPool` module, with a twist.** `dam_db::taxonomy`'s move/merge/deprecate have been written
+      since 2.2 and unreachable since 2.2 — but here the pool was *deliberate*, documented as "a caller cannot
+      accidentally run one of these outside a transaction". The intent was right and the mechanism made the
+      module uncallable: a handler reaches tenant tables through a `TenantConn`, whose transaction carries the
+      `search_path`, and a pool has none. `TenantConn` **is** a `Transaction`, so the guarantee survives the
+      conversion and becomes structural rather than defensive — and a caller can now merge three terms in one
+      transaction instead of three, closing the windows in which the vocabulary had two live terms for one
+      concept.
+
+      **Migration 0034 backfills, and the first version of the backfill was wrong.** Honouring a `false`-default
+      column without a backfill would hand every existing tenant an empty vocabulary and silently stop AI
+      tagging that works. So it sets the flag `true` — and setting it on *every* taxonomy, which looked like the
+      conservative choice, opened the dev tenant's category tree to the model. Caught by running it: the
+      backfill is now scoped to `kind = 'vocabulary'`, and the query requires the kind as well as the flag, so a
+      tree can never be offered even if somebody sets the column by hand. That last case is now a test.
+
+      **What the surface deliberately lacks.** No delete, at either level. `asset_tags` cascades, so deleting a
+      term untags every asset that carried it — years of work, gone quietly, noticed when a search returns
+      empty. Retire keeps the assets and keeps the id resolving; merge moves the assets and leaves a pointer.
+      No slug field on the edit form either: it is what a model answers with and what an import resolves.
+
+      **Smaller decisions.** Opening a vocabulary to a model is its own endpoint, not a field on an update body,
+      so it cannot be changed while editing a label. Synonyms are trimmed, emptied and de-duplicated
+      case-insensitively before they cost prompt bytes on every call — `dam_ai::enrich` already matches without
+      regard to case. The threshold is clamped and *read back*, because a screen showing the 1.5 somebody typed
+      would show a setting that is not in force. A term id in a URL is checked against the vocabulary id beside
+      it, or the path segment would be decoration and a guessed id would confirm a term exists.
+
+      10 db cases, 9 API cases, 9 browser cases including axe. Verified against the running stack through a
+      real browser: created, terms added with `cloudy,  grey ,, Cloudy` arriving as `cloudy, grey`, opened and
+      closed with the count in the sentence, merged with the survivor named, a 1.5 threshold reported back as 1,
+      and retired — with two copy fixes that only showed up on real data ("its 0 assets keep it", and "every one
+      of these 0 terms is in the prompt" for a vocabulary whose terms were all retired).
 
 Absorbed by the existing roadmap rather than duplicated here: the AI set (tags, faces, document text,
 transcripts, semantic search, duplicate detection) is M4; conversational access is M5's MCP server; workflow

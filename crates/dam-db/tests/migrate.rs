@@ -122,7 +122,12 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             // the table.
             //
             // 265 since 0032: `search_facets` gains its primary key and the position index the rail reads.
-            265,
+            //
+            // 267 since 0034: two partial indexes for the vocabulary that machine tagging reads — the taggable
+            // taxonomies, and the live terms ordered by slug. Both partial, because the enrichment query only
+            // ever wants the open vocabularies and the terms that are still assignable, and on a tenant whose
+            // taxonomies are mostly category trees that is a small fraction of both tables.
+            267,
         ),
         (
             "check constraints",

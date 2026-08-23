@@ -14,12 +14,24 @@
 //! one statement over the whole subtree. Each of those is why [`deprecate`], [`merge`] and [`move_term`]
 //! exist instead of the callers writing their own UPDATE.
 //!
-//! ## Every operation runs in a transaction it opens itself
+//! ## Every operation must run inside a transaction, and now does so by construction
 //!
 //! Not for tidiness. A merge is a retag plus a deprecation, and a move is a path rewrite across N rows;
-//! either one half-applied leaves the taxonomy in a state no query renders correctly. The functions take
-//! a pool rather than an executor for exactly this reason — a caller cannot accidentally run one of these
-//! outside a transaction, which is the mistake that would only show up under a failure.
+//! either one half-applied leaves the taxonomy in a state no query renders correctly.
+//!
+//! These functions originally took a `&PgPool` and opened their own transaction, to make running one outside
+//! a transaction impossible. The intent was right and the mechanism made the module unreachable: a handler
+//! reaches a tenant's tables through [`crate::TenantConn`], whose transaction is the thing carrying the
+//! `search_path` that makes `taxonomy_terms` mean `t_acme.taxonomy_terms`. A pool has no such path, so a
+//! pool-shaped signature could not be called from an API at all — which is exactly why nothing called it.
+//!
+//! Taking `&mut PgConnection` loses nothing, because `TenantConn` *is* a `Transaction`: the only way to
+//! address a tenant's schema is already the only way to be inside a transaction. The guarantee is now
+//! structural rather than defensive, and the module is callable.
+//!
+//! One consequence worth stating: a caller who wraps two of these in one transaction gets both or neither,
+//! which is an improvement — merging three terms into one used to be three transactions with two windows in
+//! which the vocabulary had two active terms for one concept.
 
 use crate::Error as DbError;
 use chrono::{DateTime, Utc};
@@ -114,8 +126,8 @@ pub struct AssignableTerm {
 /// `Ok(None)` means no such term — a reference whose taxonomy was deleted outright. That is different
 /// from a retired term, and reporting it as an error would make an ordinary stale reference look like a
 /// fault.
-pub async fn resolve(pool: &sqlx::PgPool, id: Uuid) -> Result<Option<ResolvedTerm>> {
-    let Some(row) = load(pool, id).await? else {
+pub async fn resolve(conn: &mut sqlx::PgConnection, id: Uuid) -> Result<Option<ResolvedTerm>> {
+    let Some(row) = load(&mut *conn, id).await? else {
         return Ok(None);
     };
 
@@ -132,7 +144,7 @@ pub async fn resolve(pool: &sqlx::PgPool, id: Uuid) -> Result<Option<ResolvedTer
                 ),
             });
         }
-        match load(pool, next).await? {
+        match load(&mut *conn, next).await? {
             Some(hop) => {
                 effective_id = hop.id;
                 successor = hop.superseded_by;
@@ -159,13 +171,16 @@ pub async fn resolve(pool: &sqlx::PgPool, id: Uuid) -> Result<Option<ResolvedTer
 /// Deprecated terms are excluded. Resolvable and assignable are different questions: a picker that keeps
 /// offering retired terms means the vocabulary never actually gets cleaned up, which is why somebody
 /// retired one in the first place.
-pub async fn assignable(pool: &sqlx::PgPool, taxonomy_id: Uuid) -> Result<Vec<AssignableTerm>> {
+pub async fn assignable(
+    conn: &mut sqlx::PgConnection,
+    taxonomy_id: Uuid,
+) -> Result<Vec<AssignableTerm>> {
     let rows = sqlx::query_as::<_, (Uuid, String, String, String)>(
         "SELECT id, path::text, slug, label FROM taxonomy_terms \
          WHERE taxonomy_id = $1 AND deprecated_at IS NULL ORDER BY path",
     )
     .bind(taxonomy_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
 
     Ok(rows
@@ -184,12 +199,10 @@ pub async fn assignable(pool: &sqlx::PgPool, taxonomy_id: Uuid) -> Result<Vec<As
 /// Refuses while live children remain. Cascading instead would retire terms the operator never asked
 /// about; leaving them would put active terms under a retired ancestor, which no rollup query renders
 /// sensibly. Naming the problem is the only option that does not surprise someone.
-pub async fn deprecate(pool: &sqlx::PgPool, id: Uuid) -> Result<()> {
-    let mut tx = pool.begin().await?;
-    let term = require(&mut tx, id).await?;
+pub async fn deprecate(conn: &mut sqlx::PgConnection, id: Uuid) -> Result<()> {
+    let term = require(&mut *conn, id).await?;
     if term.deprecated_at.is_some() {
         // Idempotent: retiring a retired term is what a retried request looks like.
-        tx.commit().await?;
         return Ok(());
     }
 
@@ -197,7 +210,7 @@ pub async fn deprecate(pool: &sqlx::PgPool, id: Uuid) -> Result<()> {
         "SELECT count(*) FROM taxonomy_terms WHERE parent_id = $1 AND deprecated_at IS NULL",
     )
     .bind(id)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut *conn)
     .await?;
     if live_children > 0 {
         return Err(Error::HasLiveChildren {
@@ -210,9 +223,8 @@ pub async fn deprecate(pool: &sqlx::PgPool, id: Uuid) -> Result<()> {
         "UPDATE taxonomy_terms SET deprecated_at = now(), updated_at = now() WHERE id = $1",
     )
     .bind(id)
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?;
-    tx.commit().await?;
     Ok(())
 }
 
@@ -221,16 +233,15 @@ pub async fn deprecate(pool: &sqlx::PgPool, id: Uuid) -> Result<()> {
 /// The retag and the deprecation are one transaction. Half of this is worse than none — assets moved but
 /// the source still live means two active terms for one concept, and the source retired but the assets
 /// left behind means they are tagged with something no picker offers.
-pub async fn merge(pool: &sqlx::PgPool, from: Uuid, into: Uuid) -> Result<()> {
+pub async fn merge(conn: &mut sqlx::PgConnection, from: Uuid, into: Uuid) -> Result<()> {
     if from == into {
         return Err(Error::WouldCycle {
             detail: format!("term {from} cannot be merged into itself"),
         });
     }
 
-    let mut tx = pool.begin().await?;
-    let source = require(&mut tx, from).await?;
-    let target = require(&mut tx, into).await?;
+    let source = require(&mut *conn, from).await?;
+    let target = require(&mut *conn, into).await?;
 
     if source.taxonomy_id != target.taxonomy_id {
         return Err(Error::DifferentTaxonomies {
@@ -261,7 +272,7 @@ pub async fn merge(pool: &sqlx::PgPool, from: Uuid, into: Uuid) -> Result<()> {
                 detail: format!("the chain from {into} is already longer than {MAX_CHAIN} hops"),
             });
         }
-        cursor = match load_tx(&mut tx, next).await? {
+        cursor = match load_tx(&mut *conn, next).await? {
             Some(hop) => hop.superseded_by,
             None => None,
         };
@@ -283,13 +294,13 @@ pub async fn merge(pool: &sqlx::PgPool, from: Uuid, into: Uuid) -> Result<()> {
     )
     .bind(from)
     .bind(into)
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?;
 
     sqlx::query("UPDATE asset_tags SET term_id = $2 WHERE term_id = $1")
         .bind(from)
         .bind(into)
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await?;
 
     // The other references to a term. Left as separate statements rather than a trigger so the set is
@@ -298,7 +309,7 @@ pub async fn merge(pool: &sqlx::PgPool, from: Uuid, into: Uuid) -> Result<()> {
     sqlx::query("UPDATE tag_feedback SET term_id = $2 WHERE term_id = $1")
         .bind(from)
         .bind(into)
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await?;
 
     sqlx::query(
@@ -308,7 +319,7 @@ pub async fn merge(pool: &sqlx::PgPool, from: Uuid, into: Uuid) -> Result<()> {
     )
     .bind(from)
     .bind(into)
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?;
 
     // `asset_count` is denormalised and worker-maintained, but leaving it stale across a merge would
@@ -319,10 +330,9 @@ pub async fn merge(pool: &sqlx::PgPool, from: Uuid, into: Uuid) -> Result<()> {
          ) WHERE id = ANY($1)",
     )
     .bind(vec![from, into])
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?;
 
-    tx.commit().await?;
     Ok(())
 }
 
@@ -331,9 +341,12 @@ pub async fn merge(pool: &sqlx::PgPool, from: Uuid, into: Uuid) -> Result<()> {
 /// The subtree moves with it, in one statement. Updating only the moved term is the classic version of
 /// this bug: its descendants keep a path whose prefix no longer exists, so `path <@ 'outdoor'` stops
 /// finding them and reports nothing rather than failing.
-pub async fn move_term(pool: &sqlx::PgPool, id: Uuid, new_parent: Option<Uuid>) -> Result<()> {
-    let mut tx = pool.begin().await?;
-    let term = require(&mut tx, id).await?;
+pub async fn move_term(
+    conn: &mut sqlx::PgConnection,
+    id: Uuid,
+    new_parent: Option<Uuid>,
+) -> Result<()> {
+    let term = require(&mut *conn, id).await?;
     if term.deprecated_at.is_some() {
         // Its path is what old rollup queries were written against, and nothing new can be assigned to
         // it, so reorganising it changes the shape of history for no benefit.
@@ -351,7 +364,7 @@ pub async fn move_term(pool: &sqlx::PgPool, id: Uuid, new_parent: Option<Uuid>) 
                     detail: format!("term {id} cannot be its own parent"),
                 });
             }
-            let parent = require(&mut tx, parent_id).await?;
+            let parent = require(&mut *conn, parent_id).await?;
             if parent.taxonomy_id != term.taxonomy_id {
                 return Err(Error::DifferentTaxonomies {
                     left: id,
@@ -374,7 +387,6 @@ pub async fn move_term(pool: &sqlx::PgPool, id: Uuid, new_parent: Option<Uuid>) 
     };
 
     if new_path == term.path {
-        tx.commit().await?;
         return Ok(());
     }
 
@@ -388,7 +400,7 @@ pub async fn move_term(pool: &sqlx::PgPool, id: Uuid, new_parent: Option<Uuid>) 
     .bind(term.taxonomy_id)
     .bind(&new_path)
     .bind(id)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut *conn)
     .await?;
     if taken {
         return Err(Error::PathTaken { path: new_path });
@@ -406,7 +418,7 @@ pub async fn move_term(pool: &sqlx::PgPool, id: Uuid, new_parent: Option<Uuid>) 
     .bind(term.taxonomy_id)
     .bind(parent_prefix(&new_path))
     .bind(&term.path)
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?;
     debug_assert!(
         updated.rows_affected() >= 1,
@@ -416,10 +428,9 @@ pub async fn move_term(pool: &sqlx::PgPool, id: Uuid, new_parent: Option<Uuid>) 
     sqlx::query("UPDATE taxonomy_terms SET parent_id = $2 WHERE id = $1")
         .bind(id)
         .bind(new_parent)
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await?;
 
-    tx.commit().await?;
     Ok(())
 }
 
@@ -471,27 +482,24 @@ fn to_row(tuple: TermTuple) -> TermRow {
     }
 }
 
-async fn load(pool: &sqlx::PgPool, id: Uuid) -> Result<Option<TermRow>> {
+async fn load(conn: &mut sqlx::PgConnection, id: Uuid) -> Result<Option<TermRow>> {
     Ok(sqlx::query_as::<_, TermTuple>(SELECT_TERM)
         .bind(id)
-        .fetch_optional(pool)
+        .fetch_optional(conn)
         .await?
         .map(to_row))
 }
 
-async fn load_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    id: Uuid,
-) -> Result<Option<TermRow>> {
+async fn load_tx(conn: &mut sqlx::PgConnection, id: Uuid) -> Result<Option<TermRow>> {
     Ok(sqlx::query_as::<_, TermTuple>(SELECT_TERM)
         .bind(id)
-        .fetch_optional(&mut **tx)
+        .fetch_optional(conn)
         .await?
         .map(to_row))
 }
 
-async fn require(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, id: Uuid) -> Result<TermRow> {
-    load_tx(tx, id).await?.ok_or(Error::NotFound(id))
+async fn require(conn: &mut sqlx::PgConnection, id: Uuid) -> Result<TermRow> {
+    load_tx(conn, id).await?.ok_or(Error::NotFound(id))
 }
 
 #[cfg(test)]
@@ -510,4 +518,284 @@ mod tests {
         assert_eq!(parent_prefix("outdoor.beach.sand"), "outdoor.beach");
         assert_eq!(parent_prefix("outdoor.beach"), "outdoor");
     }
+}
+
+// ─── vocabulary administration (Q.20b) ──────────────────────────────────────
+//
+// The lifecycle operations above — move, merge, deprecate — existed since 2.2 with nothing able to reach them
+// and nothing able to *create* what they operate on. A vocabulary could only be made by hand in SQL, which is
+// why `ai_taggable` was never set: there was no surface on which to set it.
+//
+// Kept in this module rather than a new one because a vocabulary and a category tree are rows in the same
+// table, and `merge` already refuses to work across taxonomies. Splitting the CRUD from the lifecycle would
+// put "what a term is" and "what may be done to it" in two places.
+
+/// A vocabulary, with what it costs the enrichment prompt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Vocabulary {
+    pub id: Uuid,
+    pub key: String,
+    pub label: String,
+    /// Whether the zero-shot pass may propose these terms.
+    ///
+    /// The gate `dam_db::enrichment::vocabulary` reads. False is the schema default and the governed one: a
+    /// vocabulary somebody just created has not been reviewed for machine use yet.
+    pub ai_taggable: bool,
+    /// Live terms. Deprecated ones are excluded, because this is the number that answers "how much of the
+    /// prompt is this vocabulary" and a retired term is in no prompt.
+    pub term_count: i64,
+}
+
+/// A term as an administrator sees it, including the retired ones.
+///
+/// `PartialEq` without `Eq`: the two thresholds are floats, and a total equality on a type carrying one would
+/// be claiming more than `f32` offers.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VocabularyTerm {
+    pub id: Uuid,
+    pub path: String,
+    pub slug: String,
+    pub label: String,
+    /// Alternative wordings. They widen zero-shot matching at no extra prompt cost beyond their own bytes.
+    pub synonyms: Vec<String>,
+    /// Below this score the term is suggested rather than applied.
+    pub ai_threshold: f32,
+    /// Measured from `tag_feedback`, or `None` before anybody has confirmed or rejected one.
+    pub ai_precision: Option<f32>,
+    /// Confirmed tags. The denormalised column, named as such: a worker maintains it.
+    pub asset_count: i64,
+    pub deprecated_at: Option<DateTime<Utc>>,
+    /// Where the meaning went, when a merge retired this term.
+    pub superseded_by: Option<Uuid>,
+}
+
+/// Every vocabulary in the tenant.
+///
+/// `kind = 'vocabulary'` only: a category tree is filing structure and has its own administration screen, and
+/// listing both here would invite an administrator to turn on machine tagging for a browse hierarchy — the
+/// exact thing 0034 stopped the enrichment query from doing on its own.
+pub async fn vocabularies(conn: &mut sqlx::PgConnection) -> Result<Vec<Vocabulary>> {
+    let rows: Vec<(Uuid, String, String, bool, i64)> = sqlx::query_as(
+        "SELECT x.id, x.key, x.label, x.ai_taggable, \
+                (SELECT count(*) FROM taxonomy_terms t \
+                 WHERE t.taxonomy_id = x.id AND t.deprecated_at IS NULL) \
+         FROM taxonomies x WHERE x.kind = 'vocabulary' ORDER BY x.label, x.key",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(id, key, label, ai_taggable, term_count)| Vocabulary {
+            id,
+            key,
+            label,
+            ai_taggable,
+            term_count,
+        })
+        .collect())
+}
+
+/// Creates a vocabulary. Off-limits to machine tagging until somebody says otherwise.
+pub async fn create_vocabulary(
+    conn: &mut sqlx::PgConnection,
+    key: &str,
+    label: &str,
+) -> Result<Uuid> {
+    let id: Uuid = sqlx::query_scalar(
+        "INSERT INTO taxonomies (id, key, label, kind, ai_taggable) \
+         VALUES (gen_random_uuid(), $1, $2, 'vocabulary', false) RETURNING id",
+    )
+    .bind(key)
+    .bind(label)
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(id)
+}
+
+/// Turns machine tagging on or off for one vocabulary.
+///
+/// The one setting on this screen that changes what an LLM is told, so it is its own function rather than a
+/// field on a general update: an operator ticking a box marked "label" should not be able to open the
+/// vocabulary to a model by accident.
+pub async fn set_ai_taggable(
+    conn: &mut sqlx::PgConnection,
+    taxonomy_id: Uuid,
+    taggable: bool,
+) -> Result<bool> {
+    let updated = sqlx::query(
+        "UPDATE taxonomies SET ai_taggable = $2, updated_at = now() \
+         WHERE id = $1 AND kind = 'vocabulary'",
+    )
+    .bind(taxonomy_id)
+    .bind(taggable)
+    .execute(&mut *conn)
+    .await?
+    .rows_affected();
+    Ok(updated > 0)
+}
+
+/// Every term in a vocabulary, retired ones included.
+///
+/// The counterpart to [`assignable`], and the difference is the audience: a picker must not offer a retired
+/// term, and an administrator must be able to see that it is retired and where its meaning went. Two functions
+/// rather than a flag, because the picker forgetting to pass the flag is a silent regression to a vocabulary
+/// that never gets cleaned up.
+pub async fn terms(
+    conn: &mut sqlx::PgConnection,
+    taxonomy_id: Uuid,
+) -> Result<Vec<VocabularyTerm>> {
+    #[expect(
+        clippy::type_complexity,
+        reason = "one row shape, read once, mapped once"
+    )]
+    let rows: Vec<(
+        Uuid,
+        String,
+        String,
+        String,
+        Vec<String>,
+        f32,
+        Option<f32>,
+        i64,
+        Option<DateTime<Utc>>,
+        Option<Uuid>,
+    )> = sqlx::query_as(
+        "SELECT id, path::text, slug, label, synonyms, ai_threshold, ai_precision, \
+                asset_count, deprecated_at, superseded_by \
+         FROM taxonomy_terms WHERE taxonomy_id = $1 ORDER BY path",
+    )
+    .bind(taxonomy_id)
+    .fetch_all(&mut *conn)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(
+                id,
+                path,
+                slug,
+                label,
+                synonyms,
+                ai_threshold,
+                ai_precision,
+                asset_count,
+                deprecated_at,
+                superseded_by,
+            )| VocabularyTerm {
+                id,
+                path,
+                slug,
+                label,
+                synonyms,
+                ai_threshold,
+                ai_precision,
+                asset_count,
+                deprecated_at,
+                superseded_by,
+            },
+        )
+        .collect())
+}
+
+/// A term to add.
+#[derive(Debug, Clone)]
+pub struct NewTerm<'a> {
+    pub slug: &'a str,
+    pub label: &'a str,
+    pub synonyms: &'a [String],
+    /// Under the root when `None`. A vocabulary is usually flat, but "outdoor > harbour" is a real shape and
+    /// the `ltree` path supports it, so refusing a parent here would be an arbitrary restriction.
+    pub parent_id: Option<Uuid>,
+}
+
+/// Adds a term.
+///
+/// The path is computed from the parent rather than supplied, for the same reason [`move_term`] rewrites a
+/// whole subtree: a path that does not match the parent chain makes every ancestor query wrong, and quietly.
+pub async fn add_term(
+    conn: &mut sqlx::PgConnection,
+    taxonomy_id: Uuid,
+    new: &NewTerm<'_>,
+) -> Result<Uuid> {
+    let path = match new.parent_id {
+        None => new.slug.to_owned(),
+        Some(parent_id) => {
+            let parent = require(&mut *conn, parent_id).await?;
+            if parent.taxonomy_id != taxonomy_id {
+                return Err(Error::DifferentTaxonomies {
+                    left: taxonomy_id,
+                    right: parent_id,
+                });
+            }
+            // A retired parent would put a live term under a branch no picker offers, which is the same
+            // inconsistency `deprecate` refuses to create from the other direction.
+            if parent.deprecated_at.is_some() {
+                return Err(Error::Deprecated {
+                    id: parent_id,
+                    operation: "given a child",
+                });
+            }
+            format!("{}.{}", parent.path, new.slug)
+        }
+    };
+
+    let taken: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM taxonomy_terms \
+         WHERE taxonomy_id = $1 AND (path = text2ltree($2) OR slug = $3))",
+    )
+    .bind(taxonomy_id)
+    .bind(&path)
+    .bind(new.slug)
+    .fetch_one(&mut *conn)
+    .await?;
+    if taken {
+        return Err(Error::PathTaken { path });
+    }
+
+    let id: Uuid = sqlx::query_scalar(
+        "INSERT INTO taxonomy_terms (id, taxonomy_id, parent_id, path, slug, label, synonyms) \
+         VALUES (gen_random_uuid(), $1, $2, text2ltree($3), $4, $5, $6) RETURNING id",
+    )
+    .bind(taxonomy_id)
+    .bind(new.parent_id)
+    .bind(&path)
+    .bind(new.slug)
+    .bind(new.label)
+    .bind(new.synonyms)
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(id)
+}
+
+/// Changes a term's label, synonyms and threshold. Not its slug, and not its path.
+///
+/// **The slug is immutable here.** It is what a model answers with, what `asset_tags` was written against in
+/// spirit, and what an import resolves; changing it would silently orphan every one of those. Moving a term is
+/// [`move_term`], which rewrites the subtree; renaming the *concept* is a new term and a [`merge`].
+pub async fn amend_term(
+    conn: &mut sqlx::PgConnection,
+    id: Uuid,
+    label: &str,
+    synonyms: &[String],
+    ai_threshold: f32,
+) -> Result<bool> {
+    // Clamped rather than refused. A threshold outside 0..=1 cannot be satisfied or cannot fail, so it is one
+    // of two useful settings — "never auto-apply" and "always" — expressed by a typo. Refusing would be
+    // defensible; clamping and reading back what was stored is what lets the screen show the operator what
+    // they actually got.
+    let threshold = ai_threshold.clamp(0.0, 1.0);
+    let updated = sqlx::query(
+        "UPDATE taxonomy_terms SET label = $2, synonyms = $3, ai_threshold = $4, updated_at = now() \
+         WHERE id = $1",
+    )
+    .bind(id)
+    .bind(label)
+    .bind(synonyms)
+    .bind(threshold)
+    .execute(&mut *conn)
+    .await?
+    .rows_affected();
+    Ok(updated > 0)
 }

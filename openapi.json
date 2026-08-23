@@ -4806,6 +4806,337 @@
         }
       }
     },
+    "/vocabularies": {
+      "get": {
+        "tags": [
+          "vocabularies"
+        ],
+        "operationId": "list",
+        "responses": {
+          "200": {
+            "description": "Every vocabulary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/VocabularyView"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "vocabularies"
+        ],
+        "operationId": "create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewVocabularyBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created, and off-limits to machine tagging",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VocabularyView"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The key is taken"
+          }
+        }
+      }
+    },
+    "/vocabularies/{id}/ai": {
+      "post": {
+        "tags": [
+          "vocabularies"
+        ],
+        "summary": "Opens a vocabulary to machine tagging, or closes it.",
+        "description": "Its own endpoint rather than a field on an update body: this is the setting that decides what an LLM is\ntold about a customer's library, and it should not be possible to change it while editing a label.",
+        "operationId": "set_ai",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AiBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VocabularyView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such vocabulary"
+          }
+        }
+      }
+    },
+    "/vocabularies/{id}/terms": {
+      "get": {
+        "tags": [
+          "vocabularies"
+        ],
+        "operationId": "terms",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Every term, retired ones included",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TermView"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "vocabularies"
+        ],
+        "operationId": "add_term",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewTermBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Added",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TermView"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The slug or path is taken"
+          }
+        }
+      }
+    },
+    "/vocabularies/{id}/terms/{term_id}": {
+      "patch": {
+        "tags": [
+          "vocabularies"
+        ],
+        "operationId": "amend_term",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "term_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AmendTermBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Amended, with the threshold as stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TermView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such term"
+          }
+        }
+      }
+    },
+    "/vocabularies/{id}/terms/{term_id}/merge": {
+      "post": {
+        "tags": [
+          "vocabularies"
+        ],
+        "summary": "Merges this term into another: the assets move, and this one is retired pointing at it.",
+        "description": "The retag and the retirement are one transaction — half of it is worse than none, because assets moved with\nthe source still live means two active terms for one concept, and the source retired with its assets left\nbehind means they are tagged with something no picker offers.",
+        "operationId": "merge_term",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "term_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MergeBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Merged; the source is retired and resolves to the target",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TermView"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Would cycle, or crosses vocabularies, or the target is retired"
+          }
+        }
+      }
+    },
+    "/vocabularies/{id}/terms/{term_id}/retire": {
+      "post": {
+        "tags": [
+          "vocabularies"
+        ],
+        "summary": "Retires a term from new assignment. It stays resolvable, and its assets keep it.",
+        "operationId": "retire_term",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "term_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Retired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TermView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such term"
+          },
+          "409": {
+            "description": "Live children remain"
+          }
+        }
+      }
+    },
     "/watches": {
       "get": {
         "tags": [
@@ -5042,6 +5373,18 @@
           }
         }
       },
+      "AiBody": {
+        "type": "object",
+        "description": "Whether a model may draw on this vocabulary.",
+        "required": [
+          "ai_taggable"
+        ],
+        "properties": {
+          "ai_taggable": {
+            "type": "boolean"
+          }
+        }
+      },
       "AmendBody": {
         "type": "object",
         "description": "What may be changed. Not the key.",
@@ -5208,6 +5551,29 @@
             "format": "uuid"
           },
           "validation": {}
+        }
+      },
+      "AmendTermBody": {
+        "type": "object",
+        "description": "What may be changed on a term. Not the slug.",
+        "required": [
+          "label",
+          "ai_threshold"
+        ],
+        "properties": {
+          "ai_threshold": {
+            "type": "number",
+            "format": "float"
+          },
+          "label": {
+            "type": "string"
+          },
+          "synonyms": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
         }
       },
       "AmendTypeRequest": {
@@ -7044,6 +7410,19 @@
           }
         }
       },
+      "MergeBody": {
+        "type": "object",
+        "description": "Where a merge sends the meaning.",
+        "required": [
+          "into"
+        ],
+        "properties": {
+          "into": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
       "MetadataAccepted": {
         "type": "object",
         "description": "The outcome of a metadata edit.",
@@ -7273,6 +7652,51 @@
             "description": "A saved search as the source. Accepted by the schema, refused by this build — see the module note and\nNEEDS-REVIEW.md. Named in the request rather than absent from it, so asking gets an answer about the\ndecision instead of \"missing field `collection_id`\"."
           },
           "title": {
+            "type": "string"
+          }
+        }
+      },
+      "NewTermBody": {
+        "type": "object",
+        "description": "A term to add.",
+        "required": [
+          "slug",
+          "label"
+        ],
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "parent_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "synonyms": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "NewVocabularyBody": {
+        "type": "object",
+        "description": "A vocabulary to create.",
+        "required": [
+          "key",
+          "label"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "label": {
             "type": "string"
           }
         }
@@ -8759,6 +9183,74 @@
           }
         }
       },
+      "TermView": {
+        "type": "object",
+        "description": "One term, as an administrator sees it.",
+        "required": [
+          "id",
+          "path",
+          "slug",
+          "label",
+          "synonyms",
+          "ai_threshold",
+          "asset_count"
+        ],
+        "properties": {
+          "ai_precision": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "Measured from confirmations and rejections, or absent before anybody has reviewed one."
+          },
+          "ai_threshold": {
+            "type": "number",
+            "format": "float"
+          },
+          "asset_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Confirmed tags. Denormalised and worker-maintained, named so nobody reads it as live."
+          },
+          "deprecated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Set once the term is retired from new assignment. It stays resolvable."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "label": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string",
+            "description": "What a model answers with, and what an import resolves. Not changeable."
+          },
+          "superseded_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Where the meaning went, when a merge retired it."
+          },
+          "synonyms": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "TransitionView": {
         "type": "object",
         "description": "One object a run would move.",
@@ -9017,6 +9509,38 @@
               "null"
             ],
             "description": "A term to narrow the set by. Ignored when the portal does not allow searching."
+          }
+        }
+      },
+      "VocabularyView": {
+        "type": "object",
+        "description": "One vocabulary.",
+        "required": [
+          "id",
+          "key",
+          "label",
+          "ai_taggable",
+          "term_count"
+        ],
+        "properties": {
+          "ai_taggable": {
+            "type": "boolean",
+            "description": "Whether the zero-shot pass may propose these terms. False for a new one."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "key": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "term_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Live terms — what this vocabulary costs the enrichment prompt."
           }
         }
       },

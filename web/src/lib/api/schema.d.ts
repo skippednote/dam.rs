@@ -1696,6 +1696,114 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/vocabularies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list"];
+        put?: never;
+        post: operations["create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/vocabularies/{id}/ai": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Opens a vocabulary to machine tagging, or closes it.
+         * @description Its own endpoint rather than a field on an update body: this is the setting that decides what an LLM is
+         *     told about a customer's library, and it should not be possible to change it while editing a label.
+         */
+        post: operations["set_ai"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/vocabularies/{id}/terms": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["terms"];
+        put?: never;
+        post: operations["add_term"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/vocabularies/{id}/terms/{term_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["amend_term"];
+        trace?: never;
+    };
+    "/vocabularies/{id}/terms/{term_id}/merge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Merges this term into another: the assets move, and this one is retired pointing at it.
+         * @description The retag and the retirement are one transaction — half of it is worse than none, because assets moved with
+         *     the source still live means two active terms for one concept, and the source retired with its assets left
+         *     behind means they are tagged with something no picker offers.
+         */
+        post: operations["merge_term"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/vocabularies/{id}/terms/{term_id}/retire": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retires a term from new assignment. It stays resolvable, and its assets keep it. */
+        post: operations["retire_term"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/watches": {
         parameters: {
             query?: never;
@@ -1795,6 +1903,10 @@ export interface components {
              */
             out_of_scope: number;
         };
+        /** @description Whether a model may draw on this vocabulary. */
+        AiBody: {
+            ai_taggable: boolean;
+        };
         /** @description What may be changed. Not the key. */
         AmendBody: {
             description?: string | null;
@@ -1840,6 +1952,13 @@ export interface components {
             /** Format: uuid */
             taxonomy_id?: string | null;
             validation?: unknown;
+        };
+        /** @description What may be changed on a term. Not the slug. */
+        AmendTermBody: {
+            /** Format: float */
+            ai_threshold: number;
+            label: string;
+            synonyms?: string[];
         };
         /**
          * @description What to change about a type. An omitted member is left alone.
@@ -2759,6 +2878,11 @@ export interface components {
             /** @description The embedded name, as the extractor reports it — `exif.artist`, `xmp.creator`. */
             source: string;
         };
+        /** @description Where a merge sends the meaning. */
+        MergeBody: {
+            /** Format: uuid */
+            into: string;
+        };
         /** @description The outcome of a metadata edit. */
         MetadataAccepted: {
             /**
@@ -2866,6 +2990,19 @@ export interface components {
              */
             saved_search_id?: string | null;
             title: string;
+        };
+        /** @description A term to add. */
+        NewTermBody: {
+            label: string;
+            /** Format: uuid */
+            parent_id?: string | null;
+            slug: string;
+            synonyms?: string[];
+        };
+        /** @description A vocabulary to create. */
+        NewVocabularyBody: {
+            key: string;
+            label: string;
         };
         /** @description One node, with the count of assets the caller can see at or beneath it. */
         NodeRow: {
@@ -3511,6 +3648,38 @@ export interface components {
             /** @description `true` confirms the tag, `false` rejects it. Both are recorded: the rejections are the training signal. */
             accept: boolean;
         };
+        /** @description One term, as an administrator sees it. */
+        TermView: {
+            /**
+             * Format: float
+             * @description Measured from confirmations and rejections, or absent before anybody has reviewed one.
+             */
+            ai_precision?: number | null;
+            /** Format: float */
+            ai_threshold: number;
+            /**
+             * Format: int64
+             * @description Confirmed tags. Denormalised and worker-maintained, named so nobody reads it as live.
+             */
+            asset_count: number;
+            /**
+             * Format: date-time
+             * @description Set once the term is retired from new assignment. It stays resolvable.
+             */
+            deprecated_at?: string | null;
+            /** Format: uuid */
+            id: string;
+            label: string;
+            path: string;
+            /** @description What a model answers with, and what an import resolves. Not changeable. */
+            slug: string;
+            /**
+             * Format: uuid
+             * @description Where the meaning went, when a merge retired it.
+             */
+            superseded_by?: string | null;
+            synonyms: string[];
+        };
         /** @description One object a run would move. */
         TransitionView: {
             from: string;
@@ -3599,6 +3768,20 @@ export interface components {
             passcode?: string | null;
             /** @description A term to narrow the set by. Ignored when the portal does not allow searching. */
             q?: string | null;
+        };
+        /** @description One vocabulary. */
+        VocabularyView: {
+            /** @description Whether the zero-shot pass may propose these terms. False for a new one. */
+            ai_taggable: boolean;
+            /** Format: uuid */
+            id: string;
+            key: string;
+            label: string;
+            /**
+             * Format: int64
+             * @description Live terms — what this vocabulary costs the enrichment prompt.
+             */
+            term_count: number;
         };
         /** @description How many assets are in no category, and some of them. */
         Worklist: {
@@ -7773,6 +7956,250 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["UsageOptions"];
                 };
+            };
+        };
+    };
+    list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every vocabulary */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VocabularyView"][];
+                };
+            };
+        };
+    };
+    create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewVocabularyBody"];
+            };
+        };
+        responses: {
+            /** @description Created, and off-limits to machine tagging */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VocabularyView"];
+                };
+            };
+            /** @description The key is taken */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    set_ai: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AiBody"];
+            };
+        };
+        responses: {
+            /** @description Set */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VocabularyView"];
+                };
+            };
+            /** @description No such vocabulary */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    terms: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every term, retired ones included */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TermView"][];
+                };
+            };
+        };
+    };
+    add_term: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewTermBody"];
+            };
+        };
+        responses: {
+            /** @description Added */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TermView"];
+                };
+            };
+            /** @description The slug or path is taken */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    amend_term: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                term_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AmendTermBody"];
+            };
+        };
+        responses: {
+            /** @description Amended, with the threshold as stored */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TermView"];
+                };
+            };
+            /** @description No such term */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    merge_term: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                term_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MergeBody"];
+            };
+        };
+        responses: {
+            /** @description Merged; the source is retired and resolves to the target */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TermView"];
+                };
+            };
+            /** @description Would cycle, or crosses vocabularies, or the target is retired */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    retire_term: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                term_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Retired */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TermView"];
+                };
+            };
+            /** @description No such term */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Live children remain */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
