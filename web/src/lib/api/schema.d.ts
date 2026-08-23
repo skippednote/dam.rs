@@ -641,6 +641,22 @@ export interface paths {
         patch: operations["amend"];
         trace?: never;
     };
+    "/branding": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["read"];
+        put: operations["write"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/bulk": {
         parameters: {
             query?: never;
@@ -2360,6 +2376,35 @@ export interface components {
             /** @description Whether a slice is queued or in flight right now. */
             running: boolean;
         };
+        /** @description What may be changed. */
+        BrandingBody: {
+            accent: string;
+            /** Format: uuid */
+            logo_asset_id?: string | null;
+            /** @description Empty or absent means fall back to the tenant's display name. */
+            site_name?: string;
+            support_email?: string | null;
+        };
+        /** @description What the library calls itself and what it looks like. */
+        BrandingView: {
+            /** @description Lowercase `#rrggbb`. */
+            accent: string;
+            /** Format: uuid */
+            logo_asset_id?: string | null;
+            /** @description A short-lived link to the logo's thumbnail, when it has one and delivery is configured. */
+            logo_url?: string | null;
+            /**
+             * @description The name to show. Already resolved: empty `site_name` becomes the tenant's display name, so a client
+             *     never has to know the fallback rule.
+             */
+            site_name: string;
+            /**
+             * @description Whether that name is the tenant's own setting or the fallback. The settings form needs the difference —
+             *     it must show an empty field rather than pre-filling the fallback and making it look chosen.
+             */
+            site_name_is_default: boolean;
+            support_email?: string | null;
+        };
         /** @description One facet bucket. */
         Bucket: {
             /** Format: int64 */
@@ -3088,7 +3133,14 @@ export interface components {
         };
         /** @description A portal to create. */
         NewPortalRequest: {
-            accent?: string;
+            /**
+             * @description Absent means inherit the tenant's own accent from `site_branding` (Q.20d).
+             *
+             *     `Option` rather than a defaulting function, and that is the fix: the default used to be our
+             *     `#2563eb` literal, so a tenant who had set their colour still got ours on the seventh portal they
+             *     made — and nothing on screen said why.
+             */
+            accent?: string | null;
             allow_original?: boolean;
             allow_search?: boolean;
             /**
@@ -5622,6 +5674,64 @@ export interface operations {
             };
             /** @description No such mapping */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    read: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The tenant's branding, with the name resolved */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrandingView"];
+                };
+            };
+            /** @description The credential holds no read scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    write: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BrandingBody"];
+            };
+        };
+        responses: {
+            /** @description Saved, as stored */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrandingView"];
+                };
+            };
+            /** @description The accent is not a colour, or the logo is not an asset you can see */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

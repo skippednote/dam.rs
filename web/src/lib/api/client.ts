@@ -1414,3 +1414,27 @@ export async function webhookDeliveries(id: string): Promise<WebhookDelivery[]> 
 export async function retryWebhookDelivery(id: string, deliveryId: string): Promise<void> {
 	await request<void>(`/webhooks/${id}/deliveries/${deliveryId}/retry`, { method: 'POST' });
 }
+
+// ─── site branding (Q.20d) ──────────────────────────────────────────────────
+
+export type Branding = components['schemas']['BrandingView'];
+
+/**
+ * The tenant's own name, logo and accent.
+ *
+ * Read, not Manage: the shell renders this on every page, so a curator must be able to see their own library's
+ * name. The `site_name` is already resolved — an unset one comes back as the tenant's display name — and
+ * `site_name_is_default` says which it was, because a form must not pre-fill a fallback and make it look chosen.
+ */
+export async function loadBranding(): Promise<Branding> {
+	return request<Branding>('/branding');
+}
+
+export async function saveBranding(body: {
+	site_name: string;
+	logo_asset_id?: string | null;
+	accent: string;
+	support_email?: string | null;
+}): Promise<Branding> {
+	return request<Branding>('/branding', { method: 'PUT', body: JSON.stringify(body) });
+}

@@ -26,7 +26,7 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M0–M3c** Foundation, ingest, metadata/search/rights, delivery/sharing/restore | complete |
 | **F** The UI: browse, detail, upload, filter rail, lightbox, bulk bar, design pass | complete |
 | **F.11b** Share/portal UI, schema administration, metadata types | complete, restore UX included |
-| **Q** Acquia parity, 20 slices | Q.1–Q.19 done including Q.14b; Q.20 open |
+| **Q** Acquia parity, 20 slices | **complete** — Q.1–Q.20, including Q.14b collections and Q.20a–d |
 | **Go-live Tier 1** Deployment image, backups, metrics, rate limiting, virus scan, C2PA | **done** — all six, each verified against the running stack |
 | **Archival** Tiering engine, restores, the storage screen | **done** — the sweep and poll jobs, the plan/quote/request/approve API, delivery's 202, bulk archive and restore, the restore panel |
 | **M3d** Drupal 11 connector | not started |
@@ -35,7 +35,7 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M6** Workflow/proofing, annotations, analytics | not started |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** Q.20 sundries → M4 local AI → M6 → M3d → Pre-GA.
+**Next up, in order:** M4 local AI → M6 workflow/proofing → M3d Drupal connector → Pre-GA.
 
 **`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
 note carried; `DECISIONS.md` records what was chosen. Two of them needed code: a portal may now be backed by a
@@ -2363,7 +2363,8 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
 
 - [x] **Q.19b Dependent metadata fields.** A field whose relevance depends on another field's value: shown when
       the parent matches, and required only when shown. (Shipped in `0461f0f`; the box was never ticked.)
-- [ ] **Q.20 Site branding.** Worklists done (Q.20a); tag vocabulary (Q.20b); webhook delivery (Q.20c).
+- [x] **Q.20 Acquia parity, the last four slices.** Worklists (Q.20a), tag vocabulary (Q.20b), webhook
+  delivery (Q.20c), site branding (Q.20d).
 - [x] **Q.20a The admin worklists.** Ten lists, each one SQL over data damrs already holds: no table, no queue,
   no state to fall out of date, so an asset leaves a list the moment somebody fixes the thing. `Read`, not
   `Manage` — the person who files an uncategorised asset is whoever can edit it, and gating the *finding* behind
@@ -2488,6 +2489,44 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
       running stack with an independent Node receiver: two publications and a metadata edit delivered, every
       signature VERIFIED using only the documented scheme, a deliberate 503 retried to success with the same
       delivery id, and the metadata payload carrying `["title"]` while the value appeared nowhere.
+
+- [x] **Q.20d Site branding, and the vendor's name in every customer's library.** Two things were wrong. The
+  application called itself "damrs" in the nav of every tenant's library — a vendor's name where a customer's
+  belongs. And `portals.accent` defaulted to our own `#2563eb` literal, so a tenant with six press kits set the
+  same colour six times and the seventh silently reverted, with nothing on screen saying why.
+
+      **A singleton in the tenant schema, not `tenants.settings`.** That jsonb column exists and nothing has
+      ever read it, and it was tempting. Branding is tenant *data* — a logo is an asset in the tenant's own
+      schema, and 0002 forbids cross-schema foreign keys, so half of it could not live there. And a jsonb blob
+      has no CHECK constraint, which for a colour interpolated into CSS is the difference between a validated
+      value and an injection point. Migration 0036, same shape as `enrichment_settings`.
+
+      **The name falls back rather than defaulting.** An empty `site_name` resolves to the tenant's display
+      name, which they gave us at provisioning. Resolved in the API because the column cannot see
+      `dam_global.tenants` and a copy here would go stale; the response says *which* it was, because a form
+      that pre-filled the fallback would make the default look chosen — after which clearing it is
+      indistinguishable from never setting it.
+
+      **The accent is not applied to the application's own colour system**, and that is deliberate rather than
+      unfinished. `layout.css` tunes `--color-accent` and `--color-accent-fg` separately for light and dark,
+      with the comment "a light-on-light-blue button is the classic 3:1 failure" — substituting an arbitrary
+      tenant hex would break those pairs on surfaces that carry text, and axe would catch some of it but not
+      all. So the shell gets a decorative mark, which carries no text and cannot fail a contrast check, and the
+      accent's real job stays the portal, which is external-facing and already renders it in full. The screen
+      says so rather than looking unfinished.
+
+      **What driving it found.** The header fell back to "damrs" while branding loaded, so every page load of
+      every customer's library flashed the vendor's name — the exact thing this removes, just briefly
+      ("immediately: damrs | settled: Acme Picture Library"). It renders nothing until known now, with the mark
+      holding the home link open and clickable. And two of my own e2e assertions were wrong about the
+      implementation rather than the reverse: the header mark shows the colour *in force* rather than
+      live-previewing a draft, which is the right way round, and the `pattern` attribute means a malformed
+      colour never reaches the server at all — so the server's colour refusal is provoked through the API, and
+      the form's refusal path is the logo scope check.
+
+      1 unit case, 6 API cases, 1 portal-inheritance case, 10 browser cases including axe. Verified live: the
+      fallback resolved to "Acme Corp", `#000;} body{display:none` refused by name, and a save updating the
+      header without a reload.
 
 Absorbed by the existing roadmap rather than duplicated here: the AI set (tags, faces, document text,
 transcripts, semantic search, duplicate detection) is M4; conversational access is M5's MCP server; workflow

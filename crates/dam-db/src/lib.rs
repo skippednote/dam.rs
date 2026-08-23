@@ -12,6 +12,7 @@ pub mod assets;
 pub mod attachments;
 pub mod auth;
 pub mod auto_import;
+pub mod branding;
 pub mod bulk;
 pub mod categories;
 pub mod collections;

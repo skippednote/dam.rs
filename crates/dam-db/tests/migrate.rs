@@ -75,7 +75,11 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             // 74 since 0028: `enrichment_settings`, one row saying whether a model may run and what to tell it.
             // 75 since 0030: `portals`, a named branded share of a set.
             // 76 since 0032: `search_facets`, which filters the refine-search rail offers and in what order.
-            76,
+            // 77 since 0036: `site_branding`, one row saying what this tenant's library calls itself — a
+            // singleton like `enrichment_settings`, and in the tenant schema rather than
+            // `dam_global.tenants.settings` because a logo is an asset here and 0002 forbids the cross-schema
+            // foreign key that would need.
+            77,
         ),
         (
             "view count",
@@ -127,7 +131,11 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             // taxonomies, and the live terms ordered by slug. Both partial, because the enrichment query only
             // ever wants the open vocabularies and the terms that are still assignable, and on a tenant whose
             // taxonomies are mostly category trees that is a small fraction of both tables.
-            267,
+            //
+            // 268 since 0036: `site_branding`'s primary key, which is also its singleton lock. 0035 added no
+            // index of its own — it replaced the outbox ordering index rather than adding one, because an
+            // index on the timestamp it stopped comparing would still have been scanned.
+            268,
         ),
         (
             "check constraints",
@@ -178,7 +186,13 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             // 135 since 0032: a `search_facets` row must name a field, a taxonomy or a built-in. A row that
             // named none of them would be a rail entry nothing can render — and it would fail as an absence,
             // which is the hardest kind of wrong to notice.
-            135,
+            //
+            // 139 since 0036: `site_branding`'s four. The singleton lock (`id` may only be true), a bound on
+            // the name, and a shape apiece for the accent and the support address. The accent's is the one
+            // that earns its keep: that value is interpolated into a stylesheet, so the constraint *is* the
+            // sanitiser rather than a second opinion about one — a Rust check guards the endpoint, and this
+            // guards every path including one nobody has written yet.
+            139,
         ),
         (
             "hnsw indexes",

@@ -2005,6 +2005,60 @@
         }
       }
     },
+    "/branding": {
+      "get": {
+        "tags": [
+          "branding"
+        ],
+        "operationId": "read",
+        "responses": {
+          "200": {
+            "description": "The tenant's branding, with the name resolved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrandingView"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The credential holds no read scope"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "branding"
+        ],
+        "operationId": "write",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BrandingBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Saved, as stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrandingView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The accent is not a colour, or the logo is not an asset you can see"
+          }
+        }
+      }
+    },
     "/bulk": {
       "post": {
         "tags": [
@@ -6312,6 +6366,78 @@
           }
         }
       },
+      "BrandingBody": {
+        "type": "object",
+        "description": "What may be changed.",
+        "required": [
+          "accent"
+        ],
+        "properties": {
+          "accent": {
+            "type": "string"
+          },
+          "logo_asset_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "site_name": {
+            "type": "string",
+            "description": "Empty or absent means fall back to the tenant's display name."
+          },
+          "support_email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "BrandingView": {
+        "type": "object",
+        "description": "What the library calls itself and what it looks like.",
+        "required": [
+          "site_name",
+          "site_name_is_default",
+          "accent"
+        ],
+        "properties": {
+          "accent": {
+            "type": "string",
+            "description": "Lowercase `#rrggbb`."
+          },
+          "logo_asset_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "logo_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A short-lived link to the logo's thumbnail, when it has one and delivery is configured."
+          },
+          "site_name": {
+            "type": "string",
+            "description": "The name to show. Already resolved: empty `site_name` becomes the tenant's display name, so a client\nnever has to know the fallback rule."
+          },
+          "site_name_is_default": {
+            "type": "boolean",
+            "description": "Whether that name is the tenant's own setting or the fallback. The settings form needs the difference —\nit must show an empty field rather than pre-filling the fallback and making it look chosen."
+          },
+          "support_email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "Bucket": {
         "type": "object",
         "description": "One facet bucket.",
@@ -7868,7 +7994,11 @@
         ],
         "properties": {
           "accent": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Absent means inherit the tenant's own accent from `site_branding` (Q.20d).\n\n`Option` rather than a defaulting function, and that is the fix: the default used to be our\n`#2563eb` literal, so a tenant who had set their colour still got ours on the seventh portal they\nmade — and nothing on screen said why."
           },
           "allow_original": {
             "type": "boolean"

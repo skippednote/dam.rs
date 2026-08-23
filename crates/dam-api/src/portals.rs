@@ -153,8 +153,13 @@ pub struct NewPortalRequest {
     /// A media class ("every video") as the source. Refused for the same reason.
     pub media_class: Option<String>,
     pub logo_asset_id: Option<Uuid>,
-    #[serde(default = "default_accent")]
-    pub accent: String,
+    /// Absent means inherit the tenant's own accent from `site_branding` (Q.20d).
+    ///
+    /// `Option` rather than a defaulting function, and that is the fix: the default used to be our
+    /// `#2563eb` literal, so a tenant who had set their colour still got ours on the seventh portal they
+    /// made — and nothing on screen said why.
+    #[serde(default)]
+    pub accent: Option<String>,
     /// Whether the slug resolves. False means the portal is reachable only by its token.
     #[serde(default)]
     pub is_public: bool,
@@ -170,10 +175,6 @@ pub struct NewPortalRequest {
 
 fn standard() -> String {
     "standard".to_owned()
-}
-
-fn default_accent() -> String {
-    "#2563eb".to_owned()
 }
 
 fn yes() -> bool {
@@ -292,6 +293,13 @@ pub async fn create(
         return Err(Failure::NotFound);
     }
 
+    // Resolved before the create call, because both borrow the connection. Also the clearer order: the accent
+    // is decided, then the portal is made with it.
+    let accent = match request.accent {
+        Some(chosen) => chosen,
+        // The tenant's own, so a tenant sets their colour once instead of once per press kit.
+        None => dam_db::branding::read(conn.executor()).await?.accent,
+    };
     let created = portals::create(
         conn.executor(),
         &NewPortal {
@@ -301,7 +309,7 @@ pub async fn create(
             kind,
             source,
             logo_asset_id: request.logo_asset_id,
-            accent: request.accent,
+            accent,
             is_public: request.is_public,
             allow_search: request.allow_search,
         },

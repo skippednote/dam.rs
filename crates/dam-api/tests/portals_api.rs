@@ -884,3 +884,37 @@ async fn an_asset_link_is_not_a_portal() {
         "{body}"
     );
 }
+
+#[tokio::test]
+async fn a_portal_without_an_accent_inherits_the_tenants_own() {
+    // The defect this fixes: `accent` defaulted to our own `#2563eb` literal, so a tenant who had set their
+    // colour still got ours on every portal they made without naming it — and nothing on screen said why. Six
+    // press kits meant setting one colour six times, and the seventh silently reverted.
+    let f = fixture().await;
+    sqlx::query("UPDATE site_branding SET accent = '#ff6600' WHERE id")
+        .execute(&f.acme)
+        .await
+        .expect("branding");
+
+    // No accent in the body at all — the field is `Option` now, not a defaulting function.
+    let mut body = new_portal(&f, json!({ "key": "inherits" }));
+    body.as_object_mut().expect("object").remove("accent");
+    let (status, created) = call(&f, "POST", "/portals", Some(&f.key), Some(body)).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    assert_eq!(created["portal"]["accent"], "#ff6600");
+
+    // An explicit accent still wins: a portal for one campaign may legitimately differ from the house colour.
+    let (status, chosen) = call(
+        &f,
+        "POST",
+        "/portals",
+        Some(&f.key),
+        Some(new_portal(
+            &f,
+            json!({ "key": "chooses", "accent": "#123456" }),
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{chosen}");
+    assert_eq!(chosen["portal"]["accent"], "#123456");
+}

@@ -151,6 +151,10 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
         .merge(crate::archival::router(crate::archival::ArchivalState {
             global: deps.global.clone(),
         }))
+        .merge(crate::branding::router(crate::branding::BrandingState {
+            global: deps.global.clone(),
+            delivery: Some(Arc::clone(&delivery)),
+        }))
         .merge(crate::webhooks::router(crate::webhooks::WebhookState {
             global: deps.global.clone(),
             // A developer's receiver is on localhost over http, and the first version of this refused it —
