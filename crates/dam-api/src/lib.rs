@@ -38,4 +38,5 @@ pub mod tus;
 pub mod upload_profiles;
 pub mod versions;
 pub mod vocabularies;
+pub mod webhooks;
 pub mod worklists;

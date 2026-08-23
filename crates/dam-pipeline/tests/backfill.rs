@@ -805,6 +805,9 @@ fn context(f: &Fixture, transport: Arc<Recorded>) -> dam_pipeline::worker::Conte
         ))),
         ai: Some(ai(transport)),
         worker: "backfill-chain-test".to_owned(),
+        // No webhook subscriptions in these fixtures, so nothing is ever dispatched. A default client
+        // rather than a builder, because what these suites exercise is unrelated to how it is configured.
+        http: reqwest::Client::new(),
     }
 }
 

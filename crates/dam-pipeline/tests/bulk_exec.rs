@@ -393,6 +393,9 @@ async fn the_worker_runs_it_and_queues_the_reindex(f: &Fixture) {
             dir.path(),
         ))),
         worker: "bulk-test-worker".to_owned(),
+        // No webhook subscriptions in these fixtures, so nothing is ever dispatched. A default client
+        // rather than a builder, because what these suites exercise is unrelated to how it is configured.
+        http: reqwest::Client::new(),
     };
 
     let target = asset(f, "via-worker.jpg").await;

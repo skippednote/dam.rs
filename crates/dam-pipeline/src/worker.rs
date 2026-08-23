@@ -53,6 +53,8 @@ pub mod kind {
     pub const TIER_SWEEP: &str = "tier_sweep";
     /// Restore requests are issued, checked, and expired (§6.5).
     pub const RESTORE_POLL: &str = "restore_poll";
+    /// One batch of the webhook outbox is signed and sent (§11).
+    pub const WEBHOOK_DISPATCH: &str = "webhook_dispatch";
 }
 
 /// How long to wait when the queue is empty.
@@ -95,6 +97,12 @@ pub struct Context {
     /// This worker's id, for the lease. Distinct per process, or two workers share a lease and both run the
     /// same job while each believes it holds it.
     pub worker: String,
+    /// The HTTP client the webhook dispatcher sends with.
+    ///
+    /// One per process, held here rather than built per delivery, because a client is a connection pool: a
+    /// dispatcher constructing one per event pays a fresh TLS handshake per event, which for a busy tenant is
+    /// most of the cost of the whole operation.
+    pub http: reqwest::Client,
 }
 
 impl std::fmt::Debug for Context {
@@ -320,6 +328,35 @@ pub async fn handle(context: &Context, job: &Job) -> Result<()> {
             if matches!(enriched.outcome, crate::enrich::EnrichOutcome::Wrote { .. }) {
                 enqueue_index(&context.global, job.tenant_id, asset_id).await?;
             }
+            Ok(())
+        }
+
+        kind::WEBHOOK_DISPATCH => {
+            let sent = crate::webhooks::dispatch(
+                &context.global,
+                &context.http,
+                &slug,
+                chrono::Utc::now(),
+            )
+            .await?;
+            if sent != crate::webhooks::Dispatched::default() {
+                tracing::info!(
+                    accepted = sent.accepted,
+                    retrying = sent.retrying,
+                    dead = sent.dead,
+                    disabled = sent.subscriptions_disabled,
+                    reclaimed = sent.reclaimed,
+                    "webhook dispatch",
+                );
+            }
+            // Immediately when the batch came back full, because a bulk publication of ten thousand assets
+            // should not take ten thousand poll intervals to go out. Otherwise after the poll interval.
+            let after = if sent.batch_was_full {
+                chrono::Duration::zero()
+            } else {
+                crate::webhooks::POLL_EVERY
+            };
+            requeue_webhook_dispatch(&context.global, job.tenant_id, after).await?;
             Ok(())
         }
 
@@ -638,6 +675,37 @@ pub async fn requeue_tier_sweep(
     after: chrono::Duration,
 ) -> Result<Uuid> {
     Ok(jobs::enqueue(global, sweep_spec(tenant_id, after)).await?)
+}
+
+/// Starts a tenant's webhook dispatch chain.
+///
+/// Deduped per tenant, and called when a subscription is created rather than at boot: a deployment where
+/// nobody has ever registered a webhook runs no dispatch at all, which is most deployments.
+pub async fn enqueue_webhook_dispatch(global: &sqlx::PgPool, tenant_id: Uuid) -> Result<Uuid> {
+    Ok(jobs::enqueue(
+        global,
+        dispatch_spec(tenant_id, chrono::Duration::zero())
+            .dedupe_key(format!("webhook_dispatch:{tenant_id}")),
+    )
+    .await?)
+}
+
+/// Queues the next pass. Not deduped, for the reason `requeue_tier_sweep` documents: this job is still
+/// `running`, so a shared key would resolve to itself and the chain would stop here.
+pub async fn requeue_webhook_dispatch(
+    global: &sqlx::PgPool,
+    tenant_id: Uuid,
+    after: chrono::Duration,
+) -> Result<Uuid> {
+    Ok(jobs::enqueue(global, dispatch_spec(tenant_id, after)).await?)
+}
+
+fn dispatch_spec(tenant_id: Uuid, after: chrono::Duration) -> jobs::JobSpec {
+    jobs::JobSpec::new(tenant_id, kind::WEBHOOK_DISPATCH)
+        // Above housekeeping, below anything interactive. A webhook is somebody's integration waiting, which
+        // matters more than a lifecycle sweep and less than a thumbnail somebody is looking at.
+        .priority(60)
+        .run_after(chrono::Utc::now() + after)
 }
 
 fn sweep_spec(tenant_id: Uuid, after: chrono::Duration) -> jobs::JobSpec {

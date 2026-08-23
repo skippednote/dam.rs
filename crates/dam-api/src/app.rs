@@ -151,6 +151,12 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
         .merge(crate::archival::router(crate::archival::ArchivalState {
             global: deps.global.clone(),
         }))
+        .merge(crate::webhooks::router(crate::webhooks::WebhookState {
+            global: deps.global.clone(),
+            // Development is the exception, because a receiver on localhost is how anybody develops against
+            // this. Everywhere else a delivery carries a signature and a payload over the open internet.
+            require_https: !matches!(cfg.environment, dam_core::config::Environment::Development),
+        }))
         .merge(crate::vocabularies::router(
             crate::vocabularies::VocabularyState {
                 global: deps.global.clone(),

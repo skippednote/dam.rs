@@ -18,6 +18,7 @@ dam-search = { path = "../../crates/dam-search" }
 dam-pipeline = { path = "../../crates/dam-pipeline" }
 dam-connect = { path = "../../crates/dam-connect" }
 anyhow = { workspace = true }
+reqwest = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

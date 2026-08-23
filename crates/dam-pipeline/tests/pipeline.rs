@@ -1630,6 +1630,9 @@ async fn the_whole_chain_runs_through_the_worker() {
             dir.path(),
         ))),
         worker: "test-worker".to_owned(),
+        // No webhook subscriptions in these fixtures, so nothing is ever dispatched. A default client
+        // rather than a builder, because what these suites exercise is unrelated to how it is configured.
+        http: reqwest::Client::new(),
     };
 
     // A field definition, so the index schema has something to carry.

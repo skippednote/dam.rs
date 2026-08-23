@@ -22,6 +22,7 @@ pub mod derive;
 pub mod enrich;
 pub mod finalise;
 pub mod tiering;
+pub mod webhooks;
 pub mod worker;
 
 /// Everything that can go wrong in a stage.

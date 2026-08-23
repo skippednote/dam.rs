@@ -5181,6 +5181,206 @@
         }
       }
     },
+    "/webhooks": {
+      "get": {
+        "tags": [
+          "webhooks"
+        ],
+        "operationId": "list",
+        "responses": {
+          "200": {
+            "description": "Every subscription, without secrets",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SubscriptionView"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "operationId": "create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewSubscriptionBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Registered; the secret is in this response only",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The URL is not one this server will post to"
+          }
+        }
+      }
+    },
+    "/webhooks/{id}": {
+      "delete": {
+        "tags": [
+          "webhooks"
+        ],
+        "operationId": "remove",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed, with its queued deliveries"
+          },
+          "404": {
+            "description": "No such subscription"
+          }
+        }
+      }
+    },
+    "/webhooks/{id}/deliveries": {
+      "get": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "The recent deliveries for one subscription, newest first.",
+        "description": "**No payloads.** It is the largest column, on the query a screen runs most often, and returning them would\nmake this the cheapest way to read a tenant's whole change history in one request.",
+        "operationId": "deliveries",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The subscription",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Recent deliveries, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DeliveryView"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhooks/{id}/deliveries/{delivery_id}/retry": {
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "Re-queues an abandoned delivery.",
+        "description": "Only a `dead` one, so this cannot be used to jump the queue for something in flight — which would break the\nper-asset ordering the outbox exists to keep.",
+        "operationId": "retry",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "delivery_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Queued for another round of attempts"
+          },
+          "404": {
+            "description": "No such delivery, or it was not abandoned"
+          }
+        }
+      }
+    },
+    "/webhooks/{id}/enable": {
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "Re-enables a subscription the system disabled.",
+        "operationId": "enable",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Enabled, with its failure count forgiven",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscriptionView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such subscription"
+          }
+        }
+      }
+    },
     "/worklists": {
       "get": {
         "tags": [
@@ -6768,6 +6968,31 @@
           }
         }
       },
+      "CreatedView": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/SubscriptionView"
+          },
+          {
+            "type": "object",
+            "required": [
+              "secret",
+              "signature_note"
+            ],
+            "properties": {
+              "secret": {
+                "type": "string",
+                "description": "Shown now and never again. Store it: it is what verifies every delivery's signature."
+              },
+              "signature_note": {
+                "type": "string",
+                "description": "How to check a delivery, so the answer does not have to be looked up elsewhere."
+              }
+            }
+          }
+        ],
+        "description": "A newly created subscription, with its signing key.\n\nThe only response that ever carries the secret. A receiver cannot verify a delivery without it, so it has\nto be shown once — and once only, for the same reason an API key is."
+      },
       "CredentialActiveRequest": {
         "type": "object",
         "description": "Whether a credential is withdrawn or in use.\n\nNamed for the credential rather than reusing `conversions::ActiveRequest`: utoipa keys components by type\nname, and two `ActiveRequest`s in one document would silently be one schema.",
@@ -6957,6 +7182,72 @@
           },
           "label": {
             "type": "string"
+          }
+        }
+      },
+      "DeliveryView": {
+        "type": "object",
+        "description": "One delivery attempt, as an operator sees it. No payload — see [`deliveries`].",
+        "required": [
+          "id",
+          "event_kind",
+          "state",
+          "attempts",
+          "created_at",
+          "next_attempt_at"
+        ],
+        "properties": {
+          "asset_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "attempts": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "delivered_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "event_kind": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "next_attempt_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the next attempt is due. In the past for one that is waiting to be picked up."
+          },
+          "response_status": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The HTTP status, when there was one. Absent for a timeout or a connection failure, which is a different\ndiagnosis and must not read as a zero."
+          },
+          "state": {
+            "type": "string",
+            "description": "`pending`, `delivering`, `delivered`, `failed` or `dead`."
           }
         }
       },
@@ -7652,6 +7943,25 @@
             "description": "A saved search as the source. Accepted by the schema, refused by this build — see the module note and\nNEEDS-REVIEW.md. Named in the request rather than absent from it, so asking gets an answer about the\ndecision instead of \"missing field `collection_id`\"."
           },
           "title": {
+            "type": "string"
+          }
+        }
+      },
+      "NewSubscriptionBody": {
+        "type": "object",
+        "description": "An endpoint to register.",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "event_kinds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Which events to send. Omit or leave empty for all of them."
+          },
+          "url": {
             "type": "string"
           }
         }
@@ -9094,6 +9404,53 @@
           "GLACIER",
           "DEEP_ARCHIVE"
         ]
+      },
+      "SubscriptionView": {
+        "type": "object",
+        "description": "One subscription. Never carries the secret.",
+        "required": [
+          "id",
+          "url",
+          "event_kinds",
+          "active",
+          "consecutive_failures",
+          "created_at"
+        ],
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "consecutive_failures": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Deliveries abandoned in a row. Reset by any success, and by enabling it again."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "disabled_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the system disabled it. Present only when it did."
+          },
+          "event_kinds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The event kinds wanted. Empty means all of them."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "url": {
+            "type": "string"
+          }
+        }
       },
       "SuggestedTagView": {
         "type": "object",

@@ -169,6 +169,9 @@ async fn each_pass_leaves_the_next_one_behind_it(f: &Fixture) {
         scanner: None,
         signing_identity: None,
         worker: "tiering-test".to_owned(),
+        // No webhook subscriptions in these fixtures, so nothing is ever dispatched. A default client
+        // rather than a builder, because what these suites exercise is unrelated to how it is configured.
+        http: reqwest::Client::new(),
     };
 
     for kind in [

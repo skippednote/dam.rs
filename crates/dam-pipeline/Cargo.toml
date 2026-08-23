@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 dam-core = { path = "../dam-core" }
+dam-connect = { path = "../dam-connect" }
 dam-db = { path = "../dam-db" }
 dam-store = { path = "../dam-store" }
 dam-media = { path = "../dam-media" }
@@ -22,6 +23,8 @@ chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
+futures = { workspace = true }
+reqwest = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["fs"] }
 tempfile = { workspace = true }

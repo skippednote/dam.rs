@@ -58,6 +58,7 @@ async fn main() -> anyhow::Result<()> {
         store,
         indexes,
         ai: Some(ai),
+        http: webhook_client().context("building the webhook http client")?,
         // Built from configuration here rather than inside the pipeline, like the store. `None` when no
         // `clamd` is configured, which scans nothing — see `security.clamd_address`.
         // A signing identity only when both halves are configured. One without the other is a
@@ -146,6 +147,25 @@ fn hostname() -> Option<String> {
 
 /// Resolves on SIGINT or SIGTERM.
 ///
+/// The client the webhook dispatcher sends with.
+///
+/// One per process. A `reqwest::Client` is a connection pool, so building one per delivery would pay a fresh
+/// TLS handshake per webhook — for a tenant publishing in bulk that is most of the cost of the operation.
+///
+/// `redirect::Policy::none()` is the load-bearing setting: a redirect from a webhook endpoint is a
+/// misconfiguration, and following one would post a customer's data to a host they never nominated.
+/// `dam_connect::webhooks::classify` turns the 3xx into a rejection with that sentence in the delivery log.
+///
+/// Propagated rather than defaulted, and that is the point of it being a function. `unwrap_or_default()` here
+/// would fall back to a client that *does* follow redirects — silently undoing the one security property this
+/// builder exists to set. A worker that cannot build its client should refuse to start.
+fn webhook_client() -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(concat!("damrs/", env!("CARGO_PKG_VERSION")))
+        .build()
+}
+
 /// SIGTERM as well as SIGINT, because a container runtime sends SIGTERM — and a worker killed rather than
 /// drained leaves its claimed jobs locked until the lease lapses, which is a two-minute stall on every deploy
 /// for whatever was in flight.
