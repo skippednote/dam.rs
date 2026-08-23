@@ -192,13 +192,40 @@ pub async fn candidates(
                  OR coalesce(a.legal_hold, false) \
                  OR EXISTS (SELECT 1 FROM collection_items ci \
                             JOIN collections c ON c.id = ci.collection_id \
-                            WHERE ci.asset_id = p.asset_id AND c.pin_hot)) AS pinned, \
+                            WHERE ci.asset_id = p.asset_id AND c.pin_hot) \
+                 -- A live page on a connected site (M3d·4, §11.4). Here rather than applied by the caller,
+                 -- because three pin sources already live in this expression and a fourth deciding place
+                 -- would let a dry-run plan read from SQL disagree with what actually moves.
+                 --
+                 -- Every condition earns its place. `usage_count > 0`: a media entity nobody placed on a page
+                 -- is not a live page. `state = 'linked'`: orphaned, expired and unpublished all describe a
+                 -- page that is gone. An active-or-`error` connector: a failing webhook is not a page going
+                 -- away, but a paused or revoked site is not rendering. And `synced_at` inside the horizon —
+                 -- this data is the site's own, so a site that has gone quiet is indistinguishable from one
+                 -- that stopped using the asset, and the pin has to expire rather than hold a library in
+                 -- Standard forever on the strength of an abandoned integration.
+                 OR EXISTS (SELECT 1 FROM connector_asset_refs r \
+                            JOIN connectors cx ON cx.id = r.connector_id \
+                            WHERE r.asset_id = p.asset_id AND r.state = 'linked' \
+                              AND r.usage_count > 0 AND cx.status IN ('active', 'error') \
+                              AND r.synced_at IS NOT NULL AND r.synced_at > $6)) AS pinned, \
                 -- The reason, in the order that decides which one matters. A legal hold outranks everything
                 -- because it is the one that is not negotiable; a pinned collection names itself, so an
                 -- operator reading a plan can go and unpin it; the stored column is the manual note and
                 -- comes last.
                 coalesce( \
                     CASE WHEN a.legal_hold THEN 'the asset is under legal hold' END, \
+                    -- Second, above the pinned collection, on the same negotiability argument the comment
+                    -- above makes: an operator can go and unpin a collection, and cannot unpublish somebody
+                    -- else's website. It is also the most surprising line to find in a plan, which is
+                    -- precisely when a reason needs to be the one shown.
+                    (SELECT 'live on ' || r.usage_count::text || ' page(s) of ' \
+                            || quote_literal(cx.label) \
+                     FROM connector_asset_refs r JOIN connectors cx ON cx.id = r.connector_id \
+                     WHERE r.asset_id = p.asset_id AND r.state = 'linked' \
+                       AND r.usage_count > 0 AND cx.status IN ('active', 'error') \
+                       AND r.synced_at IS NOT NULL AND r.synced_at > $6 \
+                     ORDER BY r.usage_count DESC, cx.label LIMIT 1), \
                     (SELECT 'a member of the pinned collection ' || quote_literal(c.label) \
                      FROM collection_items ci JOIN collections c ON c.id = ci.collection_id \
                      WHERE ci.asset_id = p.asset_id AND c.pin_hot \
@@ -226,6 +253,9 @@ pub async fn candidates(
     .bind(limit)
     .bind(&policy.applies_to)
     .bind(&policy.derivative_roles)
+    // The staleness horizon for a connector reference. Passed rather than computed in SQL so it is the same
+    // instant the rest of the sweep reasons about, and so a test can move it.
+    .bind(now - crate::connector_refs::STALE_AFTER)
     .fetch_all(&mut *conn)
     .await?;
 

@@ -236,6 +236,11 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
         .merge(crate::versions::router(crate::versions::VersionState {
             global: deps.global.clone(),
         }))
+        .merge(crate::references::router(
+            crate::references::ReferenceState {
+                global: deps.global.clone(),
+            },
+        ))
         .merge(crate::connectors::router(
             crate::connectors::ConnectorState {
                 global: deps.global.clone(),

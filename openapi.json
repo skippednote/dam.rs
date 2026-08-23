@@ -1168,6 +1168,40 @@
         }
       }
     },
+    "/assets/{asset_id}/references": {
+      "get": {
+        "tags": [
+          "connectors"
+        ],
+        "operationId": "for_asset",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImpactView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such asset, or not one this caller may see"
+          }
+        }
+      }
+    },
     "/assets/{asset_id}/restore": {
       "get": {
         "tags": [
@@ -2943,6 +2977,100 @@
           },
           "404": {
             "description": "No such connector"
+          }
+        }
+      }
+    },
+    "/connectors/{id}/refs": {
+      "get": {
+        "tags": [
+          "connectors"
+        ],
+        "operationId": "list",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ReferenceView"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such connector"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "connectors"
+        ],
+        "operationId": "report",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SyncBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncedView"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only the connector's own credential may report its usage"
+          },
+          "404": {
+            "description": "No such connector"
+          },
+          "422": {
+            "description": "Too many references, or an entity type that is not usable"
           }
         }
       }
@@ -8775,6 +8903,38 @@
           }
         }
       },
+      "ImpactView": {
+        "type": "object",
+        "description": "What pulling an asset would affect.",
+        "required": [
+          "sites",
+          "entities",
+          "pages",
+          "references"
+        ],
+        "properties": {
+          "entities": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "pages": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Places those entities are used, summed from what each site reported. The softest of the three — it is\nthe site's own count — which is why it is named separately rather than folded into one total."
+          },
+          "references": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReferenceView"
+            },
+            "description": "The references themselves, most-used first."
+          },
+          "sites": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "Insights": {
         "type": "object",
         "description": "Everything the Insights screen draws.",
@@ -10369,6 +10529,126 @@
           }
         }
       },
+      "RefBody": {
+        "type": "object",
+        "description": "One thing a site is telling us it uses.",
+        "required": [
+          "asset_id",
+          "remote_entity_id"
+        ],
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "remote_entity_id": {
+            "type": "string",
+            "description": "The remote's own id for the entity — a Drupal media id. Together with the type it is what identifies\nthis reference, so an entity that switches asset updates rather than duplicating."
+          },
+          "remote_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where an operator can go and look. The most useful field in a takedown report."
+          },
+          "remote_uuid": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "synced_version_no": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Which version the site is rendering, when it knows. Behind the current one means drift."
+          },
+          "usage_count": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many places downstream the entity actually appears. Zero is meaningful: a media row nobody has\nplaced on a page is not a live page, and it will not pin."
+          },
+          "usage_sample": {
+            "description": "`[{url, title}]`, a sample rather than a list."
+          }
+        }
+      },
+      "ReferenceView": {
+        "type": "object",
+        "description": "One reference, as a report reads it.",
+        "required": [
+          "connector_id",
+          "connector_label",
+          "asset_id",
+          "remote_entity_type",
+          "remote_entity_id",
+          "usage_count",
+          "usage_sample",
+          "state",
+          "version_drifted",
+          "refresh_overdue"
+        ],
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "connector_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "connector_label": {
+            "type": "string",
+            "description": "The site's name, so a report reads without a second lookup."
+          },
+          "refresh_overdue": {
+            "type": "boolean",
+            "description": "The site has not reported inside the freshness window. A site to go and look at — and the reason this\nreference no longer keeps the asset out of cold storage."
+          },
+          "remote_entity_id": {
+            "type": "string"
+          },
+          "remote_entity_type": {
+            "type": "string"
+          },
+          "remote_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "description": "`linked`, `expired`, `unpublished` or `orphaned` — what somebody asserted. Never `stale`: staleness is\nthe two derived fields below, so they cannot disagree with the timestamps under them."
+          },
+          "synced_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "synced_version_no": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "usage_count": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "usage_sample": {},
+          "version_drifted": {
+            "type": "boolean",
+            "description": "The site is rendering an older version. A job to run."
+          }
+        }
+      },
       "RegisterBody": {
         "type": "object",
         "description": "A site to connect.",
@@ -11253,6 +11533,51 @@
               "null"
             ],
             "description": "The field key or taxonomy label it came from. Absent for a filename."
+          }
+        }
+      },
+      "SyncBody": {
+        "type": "object",
+        "description": "A sync from a connected site.",
+        "required": [
+          "remote_entity_type",
+          "references"
+        ],
+        "properties": {
+          "full_sync": {
+            "type": "boolean",
+            "description": "`true` means this is everything of that type the site has; anything absent becomes orphaned in the same\ntransaction. `false` is an incremental report that only adds and updates."
+          },
+          "references": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RefBody"
+            }
+          },
+          "remote_entity_type": {
+            "type": "string",
+            "description": "`media` for Drupal. Scoped, so one integration cannot orphan another's rows."
+          }
+        }
+      },
+      "SyncedView": {
+        "type": "object",
+        "description": "What a sync did.",
+        "required": [
+          "written",
+          "orphaned"
+        ],
+        "properties": {
+          "orphaned": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many references the site no longer mentions. Zero on an incremental report, always.",
+            "minimum": 0
+          },
+          "written": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           }
         }
       },

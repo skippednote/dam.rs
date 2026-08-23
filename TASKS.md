@@ -29,13 +29,13 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **Q** Acquia parity, 20 slices | **complete** — Q.1–Q.20, including Q.14b collections and Q.20a–d |
 | **Go-live Tier 1** Deployment image, backups, metrics, rate limiting, virus scan, C2PA | **done** — all six, each verified against the running stack |
 | **Archival** Tiering engine, restores, the storage screen | **done** — the sweep and poll jobs, the plan/quote/request/approve API, delivery's 202, bulk archive and restore, the restore panel |
-| **M3d** Drupal 11 connector | registry, signed delivery, browse and oEmbed done (M3d·1–·3); usage index and the module open |
+| **M3d** Drupal 11 connector | M3d·1–·4 done; only the Drupal module (M3d·5) open |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, colour | dedup and colour **done** (M4a); the rest needs model files — see M4 below |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | **done** — two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query, the MCP server |
 | **M6** Workflow/proofing, annotations, analytics | **done** — annotations (M6a), proofing (M6b), analytics (M6c) |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** M3d·4 usage index → M3d·5 the Drupal module → Pre-GA (G7 import, G10 SCIM/BYOK/audit, G19 metering enforcement, quotas). M4b (local ONNX models) stays parked on the model-distribution question.
+**Next up, in order:** M3d·5 the Drupal module → Pre-GA (G7 import, G10 SCIM/BYOK/audit, G19 metering enforcement, quotas). M4b (local ONNX models) stays parked on the model-distribution question.
 M4b (local models) is parked on a distribution decision — see the M4 section.
 
 **`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
@@ -1469,10 +1469,54 @@ API that does not exist yet is a module written twice.
   correct dimensions, `maxwidth` picking 256/1024/2048, and each refusal at its spec status (401 no credential,
   400 another provider's URL, 501 for XML, 404 for an unknown asset).
 
-- [ ] **M3d·4 The usage index.** `connector_asset_refs` — "this asset appears on 12 pages of site X". Three
-  things depend on it: usage reporting, takedown impact before pulling an asset, and a pin-hot signal for the
-  lifecycle engine, since an asset live on a production site is a poor tiering candidate whatever its download
-  history says.
+- [x] **M3d·4 The usage index.** `connector_asset_refs` has existed since migration 0004 with nothing writing
+  to it. Three things depend on it, and each one turned on a different decision.
+
+  **The pin has to expire, and that is the whole design.** 0004 already says of `usage_sample` that it is
+  "populated by the connector, so it is advisory rather than authoritative" — fine for a report, dangerous for
+  a signal that keeps objects out of cold storage. A site that goes quiet (decommissioned, broken module, a
+  token nobody renewed) is *indistinguishable* from a site that stopped using the asset. Pin forever and one
+  abandoned integration holds a library in Standard indefinitely; never pin and a live page causes a restore
+  storm the first time somebody thaws the original. So a reference pins only while it is fresh — refreshed
+  inside thirty days, in use, on an active connector — and the test drives that lapse through the *planner's
+  own query* rather than a helper.
+
+  **Which is where the pin lives: in `tiering::candidates`, beside the three pin sources already there.** Not
+  applied by the caller. A fourth place deciding whether something is pinned would let a dry-run plan read from
+  SQL disagree with what actually moves, and the reason string is ordered second — above a pinned collection,
+  below a legal hold — on that query's own negotiability argument: an operator can go and unpin a collection
+  and cannot unpublish somebody else's website.
+
+  **A full sync is one request.** Reporting what is used only grows the index; something has to say what went
+  away, or a deleted node pins its asset hot forever and every takedown report over-counts. Split into
+  report-then-sweep, a site that crashed between them would leave what it had just re-reported looking
+  abandoned. So `full_sync` orphans the absent rows in the same transaction — orphans rather than deletes,
+  because an operator asking why something stopped being pinned needs to see that it was once used.
+
+  **Only a site's own credential may report its own usage.** Not `Manage`. An administrator does not know which
+  pages render which media, and this write feeds the pin — so a caller who can forge it can hold a library in
+  Standard. Narrowing to the one credential with first-hand knowledge is both the honest rule and the tighter
+  one. A paused or revoked site cannot report at all.
+
+  **Two kinds of stale mean different things**, and both are derived rather than stored so they cannot disagree
+  with the timestamps under them. Version drift is a job to run; a missed refresh is a site to go and look at.
+  The `state` column's CHECK still permits `'stale'` and nothing ever writes it: the column records what
+  somebody *asserted*, and staleness is computed.
+
+  **The impact report counts the live and lists the dead.** The counts are what pulling the asset would break;
+  the list is everything, including a reference a site stopped reporting — because showing only counts hides
+  "one site went quiet three weeks ago", which is exactly what makes a number untrustworthy. And `pages` is
+  labelled as the site's own number rather than folded into a total: damrs cannot see somebody else's website.
+  The panel lives on the asset, because that is where a takedown decision is made.
+
+  7 db cases, 9 API cases, 7 browser cases.
+
+  Two fixture traps worth recording. `lifecycle_policies` refuses a transition without both a target class and
+  a target pool — the schema refusing a policy that could never execute, which is right and which my first
+  fixture ignored. And `provenance_state: 'unknown'` is not a value: that vocabulary is
+  none/valid/invalid/untrusted, and `unknown` belongs to *rights*. An invented one makes the detail panel throw
+  from a metadata lookup, which presents as the panel simply never opening — it cost a debugging round here and
+  was already lurking, harmlessly, in the proofing suite's fixture.
 
 - [ ] **M3d·5 The Drupal module.** `integrations/drupal/`, Drupal 11+ only, six submodules (§11.2).
 

@@ -24,6 +24,7 @@
 	import CommentPanel from './CommentPanel.svelte';
 	import EngagementPanel from './EngagementPanel.svelte';
 	import AttachmentPanel from './AttachmentPanel.svelte';
+	import ReferencePanel from './ReferencePanel.svelte';
 	import DownloadPanel from './DownloadPanel.svelte';
 	import HistoryPanel from './HistoryPanel.svelte';
 	import RestorePanel from './RestorePanel.svelte';
@@ -264,6 +265,13 @@
 	<CommentPanel assetId={asset.id} />
 
 	<SharePanel assetId={asset.id} />
+
+	<!--
+		After Share and before the AI panel, because it belongs to the same question those two raise: where has
+		this gone, and who is relying on it. It is also the panel somebody reads before a takedown, which is a
+		decision made from the asset rather than from a settings screen.
+	-->
+	<ReferencePanel assetId={asset.id} />
 
 	<!-- Before the history, and closed: which of these words a machine wrote is a question about the asset itself
 	     rather than about what has happened to it. Read-gated on the server, deliberately — a marking only

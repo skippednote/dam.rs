@@ -1650,3 +1650,28 @@ export async function setConnectorStatus(
 		body: JSON.stringify({ status })
 	});
 }
+
+// ─── the usage index (M3d·4) ────────────────────────────────────────────────
+
+export type AssetReference = components['schemas']['ReferenceView'];
+export type ReferenceImpact = components['schemas']['ImpactView'];
+
+/**
+ * Where an asset is used on connected sites.
+ *
+ * The three counts describe only what is *live* — linked, in use, on an active site, reported recently — while
+ * the list carries every reference including the dead ones. That asymmetry is the point: the counts are what
+ * pulling the asset would break, and the list is what explains them, including "one site stopped reporting
+ * three weeks ago".
+ *
+ * `pages` is the softest of the three because it is the site's own count. Named separately rather than folded
+ * into a total, so a screen can say so.
+ */
+export async function assetReferences(assetId: string): Promise<ReferenceImpact> {
+	return request<ReferenceImpact>(`/assets/${assetId}/references`);
+}
+
+/** Every reference one connected site holds, most-used first. */
+export async function connectorReferences(id: string, limit = 100): Promise<AssetReference[]> {
+	return request<AssetReference[]>(`/connectors/${id}/refs?limit=${limit}`);
+}

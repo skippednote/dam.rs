@@ -178,7 +178,7 @@ async function connect(page: Page, options: Options = {}) {
 						height: 3000,
 						tier: 'hot',
 						rights_state: 'allowed',
-						provenance_state: 'unknown',
+						provenance_state: 'none',
 						thumbnail_url: null,
 						tag_confidence: null,
 						is_favourite: false,

@@ -369,6 +369,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/assets/{asset_id}/references": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["for_asset"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/assets/{asset_id}/restore": {
         parameters: {
             query?: never;
@@ -657,6 +673,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/browse": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["browse"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/bulk": {
         parameters: {
             query?: never;
@@ -937,6 +969,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/connectors/{id}/refs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list"];
+        put: operations["report"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/connectors/{id}/rotate": {
         parameters: {
             query?: never;
@@ -1207,6 +1255,22 @@ export interface paths {
          *     Answers about the caller and nobody else, so there is no id to pass and nothing to point at somebody with.
          */
         get: operations["me"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/oembed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["oembed"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2681,6 +2745,12 @@ export interface components {
             site_name_is_default: boolean;
             support_email?: string | null;
         };
+        /** @description What a picker draws. */
+        BrowseResult: {
+            /** @description The rail, counted over the same query — so a facet saying 40 and a grid showing 3 cannot happen. */
+            facets: components["schemas"]["Facet"][];
+            results: components["schemas"]["AssetPage"];
+        };
         /** @description One facet bucket. */
         Bucket: {
             /** Format: int64 */
@@ -3373,6 +3443,21 @@ export interface components {
             /** @description The values that make this one apply. Compared as text, so `true` and `2026` work as written. */
             values: string[];
         };
+        /** @description What pulling an asset would affect. */
+        ImpactView: {
+            /** Format: int64 */
+            entities: number;
+            /**
+             * Format: int64
+             * @description Places those entities are used, summed from what each site reported. The softest of the three — it is
+             *     the site's own count — which is why it is named separately rather than folded into one total.
+             */
+            pages: number;
+            /** @description The references themselves, most-used first. */
+            references: components["schemas"]["ReferenceView"][];
+            /** Format: int64 */
+            sites: number;
+        };
         /** @description Everything the Insights screen draws. */
         Insights: {
             by_class: components["schemas"]["ClassView"][];
@@ -3638,6 +3723,35 @@ export interface components {
             path: string;
             retired: boolean;
             slug: string;
+        };
+        /**
+         * @description An oEmbed response.
+         *
+         *     Field names are the spec's, including the snake_case ones, because a consumer reads them by name.
+         */
+        Oembed: {
+            /**
+             * Format: int32
+             * @description Seconds a consumer may cache this. Below the `url`'s own lifetime, deliberately.
+             */
+            cache_age: number;
+            /** Format: int32 */
+            height?: number | null;
+            provider_name: string;
+            provider_url?: string | null;
+            /** Format: int32 */
+            thumbnail_height?: number | null;
+            thumbnail_url?: string | null;
+            /** Format: int32 */
+            thumbnail_width?: number | null;
+            title: string;
+            /** @description `photo` for an image, `link` for anything else. Never `video` — see the module docs. */
+            type: string;
+            /** @description The image itself, for a `photo`. A signed delivery URL, so it expires — see `cache_age`. */
+            url?: string | null;
+            version: string;
+            /** Format: int32 */
+            width?: number | null;
         };
         /** @description A round to open. */
         OpenRoundBody: {
@@ -4040,6 +4154,63 @@ export interface components {
              * @description 1 to 5. There is no zero — clearing a rating is `DELETE`, because "no opinion" is not a low score.
              */
             stars: number;
+        };
+        /** @description One thing a site is telling us it uses. */
+        RefBody: {
+            /** Format: uuid */
+            asset_id: string;
+            /**
+             * @description The remote's own id for the entity — a Drupal media id. Together with the type it is what identifies
+             *     this reference, so an entity that switches asset updates rather than duplicating.
+             */
+            remote_entity_id: string;
+            /** @description Where an operator can go and look. The most useful field in a takedown report. */
+            remote_url?: string | null;
+            remote_uuid?: string | null;
+            /**
+             * Format: int32
+             * @description Which version the site is rendering, when it knows. Behind the current one means drift.
+             */
+            synced_version_no?: number | null;
+            /**
+             * Format: int32
+             * @description How many places downstream the entity actually appears. Zero is meaningful: a media row nobody has
+             *     placed on a page is not a live page, and it will not pin.
+             */
+            usage_count?: number;
+            /** @description `[{url, title}]`, a sample rather than a list. */
+            usage_sample?: unknown;
+        };
+        /** @description One reference, as a report reads it. */
+        ReferenceView: {
+            /** Format: uuid */
+            asset_id: string;
+            /** Format: uuid */
+            connector_id: string;
+            /** @description The site's name, so a report reads without a second lookup. */
+            connector_label: string;
+            /**
+             * @description The site has not reported inside the freshness window. A site to go and look at — and the reason this
+             *     reference no longer keeps the asset out of cold storage.
+             */
+            refresh_overdue: boolean;
+            remote_entity_id: string;
+            remote_entity_type: string;
+            remote_url?: string | null;
+            /**
+             * @description `linked`, `expired`, `unpublished` or `orphaned` — what somebody asserted. Never `stale`: staleness is
+             *     the two derived fields below, so they cannot disagree with the timestamps under them.
+             */
+            state: string;
+            /** Format: date-time */
+            synced_at?: string | null;
+            /** Format: int32 */
+            synced_version_no?: number | null;
+            /** Format: int32 */
+            usage_count: number;
+            usage_sample: unknown;
+            /** @description The site is rendering an older version. A job to run. */
+            version_drifted: boolean;
         };
         /** @description A site to connect. */
         RegisterBody: {
@@ -4458,6 +4629,27 @@ export interface components {
             source: string;
             /** @description The field key or taxonomy label it came from. Absent for a filename. */
             within?: string | null;
+        };
+        /** @description A sync from a connected site. */
+        SyncBody: {
+            /**
+             * @description `true` means this is everything of that type the site has; anything absent becomes orphaned in the same
+             *     transaction. `false` is an incremental report that only adds and updates.
+             */
+            full_sync?: boolean;
+            references: components["schemas"]["RefBody"][];
+            /** @description `media` for Drupal. Scoped, so one integration cannot orphan another's rows. */
+            remote_entity_type: string;
+        };
+        /** @description What a sync did. */
+        SyncedView: {
+            /**
+             * Format: int64
+             * @description How many references the site no longer mentions. Zero on an incremental report, always.
+             */
+            orphaned: number;
+            /** Format: int64 */
+            written: number;
         };
         /** @description A decision about a suggested tag. */
         TagDecision: {
@@ -5604,6 +5796,34 @@ export interface operations {
             };
         };
     };
+    for_asset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImpactView"];
+                };
+            };
+            /** @description No such asset, or not one this caller may see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     restore_state: {
         parameters: {
             query?: never;
@@ -6355,6 +6575,49 @@ export interface operations {
             };
         };
     };
+    browse: {
+        parameters: {
+            query?: {
+                /** @description The shorthand query. Empty lists the library, newest first, which is what a picker opens on. */
+                q?: string;
+                limit?: number | null;
+                offset?: number | null;
+                /**
+                 * @description A token the site signed itself, for a browser-side picker. Omit it and the `Authorization` header is
+                 *     used instead.
+                 */
+                token?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrowseResult"];
+                };
+            };
+            /** @description No usable credential, or a token that does not verify */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authenticated, and holds no read scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     create: {
         parameters: {
             query?: never;
@@ -7064,6 +7327,82 @@ export interface operations {
             };
         };
     };
+    list: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReferenceView"][];
+                };
+            };
+            /** @description No such connector */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    report: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SyncBody"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncedView"];
+                };
+            };
+            /** @description Only the connector's own credential may report its usage */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such connector */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Too many references, or an entity type that is not usable */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     rotate: {
         parameters: {
             query?: never;
@@ -7567,6 +7906,59 @@ export interface operations {
             };
             /** @description The key has no person behind it */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    oembed: {
+        parameters: {
+            query: {
+                /** @description The asset's page URL, as an editor pasted it: `<origin>/assets/<id>`. */
+                url: string;
+                /** @description The consumer's maximum width. Used to choose a rendition, not to scale one. */
+                maxwidth?: number | null;
+                maxheight?: number | null;
+                /**
+                 * @description `json` only. XML is in the spec and nothing has asked for it; a stub returning JSON under an XML content
+                 *     type would be worse than a refusal.
+                 */
+                format?: string | null;
+                /** @description A token the site signed, for a browser-side editor plugin. Omit it and the `Authorization` header is used. */
+                token?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Oembed"];
+                };
+            };
+            /** @description Not an asset URL from this library, or a format other than json */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No usable credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such asset, or not one this caller may see */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
