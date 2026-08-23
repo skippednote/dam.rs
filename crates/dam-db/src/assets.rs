@@ -122,6 +122,30 @@ pub async fn page<'e, E>(
 where
     E: sqlx::PgExecutor<'e>,
 {
+    page_narrowed(executor, predicate, None, order, offset, limit).await
+}
+
+/// [`page`], with one extra SQL clause `AND`ed onto the access filter.
+///
+/// Exists for the worklists (Q.20), whose conditions are not in the query IR and should not be: "a required
+/// field of this asset's resolved type is absent" is a three-way join with a fallback, not something anybody
+/// types into a search box. Sharing this function rather than writing a third pager keeps one definition of
+/// what a grid row *is* — the two that already existed had drifted apart once, and the summary shape is
+/// exactly the thing a screen breaks on when it does.
+///
+/// `narrowing` is pushed verbatim, so it must be a static clause with no caller-supplied text in it. Every
+/// caller today is a `Worklist`, which is an enum.
+pub(crate) async fn page_narrowed<'e, E>(
+    executor: E,
+    predicate: &AccessPredicate,
+    narrowing: Option<&str>,
+    order: Order,
+    offset: i64,
+    limit: i64,
+) -> Result<Page, Error>
+where
+    E: sqlx::PgExecutor<'e>,
+{
     let offset = offset.max(0);
     let limit = limit.clamp(1, MAX_LIMIT);
 
@@ -135,6 +159,10 @@ where
     builder.push(WARMEST_PLACEMENT);
     builder.push(" WHERE ");
     crate::access::push_asset_filter(&mut builder, predicate)?;
+    if let Some(clause) = narrowing {
+        builder.push(" AND ");
+        builder.push(clause);
+    }
     // The rows that are the library: current versions, and nothing that is paperwork attached to something else.
     // A library with three versions of one asset has one of that asset in it — not three — and a model release is
     // not an asset anybody browses to.

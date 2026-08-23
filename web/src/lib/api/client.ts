@@ -1272,3 +1272,23 @@ export async function moveInCollection(
 		body: JSON.stringify({ position })
 	});
 }
+
+// ─── worklists (Q.20) ───────────────────────────────────────────────────────
+
+export type Worklist = components['schemas']['WorklistView'];
+
+/**
+ * Every worklist with this caller's own count.
+ *
+ * The counts are per-caller, so two people legitimately see different numbers — a worklist that counted work
+ * its reader cannot reach would send them looking for an asset that 404s.
+ */
+export async function listWorklists(): Promise<Worklist[]> {
+	return request<Worklist[]>('/worklists');
+}
+
+/** One worklist as a page of assets, in the same shape the grid draws. */
+export async function worklistPage(key: string, offset = 0, limit = 60): Promise<AssetPage> {
+	return request<AssetPage>(`/worklists/${key}?offset=${offset}&limit=${limit}`);
+}
+

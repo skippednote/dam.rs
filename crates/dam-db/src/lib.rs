@@ -47,6 +47,7 @@ pub mod upload_profiles;
 pub mod uploads;
 pub mod usage;
 pub mod versions;
+pub mod worklists;
 
 #[cfg(feature = "testing")]
 pub mod testing;

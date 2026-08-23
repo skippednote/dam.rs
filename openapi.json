@@ -4849,6 +4849,84 @@
           }
         }
       }
+    },
+    "/worklists": {
+      "get": {
+        "tags": [
+          "worklists"
+        ],
+        "operationId": "list",
+        "responses": {
+          "200": {
+            "description": "Every worklist with the caller's own count",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WorklistView"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The credential holds no read scope"
+          }
+        }
+      }
+    },
+    "/worklists/{key}": {
+      "get": {
+        "tags": [
+          "worklists"
+        ],
+        "operationId": "page",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "description": "The worklist",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of the worklist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetPage"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such worklist"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -8962,6 +9040,40 @@
             "type": "integer",
             "format": "int64",
             "description": "Every uncategorised asset this caller can see."
+          }
+        }
+      },
+      "WorklistView": {
+        "type": "object",
+        "description": "One worklist, and how much of it there is for this caller.",
+        "required": [
+          "key",
+          "label",
+          "explanation",
+          "count",
+          "urgent"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many assets *this caller* can see on it."
+          },
+          "explanation": {
+            "type": "string",
+            "description": "What being on this list means, and what to do about it. Sent from the server rather than written into\nthe client, so the sentence and the SQL that decides it live in the same place."
+          },
+          "key": {
+            "type": "string",
+            "description": "The stable name, used in the URL."
+          },
+          "label": {
+            "type": "string",
+            "description": "What to call it on screen."
+          },
+          "urgent": {
+            "type": "boolean",
+            "description": "Whether the list is worth leading with when it is not empty.\n\nTwo of these are exposure rather than tidiness — an asset served past its expiry date, and a licence\nabout to lapse — and a screen that sorted by count would bury them under a thousand missing captions."
           }
         }
       }

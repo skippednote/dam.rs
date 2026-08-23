@@ -26,6 +26,9 @@
 		{ href: resolve('/orders'), label: 'Orders' },
 		{ href: resolve('/schema'), label: 'Schema' },
 		{ href: resolve('/storage'), label: 'Storage' },
+		// Beside Review because both are queues of work over the library, and a person who opens one has
+		// reason to open the other.
+		{ href: resolve('/worklists'), label: 'Worklists' },
 		// Next to Schema because it is the same kind of work: deciding what the library's own vocabulary means.
 		{ href: resolve('/review'), label: 'Review' },
 		{ href: resolve('/style'), label: 'Style' },

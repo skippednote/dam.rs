@@ -37,3 +37,4 @@ pub mod throttle;
 pub mod tus;
 pub mod upload_profiles;
 pub mod versions;
+pub mod worklists;

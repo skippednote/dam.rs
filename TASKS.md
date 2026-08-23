@@ -1588,7 +1588,7 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
   time under a heading that was the taxonomy's UUID. And looking at it found the fourth: the selected label used
   `text-accent-fg` — the foreground *for* the accent surface — so it rendered exactly the background colour and
   vanished, which axe did not flag. 5 new API cases, 9 e2e cases, 4 unit cases; 6 routing mutations all caught.
-- [ ] **Q.2c·3 The uncategorised worklist surfaced** in the UI, with the other admin worklists (Q.20).
+- [x] **Q.2c·3 The uncategorised worklist surfaced** in the UI, with the other admin worklists — see Q.20a.
 - [x] **Q.3a Upload profiles: the model, and the ingest that honours them.** A profile answers three questions
   asked at three different times by three different pieces — the uploader needs the form and whether to insist
   on required fields, finalise needs the defaults and the metadata type, and enrichment needs to know whether
@@ -2363,8 +2363,40 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
 
 - [x] **Q.19b Dependent metadata fields.** A field whose relevance depends on another field's value: shown when
       the parent matches, and required only when shown. (Shipped in `0461f0f`; the box was never ticked.)
-- [ ] **Q.20 Site branding, webhook delivery, the admin worklists, tag vocabulary administration.** The
-  worklists are the cheapest real value on this list: they are queries over data damrs already holds.
+- [ ] **Q.20 Site branding, webhook delivery, tag vocabulary administration.** Worklists done — Q.20a below.
+- [x] **Q.20a The admin worklists.** Ten lists, each one SQL over data damrs already holds: no table, no queue,
+  no state to fall out of date, so an asset leaves a list the moment somebody fixes the thing. `Read`, not
+  `Manage` — the person who files an uncategorised asset is whoever can edit it, and gating the *finding* behind
+  a permission the *fixing* does not need is how a backlog becomes one person's job.
+
+      **Not in the query IR, deliberately.** Six of the ten could be search clauses and it would be the wrong
+      place: "a required field of this asset's *resolved* metadata type is absent" is a three-way join with a
+      fallback chain, and putting it in the IR would put it in saved searches, asset-group predicates and the
+      MCP surface too. Administration stays administration.
+
+      **Every count runs through the caller's predicate**, so two readers legitimately see different numbers —
+      §7's disclosure rule arriving as a usability bug, because a to-do list that counts work its reader cannot
+      see sends them to an asset that 404s. Ten scalar subqueries in one statement, so the numbers describe one
+      instant: "12 uncategorised" beside "12 missing metadata" invites the reading that they are the same twelve.
+
+      **What running it against the real library found, and no test would have.** The grid badged three assets
+      "Expiring" while the worklist named after expiry reported zero. `RightsState::Expiring` comes from licence
+      *term* dates with a per-licence notice window (60 days by default, longer where a contract says so);
+      `assets.expires_at` is a retention date somebody set on the file. Two different questions, and the one I
+      had built ignored the contracts. Fixed by reading `assets.rights_state` — the same column the badge
+      renders, so the two cannot disagree — and adding `rights-denied` beside it. Both expiry lists now say
+      which column they read.
+
+      **And `no-licence` is not urgent.** It read 180 of 182 on the dev library and outlined the whole page in
+      red. Every asset arrives unlicensed, so a badge that fires on every row from day one is background rather
+      than a signal; urgent marks a *change* — a contract running out, a use that became forbidden — not an
+      absence that was always there.
+
+      Also caught by the tests: an archived asset was still appearing as filing work, which is two answers to
+      "has this been dealt with" — every list is now scoped to `status = 'active'` in one place, so an eleventh
+      cannot forget it. 12 db cases, 6 API cases, 10 browser cases including axe. Verified against the running
+      stack: every count cross-checked by hand against SQL, and the three "Licence coverage ending" assets each
+      carry the matching badge in the grid the list opens into.
 
 Absorbed by the existing roadmap rather than duplicated here: the AI set (tags, faces, document text,
 transcripts, semantic search, duplicate detection) is M4; conversational access is M5's MCP server; workflow

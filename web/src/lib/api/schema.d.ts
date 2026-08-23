@@ -1713,6 +1713,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/worklists": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/worklists/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["page"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -3577,6 +3609,30 @@ export interface components {
              * @description Every uncategorised asset this caller can see.
              */
             total: number;
+        };
+        /** @description One worklist, and how much of it there is for this caller. */
+        WorklistView: {
+            /**
+             * Format: int64
+             * @description How many assets *this caller* can see on it.
+             */
+            count: number;
+            /**
+             * @description What being on this list means, and what to do about it. Sent from the server rather than written into
+             *     the client, so the sentence and the SQL that decides it live in the same place.
+             */
+            explanation: string;
+            /** @description The stable name, used in the URL. */
+            key: string;
+            /** @description What to call it on screen. */
+            label: string;
+            /**
+             * @description Whether the list is worth leading with when it is not empty.
+             *
+             *     Two of these are exposure rather than tidiness — an asset served past its expiry date, and a licence
+             *     about to lapse — and a screen that sorted by count would bury them under a thousand missing captions.
+             */
+            urgent: boolean;
         };
     };
     responses: never;
@@ -7742,6 +7798,66 @@ export interface operations {
             };
             /** @description The key has no person behind it */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every worklist with the caller's own count */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorklistView"][];
+                };
+            };
+            /** @description The credential holds no read scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    page: {
+        parameters: {
+            query?: {
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                /** @description The worklist */
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page of the worklist */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssetPage"];
+                };
+            };
+            /** @description No such worklist */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
