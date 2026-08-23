@@ -1028,6 +1028,61 @@
         }
       }
     },
+    "/assets/{asset_id}/legal-hold": {
+      "put": {
+        "tags": [
+          "governance"
+        ],
+        "summary": "Places or lifts a legal hold.",
+        "operationId": "set_legal_hold",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "description": "The asset",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LegalHoldBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegalHoldView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential"
+          },
+          "403": {
+            "description": "Authenticated, and holds no manage scope"
+          },
+          "404": {
+            "description": "No such asset, or not one this caller may see"
+          },
+          "422": {
+            "description": "No reason given"
+          }
+        }
+      }
+    },
     "/assets/{asset_id}/metadata": {
       "patch": {
         "tags": [
@@ -1877,6 +1932,197 @@
           },
           "404": {
             "description": "No such asset, or not one this caller may see"
+          }
+        }
+      }
+    },
+    "/audit": {
+      "get": {
+        "tags": [
+          "governance"
+        ],
+        "summary": "Reads the governance record, newest first.",
+        "operationId": "list",
+        "parameters": [
+          {
+            "name": "action",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "actor_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "target_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "before_seq",
+            "in": "query",
+            "description": "Keyset cursor: the page runs backwards from here, exclusive.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential"
+          },
+          "403": {
+            "description": "Authenticated, and holds no manage scope"
+          }
+        }
+      }
+    },
+    "/audit/export": {
+      "post": {
+        "tags": [
+          "governance"
+        ],
+        "summary": "Takes a re-verifiable extract, and records that it was taken.",
+        "operationId": "export",
+        "parameters": [
+          {
+            "name": "from_seq",
+            "in": "query",
+            "description": "Where to start. Defaults to the beginning of the chain.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "How many entries to take. Only read by the export.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExtractView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential"
+          },
+          "403": {
+            "description": "Authenticated, and holds no manage scope"
+          }
+        }
+      }
+    },
+    "/audit/verify": {
+      "get": {
+        "tags": [
+          "governance"
+        ],
+        "summary": "Walks the chain and reports the first inconsistency.",
+        "operationId": "verify",
+        "parameters": [
+          {
+            "name": "from_seq",
+            "in": "query",
+            "description": "Where to start. Defaults to the beginning of the chain.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "How many entries to take. Only read by the export.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The report. A broken chain is a 200 with `intact: false` — the request succeeded, and the answer is bad news.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VerificationView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential"
+          },
+          "403": {
+            "description": "Authenticated, and holds no manage scope"
           }
         }
       }
@@ -8811,6 +9057,95 @@
           }
         }
       },
+      "EntryView": {
+        "type": "object",
+        "description": "One entry, as a screen and an auditor both read it.",
+        "required": [
+          "seq",
+          "at",
+          "actor_kind",
+          "action",
+          "target_kind",
+          "payload",
+          "hash"
+        ],
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "actor_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "actor_kind": {
+            "type": "string"
+          },
+          "at": {
+            "type": "string",
+            "description": "The timestamp in the exact form the hash covers — six fractional digits, always.\n\nA `DateTime` here would serialise through chrono's `AutoSi`, which drops the fraction when the\nmicroseconds are zero. Roughly one entry in a million lands on that, and the extract would carry an\n`at` that does not reproduce the digest printed beside it — so an auditor following the published\nformula would report a tampered record. Still RFC 3339, so a screen parses it unchanged."
+          },
+          "hash": {
+            "type": "string"
+          },
+          "payload": {},
+          "prev_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Both hashes travel with the row, because an extract that carried only the digest could not be walked\nand an extract that carried only the link could not be checked."
+          },
+          "seq": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "target_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "target_kind": {
+            "type": "string"
+          }
+        }
+      },
+      "ExtractView": {
+        "type": "object",
+        "required": [
+          "entries",
+          "recorded_as",
+          "chain_version"
+        ],
+        "properties": {
+          "anchor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The hash the first entry links back to, so the extract's own head can be checked rather than trusted.\n`None` when the extract starts at the beginning of the chain."
+          },
+          "chain_version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How the hashes were computed, so the extract can be re-verified without this codebase.",
+            "minimum": 0
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EntryView"
+            }
+          },
+          "recorded_as": {
+            "$ref": "#/components/schemas/EntryView",
+            "description": "The entry recording that this export happened. Not a member of `entries`."
+          }
+        }
+      },
       "Facet": {
         "type": "object",
         "description": "One facetable field and its buckets.",
@@ -8832,6 +9167,26 @@
           "truncated": {
             "type": "boolean",
             "description": "Whether buckets were dropped by the limit. Reported rather than left implicit — see [`FACET_BUCKETS`]."
+          }
+        }
+      },
+      "FailureView": {
+        "type": "object",
+        "required": [
+          "kind",
+          "seq",
+          "detail"
+        ],
+        "properties": {
+          "detail": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "seq": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },
@@ -9057,6 +9412,53 @@
           "hours",
           "days"
         ]
+      },
+      "LegalHoldBody": {
+        "type": "object",
+        "description": "Place or lift a hold.",
+        "required": [
+          "held",
+          "reason"
+        ],
+        "properties": {
+          "held": {
+            "type": "boolean",
+            "description": "`true` places the hold, `false` lifts it. Not a verb in the path, because the two directions have the\nsame permission, the same audit shape and the same idempotency — and splitting them into\n`/hold` and `/release` would be two handlers that had to stay identical."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why. Required in both directions; see the module note."
+          }
+        }
+      },
+      "LegalHoldView": {
+        "type": "object",
+        "required": [
+          "asset_id",
+          "held",
+          "changed"
+        ],
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "audit_seq": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The sequence number of the entry recording this change, when there was one. Returned so a caller can\ncite it — an operator who has just placed a hold under instruction needs the reference, and going to\nlook for it afterwards is how the wrong row gets cited."
+          },
+          "changed": {
+            "type": "boolean",
+            "description": "`false` when the asset was already in the requested state, in which case no audit entry was written."
+          },
+          "held": {
+            "type": "boolean"
+          }
+        }
       },
       "ListPage": {
         "type": "object",
@@ -9802,6 +10204,28 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "PageView": {
+        "type": "object",
+        "required": [
+          "entries"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EntryView"
+            }
+          },
+          "next_before_seq": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Pass back as `before_seq` for the next page. `None` at the end of the log."
           }
         }
       },
@@ -11933,6 +12357,46 @@
           "verdict": {
             "type": "string",
             "description": "`approved` or `changes_requested`. Not `pending` — that is a starting state, not an answer."
+          }
+        }
+      },
+      "VerificationView": {
+        "type": "object",
+        "required": [
+          "intact",
+          "checked",
+          "from_seq"
+        ],
+        "properties": {
+          "checked": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "failure": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/FailureView",
+                "description": "Present only when the chain broke. `kind` is `altered` or `unlinked`: the first says a row's own\ncolumns no longer produce its digest, the second says the row before it is not the row it names.\nAn investigator needs the difference — one points at a record, the other at a gap."
+              }
+            ]
+          },
+          "from_seq": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "intact": {
+            "type": "boolean"
+          },
+          "through_seq": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
           }
         }
       },

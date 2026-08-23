@@ -315,6 +315,20 @@ pub async fn register(
     let row = connectors::by_id(conn.executor(), registered)
         .await?
         .ok_or(Failure::Internal)?;
+    audit(
+        &mut conn,
+        &caller,
+        dam_db::audit::Action::ConnectorRegistered,
+        registered,
+        serde_json::json!({
+            "label": row.label,
+            "site_url": row.site_url,
+            "asset_group_ids": body.asset_group_ids,
+            "allow_original": body.allow_original,
+            "allow_restore": body.allow_restore,
+        }),
+    )
+    .await?;
     conn.commit().await?;
 
     // The identity, membership and key live in the control plane, so they cannot be in the tenant transaction
@@ -425,6 +439,17 @@ pub async fn rotate(
     let row = connectors::by_id(conn.executor(), id)
         .await?
         .ok_or(Failure::NotFound)?;
+    audit(
+        &mut conn,
+        &caller,
+        dam_db::audit::Action::ConnectorRotated,
+        id,
+        // The reason, not the secret. Which rotation this was is the governance fact: a scheduled one leaves
+        // the old secret verifying for a week and a leak response does not, and six months later that is the
+        // difference between a planned change and an incident.
+        serde_json::json!({ "label": row.label, "keep_previous": body.keep_previous }),
+    )
+    .await?;
     conn.commit().await?;
 
     Ok(Json(RegisteredView {
@@ -506,6 +531,16 @@ pub async fn set_status(
     let row = connectors::by_id(conn.executor(), id)
         .await?
         .ok_or(Failure::Internal)?;
+    if status == connectors::Status::Revoked {
+        audit(
+            &mut conn,
+            &caller,
+            dam_db::audit::Action::ConnectorRevoked,
+            id,
+            serde_json::json!({ "label": row.label, "site_url": row.site_url }),
+        )
+        .await?;
+    }
     conn.commit().await?;
     Ok(Json(view(&row, chrono::Utc::now())))
 }
@@ -544,4 +579,36 @@ impl From<Refused> for Failure {
             ConnectorRefusal::Database(error) => Self::from(error),
         }
     }
+}
+
+/// Append a governance entry for a connector change.
+///
+/// A connector is a standing grant of read access to somebody else's website, so registering, rotating and
+/// revoking one are governance decisions rather than configuration edits — which is why they are chained in
+/// `audit_log` and not only in the activity feed. Suspending is not: it is reversible, operational, and
+/// belongs to whoever is on call.
+async fn audit(
+    conn: &mut dam_db::TenantConn<'_>,
+    caller: &caller::Caller,
+    action: dam_db::audit::Action,
+    connector_id: Uuid,
+    payload: serde_json::Value,
+) -> Result<(), Failure> {
+    dam_db::audit::record(
+        conn.executor(),
+        dam_db::audit::NewEntry {
+            action,
+            actor_kind: if caller.identity_id.is_some() {
+                dam_db::audit::ActorKind::User
+            } else {
+                dam_db::audit::ActorKind::ApiKey
+            },
+            actor_id: caller.identity_id,
+            target_kind: "connector".to_owned(),
+            target_id: Some(connector_id.to_string()),
+            payload,
+        },
+    )
+    .await?;
+    Ok(())
 }

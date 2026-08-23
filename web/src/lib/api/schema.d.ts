@@ -334,6 +334,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/assets/{asset_id}/legal-hold": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Places or lifts a legal hold. */
+        put: operations["set_legal_hold"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/assets/{asset_id}/metadata": {
         parameters: {
             query?: never;
@@ -595,6 +612,57 @@ export interface paths {
         post?: never;
         /** Stops watching. Idempotent. */
         delete: operations["remove_watch"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Reads the governance record, newest first. */
+        get: operations["list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/audit/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Takes a re-verifiable extract, and records that it was taken. */
+        post: operations["export"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/audit/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Walks the chain and reports the first inconsistency. */
+        get: operations["verify"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -3418,12 +3486,60 @@ export interface components {
             natural_language_search?: boolean;
             suggest_tags: boolean;
         };
+        /** @description One entry, as a screen and an auditor both read it. */
+        EntryView: {
+            action: string;
+            /** Format: uuid */
+            actor_id?: string | null;
+            actor_kind: string;
+            /**
+             * @description The timestamp in the exact form the hash covers — six fractional digits, always.
+             *
+             *     A `DateTime` here would serialise through chrono's `AutoSi`, which drops the fraction when the
+             *     microseconds are zero. Roughly one entry in a million lands on that, and the extract would carry an
+             *     `at` that does not reproduce the digest printed beside it — so an auditor following the published
+             *     formula would report a tampered record. Still RFC 3339, so a screen parses it unchanged.
+             */
+            at: string;
+            hash: string;
+            payload: unknown;
+            /**
+             * @description Both hashes travel with the row, because an extract that carried only the digest could not be walked
+             *     and an extract that carried only the link could not be checked.
+             */
+            prev_hash?: string | null;
+            /** Format: int64 */
+            seq: number;
+            target_id?: string | null;
+            target_kind: string;
+        };
+        ExtractView: {
+            /**
+             * @description The hash the first entry links back to, so the extract's own head can be checked rather than trusted.
+             *     `None` when the extract starts at the beginning of the chain.
+             */
+            anchor?: string | null;
+            /**
+             * Format: int32
+             * @description How the hashes were computed, so the extract can be re-verified without this codebase.
+             */
+            chain_version: number;
+            entries: components["schemas"]["EntryView"][];
+            /** @description The entry recording that this export happened. Not a member of `entries`. */
+            recorded_as: components["schemas"]["EntryView"];
+        };
         /** @description One facetable field and its buckets. */
         Facet: {
             buckets: components["schemas"]["Bucket"][];
             key: string;
             /** @description Whether buckets were dropped by the limit. Reported rather than left implicit — see [`FACET_BUCKETS`]. */
             truncated: boolean;
+        };
+        FailureView: {
+            detail: string;
+            kind: string;
+            /** Format: int64 */
+            seq: number;
         };
         /** @description One field definition, as a form needs it. */
         FieldDefinition: {
@@ -3528,6 +3644,31 @@ export interface components {
          * @enum {string}
          */
         LatencyClass: "instant" | "seconds" | "minutes" | "hours" | "days";
+        /** @description Place or lift a hold. */
+        LegalHoldBody: {
+            /**
+             * @description `true` places the hold, `false` lifts it. Not a verb in the path, because the two directions have the
+             *     same permission, the same audit shape and the same idempotency — and splitting them into
+             *     `/hold` and `/release` would be two handlers that had to stay identical.
+             */
+            held: boolean;
+            /** @description Why. Required in both directions; see the module note. */
+            reason: string;
+        };
+        LegalHoldView: {
+            /** Format: uuid */
+            asset_id: string;
+            /**
+             * Format: int64
+             * @description The sequence number of the entry recording this change, when there was one. Returned so a caller can
+             *     cite it — an operator who has just placed a hold under instruction needs the reference, and going to
+             *     look for it afterwards is how the wrong row gets cited.
+             */
+            audit_seq?: number | null;
+            /** @description `false` when the asset was already in the requested state, in which case no audit entry was written. */
+            changed: boolean;
+            held: boolean;
+        };
         /**
          * @description A page of the caller's own favourites or watches.
          *
@@ -3836,6 +3977,14 @@ export interface components {
             /** @description `submitted`, `approved`, `rejected`, `ready`, `collected`, `cancelled`. */
             state: string;
             territory?: string | null;
+        };
+        PageView: {
+            entries: components["schemas"]["EntryView"][];
+            /**
+             * Format: int64
+             * @description Pass back as `before_seq` for the next page. `None` at the end of the log.
+             */
+            next_before_seq?: number | null;
         };
         /** @description A person, as a thread names them. */
         PersonView: {
@@ -4810,6 +4959,16 @@ export interface components {
             /** @description `approved` or `changes_requested`. Not `pending` — that is a starting state, not an answer. */
             verdict: string;
         };
+        VerificationView: {
+            /** Format: int64 */
+            checked: number;
+            failure?: null | components["schemas"]["FailureView"];
+            /** Format: int64 */
+            from_seq: number;
+            intact: boolean;
+            /** Format: int64 */
+            through_seq?: number | null;
+        };
         /** @description What a verification call found out. */
         VerifyResult: {
             /** @description What the provider said, or what went wrong, in one sentence somebody can act on. */
@@ -5747,6 +5906,60 @@ export interface operations {
             };
         };
     };
+    set_legal_hold: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The asset */
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LegalHoldBody"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LegalHoldView"];
+                };
+            };
+            /** @description No usable credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authenticated, and holds no manage scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such asset, or not one this caller may see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No reason given */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     update_metadata: {
         parameters: {
             query?: never;
@@ -6429,6 +6642,123 @@ export interface operations {
             };
             /** @description No such asset, or not one this caller may see */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list: {
+        parameters: {
+            query?: {
+                action?: string | null;
+                actor_id?: string | null;
+                target_kind?: string | null;
+                target_id?: string | null;
+                /** @description Keyset cursor: the page runs backwards from here, exclusive. */
+                before_seq?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PageView"];
+                };
+            };
+            /** @description No usable credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authenticated, and holds no manage scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    export: {
+        parameters: {
+            query?: {
+                /** @description Where to start. Defaults to the beginning of the chain. */
+                from_seq?: number;
+                /** @description How many entries to take. Only read by the export. */
+                limit?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExtractView"];
+                };
+            };
+            /** @description No usable credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authenticated, and holds no manage scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    verify: {
+        parameters: {
+            query?: {
+                /** @description Where to start. Defaults to the beginning of the chain. */
+                from_seq?: number;
+                /** @description How many entries to take. Only read by the export. */
+                limit?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The report. A broken chain is a 200 with `intact: false` — the request succeeded, and the answer is bad news. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VerificationView"];
+                };
+            };
+            /** @description No usable credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authenticated, and holds no manage scope */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

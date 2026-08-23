@@ -29,6 +29,7 @@ pub mod downloads;
 pub mod dto;
 pub mod duplicates;
 pub mod engagement;
+pub mod governance;
 pub mod history;
 pub mod insights;
 pub mod observability;

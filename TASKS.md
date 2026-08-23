@@ -33,9 +33,9 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, colour | dedup and colour **done** (M4a); the rest needs model files — see M4 below |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | **done** — two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query, the MCP server |
 | **M6** Workflow/proofing, annotations, analytics | **done** — annotations (M6a), proofing (M6b), analytics (M6c) |
-| **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | G19 **done**; G7 crosswalk and dry-run **done**, transfer needs a source connector; G10 open |
+| **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | G19 **done**; G7 crosswalk and dry-run **done**, transfer needs a source connector; G10 audit chain **done**, SCIM and BYOK open |
 
-**Next up, in order:** Pre-GA G10 SCIM/BYOK/audit → G7·2 source connectors (which wants a decision on the `csv` crate). M3d·5 (the Drupal module) is deferred until there is a Drupal environment to verify against — see its entry. M4b (local ONNX models) stays parked on the model-distribution question.
+**Next up, in order:** Pre-GA G10·2a user administration (SCIM cannot precede it — see its entry) → G10·2b SCIM → G7·2 source connectors (which wants a decision on the `csv` crate). M3d·5 (the Drupal module) is deferred until there is a Drupal environment to verify against — see its entry. M4b (local ONNX models) stays parked on the model-distribution question.
 M4b (local models) is parked on a distribution decision — see the M4 section.
 
 **`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
@@ -1424,7 +1424,156 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   The rollback machinery is already built and tested against real records, so the transfer slice does not have
   to build its own escape hatch under pressure.
 
-- [ ] **G10 SCIM, BYOK, audit export.**
+- [ ] **G10 SCIM, BYOK, audit export.** Three unrelated things behind one heading; the audit chain is first
+  because it is the one nothing else depends on and the one an RFP treats as pass/fail.
+
+- [x] **G10·1 The tamper-evident record, and the legal hold worth recording.**
+
+  **Two absences that only make sense together.** `audit_log` has carried `prev_hash`, `hash`, its four
+  indexes and two rules refusing UPDATE and DELETE since migration 0007, with the hash formula written in a
+  comment beside the column — and nothing has ever written a row. `assets.legal_hold` has been *read* since
+  migration 0001 — the rights gate refuses to deliver a held asset, the tiering scan refuses to move one, the
+  purge view excludes one, the detail panel draws a badge for it — and nothing has ever written that either.
+  Shipping one alone would have been half a feature: a chain with nothing worth chaining, or a hold nobody can
+  prove was placed.
+
+  **The formula in the schema says to concatenate, and concatenation is wrong.** `action || target_kind` makes
+  `("a", "bc")` and `("ab", "c")` the same bytes, so one row's digest can cover a different row's content.
+  Length prefixes, as in `signed_url`, which documents the identical break for the identical reason. An
+  optional field needs more than an empty one: `None` and `Some("")` both render as zero bytes, so a marker
+  byte inside the field separates them.
+
+  **The payload is canonicalised rather than serialised**, and the reason is a Cargo feature. `serde_json`'s
+  `preserve_order` switches `Map` from sorted to insertion order, features are additive across a workspace,
+  and any crate three levels down that turns it on would break every hash written before that day — presenting
+  as historical tamper evidence. Sorting the keys here costs an allocation and removes the dependency.
+
+  **Timestamps are fixed-width or they are an intermittent false alarm.** `chrono`'s own `Serialize` uses
+  `AutoSi`, which drops the fraction entirely when the microseconds are zero. Hashing that rendering would
+  fail verification for exactly the entries that land on a trailing zero — and intermittent tamper evidence is
+  worse than none, because it teaches the reader the alarm is noise. One `canonical_time` is used by both the
+  digest and the exported view, which is the only way those two stay in step. Found by writing an independent
+  verifier against a real extract and watching it disagree.
+
+  **`seq` and `at` are supplied, not defaulted.** Both columns have defaults and this path uses neither,
+  because the hash covers both and only Rust computes the hash — and the repair (insert, read back, update the
+  hash) is exactly the UPDATE the table refuses. `clock_timestamp()` rather than `now()`, because a
+  transaction that waited on the chain lock started *earlier* than the one that overtook it, so `now()` would
+  write timestamps running backwards against the sequence. The consequence is that **a gap in `seq` is not
+  evidence of tampering**: `nextval` is deliberately non-transactional, so every rolled-back governance action
+  leaves a hole. Verification chains on `prev_hash` for that reason and never on contiguity — a verifier that
+  counted numbers would report routine failures as deleted evidence.
+
+  **A chain without a lock forks, silently, and is unrepairable when found.** Two transactions reading the
+  same tail both insert claiming the same predecessor; nothing fails at the time, and the damage surfaces
+  months later in front of an auditor with no way left to tell which branch was the real history. So `record`
+  takes an advisory transaction lock keyed on the table's own OID — unique across the cluster, so no two
+  tenants can collide, where a hashed schema name would collide sometimes and couple two customers in a way
+  nobody would ever diagnose.
+
+  **And `record` opens that transaction itself.** `pg_advisory_xact_lock` outside a transaction is taken and
+  released by the statement that calls it: a lock in the shape of a no-op, undetectable by the code depending
+  on it, and the same silent failure `tenant_conn` exists to prevent for `SET LOCAL`. `Connection::begin`
+  gives a `BEGIN` when there is none and a `SAVEPOINT` when there is, and an advisory transaction lock taken
+  inside a savepoint is held to the top-level commit either way.
+
+  **What is hashed is what is stored.** `jsonb` normalises on the way in — `-0.0` reads back as `0.0` — so
+  hashing the submitted value makes a row unverifiable from the instant it was written, which is tamper
+  evidence for an entry nobody touched. The statement that draws the sequence casts the payload through
+  `jsonb` and hands it back. I first wrote this up claiming `jsonb` rewrites `1e2` as `100`; it does not,
+  because `serde_json` has already turned it into `100.0`. Probing the real database for a case that actually
+  differs is what produced the negative zero.
+
+  **The rules are the fence; the chain is the alarm.** UPDATE and DELETE are refused in the database, so the
+  attack available to an application-level compromise is an *append* — a plausible extra entry, needing no DDL
+  rights, and the one that must not work. The cases that alter and remove rows disable the rules first,
+  deliberately: that is what an attacker with DDL does, and the chain is what remains. Reported as two
+  distinct findings, because "this row was edited" points at a record and "a row is missing between these two"
+  points at a gap.
+
+  **A broken chain is a 200.** A 500 would be indistinguishable from the database being down, and "we cannot
+  tell you" and "the record has been altered" are different sentences of which only one is an emergency.
+  `damctl audit verify` exits non-zero instead, because that is the one report that has to fail a cron job.
+
+  **The export is a POST, because it writes.** It appends the entry saying a copy was taken; behind GET that
+  entry would be written by every link preview, browser prefetch and uptime probe — noise, and a false trail
+  of people who never asked for the data. The extract carries the anchor its first entry links back to, so a
+  window into the middle of a chain can be checked rather than trusted, and it cannot contain the record of
+  its own creation.
+
+  **`damctl audit` exists as well as the API route**, and the reason is the threat model: the chain detects an
+  alteration made by whoever holds enough rights to make one, which includes whoever holds the application's
+  credentials. A verification that only ever runs *through* the application is one an attacker in that
+  position controls.
+
+  **The reason for a hold is not a column.** There is no `legal_hold_reason` and this does not add one: the
+  question is always who, when and why, and a column answers the least useful third while overwriting itself
+  on every change. It is required in both directions, and releasing needs it more — "somebody lifted the
+  litigation hold" with no sentence attached is the row that makes an auditor distrust the rest of the log.
+  Re-asserting a hold records nothing and says so, because a log where most entries are re-assertions is a log
+  nobody reads to the end.
+
+  `Action::Manage` and no new permission string, following `ai.rs`: the built-in administrator role's
+  permissions are wildcards that nothing expands, so a new string would be a gate no existing role could pass.
+  The audit log is not asset-scoped and so is not filtered by the caller's predicate, which is the reason it
+  takes the strongest gate the model has.
+
+  **Verified by an independent implementation.** `verify_chain.py` rebuilds the digest from the exported JSON
+  with no damrs code, working only from the published field order and framing, and agrees with both the server
+  and `damctl` — including on the recomputed hash of a row tampered with in the live database, which all three
+  then reported at the same sequence number. The dev tenant's chain was restored to its original payload and
+  the UPDATE rule re-enabled afterwards.
+
+  30 unit cases (15 pure over the canonical form, 15 over the chain), 12 API cases, 14 browser cases across
+  two screens. Driving the real browser against the real server is what caught the accent-button contrast
+  failure and three colour tokens I had invented.
+
+  *Found and not fixed here:* the bulk action bar offers **Delete** for a selection under legal hold. The
+  detail panel's own comment says a user who cannot delete deserves to know why "rather than to meet a failing
+  button", and the bar does not honour it — `assets.legal_hold` is on `Detail` and not on `Summary`, so the
+  grid cannot currently know. That is a listing-query change and belongs in its own slice.
+
+- [ ] **G10·2a User administration.** Read while scoping SCIM, and it changes the order of the work:
+  **there is no way to add a person to a tenant.** `tenant_members` is read by `caller`, `auth`, `browse` and
+  `comments`, and written in exactly one place — connector registration, inserting a service account. No
+  endpoint invites a colleague, grants a role, or removes somebody who left.
+
+  So SCIM cannot come first. Built first, it would be the *only* way to provision a person, which leaves a
+  customer without an IdP unable to add a second user — and the operations SCIM drives are the same ones a
+  human path needs, so building SCIM first means building them twice. `Action::RoleGranted`,
+  `RoleRevoked`, `IdentityProvisioned` and `IdentityDeprovisioned` are already in the audit vocabulary for
+  this, deliberately.
+
+  The half that matters is removal, for the reason `0002_enterprise.sql` gives about SCIM: an account that is
+  marked gone but keeps its API keys and memberships is a flag with no effect, and that is precisely what a
+  security questionnaire asks about.
+
+- [ ] **G10·2b SCIM 2.0**, on top of that. Notes from reading the schema:
+
+  **`identities` is global and `identities_scim_idx` is a global unique index on `scim_external_id`.** Two
+  customers whose IdPs number their users independently — and Okta's default `externalId` is an opaque per-org
+  id — will collide, and the failure is one customer's provisioning breaking because of another's. The fix is
+  a column saying *whose* external id it is: `scim_client_id` on `identities` with the unique index moved to
+  `(scim_client_id, scim_external_id)`. One column, one index swap, and the client already carries the tenant.
+
+  **`scim_managed` has to make the human path refuse.** 0002 says so directly: "SCIM-managed identities must
+  not be editable in the damrs UI, or the IdP will overwrite local edits on next sync and the customer will
+  report it as data loss." That is a constraint on G10·2a, which is another reason it lands first.
+
+  **PATCH is not optional.** Entra deprovisions with `PATCH` and `active: false` rather than `DELETE`, so a
+  `DELETE`-only implementation fails against the second-largest IdP in the market. Filtering can stay minimal
+  — `userName eq` and `externalId eq` are what IdPs actually send — but the envelope cannot: `ListResponse`,
+  `meta.resourceType`, and `urn:ietf:params:scim:api:messages:2.0:Error` are what make the difference between
+  working and being rejected at setup.
+
+  **`scim_clients` is another table with no reader.** Its token is not an `api_keys` row and should not become
+  one: a SCIM client is not a tenant member, holds no ABAC predicate, and manages identities rather than
+  reading assets. That is a second authenticator in a codebase that deliberately has one, so it needs saying
+  out loud rather than arriving as a convenience.
+
+- [ ] **G10·3 BYOK.** §19's own note says SSE-KMS with a per-tenant key, and that "building anything here
+  would be worse". That makes this a deployment and configuration slice rather than a code one, and it should
+  be written as such rather than grown into an encryption layer.
 
 ### M3d — the Drupal connector
 

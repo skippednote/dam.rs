@@ -1697,3 +1697,76 @@ export type Quotas = components['schemas']['QuotasView'];
 export async function loadQuotas(): Promise<Quotas> {
 	return request<Quotas>('/quotas');
 }
+
+// ─── governance (G10) ───────────────────────────────────────────────────────
+
+export type AuditEntry = components['schemas']['EntryView'];
+export type AuditPage = components['schemas']['PageView'];
+export type AuditVerification = components['schemas']['VerificationView'];
+export type AuditExtract = components['schemas']['ExtractView'];
+export type LegalHoldResult = components['schemas']['LegalHoldView'];
+
+/**
+ * Places or lifts a legal hold.
+ *
+ * `changed` is `false` when the asset was already in the asked-for state, and in that case nothing was
+ * recorded. A screen that reported "hold placed" either way would be claiming an audit entry that does not
+ * exist.
+ *
+ * The reason is required in both directions. Lifting needs it more than placing does: "somebody lifted the
+ * litigation hold" with no sentence attached is the row that makes an auditor distrust the rest of the log.
+ */
+export async function setLegalHold(
+	assetId: string,
+	held: boolean,
+	reason: string
+): Promise<LegalHoldResult> {
+	return request<LegalHoldResult>(`/assets/${assetId}/legal-hold`, {
+		method: 'PUT',
+		body: JSON.stringify({ held, reason })
+	});
+}
+
+/**
+ * Reads the governance record, newest first.
+ *
+ * Not filtered by the caller's access predicate, because the log is not asset-scoped — which is why the
+ * endpoint takes the strongest gate the role model has. A caller who cannot manage gets a 403 rather than an
+ * empty list.
+ */
+export async function auditLog(
+	params: {
+		action?: string;
+		target_kind?: string;
+		target_id?: string;
+		before_seq?: number;
+	} = {}
+): Promise<AuditPage> {
+	const query = new URLSearchParams();
+	for (const [key, value] of Object.entries(params)) {
+		if (value !== undefined && value !== '') query.set(key, String(value));
+	}
+	const suffix = query.size > 0 ? `?${query}` : '';
+	return request<AuditPage>(`/audit${suffix}`);
+}
+
+/**
+ * Walks the hash chain and reports the first inconsistency.
+ *
+ * A broken chain comes back as a 200 with `intact: false`. That is deliberate on the server's part and the
+ * screen has to honour it: rendering an error state would say "we could not check", which is the opposite of
+ * what happened.
+ */
+export async function verifyAudit(): Promise<AuditVerification> {
+	return request<AuditVerification>('/audit/verify');
+}
+
+/**
+ * Takes a re-verifiable extract, and records that it was taken.
+ *
+ * A POST because it writes: the `audit.exported` entry says a copy was taken, and behind GET that entry would
+ * be written by every link preview and uptime probe.
+ */
+export async function exportAudit(fromSeq = 0): Promise<AuditExtract> {
+	return request<AuditExtract>(`/audit/export?from_seq=${fromSeq}`, { method: 'POST' });
+}

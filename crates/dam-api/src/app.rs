@@ -253,6 +253,11 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
                 keyring: cfg.sealing_keyring(),
             },
         ))
+        .merge(crate::governance::router(
+            crate::governance::GovernanceState {
+                global: deps.global.clone(),
+            },
+        ))
         .merge(crate::insights::router(crate::insights::InsightsState {
             global: deps.global.clone(),
         }))

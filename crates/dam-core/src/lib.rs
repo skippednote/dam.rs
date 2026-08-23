@@ -10,6 +10,7 @@
     allow(clippy::expect_used, clippy::unwrap_used, clippy::result_large_err)
 )]
 
+pub mod audit;
 pub mod clock;
 pub mod config;
 pub mod crosswalk;

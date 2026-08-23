@@ -10,6 +10,7 @@ pub mod access;
 pub mod ai_credentials;
 pub mod assets;
 pub mod attachments;
+pub mod audit;
 pub mod auth;
 pub mod auto_import;
 pub mod branding;

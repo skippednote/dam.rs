@@ -50,6 +50,19 @@ enum Command {
         action: ImportAction,
     },
 
+    /// Verify or export the tamper-evident governance record (G10).
+    ///
+    /// Operator-facing as well as an API route, and the reason is the failure it exists to catch: the chain
+    /// detects an alteration made by whoever holds enough rights to make one, which includes whoever holds
+    /// the application's credentials. A verification that only ever runs *through* the application is a
+    /// verification an attacker in that position controls. This path takes the database URL directly.
+    Audit {
+        #[arg(long)]
+        tenant: String,
+        #[command(subcommand)]
+        action: AuditAction,
+    },
+
     /// Set or clear a tenant's cap (G19).
     ///
     /// Here rather than in the API, deliberately: a tenant raising its own limit is not a feature, and putting
@@ -247,6 +260,27 @@ enum ImportAction {
         /// Required. A rollback removes work, so it does not happen because somebody pressed up-arrow.
         #[arg(long)]
         confirm: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum AuditAction {
+    /// Walk the chain and report the first inconsistency.
+    Verify {
+        /// Start here rather than at the beginning of the chain.
+        #[arg(long, default_value_t = 0)]
+        from_seq: i64,
+    },
+    /// Print a re-verifiable extract as JSON lines on stdout.
+    ///
+    /// JSON lines rather than one document, because an extract is meant to be walked and a chain of a hundred
+    /// thousand entries should not have to be held in memory to be checked. The first line is a header
+    /// carrying the chain version and the hash the extract links back to; every later line is an entry.
+    Export {
+        #[arg(long, default_value_t = 0)]
+        from_seq: i64,
+        #[arg(long, default_value_t = 1_000)]
+        limit: i64,
     },
 }
 
@@ -913,6 +947,96 @@ async fn main() -> anyhow::Result<()> {
                         eprintln!(
                             "{} were left in place — a legal hold outranks a migration's rollback",
                             assets.len() as u64 - removed
+                        );
+                    }
+                }
+            }
+        }
+
+        Command::Audit { tenant, action } => {
+            let slug = TenantSlug::new(&tenant).context("tenant slug")?;
+            let url = cfg.database.url.expose();
+            let pool =
+                dam_db::tenant_conn::single_tenant_pool(url, &slug, cfg.database.max_connections)
+                    .await
+                    .context("connecting to the tenant schema")?;
+            let mut conn = pool.acquire().await.context("acquiring a connection")?;
+
+            match action {
+                AuditAction::Verify { from_seq } => {
+                    let result = dam_db::audit::verify(&mut conn, from_seq.max(0))
+                        .await
+                        .context("verifying the audit chain")?;
+                    println!(
+                        "checked {} entries from seq {}{}",
+                        result.checked,
+                        result.from_seq,
+                        result
+                            .through_seq
+                            .map(|through| format!(" through {through}"))
+                            .unwrap_or_default()
+                    );
+                    match result.first_break {
+                        None => println!("chain intact"),
+                        // A non-zero exit, because this is the one report that must fail a cron job rather
+                        // than print into a log nobody reads. A verification that cannot fail is decoration.
+                        Some(dam_db::audit::Break::Altered {
+                            seq,
+                            stored,
+                            recomputed,
+                        }) => bail!(
+                            "entry {seq} was altered: it stores {stored} and its columns hash to {recomputed}"
+                        ),
+                        Some(dam_db::audit::Break::Unlinked {
+                            seq,
+                            claimed_prev,
+                            actual_prev,
+                        }) => bail!(
+                            "entry {seq} names predecessor {}, but the entry before it hashes to {} — a row is missing between them",
+                            claimed_prev.as_deref().unwrap_or("nothing"),
+                            actual_prev.as_deref().unwrap_or("nothing")
+                        ),
+                    }
+                }
+                AuditAction::Export { from_seq, limit } => {
+                    let extract = dam_db::audit::export(
+                        &mut conn,
+                        from_seq.max(0),
+                        limit,
+                        None,
+                        // Nobody is behind this: it ran from a shell. Attributing it to a person would be
+                        // inventing the one field the record exists to be trusted on.
+                        dam_db::audit::ActorKind::System,
+                    )
+                    .await
+                    .context("exporting the audit chain")?;
+
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "chain_version": dam_core::audit::CHAIN_VERSION,
+                            "from_seq": from_seq.max(0),
+                            "entries": extract.entries.len(),
+                            "anchor": extract.anchor,
+                            "recorded_as": extract.recorded_as.seq,
+                        })
+                    );
+                    for entry in &extract.entries {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "seq": entry.seq,
+                                // The canonical form, not chrono's serialiser: see `dam_core::audit::canonical_time`.
+                            "at": dam_core::audit::canonical_time(entry.at),
+                                "actor_id": entry.actor_id,
+                                "actor_kind": entry.actor_kind,
+                                "action": entry.action,
+                                "target_kind": entry.target_kind,
+                                "target_id": entry.target_id,
+                                "payload": entry.payload,
+                                "prev_hash": entry.prev_hash,
+                                "hash": entry.hash,
+                            })
                         );
                     }
                 }

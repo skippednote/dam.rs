@@ -52,6 +52,9 @@
 		// Beside Webhooks for the same reason, and because they are the two halves of one thing: a webhook is
 		// how the library tells another system something changed, and a connected site is that system.
 		{ href: resolve('/connectors'), label: 'Sites' },
+		// Between Sites and Settings: it is administration rather than content, and it is the screen an auditor
+		// is pointed at — which is a different visit from a curator's, so it does not belong among the queues.
+		{ href: resolve('/governance'), label: 'Governance' },
 		{ href: resolve('/style'), label: 'Style' },
 		// Beside Settings, because it is configuration rather than content — and it is the one screen where a
 		// tenant makes the application look like theirs.

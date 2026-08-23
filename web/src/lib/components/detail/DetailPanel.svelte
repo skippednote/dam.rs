@@ -27,6 +27,7 @@
 	import ReferencePanel from './ReferencePanel.svelte';
 	import DownloadPanel from './DownloadPanel.svelte';
 	import HistoryPanel from './HistoryPanel.svelte';
+	import LegalHoldPanel from './LegalHoldPanel.svelte';
 	import RestorePanel from './RestorePanel.svelte';
 	import VersionPanel from './VersionPanel.svelte';
 	import MetadataEditor from './MetadataEditor.svelte';
@@ -51,6 +52,19 @@
 		onversions?: () => void;
 		onclose?: () => void;
 	} = $props();
+
+	/**
+	 * The hold, so placing one redraws the header badge without refetching the asset.
+	 *
+	 * The local override carries the asset id it belongs to, and the derived value falls back to the prop as
+	 * soon as the ids stop matching. A bare `$state` seeded from the prop would keep the previous asset's hold
+	 * on screen after the panel was pointed somewhere else — which, for a badge that means "this cannot be
+	 * deleted", is the wrong thing to be stale about.
+	 */
+	let override = $state<{ id: string; value: boolean } | null>(null);
+	const legalHold = $derived(
+		override !== null && override.id === asset.id ? override.value : asset.legal_hold
+	);
 
 	const values = $derived((asset.values ?? {}) as Record<string, unknown>);
 	const technical = $derived((asset.technical ?? {}) as Record<string, unknown>);
@@ -148,7 +162,7 @@
 			<TierBadge tier={asset.tier} />
 			<RightsBadge state={asset.rights_state} />
 			<ProvenanceBadge state={asset.provenance_state} />
-			{#if asset.legal_hold}
+			{#if legalHold}
 				<!--
 					Surfaced because a user who cannot delete an asset deserves to know why rather than to meet a
 					failing button. Legal hold blocks tiering *and* deletion.
@@ -193,6 +207,17 @@
 	<!-- Where the words above become an action. Until this existed the panel could explain that an asset was
 	     archived and offer nothing to do about it, which is the whole of F.11b·2b. -->
 	<RestorePanel assetId={asset.id} tier={asset.tier} />
+
+	<!-- Directly under the tiering paragraph, because a hold is the thing that overrides it: the sentence above
+	     says this asset may move to cold storage, and this is what stops it. The badge in the header has drawn
+	     this state since the first release with nothing able to set it. -->
+	<LegalHoldPanel
+		assetId={asset.id}
+		held={legalHold}
+		onchange={(next) => {
+			override = { id: asset.id, value: next };
+		}}
+	/>
 
 	<!-- Directly under the paragraph about availability, because that paragraph is what somebody reads before
 	     deciding to take a copy. The panel hides itself for a caller who may look and not download. -->
