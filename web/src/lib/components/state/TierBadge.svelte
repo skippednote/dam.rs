@@ -4,6 +4,7 @@
 -->
 <script lang="ts">
 	import { tierMeta, type Tier } from './vocabulary';
+	import { Archive, ArrowClockwise, CloudArrowDown, Flame, Snowflake } from 'phosphor-svelte';
 
 	let { tier }: { tier: Tier } = $props();
 	const meta = $derived(tierMeta(tier));
@@ -27,6 +28,18 @@
 >
 	<!-- Decorative: the label already carries the meaning, so a screen reader must not read the glyph
 	     as "dotted circle Archived". -->
-	<span data-testid="tier-glyph" aria-hidden="true">{meta.icon}</span>
+	<span data-testid="tier-glyph" aria-hidden="true">
+		{#if tier === 'hot'}
+			<Flame size={13} />
+		{:else if tier === 'cool'}
+			<Snowflake size={13} />
+		{:else if tier === 'archive'}
+			<Archive size={13} />
+		{:else if tier === 'restoring'}
+			<ArrowClockwise size={13} />
+		{:else}
+			<CloudArrowDown size={13} />
+		{/if}
+	</span>
 	<span>{meta.label}</span>
 </span>

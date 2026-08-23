@@ -210,15 +210,15 @@
 
 			<ul class="space-y-1">
 				{#if options.original_available}
-					<li class="rounded-md border border-line px-2 py-1.5">
+					<li>
 						<button
 							type="button"
-							class="w-full text-left text-xs disabled:opacity-50"
+							class="w-full rounded-md bg-accent px-3 py-2 text-left text-xs text-accent-fg disabled:opacity-50"
 							disabled={busy !== null}
 							onclick={() => choose('original', 'The original file')}
 						>
 							<span class="font-medium">Original file</span>
-							<span class="block text-muted">
+							<span class="block">
 								Exactly what was uploaded. Rights are checked when the link is made, so this may
 								still be refused.
 							</span>

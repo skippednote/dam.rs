@@ -19,6 +19,7 @@
 	import TierBadge from '$lib/components/state/TierBadge.svelte';
 	import RightsBadge from '$lib/components/state/RightsBadge.svelte';
 	import type { AssetSummary } from './types';
+	import { Archive, Broadcast, ImageBroken, Star } from 'phosphor-svelte';
 
 	let {
 		items,
@@ -254,7 +255,7 @@
 		tabindex="-1"
 		{onkeydown}
 		style="height: {height}px"
-		class="overflow-auto rounded-md border border-line"
+		class="overflow-auto"
 	>
 		<!-- Sized from the total, so the scrollbar reflects the collection rather than the window. -->
 		<div data-testid="grid-sizer" style="height: {totalRows * rowHeight}px; position: relative;">
@@ -263,7 +264,7 @@
 					role="row"
 					aria-rowindex={virtualRow.index + 1}
 					style="position: absolute; top: 0; left: 0; width: 100%; height: {rowHeight}px; transform: translateY({virtualRow.start}px);"
-					class="flex gap-2 p-2"
+					class="flex gap-3 py-1"
 				>
 					{#each Array.from({ length: columns }, (_, column) => column) as column (column)}
 						{@const index = cellIndex(virtualRow.index, column)}
@@ -286,9 +287,9 @@
 								data-cell-index={index}
 								tabindex={focused === index ? 0 : -1}
 								onclick={(event) => onclick(event, index)}
-								class="flex min-w-0 flex-1 flex-col gap-1 rounded-md border border-line
-								       bg-surface p-2 text-left text-xs
-								       aria-selected:ring-2 aria-selected:ring-accent"
+								class="group flex min-w-0 flex-1 flex-col overflow-hidden rounded-md border border-line
+								       bg-surface text-left text-xs transition-colors hover:border-state-neutral
+								       aria-selected:border-accent aria-selected:ring-2 aria-selected:ring-accent"
 							>
 								<!--
 									`loading="lazy"` because a virtualised grid still mounts a row's worth of images at a
@@ -307,7 +308,7 @@
 										aria-hidden="true"
 										loading="lazy"
 										decoding="async"
-										class="image-well min-h-0 w-full flex-1 rounded object-cover"
+										class="image-well min-h-0 w-full flex-1 object-cover"
 									/>
 								{:else}
 									<!--
@@ -316,18 +317,25 @@
 										the honest label for that. An empty cell reads as a broken image.
 									-->
 									<div
-										class="image-well flex min-h-0 flex-1 items-center justify-center rounded text-[10px]
+										class="image-well flex min-h-0 flex-1 flex-col items-center justify-center gap-2 text-[10px]
 										       text-muted"
 										data-testid="thumbnail-placeholder"
 									>
-										{asset.tier === 'archive' ? 'archived' : 'processing'}
+										{#if asset.tier === 'archive'}
+											<Archive size={22} aria-hidden="true" />
+											<span>Original archived · preview pending</span>
+										{:else}
+											<ImageBroken size={22} aria-hidden="true" />
+											<span>Preview processing</span>
+										{/if}
 									</div>
 								{/if}
-								<span class="flex min-w-0 items-center gap-1">
-									<span data-testid="cell-filename" class="min-w-0 flex-1 truncate font-medium">
-										{asset.filename}
-									</span>
-									<!--
+								<div class="space-y-1.5 px-2.5 py-2">
+									<span class="flex min-w-0 items-center gap-1">
+										<span data-testid="cell-filename" class="min-w-0 flex-1 truncate font-medium">
+											{asset.filename}
+										</span>
+										<!--
 										`tabindex="-1"`, so the grid keeps exactly one tab stop — the WAI-ARIA grid pattern
 										allows a widget inside a cell and reaches it through the container's key handling,
 										which is what `f` above is. It stays in the accessibility tree, so a screen reader
@@ -336,56 +344,62 @@
 										`stopPropagation`, because a click here is not a click on the cell: without it,
 										favouriting would also change the selection and open the detail panel.
 									-->
-									<button
-										type="button"
-										tabindex="-1"
-										aria-pressed={asset.is_favourite}
-										aria-label={asset.is_favourite
-											? `Remove ${asset.filename} from favourites`
-											: `Add ${asset.filename} to favourites`}
-										onclick={(event) => {
-											event.stopPropagation();
-											onfavourite?.(asset);
-										}}
-										class="shrink-0 rounded px-1 text-sm leading-none
+										<button
+											type="button"
+											tabindex="-1"
+											aria-pressed={asset.is_favourite}
+											aria-label={asset.is_favourite
+												? `Remove ${asset.filename} from favourites`
+												: `Add ${asset.filename} to favourites`}
+											onclick={(event) => {
+												event.stopPropagation();
+												onfavourite?.(asset);
+											}}
+											class="shrink-0 rounded px-1 text-sm leading-none
 										       {asset.is_favourite ? 'text-accent' : 'text-muted hover:text-fg'}"
-									>
-										{asset.is_favourite ? '★' : '☆'}
-									</button>
-								</span>
-								<span class="flex flex-wrap items-center gap-1">
-									<TierBadge tier={asset.tier} />
-									<RightsBadge state={asset.rights_state} />
-									{#if asset.published_at}
-										<!--
+										>
+											<Star
+												size={15}
+												weight={asset.is_favourite ? 'fill' : 'regular'}
+												aria-hidden="true"
+											/>
+										</button>
+									</span>
+									<span class="flex flex-wrap items-center gap-1">
+										<TierBadge tier={asset.tier} />
+										<RightsBadge state={asset.rights_state} />
+										{#if asset.published_at}
+											<!--
 											Published (Q.14): this asset can appear on a page anybody can reach. Form
 											rather than colour, like the tier badge — the colour channel belongs to
 											rights, the only dimension with legal consequence — and a title carrying the
 											instant, because "since when" is the question a public appearance raises.
 										-->
-										<span
-											data-testid="published-badge"
-											title={`Published ${new Date(asset.published_at).toLocaleString()}`}
-											class="inline-flex items-center gap-1 rounded-md border border-state-neutral bg-surface px-2 py-0.5 text-xs text-fg"
-										>
-											<span aria-hidden="true">◉</span>
-											Public
-										</span>
-									{/if}
-									{#if asset.average_stars !== null && asset.average_stars !== undefined}
-										<!--
+											<span
+												data-testid="published-badge"
+												title={`Published ${new Date(asset.published_at).toLocaleString()}`}
+												class="inline-flex items-center gap-1 rounded-md border border-state-neutral bg-surface px-2 py-0.5 text-xs text-fg"
+											>
+												<Broadcast size={12} aria-hidden="true" />
+												Public
+											</span>
+										{/if}
+										{#if asset.average_stars !== null && asset.average_stars !== undefined}
+											<!--
 											The library's average, as a number rather than five glyphs: a cell has no room for
 											a star widget, and "4.2" is both smaller and more precise than four-and-a-bit
 											stars drawn at this size.
 										-->
-										<span
-											class="rounded bg-raised px-1 text-[10px] text-muted tabular-nums"
-											title="Average rating"
-										>
-											★ {asset.average_stars.toFixed(1)}
-										</span>
-									{/if}
-								</span>
+											<span
+												class="rounded bg-raised px-1 text-[10px] text-muted tabular-nums"
+												title="Average rating"
+											>
+												<Star size={10} weight="fill" aria-hidden="true" />
+												{asset.average_stars.toFixed(1)}
+											</span>
+										{/if}
+									</span>
+								</div>
 							</div>
 						{:else}
 							<!-- A trailing gap on the last row. Presentational, so it is not a gridcell: an

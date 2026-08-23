@@ -1,10 +1,12 @@
-# damrs — Architecture
+# dam.rs architecture
 
-An AI-first digital asset management system in Rust, functionally modelled on
-Acquia DAM (Widen), with S3-compatible object storage and aggressive cold
-tiering that does not compromise searchability.
+Rights-aware digital asset infrastructure, built in Rust. The system is functionally modelled on Acquia DAM
+(Widen), with S3-compatible object storage and aggressive cold tiering that does not compromise
+searchability.
 
-Status: design. No implementation yet.
+**Status:** active development. The architecture records the intended system and its invariants; see
+[`TASKS.md`](TASKS.md) for current implementation status and [`DECISIONS.md`](DECISIONS.md) for evidence from
+the running implementation.
 
 > A research pass on 2026-08-17 found 24 gaps, recorded in `GAPS.md`. All are now
 > addressed in this document and in the migrations — four via schema
@@ -183,7 +185,7 @@ damrs/
 │   ├── damd/                   # API + delivery
 │   ├── dam-worker/             # job runner
 │   └── damctl/                 # migrate, provision-tenant, reindex, backfill, import
-├── web/                        # React 19 + TS UI (§14) — also the Drupal picker
+├── web/                        # Svelte 5 + TypeScript UI (§14) — also the Drupal picker
 ├── integrations/
 │   └── drupal/                 # PHP contrib module, Drupal 11+ — separate composer
 │                               #   package, not a Cargo member (§11)

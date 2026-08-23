@@ -51,9 +51,15 @@
 
 <div class="mx-auto max-w-5xl space-y-8 p-8">
 	<div>
-		<h1 class="text-2xl font-semibold tracking-tight">damrs</h1>
+		<p class="mb-2 text-[10px] font-semibold tracking-[0.16em] text-accent uppercase">
+			Library overview
+		</p>
+		<h1 class="text-3xl font-semibold tracking-[-0.03em]">What needs attention</h1>
 		<p class="mt-1 text-sm text-muted">
-			Everything below is what <em>you</em> can see. Somebody with wider access sees larger numbers.
+			Your view of the library, its recent movement, and the work waiting behind it.
+		</p>
+		<p class="mt-1 text-xs text-muted">
+			Counts reflect what <em>you</em> can see. Somebody with wider access may see larger numbers.
 		</p>
 	</div>
 
@@ -83,8 +89,10 @@
 				and axe said so. The link lives inside the `dd` instead, which is also the better reading order: the
 				label, then the number you can act on.
 			-->
-			<dl class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-				<div class="rounded-md border border-line p-3" data-testid="count-assets">
+			<dl
+				class="grid grid-cols-2 gap-px overflow-hidden rounded-md border border-line bg-line sm:grid-cols-3 lg:grid-cols-5"
+			>
+				<div class="bg-bg p-4" data-testid="count-assets">
 					<dt class="text-xs text-muted">Assets you can see</dt>
 					<dd class="mt-1 text-2xl font-semibold tabular-nums">
 						<a href={resolve('/assets')} class="underline decoration-line hover:decoration-fg">
@@ -92,25 +100,25 @@
 						</a>
 					</dd>
 				</div>
-				<div class="rounded-md border border-line p-3">
+				<div class="bg-bg p-4">
 					<dt class="text-xs text-muted">Uploaded this week</dt>
 					<dd class="mt-1 text-2xl font-semibold tabular-nums">
 						{data.counts.uploads_this_week}
 					</dd>
 				</div>
-				<div class="rounded-md border border-line p-3">
+				<div class="bg-bg p-4">
 					<dt class="text-xs text-muted">Downloaded this week</dt>
 					<dd class="mt-1 text-2xl font-semibold tabular-nums">
 						{data.counts.downloads_this_week}
 					</dd>
 				</div>
-				<div class="rounded-md border border-line p-3">
+				<div class="bg-bg p-4">
 					<dt class="text-xs text-muted">Comments this week</dt>
 					<dd class="mt-1 text-2xl font-semibold tabular-nums">
 						{data.counts.comments_this_week}
 					</dd>
 				</div>
-				<div class="rounded-md border border-line p-3" data-testid="count-undescribed">
+				<div class="bg-bg p-4" data-testid="count-undescribed">
 					<dt class="text-xs text-muted">Nothing written about them</dt>
 					<dd class="mt-1 text-2xl font-semibold tabular-nums">
 						{data.counts.without_metadata}
