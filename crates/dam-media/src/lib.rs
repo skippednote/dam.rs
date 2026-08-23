@@ -17,6 +17,7 @@ pub mod profiles;
 pub mod provenance;
 pub mod proxy;
 pub mod sandbox;
+pub mod similarity;
 pub mod sniff;
 /// Fixtures for tests in this crate and in the crates that ingest what it produces.
 #[cfg(feature = "testing")]
