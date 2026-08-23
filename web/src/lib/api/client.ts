@@ -1438,3 +1438,39 @@ export async function saveBranding(body: {
 }): Promise<Branding> {
 	return request<Branding>('/branding', { method: 'PUT', body: JSON.stringify(body) });
 }
+
+// ─── near-duplicates and colour (M4) ────────────────────────────────────────
+
+export type DuplicateCandidate = components['schemas']['CandidateView'];
+export type ColourBucket = components['schemas']['ColourBucket'];
+
+/**
+ * Open near-duplicate pairs, most alike first.
+ *
+ * Only pairs whose *both* halves the caller can see — a pair with one visible side would disclose that the
+ * other exists. So two people legitimately see different queues.
+ */
+export async function listDuplicates(): Promise<DuplicateCandidate[]> {
+	return request<DuplicateCandidate[]>('/duplicates');
+}
+
+/**
+ * Records a verdict on a pair.
+ *
+ * `merged` records a decision and merges nothing — which asset survives, and what happens to the other's
+ * rights and references, is not something this endpoint decides.
+ */
+export async function resolveDuplicate(
+	id: string,
+	state: 'confirmed' | 'dismissed' | 'merged'
+): Promise<void> {
+	await request<void>(`/duplicates/${id}`, {
+		method: 'POST',
+		body: JSON.stringify({ state })
+	});
+}
+
+/** Colour buckets present in the library, most common first. Counts primary colours only. */
+export async function listColours(): Promise<ColourBucket[]> {
+	return request<ColourBucket[]>('/colours');
+}

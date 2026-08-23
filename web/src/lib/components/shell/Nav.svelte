@@ -31,6 +31,9 @@
 		// Beside Review because both are queues of work over the library, and a person who opens one has
 		// reason to open the other.
 		{ href: resolve('/worklists'), label: 'Worklists' },
+		// Beside Worklists because it is the same kind of thing: a queue of judgements the library needs from
+		// a person, computed from what it already holds.
+		{ href: resolve('/duplicates'), label: 'Duplicates' },
 		// Next to Schema because it is the same kind of work: deciding what the library's own vocabulary means.
 		{ href: resolve('/review'), label: 'Review' },
 		// Beside Review for the same reason, and because the review queue is where a badly-set threshold shows

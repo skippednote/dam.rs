@@ -135,6 +135,56 @@ async fn near_takes_the_closer_of_the_two_hashes(pool: &PgPool) {
     let _ = pool;
 }
 
+async fn an_exact_duplicate_is_not_a_near_duplicate(pool: &PgPool) {
+    // 0003: "exact duplicates are free — identical BLAKE3 means one object, caught at ingest. This table is
+    // for NEAR duplicates." Two asset rows can legitimately share a content hash — the same file uploaded
+    // twice, into two collections, by two people — and a perceptual hash tells a reviewer nothing the hash
+    // they already have does not.
+    //
+    // Running the pass over a real 162-asset library is what made this worth fixing: 33 of 84 pairs were
+    // byte-identical, so nearly half the queue was work nobody needed to do. That is how a review queue
+    // becomes something people stop opening.
+    let (_pg, fresh) = db().await;
+    let hash = blake3::hash(b"the same bytes").to_hex().to_string();
+    let mut ids = Vec::new();
+    for name in ["first-copy", "second-copy"] {
+        let id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO assets (id, content_hash, filename, mime, bytes, version_group_id) \
+             VALUES ($1, $2, $3, 'image/jpeg', 4096, $1)",
+        )
+        .bind(id)
+        .bind(&hash)
+        .bind(format!("{name}.jpg"))
+        .execute(&fresh)
+        .await
+        .expect("asset");
+        ids.push(id);
+    }
+    // A third asset with the same *picture* but different bytes — a re-encode, which is what this table is for.
+    let reencoded = asset(&fresh, "reencoded").await;
+
+    let hashes = Hashes {
+        phash: 0x0f0f,
+        dhash: 0x0f0f,
+    };
+    for id in ids.iter().chain(std::iter::once(&reencoded)) {
+        similarity::record_hashes(&mut *held(&fresh).await, *id, hashes)
+            .await
+            .expect("record");
+    }
+
+    let found = similarity::near(&mut *held(&fresh).await, ids[0], hashes, 4)
+        .await
+        .expect("near");
+    assert_eq!(
+        found,
+        vec![(reencoded, 0)],
+        "the byte-identical copy is excluded and the re-encode is not: {found:?}"
+    );
+    let _ = pool;
+}
+
 async fn near_excludes_the_asset_itself_and_anything_deleted(pool: &PgPool) {
     let (_pg, fresh) = db().await;
     let me = asset(&fresh, "me").await;
@@ -477,6 +527,7 @@ async fn the_similarity_tables_hold_their_invariants() {
     recording_a_hash_twice_replaces_it(&pool).await;
     near_takes_the_closer_of_the_two_hashes(&pool).await;
     near_excludes_the_asset_itself_and_anything_deleted(&pool).await;
+    an_exact_duplicate_is_not_a_near_duplicate(&pool).await;
 
     a_pair_is_one_row_whichever_way_it_is_found(&pool).await;
     a_dismissed_pair_is_not_reopened_by_a_reprocess(&pool).await;

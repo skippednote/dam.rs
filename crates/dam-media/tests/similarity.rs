@@ -20,6 +20,15 @@
 use dam_media::similarity::{self, Hashes};
 use image::{DynamicImage, Rgb, RgbImage};
 
+/// PNG bytes, for the entry point that takes them.
+fn encode(image: &DynamicImage) -> Vec<u8> {
+    let mut out = std::io::Cursor::new(Vec::new());
+    image
+        .write_to(&mut out, image::ImageFormat::Png)
+        .expect("encode");
+    out.into_inner()
+}
+
 /// A deterministic gradient, the same shape the probe suite uses.
 fn gradient(w: u32, h: u32) -> DynamicImage {
     let mut img = RgbImage::new(w, h);
@@ -61,6 +70,24 @@ fn smooth(w: u32, h: u32) -> DynamicImage {
     DynamicImage::ImageRgb8(img)
 }
 
+/// Texture at a spatial frequency low enough to survive a downscale — a stand-in for photographic content.
+///
+/// Generated from coordinates *normalised to the image size*, so the same call at two sizes is the same
+/// picture rather than a differently-wrapped pattern. That distinction cost two debugging rounds: a fixture
+/// computed from raw pixel indices is a different image at every size, and blaming the hash for that is the
+/// easiest mistake here to make twice.
+fn textured(w: u32, h: u32) -> DynamicImage {
+    let mut img = RgbImage::new(w, h);
+    for (x, y, px) in img.enumerate_pixels_mut() {
+        let fx = x as f32 / w as f32;
+        let fy = y as f32 / h as f32;
+        let value = ((fx * 9.0).sin() * 60.0 + (fy * 7.0).cos() * 50.0 + 128.0).clamp(0.0, 255.0);
+        let v = value as u8;
+        *px = Rgb([v, v.wrapping_add(20), 200u8.saturating_sub(v / 2)]);
+    }
+    DynamicImage::ImageRgb8(img)
+}
+
 fn checkerboard(w: u32, h: u32) -> DynamicImage {
     let mut img = RgbImage::new(w, h);
     for (x, y, px) in img.enumerate_pixels_mut() {
@@ -80,7 +107,7 @@ fn the_same_image_hashes_identically_every_time() {
     assert_eq!(similarity::hashes(&image), similarity::hashes(&image));
     assert_eq!(
         similarity::hashes(&image).distance(similarity::hashes(&image)),
-        0
+        Some(0)
     );
 }
 
@@ -93,16 +120,18 @@ fn a_rescale_stays_close_and_a_different_picture_does_not() {
     // from pixel coordinates modulo 256, so calling it at 96 produces a pattern that wraps differently — a
     // genuinely different picture, which is what the first version of this compared and then blamed the hash
     // for. A fixture that does not hold the thing under test still is not a test of it.
-    // A smooth gradient, which is what real photographic content looks like to a low-frequency hash. The
-    // high-frequency `gradient` helper is exercised separately below, because heavy aliasing is its own case.
-    let source = smooth(256, 256);
+    // A textured image, which is what real photographic content looks like to a DCT hash. Not the smooth ramp:
+    // that has all its energy in two coefficients, so the median comparison is near-arbitrary and a rescale
+    // moves twenty-two bits — a genuine limit of the algorithm, recorded in its own test rather than papered
+    // over here. Measured, this fixture rescales to distance 0.
+    let source = textured(256, 256);
     let original = similarity::hashes(&source);
     let rescaled =
         similarity::hashes(&source.resize_exact(96, 96, image::imageops::FilterType::Lanczos3));
     let unrelated = similarity::hashes(&checkerboard(256, 256));
 
-    let near = original.distance(rescaled);
-    let far = original.distance(unrelated);
+    let near = original.distance(rescaled).expect("both have structure");
+    let far = original.distance(unrelated).expect("both have structure");
     assert!(
         near <= 4,
         "a rescale of an ordinary picture should barely move, got {near}"
@@ -121,11 +150,13 @@ fn a_heavy_downscale_of_a_fine_pattern_stays_inside_the_review_threshold() {
     // away a true duplicate is that nobody ever sees it, whereas the cost of keeping a false one is a row
     // somebody dismisses.
     let source = gradient(256, 256);
-    let distance = similarity::hashes(&source).distance(similarity::hashes(&source.resize_exact(
-        96,
-        96,
-        image::imageops::FilterType::Lanczos3,
-    )));
+    let distance = similarity::hashes(&source)
+        .distance(similarity::hashes(&source.resize_exact(
+            96,
+            96,
+            image::imageops::FilterType::Lanczos3,
+        )))
+        .expect("both have structure");
     assert!(
         distance <= similarity::NEAR_DUPLICATE_DISTANCE,
         "an aliased downscale is still the same picture, got {distance}"
@@ -158,8 +189,8 @@ fn a_brightness_change_is_survived_by_the_gradient_hash() {
         "a brightness shift should barely move the gradient hash, got {gradient_distance}"
     );
     assert!(
-        a.distance(b) <= gradient_distance,
-        "distance() must take the closer of the two hashes"
+        a.distance(b).expect("both have structure") <= gradient_distance,
+        "distance() must take the closer of the two comparable hashes"
     );
 }
 
@@ -182,11 +213,100 @@ fn a_flat_image_hashes_without_panicking() {
     let flat = similarity::hashes(&solid(64, 64, [128, 128, 128]));
     let also_flat = similarity::hashes(&solid(64, 64, [128, 128, 128]));
     assert_eq!(flat, also_flat);
-    // And two different flat colours are *not* far apart, which is correct and worth recording: neither hash
-    // carries absolute brightness, so "grey square" and "blue square" are the same picture to both of them.
-    // Colour is what tells those apart, which is why both features exist.
-    let blue = similarity::hashes(&solid(64, 64, [40, 80, 200]));
-    assert!(flat.distance(blue) <= 8);
+}
+
+#[test]
+fn an_image_with_no_tonal_variation_gets_no_hash_at_all() {
+    // The defence that matters, and the second attempt at it. The first was a population-count band on the
+    // hash, which cannot work: the DCT hash compares each coefficient against the *median* of the set, so
+    // about half its bits are set for a photograph and a blank page alike. Measured, a solid grey square and
+    // a solid blue one both hashed to thirty-one bits and came out **11 apart** — inside the twelve-bit review
+    // threshold, so two unrelated flat colours would have been queued as duplicates of each other.
+    //
+    // So the test is on the image, not the hash: below `MIN_LUMA_DEVIATION` there is no hash stored, which
+    // excludes the asset from both directions with no column to record it and no filter to remember.
+    let flat = encode(&solid(96, 96, [128, 128, 128]));
+    let analysed = similarity::analyse(&flat).expect("analyse");
+    assert!(
+        analysed.hashes.is_none(),
+        "a flat wash matches every other flat wash, so it gets no hash"
+    );
+    // Its colours are still recorded — and that is the point. Colour is exactly what distinguishes the images
+    // a perceptual hash cannot.
+    assert_eq!(analysed.colours.len(), 1);
+    assert_eq!(analysed.colours[0].palette_bucket, "grey");
+
+    let blue = similarity::analyse(&encode(&solid(96, 96, [40, 80, 200]))).expect("analyse");
+    assert!(blue.hashes.is_none());
+    assert_eq!(blue.colours[0].palette_bucket, "blue");
+
+    // A textured image keeps its hash.
+    let busy = similarity::analyse(&encode(&checkerboard(96, 96))).expect("analyse");
+    assert!(
+        busy.hashes.is_some(),
+        "a checkerboard has plenty of variation"
+    );
+
+    // And the deviation measure is what decides, on the scale it claims: 0 for a flat field, well above the
+    // floor for a checkerboard.
+    assert!(similarity::luma_deviation(&solid(96, 96, [128, 128, 128])) < 1.0);
+    assert!(similarity::luma_deviation(&checkerboard(96, 96)) > similarity::MIN_LUMA_DEVIATION);
+}
+
+#[test]
+fn a_smooth_ramp_keeps_its_hash_and_is_honestly_unreliable() {
+    // A gradient is the awkward middle case, and this records it rather than pretending otherwise. It has
+    // plenty of tonal variation, so it is hashed; its *gradient* hash is all zeroes, because a ramp has no
+    // pixel-to-pixel differences at the 8×8 scale; and its DCT hash is unstable across a rescale — measured at
+    // 22 bits for a 256→96 downscale, well outside the review threshold.
+    //
+    // The consequence is that two rescaled copies of the same gradient will not be found as duplicates. That
+    // is a known limit of a DCT hash on an image whose energy sits in two coefficients, not something this
+    // module can fix by choosing better constants — and a test that asserted otherwise would be a test of a
+    // wish.
+    let ramp = smooth(256, 256);
+    let analysed = similarity::analyse(&encode(&ramp)).expect("analyse");
+    let hashes = analysed.hashes.expect("a ramp has tonal variation");
+    assert_eq!(
+        hashes.dhash.count_ones(),
+        0,
+        "no local differences to record"
+    );
+    assert!(
+        similarity::discriminative(hashes.phash),
+        "but the DCT hash carries the shape"
+    );
+
+    // It is not paired with a flat colour, because the flat colour has no hash to pair with.
+    assert!(
+        similarity::analyse(&encode(&solid(96, 96, [128, 128, 128])))
+            .expect("analyse")
+            .hashes
+            .is_none()
+    );
+}
+
+#[test]
+fn a_collapsed_hash_is_left_out_of_the_comparison() {
+    // The bug a real library found: a 932-byte test pattern paired with an MP4 at distance 0. Both had
+    // `dhash = 0` — correctly, since neither picture has any pixel-to-pixel variation — and taking the
+    // minimum of the two distances blindly let that useless hash decide, while the DCT hashes were saying the
+    // pictures were nothing alike.
+    let ramp = similarity::hashes(&smooth(128, 128));
+    let flat = similarity::hashes(&solid(128, 128, [90, 90, 90]));
+    assert_eq!(ramp.dhash.count_ones(), 0);
+    assert_eq!(flat.dhash.count_ones(), 0);
+    assert!(
+        ramp.distance(flat)
+            .is_none_or(|d| d > similarity::NEAR_DUPLICATE_DISTANCE),
+        "a ramp and a flat wash must not be reported alike through a hash that is all zeroes: {:?}",
+        ramp.distance(flat)
+    );
+
+    // And a hash that is entirely set is as uninformative as one that is entirely clear.
+    assert!(!similarity::discriminative(0));
+    assert!(!similarity::discriminative(u64::MAX));
+    assert!(similarity::discriminative(1));
 }
 
 // ─── colour ─────────────────────────────────────────────────────────────────

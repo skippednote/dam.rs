@@ -300,6 +300,7 @@ pub async fn handle(context: &Context, job: &Job) -> Result<()> {
                     %asset_id,
                     colours = analysed.colours,
                     candidates = analysed.candidates,
+                    hashed = analysed.hashed,
                     "hashed and coloured",
                 ),
                 // Not an image. A library is full of files nothing can look at, and that is not a failure.

@@ -35,6 +35,34 @@ type Result<T> = std::result::Result<T, Error>;
 /// and stop fitting in a column the schema already chose, so the size is fixed here rather than configurable.
 const HASH_SIDE: u32 = 8;
 
+/// How much tonal variation an image needs before its hash means anything.
+///
+/// Standard deviation of luma, on 0..=255. Six is a little over two percent of the range — below that an image
+/// is a flat wash, and *every* flat wash is a near-duplicate of every other by any perceptual hash.
+///
+/// Measured from the image rather than inferred from the hash, and that is the point. The obvious test —
+/// population count of the hash — cannot work for the DCT hash: it compares each coefficient against the
+/// *median* of the set, so about half the bits are set by construction, for a photograph and a blank page
+/// alike. Running the numbers is what showed it: a solid grey square and a solid blue one both hash to
+/// thirty-one bits, and their distance came out at 11 — inside the twelve-bit review threshold, so two
+/// unrelated flat colours would have been queued as duplicates.
+///
+/// The gradient hash *does* degenerate visibly, to all zeroes, which is why [`discriminative`] still earns its
+/// keep for that one.
+pub const MIN_LUMA_DEVIATION: f32 = 6.0;
+
+/// Whether one hash carries enough structure to compare against another.
+///
+/// True unless the hash is all zeroes or all ones. Useful for the **gradient** hash, which genuinely collapses
+/// to zero on any image with no pixel-to-pixel variation — a flat colour, a smooth ramp, the black poster frame
+/// of a video. Near-useless for the DCT hash, which is a median comparison and therefore always sits near
+/// thirty-two bits; [`MIN_LUMA_DEVIATION`] is what catches that case.
+#[must_use]
+pub const fn discriminative(hash: u64) -> bool {
+    let bits = hash.count_ones();
+    bits > 0 && bits < 64
+}
+
 /// The Hamming distance at or below which two images are worth a human's attention.
 ///
 /// Twelve of sixty-four bits. Chosen from what the hashes actually do rather than from a round number: a
@@ -62,7 +90,14 @@ pub const COLOURS_KEPT: usize = 5;
 /// own to do it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Analysis {
-    pub hashes: Hashes,
+    /// `None` when the image has too little tonal variation for a hash to mean anything.
+    ///
+    /// Not stored at all in that case, which is the whole mechanism: an image with no hash cannot be found by
+    /// a search and cannot find anything, so it is excluded from both directions without a column to record it
+    /// or a filter to remember. See [`MIN_LUMA_DEVIATION`].
+    pub hashes: Option<Hashes>,
+    /// Always present. Colour is precisely what distinguishes the images a hash cannot: a grey square and a
+    /// blue square are the same picture to any perceptual hash, and obviously different to a person.
     pub colours: Vec<Colour>,
 }
 
@@ -75,9 +110,51 @@ pub fn analyse(bytes: &[u8]) -> Result<Analysis> {
     let image = image::load_from_memory(bytes)
         .map_err(|error| Error::Decode(format!("decoding for similarity: {error}")))?;
     Ok(Analysis {
-        hashes: hashes(&image),
+        hashes: (luma_deviation(&image) >= MIN_LUMA_DEVIATION).then(|| hashes(&image)),
         colours: colours(&image)?,
     })
+}
+
+/// Standard deviation of luma over a small sample, on 0..=255.
+///
+/// Sampled at the same size the colour pass uses, so a flat wash is cheap to spot and a photograph is measured
+/// on enough pixels to be representative. A single pass, using the sum-of-squares form: two accumulators
+/// rather than two traversals.
+#[must_use]
+pub fn luma_deviation(image: &DynamicImage) -> f32 {
+    const SAMPLE_SIDE: u32 = 96;
+    let small = image
+        .resize_exact(
+            SAMPLE_SIDE,
+            SAMPLE_SIDE,
+            image::imageops::FilterType::Triangle,
+        )
+        .to_luma8();
+
+    let mut sum = 0f64;
+    let mut squares = 0f64;
+    let mut count = 0u32;
+    for pixel in small.pixels() {
+        let value = f64::from(pixel.0[0]);
+        sum += value;
+        squares += value * value;
+        count += 1;
+    }
+    if count == 0 {
+        return 0.0;
+    }
+    let n = f64::from(count);
+    let mean = sum / n;
+    // Clamped at zero: floating-point cancellation can make this a hair negative for a genuinely flat image,
+    // and a NaN from `sqrt` would propagate into a comparison that then answers neither true nor false.
+    let variance = (squares / n - mean * mean).max(0.0);
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a deviation on 0..=255, well inside f32"
+    )]
+    {
+        variance.sqrt() as f32
+    }
 }
 
 /// Both perceptual hashes of one image.
@@ -90,16 +167,37 @@ pub struct Hashes {
 }
 
 impl Hashes {
-    /// Hamming distance to another pair, taking the *closer* of the two hashes.
+    /// Whether either hash carries enough structure to be worth comparing.
+    ///
+    /// An image failing this — a flat colour, a smooth gradient, a black video frame — is at distance zero from
+    /// every other such image, so hashing it is fine and *searching* with it is not.
+    #[must_use]
+    pub const fn is_comparable(self) -> bool {
+        discriminative(self.phash) || discriminative(self.dhash)
+    }
+
+    /// Hamming distance to another pair, taking the *closer* of the two comparable hashes.
     ///
     /// The minimum rather than the mean, because the two algorithms fail on different transformations: a crop
-    /// that defeats the DCT hash often leaves the gradient hash intact, and averaging would bury that. A
-    /// candidate is worth a human's attention when either says the pictures are alike.
+    /// that defeats the DCT hash often leaves the gradient hash intact, and averaging would bury that.
+    ///
+    /// But a structureless hash is excluded from that minimum, and the correction came from real data: a smooth
+    /// gradient and the black poster frame of a video both hash to `dhash = 0`, because neither has any
+    /// pixel-to-pixel variation for the gradient hash to record. Taking the minimum blindly then reported them
+    /// as the same picture while the DCT hashes were correctly saying otherwise.
+    ///
+    /// `None` when no pair of hashes is comparable — no answer, rather than an answer of zero.
     #[must_use]
-    pub fn distance(self, other: Self) -> u32 {
-        (self.phash ^ other.phash)
-            .count_ones()
-            .min((self.dhash ^ other.dhash).count_ones())
+    pub fn distance(self, other: Self) -> Option<u32> {
+        let mut best: Option<u32> = None;
+        for (mine, theirs) in [(self.phash, other.phash), (self.dhash, other.dhash)] {
+            if !discriminative(mine) || !discriminative(theirs) {
+                continue;
+            }
+            let distance = (mine ^ theirs).count_ones();
+            best = Some(best.map_or(distance, |current| current.min(distance)));
+        }
+        best
     }
 }
 

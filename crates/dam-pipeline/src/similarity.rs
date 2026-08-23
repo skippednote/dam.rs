@@ -31,6 +31,12 @@ pub struct Analysed {
     pub colours: usize,
     /// Candidate pairs newly queued. Excludes any a human already resolved.
     pub candidates: u64,
+    /// Whether the image had enough tonal variation to hash at all.
+    ///
+    /// False for a flat colour or a black video frame — reported rather than hidden, because "no candidates"
+    /// and "could not look for candidates" are different facts, and an operator wondering why a duplicate was
+    /// missed needs to be able to tell them apart.
+    pub hashed: bool,
 }
 
 /// Hashes and colours one asset, then queues near-duplicates.
@@ -69,11 +75,18 @@ pub async fn analyse(
         .map_err(|error| Error::Permanent(format!("analysing the proxy of {asset_id}: {error}")))?;
 
     let mut conn = TenantConn::begin(global, slug).await?;
-    let stored = dam_db::similarity::Hashes {
+    // No hash at all for an image with too little tonal variation. A flat wash is a near-duplicate of every
+    // other flat wash by any perceptual hash, so storing one would put it in the queue against everything —
+    // and leaving the row out is what excludes it from both directions without a column to record it or a
+    // filter to remember. Its *colours* are still stored, which is exactly what tells a grey square from a
+    // blue one.
+    let stored = hashes.map(|hashes| dam_db::similarity::Hashes {
         phash: hashes.phash,
         dhash: hashes.dhash,
-    };
-    dam_db::similarity::record_hashes(conn.executor(), asset_id, stored).await?;
+    });
+    if let Some(stored) = stored {
+        dam_db::similarity::record_hashes(conn.executor(), asset_id, stored).await?;
+    }
     dam_db::similarity::record_colours(
         conn.executor(),
         asset_id,
@@ -91,19 +104,27 @@ pub async fn analyse(
 
     // Searched *after* this asset's own hash is written, so a pair found here is symmetric: whichever of the
     // two is processed second finds the first, and the ordered insert makes it one row either way.
-    let found = dam_db::similarity::near(
-        conn.executor(),
-        asset_id,
-        stored,
-        media::NEAR_DUPLICATE_DISTANCE,
-    )
-    .await?;
-    let candidates =
-        dam_db::similarity::record_candidates(conn.executor(), asset_id, &found).await?;
+    //
+    // Nothing to search with when the image had no hash: a flat wash matches every other flat wash under any
+    // perceptual hash, so the honest answer is no candidates rather than all of them.
+    let candidates = match stored {
+        Some(stored) => {
+            let found = dam_db::similarity::near(
+                conn.executor(),
+                asset_id,
+                stored,
+                media::NEAR_DUPLICATE_DISTANCE,
+            )
+            .await?;
+            dam_db::similarity::record_candidates(conn.executor(), asset_id, &found).await?
+        }
+        None => 0,
+    };
     conn.commit().await?;
 
     Ok(Some(Analysed {
         colours: colours.len(),
         candidates,
+        hashed: stored.is_some(),
     }))
 }

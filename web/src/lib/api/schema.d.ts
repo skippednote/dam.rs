@@ -863,6 +863,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/colours": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The colour buckets present in the library.
+         * @description **Not scoped to the caller**, and that is a deliberate exception worth stating. Every other count in this
+         *     codebase runs through the reader's predicate, because §7 says a count is a disclosure. A colour bucket is
+         *     the one place that reasoning does not reach: "eleven assets are mostly blue" names no asset, and the facet
+         *     exists to tell somebody whether clicking it is worth anything. The *results* of clicking it are scoped like
+         *     every other search, so the disclosure is a number with nothing behind it.
+         */
+        get: operations["colours"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/comments/{comment_id}": {
         parameters: {
             query?: never;
@@ -948,6 +972,38 @@ export interface paths {
         get: operations["dashboard"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/duplicates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/duplicates/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["resolve"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2511,6 +2567,25 @@ export interface components {
             /** @description Whether the state is final, so a client polls this instead of re-implementing the state vocabulary. */
             terminal: boolean;
         };
+        /** @description A pair awaiting a verdict. */
+        CandidateView: {
+            /**
+             * Format: float
+             * @description Absent until embeddings exist — the model-dependent half of M4.
+             */
+            cosine?: number | null;
+            /**
+             * Format: int32
+             * @description Bits differing out of 64, from the closer of the two hashes. Lower is more alike.
+             */
+            hamming?: number | null;
+            /** Format: uuid */
+            id: string;
+            left: components["schemas"]["Side"];
+            /** @description `near_identical` or `variant`. The finer relations need an embedding to tell apart. */
+            relation?: string | null;
+            right: components["schemas"]["Side"];
+        };
         /** @description One collection. */
         CollectionView: {
             description?: string | null;
@@ -2525,6 +2600,16 @@ export interface components {
             pin_hot: boolean;
             /** @description `private`, `shared` or `public`. */
             visibility: string;
+        };
+        /** @description One colour bucket and how many assets lead with it. */
+        ColourBucket: {
+            /** @description `red`, `orange`, `grey`, `brown` and so on — a coarse name, so a facet groups into something clickable. */
+            bucket: string;
+            /**
+             * Format: int64
+             * @description Assets whose *primary* colour is in this bucket.
+             */
+            count: number;
         };
         /** @description One comment, as a thread draws it. */
         CommentView: {
@@ -3604,6 +3689,16 @@ export interface components {
         ReplaceKeyRequest: {
             api_key: string;
         };
+        /** @description A verdict. */
+        ResolveBody: {
+            /**
+             * @description `confirmed`, `dismissed` or `merged`.
+             *
+             *     **`merged` records a decision and merges nothing.** Which asset survives, and what happens to the
+             *     other's rights and references, is not something this endpoint can decide — see the module docs.
+             */
+            state: string;
+        };
         /**
          * @description What a caller asks for.
          *
@@ -3755,6 +3850,17 @@ export interface components {
             /** Format: int32 */
             max_downloads?: number | null;
             revoked: boolean;
+        };
+        /** @description One side of a candidate pair, with enough to look at it. */
+        Side: {
+            /** Format: uuid */
+            asset_id: string;
+            /** Format: int64 */
+            bytes: number;
+            filename: string;
+            mime: string;
+            /** @description Absent when nothing has rendered a thumbnail, rather than a link that 404s. */
+            thumbnail_url?: string | null;
         };
         /** @description One object a run would leave alone. */
         SkipView: {
@@ -6264,6 +6370,26 @@ export interface operations {
             };
         };
     };
+    colours: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Colour buckets, most common first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ColourBucket"][];
+                };
+            };
+        };
+    };
     remove: {
         parameters: {
             query?: never;
@@ -6497,6 +6623,66 @@ export interface operations {
             };
             /** @description The credential holds no read scope */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Open pairs, most alike first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CandidateView"][];
+                };
+            };
+        };
+    };
+    resolve: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResolveBody"];
+            };
+        };
+        responses: {
+            /** @description Recorded */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such open pair, or one you cannot see both sides of */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not a verdict */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

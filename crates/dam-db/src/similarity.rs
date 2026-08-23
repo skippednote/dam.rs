@@ -130,17 +130,50 @@ pub async fn record_colours(
 /// Returns the *closer* of the two hash distances per row, matching
 /// `dam_media::similarity::Hashes::distance` — the two algorithms fail on different transformations, so a pair
 /// is worth surfacing when either says the pictures are alike.
+///
+/// **Assets sharing a content hash are excluded**, and that is not an optimisation. 0003 is explicit: "exact
+/// duplicates are free — identical BLAKE3 means one object, caught at ingest. This table is for NEAR
+/// duplicates." Two asset rows can legitimately share a content hash — the same file uploaded twice, into two
+/// collections, by two people — and a perceptual hash tells a reviewer nothing they could not get from the
+/// hash they already have. Running this over a real library made the point: 33 of 84 pairs, nearly half the
+/// queue, were byte-identical, which is exactly the noise that makes a review queue go unread.
+///
+/// **A collapsed hash is excluded from the comparison**, on both sides. The same run turned up a 932-byte test
+/// pattern paired with an MP4 at distance 0: both had `dhash = 0`, because neither picture has any
+/// pixel-to-pixel variation for the gradient hash to record, and `least` then reported them identical while
+/// the DCT hashes were correctly saying otherwise.
+///
+/// That is only half the defence. The other half is upstream: an image with too little tonal variation gets no
+/// hash stored at all, so it is absent from this table and cannot be found or find anything. It has to work
+/// that way, because the DCT hash *cannot* be detected as degenerate from its bits — see
+/// `dam_media::similarity::MIN_LUMA_DEVIATION`.
+///
+/// `IS DISTINCT FROM` rather than `<>`, and the difference is not stylistic: the subquery is NULL when
+/// `asset_id` names no row, and `content_hash <> NULL` is NULL — so a plain comparison excluded *everything*
+/// and the function silently returned nothing. A test that probes with an id not in `assets` caught it.
 pub async fn near(
     conn: &mut sqlx::PgConnection,
     asset_id: Uuid,
     hashes: Hashes,
     threshold: u32,
 ) -> Result<Vec<(Uuid, i16)>, Error> {
-    let rows: Vec<(Uuid, i32)> = sqlx::query_as(
+    // A degenerate hash is excluded from the comparison on *both* sides, mirroring
+    // `dam_media::similarity::Hashes::distance`. `NULL` for an unusable hash, so `least` ignores it — and a
+    // row where neither hash is usable yields `NULL` and fails the threshold, which is what drops it.
+    //
+    // A collapsed hash — all zeroes or all ones — is excluded from the comparison on both sides, which
+    // mirrors `dam_media::similarity::Hashes::distance`. `NULL` for an unusable one, so `least` ignores it; a
+    // row where neither is usable yields `NULL`, fails the threshold, and drops out.
+    //
+    // `$5` and `$6` say whether the *probe's* hashes are usable. Passed in rather than recomputed in SQL
+    // because the caller already knows, and two implementations of one rule is how they drift apart.
+    let rows: Vec<(Uuid, Option<i32>)> = sqlx::query_as(
         "SELECT p.asset_id, \
                 least( \
-                  bit_count((p.phash # $2)::bit(64)), \
-                  bit_count((p.dhash # $3)::bit(64)) \
+                  CASE WHEN $5 AND bit_count(p.phash::bit(64)) NOT IN (0, 64) \
+                       THEN bit_count((p.phash # $2)::bit(64)) END, \
+                  CASE WHEN $6 AND bit_count(p.dhash::bit(64)) NOT IN (0, 64) \
+                       THEN bit_count((p.dhash # $3)::bit(64)) END \
                 )::int AS distance \
          FROM asset_phashes p \
          JOIN assets a ON a.id = p.asset_id \
@@ -148,9 +181,12 @@ pub async fn near(
            AND a.deleted_at IS NULL \
            AND a.is_current \
            AND a.attached_to IS NULL \
+           AND a.content_hash IS DISTINCT FROM (SELECT content_hash FROM assets WHERE id = $1) \
            AND least( \
-                 bit_count((p.phash # $2)::bit(64)), \
-                 bit_count((p.dhash # $3)::bit(64)) \
+                 CASE WHEN $5 AND bit_count(p.phash::bit(64)) NOT IN (0, 64) \
+                      THEN bit_count((p.phash # $2)::bit(64)) END, \
+                 CASE WHEN $6 AND bit_count(p.dhash::bit(64)) NOT IN (0, 64) \
+                      THEN bit_count((p.dhash # $3)::bit(64)) END \
                ) <= $4 \
          ORDER BY distance, p.asset_id",
     )
@@ -158,12 +194,14 @@ pub async fn near(
     .bind(signed(hashes.phash))
     .bind(signed(hashes.dhash))
     .bind(i32::try_from(threshold).unwrap_or(i32::MAX))
+    .bind(dam_media::similarity::discriminative(hashes.phash))
+    .bind(dam_media::similarity::discriminative(hashes.dhash))
     .fetch_all(&mut *conn)
     .await?;
 
     Ok(rows
         .into_iter()
-        .map(|(id, distance)| (id, i16::try_from(distance).unwrap_or(i16::MAX)))
+        .filter_map(|(id, distance)| Some((id, i16::try_from(distance?).unwrap_or(i16::MAX))))
         .collect())
 }
 
