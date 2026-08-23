@@ -80,6 +80,9 @@
 		<a class="rounded-md px-2.5 py-1 text-muted hover:text-fg" href={resolve('/settings/ai')}>
 			AI models
 		</a>
+		<a class="rounded-md px-2.5 py-1 text-muted hover:text-fg" href={resolve('/settings/limits')}>
+			Limits
+		</a>
 	</nav>
 
 	<form class="space-y-4" onsubmit={connect}>

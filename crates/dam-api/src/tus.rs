@@ -208,6 +208,49 @@ async fn create(
         return Err(Refusal::TooLarge);
     }
 
+    // The tenant's caps, checked here for exactly the reason above (G19). Refusing at finalise would be a
+    // correct answer given far too late: the worker runs from a queue, so the client would have uploaded the
+    // whole file and be waiting on a job that was always going to refuse it.
+    //
+    // Levels rather than flows, so the numbers come from the metering pass rather than from a counter this
+    // request increments — see `dam_db::quotas::observe`. Which means the check is one indexed read and is
+    // slightly behind: a tenant crosses a cap and keeps uploading until the next pass. That is the same
+    // bounded overshoot `quotas` documents for AI spend, and the alternative — recounting the library on the
+    // path of every upload — is worse by a wide margin.
+    //
+    // A soft cap warns and proceeds, which is the point of having two enforcement modes: a hard cap on ingest
+    // loses a customer's work, so it is a choice an operator makes deliberately per tenant.
+    {
+        let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
+        let period = dam_db::quotas::month_start(chrono::Utc::now());
+        for key in [dam_db::quotas::STORAGE_BYTES, dam_db::quotas::ASSET_COUNT] {
+            let verdict =
+                dam_db::quotas::check(conn.executor(), caller.tenant_id, key, period).await?;
+            if !verdict.allowed() {
+                conn.rollback().await?;
+                tracing::warn!(
+                    tenant = %caller.tenant_id,
+                    quota = key,
+                    ?verdict,
+                    "refusing an upload over a hard cap",
+                );
+                return Err(Refusal::OverQuota);
+            }
+            if let dam_db::quotas::Verdict::Warned { used, limit } = verdict {
+                // Logged rather than returned: a TUS response carries no body, and a warning that stopped the
+                // upload would be a hard cap by another name.
+                tracing::info!(
+                    tenant = %caller.tenant_id,
+                    quota = key,
+                    used,
+                    limit,
+                    "a tenant is past its warning line",
+                );
+            }
+        }
+        conn.commit().await?;
+    }
+
     let metadata = Metadata::parse(header_str(&headers, "upload-metadata").unwrap_or_default());
 
     // 122 bits of randomness, hex-encoded. Unguessable on purpose: an id is a bearer token for the
@@ -593,6 +636,12 @@ enum Refusal {
     Forbidden,
     NotFound,
     TooLarge,
+    /// The tenant is over a hard storage or asset cap (G19).
+    ///
+    /// **507, not 413.** The distinction is one a client can act on: `TooLarge` means send a smaller file, and
+    /// this means nothing they send will work until somebody raises the cap. Collapsing them would have an
+    /// integration retrying with progressively smaller files forever.
+    OverQuota,
     UnsupportedMediaType,
     Internal,
 }
@@ -605,6 +654,7 @@ impl IntoResponse for Refusal {
             Self::Forbidden => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            Self::OverQuota => StatusCode::INSUFFICIENT_STORAGE,
             Self::UnsupportedMediaType => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         };

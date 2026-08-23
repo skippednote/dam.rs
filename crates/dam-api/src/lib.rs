@@ -37,6 +37,7 @@ pub mod openapi;
 pub mod orders;
 pub mod portals;
 pub mod proofing;
+pub mod quotas;
 pub mod references;
 pub mod schema;
 pub mod search;

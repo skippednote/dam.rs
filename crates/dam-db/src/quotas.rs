@@ -37,6 +37,25 @@ pub const MICRO: i64 = 1_000_000;
 /// The quota keys this module understands. The column's CHECK holds the full list; these are the ones with a
 /// reader.
 pub const AI_SPEND: &str = "ai_spend_cents_month";
+/// Bytes stored, across every class. A **level**, not a flow — see [`observe`].
+pub const STORAGE_BYTES: &str = "storage_bytes";
+/// Current assets in the library. A level.
+pub const ASSET_COUNT: &str = "asset_count";
+/// Retrieval spend for the month, in cents. A flow, charged when a restore is requested.
+pub const RESTORE_SPEND: &str = "restore_spend_cents_month";
+
+/// Whether a key counts a level or a flow.
+///
+/// The distinction is the whole reason [`observe`] exists beside [`charge`], and getting it wrong is not subtle:
+/// a level fed through `charge` accumulates every metering pass, so a library holding a steady terabyte would
+/// report a terabyte more every day until it tripped a cap that was never exceeded.
+#[must_use]
+pub const fn is_level(quota_key: &str) -> bool {
+    matches!(
+        quota_key.as_bytes(),
+        b"storage_bytes" | b"asset_count" | b"seats"
+    )
+}
 
 /// What a quota does when it is reached.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -225,36 +244,180 @@ pub async fn charge(
         return Ok(Verdict::Allowed);
     };
     let verdict = verdict(&quota, used);
-    match verdict {
+    stamp(conn, tenant_id, quota_key, period_start, verdict).await?;
+    Ok(verdict)
+}
+
+/// Records a measured **level**, replacing whatever was there.
+///
+/// The counterpart to [`charge`], and the difference is not cosmetic. `charge` accumulates, which is right for a
+/// flow: cents spent, bytes served, restores requested — things that happen and add up over a period. A level is
+/// a *measurement* of how much exists right now: bytes stored, assets held, seats occupied. Feeding one through
+/// `charge` would add the whole library to the counter on every metering pass, so a tenant holding a steady
+/// terabyte would trip a two-terabyte cap on the second day without having stored anything more.
+///
+/// So this sets rather than adds, and it deliberately does not touch `spend_remainder_micro`: a level has no
+/// sub-unit remainder to carry, because there is no stream of small charges — there is one number, remeasured.
+///
+/// `period_start` is still the month, so a level has the same shape as a flow in the table and one read answers
+/// both. What it means is "the level as last measured in this period" rather than "accumulated during it".
+///
+/// The thresholds are stamped the same way `charge` stamps them, and for the same reason: "when did this start"
+/// is the question, so neither timestamp moves once set.
+///
+/// **The stamp can lag a level by one measurement, and that is what the number means.** [`check`] is a read on
+/// the request path — its own docs promise one indexed read of each table — so it deliberately does not write.
+/// So a cap lowered below a tenant's current level refuses work immediately and records *when* only on the next
+/// pass. For a level that is not a gap in the bookkeeping: nothing else measures, so "when did this start" can
+/// only ever mean "when did a measurement first show it". Observed on a live tenant — a cap set below 183 assets
+/// refused the very next upload with a 507 while `exceeded_at` stayed null until the metering pass ran.
+pub async fn observe(
+    conn: &mut sqlx::PgConnection,
+    tenant_id: Uuid,
+    quota_key: &str,
+    period_start: NaiveDate,
+    level: i64,
+) -> Result<Verdict, Error> {
+    // Refused rather than silently misapplied. A caller reaching here with a flow key has confused the two
+    // models, and the failure mode of guessing — a counter that is reset to one call's worth every pass — is a
+    // cap that never fires.
+    if !is_level(quota_key) {
+        return Err(Error::Inconsistent(format!(
+            "{quota_key} counts a flow; use charge rather than observe"
+        )));
+    }
+    let used = sqlx::query_scalar::<_, i64>(
+        "INSERT INTO dam_global.tenant_spend
+                (tenant_id, quota_key, period_start, used_value)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (tenant_id, quota_key, period_start) DO UPDATE
+            SET used_value = excluded.used_value, updated_at = now()
+         RETURNING used_value",
+    )
+    .bind(tenant_id)
+    .bind(quota_key)
+    .bind(period_start)
+    .bind(level.max(0))
+    .fetch_one(&mut *conn)
+    .await?;
+
+    let Some(quota) = quota(conn, tenant_id, quota_key).await? else {
+        return Ok(Verdict::Allowed);
+    };
+    let verdict = verdict(&quota, used);
+    stamp(conn, tenant_id, quota_key, period_start, verdict).await?;
+    Ok(verdict)
+}
+
+/// Stamps `warned_at` and `exceeded_at` the first time each threshold is crossed.
+///
+/// Shared by [`charge`] and [`observe`] so the two cannot disagree about when a tenant was first told. Neither
+/// timestamp moves once set: the question is "when did this start", and a value that advanced with every write
+/// would answer "when did we last look".
+async fn stamp(
+    conn: &mut sqlx::PgConnection,
+    tenant_id: Uuid,
+    quota_key: &str,
+    period_start: NaiveDate,
+    verdict: Verdict,
+) -> Result<(), Error> {
+    let sql = match verdict {
+        Verdict::Allowed => return Ok(()),
         Verdict::Warned { .. } => {
-            sqlx::query(
-                "UPDATE dam_global.tenant_spend SET warned_at = now()
-                  WHERE tenant_id = $1 AND quota_key = $2 AND period_start = $3
-                    AND warned_at IS NULL",
-            )
-            .bind(tenant_id)
-            .bind(quota_key)
-            .bind(period_start)
-            .execute(&mut *conn)
-            .await?;
+            "UPDATE dam_global.tenant_spend SET warned_at = now()
+              WHERE tenant_id = $1 AND quota_key = $2 AND period_start = $3
+                AND warned_at IS NULL"
         }
         Verdict::Refused { .. } => {
-            sqlx::query(
-                "UPDATE dam_global.tenant_spend
-                    SET exceeded_at = now(),
-                        warned_at = COALESCE(warned_at, now())
-                  WHERE tenant_id = $1 AND quota_key = $2 AND period_start = $3
-                    AND exceeded_at IS NULL",
-            )
-            .bind(tenant_id)
-            .bind(quota_key)
-            .bind(period_start)
-            .execute(&mut *conn)
-            .await?;
+            "UPDATE dam_global.tenant_spend
+                SET exceeded_at = now(), warned_at = COALESCE(warned_at, now())
+              WHERE tenant_id = $1 AND quota_key = $2 AND period_start = $3
+                AND exceeded_at IS NULL"
         }
-        Verdict::Allowed => {}
-    }
-    Ok(verdict)
+    };
+    sqlx::query(sql)
+        .bind(tenant_id)
+        .bind(quota_key)
+        .bind(period_start)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+/// Every quota configured for a tenant, with where it stands.
+///
+/// One read of each table rather than one pair per key: a settings screen draws all of them, and six round trips
+/// for six rows is the shape that makes a page feel slow for no reason.
+///
+/// Includes only *configured* quotas. A key with no row is not a cap of zero — see [`check`] — so listing it
+/// with a limit of nothing would invite somebody to read an absent cap as an exhausted one.
+pub async fn standing(
+    conn: &mut sqlx::PgConnection,
+    tenant_id: Uuid,
+    period_start: NaiveDate,
+) -> Result<Vec<Standing>, Error> {
+    let rows = sqlx::query_as::<_, StandingRow>(
+        "SELECT q.quota_key, q.limit_value, q.warn_at_fraction, q.enforcement,
+                coalesce(s.used_value, 0) AS used_value,
+                s.warned_at, s.exceeded_at
+           FROM dam_global.tenant_quotas q
+           LEFT JOIN dam_global.tenant_spend s
+                  ON s.tenant_id = q.tenant_id AND s.quota_key = q.quota_key
+                 AND s.period_start = $2
+          WHERE q.tenant_id = $1
+          ORDER BY q.quota_key",
+    )
+    .bind(tenant_id)
+    .bind(period_start)
+    .fetch_all(&mut *conn)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let quota = Quota {
+                limit_value: row.limit_value,
+                warn_at_fraction: row.warn_at_fraction,
+                enforcement: Enforcement::parse(&row.enforcement),
+            };
+            Standing {
+                verdict: verdict(&quota, row.used_value),
+                is_level: is_level(&row.quota_key),
+                quota_key: row.quota_key,
+                quota,
+                used: row.used_value,
+                warned_at: row.warned_at,
+                exceeded_at: row.exceeded_at,
+            }
+        })
+        .collect())
+}
+
+/// One quota and where the tenant stands against it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Standing {
+    pub quota_key: String,
+    pub quota: Quota,
+    pub used: i64,
+    pub verdict: Verdict,
+    /// Whether `used` is a measurement of what exists or a total of what happened. A screen has to say which:
+    /// "1.2 TB stored" and "1.2 TB served this month" are the same number meaning very different things.
+    pub is_level: bool,
+    /// When the tenant first crossed the warning line in this period, and when they first went over. Neither
+    /// moves once set, so "we were not told" is answerable.
+    pub warned_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub exceeded_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(sqlx::FromRow)]
+struct StandingRow {
+    quota_key: String,
+    limit_value: i64,
+    warn_at_fraction: f32,
+    enforcement: String,
+    used_value: i64,
+    warned_at: Option<chrono::DateTime<chrono::Utc>>,
+    exceeded_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Sets or replaces a cap.

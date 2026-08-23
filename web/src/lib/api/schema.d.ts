@@ -1595,6 +1595,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/quotas": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/restores/{id}/approve": {
         parameters: {
             query?: never;
@@ -4104,6 +4120,50 @@ export interface components {
              *     finish.
              */
             suggestion?: string | null;
+        };
+        /** @description One cap and where the tenant stands against it. */
+        QuotaView: {
+            /**
+             * @description `soft` or `hard`. A soft cap warns and keeps serving; that difference is the whole reason enforcement is
+             *     per quota rather than per tenant — a hard cap on ingest loses a customer's work.
+             */
+            enforcement: string;
+            /** Format: date-time */
+            exceeded_at?: string | null;
+            /**
+             * @description Whether `used` measures what exists or totals what happened this month. The same number means very
+             *     different things, and a screen that did not say which would be misleading about the more alarming one.
+             */
+            is_level: boolean;
+            /** Format: int64 */
+            limit_value: number;
+            /**
+             * @description `storage_bytes`, `asset_count`, `egress_bytes_month`, `ai_spend_cents_month`,
+             *     `restore_spend_cents_month`, `api_requests_minute` or `seats`.
+             */
+            quota_key: string;
+            /** @description `allowed`, `warned` or `refused`, computed from the numbers rather than stored. */
+            standing: string;
+            /** Format: int64 */
+            used: number;
+            /**
+             * Format: float
+             * @description The fraction at which a warning fires. Sent so a screen can draw the line rather than inventing 80%.
+             */
+            warn_at_fraction: number;
+            /** Format: date-time */
+            warned_at?: string | null;
+        };
+        /** @description Every configured cap, and the month they are counted in. */
+        QuotasView: {
+            /**
+             * Format: date
+             * @description The first day of the period the flow quotas are counted in. A calendar month in UTC, because an invoice
+             *     is a calendar month — a cap that did not line up with the bill it protects would be explaining itself
+             *     forever.
+             */
+            period_start: string;
+            quotas: components["schemas"]["QuotaView"][];
         };
         /** @description One tier's price and wait. */
         QuoteOption: {
@@ -8602,6 +8662,32 @@ export interface operations {
             };
             /** @description Not a verdict */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuotasView"];
+                };
+            };
+            /** @description A cap is a commercial fact about the account; reading it needs Manage */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

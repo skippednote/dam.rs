@@ -1675,3 +1675,25 @@ export async function assetReferences(assetId: string): Promise<ReferenceImpact>
 export async function connectorReferences(id: string, limit = 100): Promise<AssetReference[]> {
 	return request<AssetReference[]>(`/connectors/${id}/refs?limit=${limit}`);
 }
+
+// ─── caps (G19) ─────────────────────────────────────────────────────────────
+
+export type Quota = components['schemas']['QuotaView'];
+export type Quotas = components['schemas']['QuotasView'];
+
+/**
+ * Every configured cap and where this tenant stands against it.
+ *
+ * Only *configured* caps come back. An absent one is not a cap of zero — the server allows work against a key
+ * with no row — so listing them all at zero would contradict the enforcement.
+ *
+ * `is_level` is the field a screen must not ignore: "1.2 TB" means what exists for `storage_bytes` and what
+ * happened this month for a flow, and the same bar drawn for both would be misleading about the more alarming
+ * one.
+ *
+ * There is deliberately no setter. A tenant raising its own limit is not a feature; that is an operator's
+ * `damctl` command.
+ */
+export async function loadQuotas(): Promise<Quotas> {
+	return request<Quotas>('/quotas');
+}

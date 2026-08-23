@@ -433,3 +433,292 @@ async fn the_remainder_column_refuses_a_whole_unit() {
         "{error}"
     );
 }
+
+// ─── levels, as against flows (G19) ─────────────────────────────────────────
+//
+// `charge` accumulates, which is right for a flow: cents spent, bytes served. A **level** is a measurement of
+// what exists right now — bytes stored, assets held — and the metering pass remeasures it daily. Feeding one
+// through `charge` would add the whole library to the counter every pass, so a tenant holding a steady terabyte
+// would trip a two-terabyte cap on the second day without having stored anything more.
+//
+// That is not a subtle failure and it is not one a reader would spot in a call site, so `observe` refuses a flow
+// key outright rather than trusting the caller to have picked the right function.
+
+#[tokio::test]
+async fn a_level_is_replaced_by_each_measurement_rather_than_accumulated() {
+    let (_pg, pool, tenant) = db().await;
+    quotas::set(
+        c!(pool),
+        tenant,
+        quotas::STORAGE_BYTES,
+        &cap(1_000, Enforcement::Hard),
+    )
+    .await
+    .expect("cap");
+
+    // Three passes measuring the same library. A steady 400 must stay 400, not become 1,200.
+    for _ in 0..3 {
+        let verdict = quotas::observe(c!(pool), tenant, quotas::STORAGE_BYTES, today(), 400)
+            .await
+            .expect("observe");
+        assert_eq!(verdict, Verdict::Allowed, "a steady level must not creep");
+    }
+    assert_eq!(
+        quotas::used(c!(pool), tenant, quotas::STORAGE_BYTES, today())
+            .await
+            .expect("used"),
+        400,
+    );
+
+    // And it goes *down* when the library does, which a counter could never do. An asset deleted has to release
+    // the cap it was holding, or a tenant who tidied up would still be refused.
+    quotas::observe(c!(pool), tenant, quotas::STORAGE_BYTES, today(), 120)
+        .await
+        .expect("observe");
+    assert_eq!(
+        quotas::used(c!(pool), tenant, quotas::STORAGE_BYTES, today())
+            .await
+            .expect("used"),
+        120,
+    );
+}
+
+#[tokio::test]
+async fn observing_a_flow_is_refused_rather_than_silently_wrong() {
+    // The failure mode of guessing is a counter reset to one call's worth on every pass — a cap that never
+    // fires. Refusing by name is the only reading that cannot be exploited by a careless call site.
+    let (_pg, pool, tenant) = db().await;
+    let refused = quotas::observe(c!(pool), tenant, quotas::AI_SPEND, today(), 500).await;
+    match refused {
+        Err(dam_db::Error::Inconsistent(message)) => {
+            assert!(message.contains("counts a flow"), "{message}");
+            assert!(message.contains("use charge"), "{message}");
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    // And nothing was written, so a mistaken call leaves no half-state behind.
+    assert_eq!(
+        quotas::used(c!(pool), tenant, quotas::AI_SPEND, today())
+            .await
+            .expect("used"),
+        0,
+    );
+}
+
+#[tokio::test]
+async fn a_level_crossing_a_cap_stamps_the_same_way_a_charge_does() {
+    // `charge` and `observe` share one `stamp`, so the two cannot disagree about when a tenant was first told.
+    let (_pg, pool, tenant) = db().await;
+    quotas::set(
+        c!(pool),
+        tenant,
+        quotas::ASSET_COUNT,
+        &cap(100, Enforcement::Hard),
+    )
+    .await
+    .expect("cap");
+
+    assert_eq!(
+        quotas::observe(c!(pool), tenant, quotas::ASSET_COUNT, today(), 80)
+            .await
+            .expect("observe"),
+        Verdict::Warned {
+            used: 80,
+            limit: 100
+        },
+        "the warning line is 80% and it is crossed by a measurement, not by a charge",
+    );
+    let (warned, exceeded): (
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<chrono::DateTime<chrono::Utc>>,
+    ) = sqlx::query_as(
+        "SELECT warned_at, exceeded_at FROM dam_global.tenant_spend \
+             WHERE tenant_id = $1 AND quota_key = $2 AND period_start = $3",
+    )
+    .bind(tenant)
+    .bind(quotas::ASSET_COUNT)
+    .bind(today())
+    .fetch_one(&pool)
+    .await
+    .expect("row");
+    let first_warning = warned.expect("warned");
+    assert!(exceeded.is_none(), "warned is not exceeded");
+
+    assert_eq!(
+        quotas::observe(c!(pool), tenant, quotas::ASSET_COUNT, today(), 100)
+            .await
+            .expect("observe"),
+        Verdict::Refused {
+            used: 100,
+            limit: 100
+        },
+    );
+    let (warned, exceeded): (
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<chrono::DateTime<chrono::Utc>>,
+    ) = sqlx::query_as(
+        "SELECT warned_at, exceeded_at FROM dam_global.tenant_spend \
+             WHERE tenant_id = $1 AND quota_key = $2 AND period_start = $3",
+    )
+    .bind(tenant)
+    .bind(quotas::ASSET_COUNT)
+    .bind(today())
+    .fetch_one(&pool)
+    .await
+    .expect("row");
+    assert_eq!(
+        warned,
+        Some(first_warning),
+        "the first warning's stamp does not move when the cap is later exceeded",
+    );
+    assert!(exceeded.is_some());
+
+    // And dropping back under does *not* clear the stamps. They record that it happened, which is the whole
+    // point — a tenant who deleted their way back under the line was still over it.
+    quotas::observe(c!(pool), tenant, quotas::ASSET_COUNT, today(), 10)
+        .await
+        .expect("observe");
+    let (warned, exceeded): (
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<chrono::DateTime<chrono::Utc>>,
+    ) = sqlx::query_as(
+        "SELECT warned_at, exceeded_at FROM dam_global.tenant_spend \
+             WHERE tenant_id = $1 AND quota_key = $2 AND period_start = $3",
+    )
+    .bind(tenant)
+    .bind(quotas::ASSET_COUNT)
+    .bind(today())
+    .fetch_one(&pool)
+    .await
+    .expect("row");
+    assert_eq!(warned, Some(first_warning));
+    assert!(exceeded.is_some(), "'we were not told' stays answerable");
+    // The *verdict* is what changes, because that is what gates work.
+    assert_eq!(
+        quotas::check(c!(pool), tenant, quotas::ASSET_COUNT, today())
+            .await
+            .expect("check"),
+        Verdict::Allowed,
+    );
+}
+
+#[tokio::test]
+async fn the_standing_report_says_which_numbers_are_levels() {
+    // "1.2 TB" is what exists if the key is `storage_bytes` and what happened if it is a monthly flow. A screen
+    // that could not tell them apart would be misleading about the more alarming one.
+    let (_pg, pool, tenant) = db().await;
+    quotas::set(
+        c!(pool),
+        tenant,
+        quotas::STORAGE_BYTES,
+        &cap(1_000, Enforcement::Soft),
+    )
+    .await
+    .expect("cap");
+    quotas::set(
+        c!(pool),
+        tenant,
+        quotas::AI_SPEND,
+        &cap(500, Enforcement::Hard),
+    )
+    .await
+    .expect("cap");
+    quotas::observe(c!(pool), tenant, quotas::STORAGE_BYTES, today(), 900)
+        .await
+        .expect("observe");
+    quotas::charge(
+        c!(pool),
+        tenant,
+        quotas::AI_SPEND,
+        today(),
+        600 * quotas::MICRO,
+    )
+    .await
+    .expect("charge");
+
+    let standing = quotas::standing(c!(pool), tenant, today())
+        .await
+        .expect("standing");
+    assert_eq!(standing.len(), 2, "{standing:?}");
+
+    let spend = standing
+        .iter()
+        .find(|row| row.quota_key == quotas::AI_SPEND)
+        .expect("ai spend");
+    assert!(!spend.is_level, "cents spent this month is a flow");
+    assert_eq!(spend.used, 600);
+    assert_eq!(
+        spend.verdict,
+        Verdict::Refused {
+            used: 600,
+            limit: 500
+        }
+    );
+    assert!(spend.exceeded_at.is_some());
+
+    let storage = standing
+        .iter()
+        .find(|row| row.quota_key == quotas::STORAGE_BYTES)
+        .expect("storage");
+    assert!(storage.is_level, "bytes stored is a level");
+    assert_eq!(storage.used, 900);
+    // A soft cap at 90% of its limit is a warning and still allowed — the customer keeps working.
+    assert_eq!(
+        storage.verdict,
+        Verdict::Warned {
+            used: 900,
+            limit: 1_000
+        }
+    );
+
+    // A configured cap the tenant has never touched still appears, with zero used — an operator needs to see
+    // the cap exists. What must *not* appear is a key with no cap at all.
+    quotas::set(
+        c!(pool),
+        tenant,
+        quotas::RESTORE_SPEND,
+        &cap(50, Enforcement::Soft),
+    )
+    .await
+    .expect("cap");
+    let standing = quotas::standing(c!(pool), tenant, today())
+        .await
+        .expect("standing");
+    assert_eq!(standing.len(), 3);
+    let restore = standing
+        .iter()
+        .find(|row| row.quota_key == quotas::RESTORE_SPEND)
+        .expect("restore");
+    assert_eq!(restore.used, 0);
+    assert_eq!(restore.verdict, Verdict::Allowed);
+    assert!(restore.warned_at.is_none());
+}
+
+#[tokio::test]
+async fn an_unconfigured_key_is_absent_rather_than_a_cap_of_zero() {
+    // Listing one with a limit of nothing would read as exhausted. `check` already says an absent cap is not a
+    // cap of zero; the report has to agree, or a screen contradicts the enforcement.
+    let (_pg, pool, tenant) = db().await;
+    assert!(
+        quotas::standing(c!(pool), tenant, today())
+            .await
+            .expect("standing")
+            .is_empty(),
+    );
+    // Even after something has been measured against it: a level with no cap is a number nobody capped.
+    quotas::observe(c!(pool), tenant, quotas::STORAGE_BYTES, today(), 5_000)
+        .await
+        .expect("observe");
+    assert!(
+        quotas::standing(c!(pool), tenant, today())
+            .await
+            .expect("standing")
+            .is_empty(),
+    );
+    assert_eq!(
+        quotas::check(c!(pool), tenant, quotas::STORAGE_BYTES, today())
+            .await
+            .expect("check"),
+        Verdict::Allowed,
+    );
+}

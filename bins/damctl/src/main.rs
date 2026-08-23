@@ -34,6 +34,33 @@ enum Command {
         #[arg(long)]
         name: Option<String>,
     },
+    /// Set or clear a tenant's cap (G19).
+    ///
+    /// Here rather than in the API, deliberately: a tenant raising its own limit is not a feature, and putting
+    /// it behind `Manage` would make it exactly that. Reading where a tenant stands *is* an API call
+    /// (`GET /quotas`), because the customer needs to see it coming.
+    Quota {
+        #[arg(long)]
+        tenant: String,
+        /// `storage_bytes`, `asset_count`, `egress_bytes_month`, `ai_spend_cents_month`,
+        /// `restore_spend_cents_month`, `api_requests_minute` or `seats`.
+        #[arg(long)]
+        key: String,
+        /// The cap. Omit to print the tenant's caps instead of setting one.
+        #[arg(long)]
+        limit: Option<i64>,
+        /// Warn at this fraction of the limit. 0.8 gives a customer time to react rather than discovering the
+        /// cap by hitting it.
+        #[arg(long, default_value_t = 0.8)]
+        warn_at: f32,
+        /// Refuse new work at the limit instead of warning and continuing.
+        ///
+        /// Off by default, and that default is the safe one: a hard cap on ingest loses a customer's work,
+        /// which is why the schema makes enforcement per-quota rather than per-tenant.
+        #[arg(long)]
+        hard: bool,
+    },
+
     /// Print the daily usage rollup for one tenant, or for the whole fleet (M6c).
     ///
     /// Operator-facing, and there is deliberately no API route onto this. `tenant_usage_daily` is not scoped
@@ -549,6 +576,71 @@ async fn main() -> anyhow::Result<()> {
                     }
                     Some(_) => {}
                 }
+            }
+        }
+
+        Command::Quota {
+            tenant,
+            key,
+            limit,
+            warn_at,
+            hard,
+        } => {
+            let pool = connect(cfg.database.url.expose(), &cfg).await?;
+            let tenant_id: uuid::Uuid =
+                sqlx::query_scalar("SELECT id FROM dam_global.tenants WHERE slug = $1")
+                    .bind(&tenant)
+                    .fetch_optional(&pool)
+                    .await
+                    .context("looking up the tenant")?
+                    .ok_or_else(|| anyhow::anyhow!("no tenant {tenant}"))?;
+            let mut conn = pool.acquire().await.context("acquiring a connection")?;
+            let period = dam_db::quotas::month_start(chrono::Utc::now());
+
+            if let Some(limit_value) = limit {
+                dam_db::quotas::set(
+                    &mut conn,
+                    tenant_id,
+                    &key,
+                    &dam_db::quotas::Quota {
+                        limit_value,
+                        warn_at_fraction: warn_at,
+                        enforcement: if hard {
+                            dam_db::quotas::Enforcement::Hard
+                        } else {
+                            dam_db::quotas::Enforcement::Soft
+                        },
+                    },
+                )
+                .await
+                .with_context(|| format!("setting {key} for {tenant}"))?;
+                tracing::info!(%tenant, quota = %key, limit_value, hard, "cap set");
+            }
+
+            // Printed either way, so setting one shows what it did rather than being silent.
+            println!("quota	limit	used	standing	enforcement	kind");
+            for row in dam_db::quotas::standing(&mut conn, tenant_id, period)
+                .await
+                .context("reading the caps")?
+            {
+                println!(
+                    "{}	{}	{}	{}	{}	{}",
+                    row.quota_key,
+                    row.quota.limit_value,
+                    row.used,
+                    match row.verdict {
+                        dam_db::quotas::Verdict::Allowed => "ok",
+                        dam_db::quotas::Verdict::Warned { .. } => "WARNED",
+                        dam_db::quotas::Verdict::Refused { .. } => "OVER",
+                    },
+                    match row.quota.enforcement {
+                        dam_db::quotas::Enforcement::Hard => "hard",
+                        dam_db::quotas::Enforcement::Soft => "soft",
+                    },
+                    // Said out loud, because the same number means very different things: a level is what
+                    // exists, a flow is what happened this month.
+                    if row.is_level { "level" } else { "flow" },
+                );
             }
         }
 

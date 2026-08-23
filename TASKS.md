@@ -33,9 +33,9 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, colour | dedup and colour **done** (M4a); the rest needs model files — see M4 below |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | **done** — two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query, the MCP server |
 | **M6** Workflow/proofing, annotations, analytics | **done** — annotations (M6a), proofing (M6b), analytics (M6c) |
-| **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
+| **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | quotas/metering enforcement **done** (G19); import, SCIM/BYOK/audit open |
 
-**Next up, in order:** M3d·5 the Drupal module → Pre-GA (G7 import, G10 SCIM/BYOK/audit, G19 metering enforcement, quotas). M4b (local ONNX models) stays parked on the model-distribution question.
+**Next up, in order:** Pre-GA G7 import → G10 SCIM/BYOK/audit. M3d·5 (the Drupal module) is deferred until there is a Drupal environment to verify against — see its entry. M4b (local ONNX models) stays parked on the model-distribution question.
 M4b (local models) is parked on a distribution decision — see the M4 section.
 
 **`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
@@ -1321,6 +1321,48 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   *Not done here:* render-on-demand. A cache miss is an honest `404` until the render path is wired; what it
   must never do is fall back to a name match. Tenant-defined profiles need a table of their own — see the
   note in `dam_media::profiles`.
+### Pre-GA
+
+- [x] **G19 Quota enforcement.** `tenant_quotas` and `tenant_spend` have been in the schema since global 0002.
+  G20 (AI spend) already read them; every other key had a cap nobody enforced — and M6c is what made them
+  enforceable, because it is the first thing that ever wrote `tenant_usage_daily`.
+
+  **A level is set, not charged, and confusing the two is not a subtle failure.** `charge` accumulates, which is
+  right for a flow: cents spent, bytes served, restores requested. A *level* is a measurement of what exists —
+  bytes stored, assets held, seats occupied — and the metering pass remeasures it daily. Feeding one through
+  `charge` would add the whole library to the counter every pass, so a tenant holding a steady terabyte would
+  trip a two-terabyte cap on the second day without having stored anything more. So `observe` sets rather than
+  adds, it refuses a flow key by name rather than trusting the call site, and a level goes *down* when the
+  library does — which a counter could never do, and which matters because a tenant who tidied up has to be
+  allowed to work again.
+
+  **Refused before a byte moves.** The gate is at TUS session creation, not at finalise: the worker runs from a
+  queue, so refusing there arrives after the client uploaded the whole file and waited on a job that was always
+  going to say no. **507, not 413** — an integration can act on the difference (413 means send a smaller file;
+  507 means nothing you send will work until somebody raises the cap) and collapsed into one status a client
+  retries with progressively smaller files forever.
+
+  **Soft is the default and must not read as an outage.** A hard cap on ingest loses a customer's work, which is
+  why the schema makes enforcement per-quota. A row over a soft cap says the work continues.
+
+  **The stamp can lag a level by one measurement, and that is what the number means.** `check` is a read on the
+  request path, so it deliberately does not write. A cap lowered below a tenant's current level refuses the very
+  next upload while `exceeded_at` stays null until the next pass — observed live. For a level that is not a gap:
+  nothing else measures, so "when did this start" can only mean "when did a measurement first show it".
+
+  Reading a cap needs `Manage` — somebody who can upload should not learn how close the library is to a limit
+  they cannot change — and there is no way to *set* one through the API at all. A tenant raising its own limit is
+  not a feature; that is `damctl quota`. The screen exists because a 507 carries no body: the explanation has to
+  be available before the wall, not at it.
+
+  5 new db cases (14 total), 1 API container, 3 upload-gate cases, 10 browser cases. Verified live: the worker's
+  boot pass measured 183 assets, a cap of 100 refused the next upload with 507, softening it returned 201,
+  raising it returned 201, and forcing a metering pass stamped `exceeded_at`.
+
+- [ ] **G7 Import.** FTP/bulk import (§ Pre-GA).
+
+- [ ] **G10 SCIM, BYOK, audit export.**
+
 ### M3d — the Drupal connector
 
 Five slices. The damrs side first, because the Drupal module is a client of it and a module written against an
@@ -1519,6 +1561,19 @@ API that does not exist yet is a module written twice.
   was already lurking, harmlessly, in the proofing suite's fixture.
 
 - [ ] **M3d·5 The Drupal module.** `integrations/drupal/`, Drupal 11+ only, six submodules (§11.2).
+
+  **Deferred deliberately, and this is the reasoning.** Nothing in this repository can run PHP or a Drupal
+  install, so the module would be the only thing here shipped without being exercised — against an API it would
+  be *asserting* about rather than calling. Every other slice this session was verified by driving the real
+  server, and several of the session's most useful findings came from exactly that: the CORS header the global
+  layer was overwriting, the download count that had always been zero, a stored `op_hash` from a superseded
+  profile definition. A module written against a live Drupal will be a better module than one written against a
+  spec.
+
+  **What the deferral is not blocked on.** The wire formats are proven implementable from their documentation
+  alone: a Python script reimplementing the length-prefixed canonical form and the HMAC — no damrs code in the
+  signing path — produces delivery tokens and browse tokens the running server honours, and every bound refuses
+  correctly. That is the property a PHP module needs, and it holds.
 
 - [ ] **3.x AWS-native features to rely on instead of building.** *Raised 2026-08-18; needs a decision on
   items 1 and 2 because they change architecture.* Every item is AWS-only while D1 says S3-compatible, so

@@ -17,6 +17,16 @@
 //! a level `object_placements` only knows as of now, and backdating it would draw a flat cost curve out of one
 //! number repeated.
 //!
+//! ## It also feeds the quotas, and only the levels
+//!
+//! `storage_bytes` and `asset_count` are what this pass measures, and `dam_db::quotas::observe` is the write
+//! that matches: a level is *set* from a measurement rather than accumulated. Feeding them through `charge`
+//! would add the whole library to the counter every pass, so a tenant holding a steady terabyte would trip a
+//! two-terabyte cap on the second day without having stored anything more.
+//!
+//! Only for today's measurement. Yesterday's row is history — writing it into `tenant_spend` would overwrite
+//! the current standing with a stale number, and the enforcement path reads that row on every upload.
+//!
 //! ## A failure here must not stall the chain
 //!
 //! One tenant's schema being unreadable — mid-provision, mid-restore, briefly locked — is not a reason to stop
@@ -59,6 +69,35 @@ pub async fn roll(
         match measured {
             Ok(totals) => {
                 dam_db::metering::upsert(global, tenant_id, day, &totals).await?;
+
+                // The quota levels, from today's measurement only — see the module docs on why yesterday's
+                // must not be written.
+                if day == today {
+                    let period = dam_db::quotas::month_start(now);
+                    let mut conn = global.acquire().await.map_err(dam_db::Error::from)?;
+                    for (key, level) in [
+                        (dam_db::quotas::STORAGE_BYTES, totals.stored_bytes()),
+                        (dam_db::quotas::ASSET_COUNT, totals.asset_count),
+                    ] {
+                        let verdict =
+                            dam_db::quotas::observe(&mut conn, tenant_id, key, period, level)
+                                .await?;
+                        // Logged at the level the verdict deserves. Nothing here *enforces* — a metering pass
+                        // that refused work would be a cap applied at whatever hour the cron happens to run.
+                        // Enforcement is at the points the quota binds: ingest, restore, delivery.
+                        match verdict {
+                            dam_db::quotas::Verdict::Refused { used, limit } => tracing::warn!(
+                                %tenant_id, quota = key, used, limit,
+                                "a tenant is over a hard cap",
+                            ),
+                            dam_db::quotas::Verdict::Warned { used, limit } => tracing::info!(
+                                %tenant_id, quota = key, used, limit,
+                                "a tenant is past its warning line",
+                            ),
+                            dam_db::quotas::Verdict::Allowed => {}
+                        }
+                    }
+                }
                 rolled.days += 1;
             }
             Err(dam_db::metering::Refusal::LevelUnobservable { .. }) => {

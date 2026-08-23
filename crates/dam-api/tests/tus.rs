@@ -912,3 +912,220 @@ async fn authentication_and_tenancy_hold() {
     // means a future edit that widens that UPDATE cannot silently break the cases above.
     a_revoked_key_stops_working_immediately(&f).await;
 }
+
+// ─── caps, before a byte moves (G19) ────────────────────────────────────────
+
+/// A hard cap refuses the *session*, not the completion.
+///
+/// This is the whole reason the check is here rather than in `finalise`. The worker runs from a queue, so a
+/// refusal there arrives after the client has uploaded the entire file and waited on a job that was always going
+/// to say no. Refusing at creation costs the client one request.
+///
+/// **507, not 413.** The distinction is one an integration can act on: 413 means send a smaller file, 507 means
+/// nothing they send will work until somebody raises the cap. Collapsed into one status, a client retries with
+/// progressively smaller files forever.
+async fn a_hard_cap_refuses_the_session_rather_than_the_completion(f: &Fixture) {
+    let tenant_id: Uuid =
+        sqlx::query_scalar("SELECT id FROM dam_global.tenants WHERE slug = 'acme'")
+            .fetch_one(&f.global)
+            .await
+            .expect("tenant");
+    let period = dam_db::quotas::month_start(chrono::Utc::now());
+    let mut conn = f.global.acquire().await.expect("connection");
+
+    // A cap that has been reached, measured as a level by the metering pass.
+    dam_db::quotas::set(
+        &mut conn,
+        tenant_id,
+        dam_db::quotas::ASSET_COUNT,
+        &dam_db::quotas::Quota {
+            limit_value: 10,
+            warn_at_fraction: 0.8,
+            enforcement: dam_db::quotas::Enforcement::Hard,
+        },
+    )
+    .await
+    .expect("cap");
+    dam_db::quotas::observe(
+        &mut conn,
+        tenant_id,
+        dam_db::quotas::ASSET_COUNT,
+        period,
+        10,
+    )
+    .await
+    .expect("observe");
+
+    // Counted before and after, because earlier cases in this container created sessions of their own — the
+    // property is that a *refused* create adds nothing, not that the table is empty.
+    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM upload_sessions")
+        .fetch_one(&f.tenant)
+        .await
+        .expect("count");
+
+    let response = send(
+        &f.app,
+        Request::post("/uploads")
+            .header(header::AUTHORIZATION, format!("Bearer {}", f.key))
+            .header("Tus-Resumable", TUS_VERSION)
+            .header("Upload-Length", "1024")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::INSUFFICIENT_STORAGE,
+        "over a hard cap, and not a 413 — see the doc comment",
+    );
+
+    // Nothing was written: a refused upload must not leave a session for the reaper to find.
+    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM upload_sessions")
+        .fetch_one(&f.tenant)
+        .await
+        .expect("count");
+    assert_eq!(after, before, "a refused create leaves no session behind");
+
+    // The other tenant is unaffected. A cap is per tenant, and a shared refusal would be the worst kind of
+    // cross-tenant leak — one customer's spending stopping another's work.
+    let response = send(
+        &f.app,
+        Request::post("/uploads")
+            .header(header::AUTHORIZATION, format!("Bearer {}", f.other_key))
+            .header("Tus-Resumable", TUS_VERSION)
+            .header("Upload-Length", "1024")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    // Raising the cap lets the work through immediately — the check is a read, not a latched state.
+    dam_db::quotas::set(
+        &mut conn,
+        tenant_id,
+        dam_db::quotas::ASSET_COUNT,
+        &dam_db::quotas::Quota {
+            limit_value: 1_000,
+            warn_at_fraction: 0.8,
+            enforcement: dam_db::quotas::Enforcement::Hard,
+        },
+    )
+    .await
+    .expect("raise");
+    let response = send(
+        &f.app,
+        Request::post("/uploads")
+            .header(header::AUTHORIZATION, format!("Bearer {}", f.key))
+            .header("Tus-Resumable", TUS_VERSION)
+            .header("Upload-Length", "1024")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+}
+
+/// A soft cap warns and keeps serving, which is the whole reason enforcement is per quota.
+///
+/// A hard cap on ingest loses a customer's work. So `soft` is the default an operator gets unless they ask for
+/// otherwise, and it must not block — the warning goes to a log and the standing report, not to the client. A
+/// TUS response carries no body, so a warning that stopped the upload would be a hard cap by another name.
+async fn a_soft_cap_over_its_limit_still_accepts_the_upload(f: &Fixture) {
+    let tenant_id: Uuid =
+        sqlx::query_scalar("SELECT id FROM dam_global.tenants WHERE slug = 'acme'")
+            .fetch_one(&f.global)
+            .await
+            .expect("tenant");
+    let period = dam_db::quotas::month_start(chrono::Utc::now());
+    let mut conn = f.global.acquire().await.expect("connection");
+
+    dam_db::quotas::set(
+        &mut conn,
+        tenant_id,
+        dam_db::quotas::STORAGE_BYTES,
+        &dam_db::quotas::Quota {
+            limit_value: 100,
+            warn_at_fraction: 0.8,
+            enforcement: dam_db::quotas::Enforcement::Soft,
+        },
+    )
+    .await
+    .expect("cap");
+    dam_db::quotas::observe(
+        &mut conn,
+        tenant_id,
+        dam_db::quotas::STORAGE_BYTES,
+        period,
+        500,
+    )
+    .await
+    .expect("observe");
+
+    let response = send(
+        &f.app,
+        Request::post("/uploads")
+            .header(header::AUTHORIZATION, format!("Bearer {}", f.key))
+            .header("Tus-Resumable", TUS_VERSION)
+            .header("Upload-Length", "1024")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::CREATED,
+        "a soft cap five times over its limit still accepts work",
+    );
+
+    // The crossing was recorded, though, so "we were not told" is answerable.
+    let exceeded: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+        "SELECT exceeded_at FROM dam_global.tenant_spend \
+         WHERE tenant_id = $1 AND quota_key = $2 AND period_start = $3",
+    )
+    .bind(tenant_id)
+    .bind(dam_db::quotas::STORAGE_BYTES)
+    .bind(period)
+    .fetch_one(&f.global)
+    .await
+    .expect("row");
+    assert!(exceeded.is_none(), "a soft cap warns rather than exceeding");
+    let warned: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+        "SELECT warned_at FROM dam_global.tenant_spend \
+         WHERE tenant_id = $1 AND quota_key = $2 AND period_start = $3",
+    )
+    .bind(tenant_id)
+    .bind(dam_db::quotas::STORAGE_BYTES)
+    .bind(period)
+    .fetch_one(&f.global)
+    .await
+    .expect("row");
+    assert!(warned.is_some(), "and it says when it started");
+}
+
+/// A tenant with no cap configured uploads freely.
+///
+/// Absence of a cap is not a cap of zero. Defaulting the other way would stop every tenant nobody has got round
+/// to configuring, which is all of them on day one.
+async fn a_tenant_with_no_caps_is_not_capped(f: &Fixture) {
+    let response = send(
+        &f.app,
+        Request::post("/uploads")
+            .header(header::AUTHORIZATION, format!("Bearer {}", f.other_key))
+            .header("Tus-Resumable", TUS_VERSION)
+            .header("Upload-Length", "1024")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn caps_are_enforced_before_a_byte_moves() {
+    let f = fixture().await;
+    a_tenant_with_no_caps_is_not_capped(&f).await;
+    a_soft_cap_over_its_limit_still_accepts_the_upload(&f).await;
+    // Last, because it leaves a hard cap configured.
+    a_hard_cap_refuses_the_session_rather_than_the_completion(&f).await;
+}
