@@ -76,6 +76,7 @@ async fn main() -> anyhow::Result<()> {
                 Secret::new(cfg.server.url_signing_key.expose().to_owned()),
             ),
             delivery_tenant,
+            delivery_tenant_slug: delivery_slug.clone(),
             // The real thing, here and only here: every test drives a recorded transport instead. A failure to
             // build it is a TLS stack that cannot initialise, which is a reason not to start rather than a
             // surprise on the first enrichment.

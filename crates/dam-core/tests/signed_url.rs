@@ -523,3 +523,103 @@ fn an_unknown_purpose_byte_is_malformed_rather_than_a_default() {
         Err(VerifyError::Malformed)
     );
 }
+
+// ─── two secrets under one key id (M3d·2) ───────────────────────────────────
+//
+// The ordinary case gives each key its own id, so rotation means a new id. A connector cannot work that way: it
+// signs its own URLs and *it* decides when to switch secrets, so during the grace window the same id is in use
+// with two different ones and damrs cannot tell which from the token. Returning only the first match would mean
+// every URL signed with the superseded secret failing — a rotation that takes the site down, which is the
+// outage the grace window exists to prevent.
+
+#[test]
+fn a_token_signed_with_a_superseded_secret_under_the_same_id_still_verifies() {
+    let current = Secret::new("the-new-connector-secret".to_owned());
+    let superseded = Secret::new("the-old-connector-secret".to_owned());
+
+    // What the site is still signing with, mid-rotation.
+    let old_only = Keyring::single("connector:abc", superseded.clone());
+    let token = signed_url::sign(&old_only, &claim()).expect("sign");
+
+    // What damrs verifies with: the current secret first, the superseded one behind it, same id.
+    let both = Keyring::single("connector:abc", current).with_retired("connector:abc", superseded);
+    let verified = signed_url::verify(&both, &token, now()).expect("the old secret still verifies");
+    assert_eq!(verified.asset_id, claim().asset_id);
+    assert_eq!(verified.key_id, "connector:abc");
+}
+
+#[test]
+fn a_token_signed_with_the_current_secret_verifies_too() {
+    // The other half, and it has to be asserted separately: a bug that only ever tried the *last* entry would
+    // pass the case above and fail every URL signed after the site deployed its new secret.
+    let current = Secret::new("the-new-connector-secret".to_owned());
+    let superseded = Secret::new("the-old-connector-secret".to_owned());
+    let new_only = Keyring::single("connector:abc", current.clone());
+    let token = signed_url::sign(&new_only, &claim()).expect("sign");
+
+    let both = Keyring::single("connector:abc", current).with_retired("connector:abc", superseded);
+    assert!(signed_url::verify(&both, &token, now()).is_ok());
+}
+
+#[test]
+fn once_the_window_closes_the_superseded_secret_is_simply_absent() {
+    // Expiry is not modelled here at all, and that is the point: the *keyring* stops carrying the old secret,
+    // so verification fails as a bad signature with no clock involved. `dam_db::connectors` decides when to
+    // stop including it, by comparing `secret_rotated_at` — see that module on why a comparison rather than a
+    // job that clears a column.
+    let superseded = Secret::new("the-old-connector-secret".to_owned());
+    let token =
+        signed_url::sign(&Keyring::single("connector:abc", superseded), &claim()).expect("sign");
+
+    let current_only = Keyring::single(
+        "connector:abc",
+        Secret::new("the-new-connector-secret".to_owned()),
+    );
+    assert_eq!(
+        signed_url::verify(&current_only, &token, now()),
+        Err(VerifyError::BadSignature)
+    );
+}
+
+#[test]
+fn an_unrelated_secret_under_the_same_id_does_not_verify() {
+    // The obvious way to get this wrong: try every secret in the keyring rather than every secret *under that
+    // id*. That would make one connector's secret verify another connector's URLs.
+    let token = signed_url::sign(
+        &Keyring::single("connector:abc", Secret::new("abc-secret".to_owned())),
+        &claim(),
+    )
+    .expect("sign");
+
+    let other = Keyring::single("connector:xyz", Secret::new("xyz-secret".to_owned()))
+        .with_retired("connector:xyz", Secret::new("abc-secret".to_owned()));
+    assert_eq!(
+        signed_url::verify(&other, &token, now()),
+        Err(VerifyError::UnknownKey),
+        "a secret filed under another id must not be tried"
+    );
+}
+
+// ─── reading the key id without verifying ───────────────────────────────────
+
+#[test]
+fn the_key_id_can_be_read_before_verification_and_only_the_key_id() {
+    let token = sign(&claim());
+    assert_eq!(signed_url::key_id_of(&token).as_deref(), Some("k1"));
+
+    // A forged token still reports its claimed id, which is exactly right: choosing a key from an unverified
+    // id is unavoidable, and naming the wrong one produces a signature that does not match.
+    let forged = format!("{}.AAAA", token.split_once('.').expect("dotted").0);
+    assert_eq!(signed_url::key_id_of(&forged).as_deref(), Some("k1"));
+    assert_eq!(
+        signed_url::verify(&keyring(), &forged, now()),
+        Err(VerifyError::BadSignature),
+    );
+}
+
+#[test]
+fn nonsense_has_no_key_id_rather_than_an_empty_one() {
+    for token in ["", "no-dot", ".", "!!!.!!!", "AAAA.AAAA"] {
+        assert_eq!(signed_url::key_id_of(token), None, "{token:?}");
+    }
+}

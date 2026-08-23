@@ -905,6 +905,70 @@ export interface paths {
         patch: operations["amend"];
         trace?: never;
     };
+    "/connectors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list"];
+        put?: never;
+        post: operations["register"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connectors/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["read"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connectors/{id}/rotate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["rotate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connectors/{id}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["set_status"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/conversions": {
         parameters: {
             query?: never;
@@ -2817,6 +2881,51 @@ export interface components {
             /** @description `public` or `private`. A private comment reaches its author and its recipients, and nobody else. */
             visibility: string;
         };
+        /**
+         * @description A connected site, as an operator sees it.
+         *
+         *     Carries no secret and no ciphertext. The sealed form is not itself dangerous, but putting it in the response
+         *     of an endpoint an administration screen polls is how it ends up in a log, a browser cache and a bug report.
+         */
+        ConnectorView: {
+            all_asset_groups: boolean;
+            allow_original: boolean;
+            allow_restore: boolean;
+            asset_group_ids: string[];
+            /** Format: date-time */
+            created_at: string;
+            /** Format: uuid */
+            id: string;
+            /** @description `drupal`, `wordpress`, `adobe_cc`, `figma`, `hubspot`, `salesforce` or `generic`. */
+            kind: string;
+            label: string;
+            last_error?: string | null;
+            /** Format: date-time */
+            last_seen_at?: string | null;
+            /**
+             * @description Whether URLs this connector signed are still honoured. `error` still renders — whatever went wrong is
+             *     not a reason to blank the images on somebody's home page.
+             */
+            may_render: boolean;
+            /**
+             * @description Whether the superseded secret is still inside its grace window *right now*. Computed rather than
+             *     stored, so a screen can say "the old secret stops working on Friday" instead of "a secret was rotated".
+             */
+            previous_secret_live: boolean;
+            /**
+             * @description What the remote says it is running, e.g. `drupal 11.1 / damrs_dam 1.2.0`. The one fact damrs cannot
+             *     infer, and the first thing worth knowing when a site starts failing.
+             */
+            remote_version?: string | null;
+            /**
+             * Format: date-time
+             * @description When the signing secret was last replaced.
+             */
+            secret_rotated_at?: string | null;
+            site_url: string;
+            /** @description `active`, `paused`, `error` or `revoked`. */
+            status: string;
+        };
         /** @description A person and what they did. */
         ContributorView: {
             /** Format: int64 */
@@ -3932,6 +4041,44 @@ export interface components {
              */
             stars: number;
         };
+        /** @description A site to connect. */
+        RegisterBody: {
+            all_asset_groups?: boolean;
+            /**
+             * @description May it fetch masters? Off unless asked for: a CMS wants renditions, and a site that can fetch originals
+             *     is a site that can leak the deliverable a customer paid for.
+             */
+            allow_original?: boolean;
+            /**
+             * @description May a render trigger a restore? Off unless asked for, and §11.1 is emphatic: a page render must never
+             *     wake Glacier.
+             */
+            allow_restore?: boolean;
+            /**
+             * @description Which asset groups the site may see. Empty with `all_asset_groups` false means it sees nothing, which is
+             *     a legitimate way to register a connector before deciding what it may have.
+             */
+            asset_group_ids?: string[];
+            config?: unknown;
+            /** @description `drupal`, `wordpress`, `adobe_cc`, `figma`, `hubspot`, `salesforce` or `generic`. */
+            kind: string;
+            label: string;
+            /**
+             * @description The remote's canonical origin. Also the CORS allowlist entry for the asset picker and the audience of
+             *     issued tokens, so it has to be the origin the browser will actually send.
+             */
+            site_url: string;
+        };
+        /** @description What a registration returns, once. */
+        RegisteredView: {
+            /** @description The API key the remote authenticates with. Stored as a hash, so this is the only time it exists. */
+            api_key: string;
+            connector: components["schemas"]["ConnectorView"];
+            /** @description The secret the remote signs render URLs with. Stored sealed, so this is the only time it is readable. */
+            signing_secret: string;
+            /** @description Said in the response body, because a UI that forgets to say it produces a support ticket a week later. */
+            warning: string;
+        };
         /** @description What a removal did. */
         RemovedField: {
             /**
@@ -4056,6 +4203,18 @@ export interface components {
          * @enum {string}
          */
         RightsState: "allowed" | "expiring" | "denied" | "unknown";
+        /** @description Whether the superseded secret keeps working. */
+        RotateBody: {
+            /**
+             * @description `true` for a scheduled rotation: the old secret keeps verifying for a week while the site's own
+             *     configuration change is deployed. `false` when the secret has leaked — then the week would be a week of
+             *     forgery.
+             *
+             *     No default. The two situations want opposite answers, and picking one for a caller who did not say
+             *     would be wrong half the time in the direction that matters.
+             */
+            keep_previous: boolean;
+        };
         /** @description One asset in a round, in snapshot order. */
         RoundAssetView: {
             /** Format: uuid */
@@ -4147,6 +4306,11 @@ export interface components {
             /** Format: uuid */
             metadata_type_id?: string | null;
         };
+        /**
+         * @description The statuses an operator may set.
+         * @enum {string}
+         */
+        SettableStatus: "active" | "paused" | "revoked";
         /** @description What a client asks for when sharing an asset. */
         ShareRequest: {
             /** @description Whether the recipient may fetch the original, rather than only the web rendition. */
@@ -4226,6 +4390,14 @@ export interface components {
             /** @description Whether this caller owns it, so a tile can say "yours" rather than implying everyone's is. */
             mine: boolean;
             name: string;
+        };
+        /** @description What to set a connector to. */
+        StatusBody: {
+            /**
+             * @description `active`, `paused` or `revoked`. Not `error` — that is something the dispatcher records, not a state an
+             *     operator sets.
+             */
+            status: components["schemas"]["SettableStatus"];
         };
         /**
          * @description S3 storage classes, matching `object_placements.storage_class`.
@@ -6801,6 +6973,162 @@ export interface operations {
             };
             /** @description Both a body and a status, neither, an unknown status, or a bad length */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectorView"][];
+                };
+            };
+        };
+    };
+    register: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegisterBody"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegisteredView"];
+                };
+            };
+            /** @description That kind is already connected to that site */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not a connector kind, or a label or site URL that will not do */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    read: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectorView"];
+                };
+            };
+            /** @description No such connector */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    rotate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RotateBody"];
+            };
+        };
+        responses: {
+            /** @description The new secret, shown once */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegisteredView"];
+                };
+            };
+            /** @description No such connector */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The connector is revoked */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    set_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StatusBody"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectorView"];
+                };
+            };
+            /** @description No such connector, or it is already revoked */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

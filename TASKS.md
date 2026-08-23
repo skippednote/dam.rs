@@ -29,13 +29,13 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **Q** Acquia parity, 20 slices | **complete** — Q.1–Q.20, including Q.14b collections and Q.20a–d |
 | **Go-live Tier 1** Deployment image, backups, metrics, rate limiting, virus scan, C2PA | **done** — all six, each verified against the running stack |
 | **Archival** Tiering engine, restores, the storage screen | **done** — the sweep and poll jobs, the plan/quote/request/approve API, delivery's 202, bulk archive and restore, the restore panel |
-| **M3d** Drupal 11 connector | registry done (M3d·1); signed delivery, browse/oEmbed, usage index and the module open |
+| **M3d** Drupal 11 connector | registry and signed delivery done (M3d·1, M3d·2); browse/oEmbed, usage index and the module open |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, colour | dedup and colour **done** (M4a); the rest needs model files — see M4 below |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | **done** — two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query, the MCP server |
 | **M6** Workflow/proofing, annotations, analytics | **done** — annotations (M6a), proofing (M6b), analytics (M6c) |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** M3d·2 connector-signed delivery → M3d·3 browse/oEmbed → M3d·4 usage index → M3d·5 the Drupal module → Pre-GA (G7 import, G10 SCIM/BYOK/audit, G19 metering enforcement, quotas). M4b (local ONNX models) stays parked on the model-distribution question.
+**Next up, in order:** M3d·3 browse/oEmbed → M3d·4 usage index → M3d·5 the Drupal module → Pre-GA (G7 import, G10 SCIM/BYOK/audit, G19 metering enforcement, quotas). M4b (local ONNX models) stays parked on the model-distribution question.
 M4b (local models) is parked on a distribution decision — see the M4 section.
 
 **`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
@@ -1362,17 +1362,51 @@ API that does not exist yet is a module written twice.
   9 db cases, 10 API cases. No screen yet: a registry whose URLs are not honoured is a screen for a feature
   that does not work end to end, so the screen lands with M3d·2.
 
-- [ ] **M3d·2 Connector-signed delivery.** The property the whole integration rests on: the remote signs render
-  URLs in PHP from the shared secret, so a damrs outage degrades to stale-but-working pages rather than white
-  screens. `dam_core::signed_url` already has the shape — a `Keyring` that signs with one key and verifies with
-  retired ones — so a connector's current and previous secrets map straight onto it.
+- [x] **M3d·2 Connector-signed delivery.** The property the whole integration rests on: the remote signs render
+  URLs itself, so a damrs outage degrades to stale-but-working pages rather than white screens.
 
-  The security work is at *verification*: a connector that signs its own URLs can sign anything, so what it may
-  ask for has to be bounded by its own row. `allow_original` false must refuse `transform = original`;
-  `Purpose::InternalPreview` must be refused outright, because it skips the rights check and a connector is
-  external; the asset must be inside the connector's groups; and `allow_restore` false must resolve a cold
-  original to the proxy rather than answering 202. Without those four, the signing secret is a bypass of
-  everything §11 claims the connector enforces.
+  **One change to `signed_url`, and it is the interesting one.** `Keyring::find` returned the *first* secret
+  under a key id, because the ordinary case gives each key its own id and rotation means a new id. A connector
+  cannot work that way: it signs its own URLs and *it* decides when to switch, so during the grace window the
+  same id is in use with two different secrets and damrs cannot tell which from the token. So `find` returns
+  every secret under an id and `verify` tries all of them — written as a fold rather than a short-circuiting
+  `any`, so the number of HMACs computed does not leak how far through a rotation a site is.
+
+  Plus `key_id_of`, which reads the claimed key id without verifying. Selecting a key from an unverified id is
+  unavoidable — verification needs a key before it can decide anything — and safe, because naming the wrong key
+  produces a signature that does not match. What it must not do is let the *choice* of key confer anything.
+
+  **Which is the whole security argument, and it is four bounds.** A connector that holds the secret can sign
+  anything, so `bound_by_connector` refuses: a `Purpose::InternalPreview` claim (it skips the rights check —
+  this is the bound that matters most, because without it a site signs one and every licence check on every
+  page is gone); a share-link claim (a share's authority belongs to the share); `original` unless
+  `allow_original`; and any asset outside the connector's groups, resolved through `grants_for` and the ordinary
+  predicate rather than by reading the groups off the connector row, which would be a second place a
+  connector's scope is decided. Plus one substitution rather than a refusal: a cold original with
+  `allow_restore` off becomes the master proxy, because §11.1 says a page render must never wake Glacier and
+  refusing would blank an image for a reason the site cannot act on.
+
+  Pausing, revoking, or revoking the connector's *API key* all stop URLs already signed — the same property as
+  a revoked share, and the API-key one matters because otherwise revoking a credential would leave render URLs
+  working for as long as the site kept signing them. An `error` state still renders: a failed webhook is not a
+  reason to blank somebody's home page.
+
+  With no connector auth configured, a connector token is refused rather than falling back to the server
+  keyring. A fallback would verify against a key the site never had — which fails, until somebody "fixes" it by
+  trying both.
+
+  **Verified against the running server with an independent implementation of the signing format** — a Python
+  script reimplementing the length-prefixed canonical form and the HMAC, with no damrs code in the signing
+  path, which is exactly what a PHP module will do. A site-signed proxy URL is served (302); `original`,
+  `purpose=InternalPreview` and a wrong secret are all refused (404); pausing stops it and resuming restores
+  it; a rotation with grace leaves both secrets working; a leak rotation kills the superseded one at once.
+
+  That exercise also surfaced why the dev library's own proxies do not deliver: they were rendered under an
+  older `web-2048` definition, so their stored `op_hash` no longer matches the profile. Delivery refuses them,
+  which is 3.2's design working — a name lookup would serve yesterday's quality setting forever.
+
+  6 delivery cases, 6 new `signed_url` cases, 14 browser cases, and the screen covering M3d·1 and M3d·2
+  together.
 
 - [ ] **M3d·3 Browse and oEmbed.** `GET /browse` (CORS-enabled search + facets for the embedded picker) and
   `GET /oembed` (provider, for CKEditor inline embeds).

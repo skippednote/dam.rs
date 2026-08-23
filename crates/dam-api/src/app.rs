@@ -46,6 +46,12 @@ pub struct AppDeps {
     /// Only the delivery routes need this, and only until 3.x makes delivery tenant-resolved from the token
     /// rather than from configuration.
     pub delivery_tenant: uuid::Uuid,
+    /// The same tenant, by slug.
+    ///
+    /// Both, because they answer different questions: `Key::original` builds a path from the id, and a
+    /// connector's sealed secret is bound to the slug. Deriving either from the other would be a lookup on the
+    /// delivery path to learn something configuration already said.
+    pub delivery_tenant_slug: dam_core::TenantSlug,
     /// Builds a protocol router over the states this module assembles — today, the MCP server.
     ///
     /// A closure rather than a `Router` or a flag, and the reason is the dependency graph: `dam-mcp` calls the
@@ -98,7 +104,11 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
             deps.keyring.clone(),
             deps.delivery_tenant,
         )
-        .with_public_url(cfg.server.public_url.clone()),
+        .with_public_url(cfg.server.public_url.clone())
+        // Connector-signed URLs (M3d·2). A site signs its own render URLs so a page render never blocks on an
+        // API call, and this is what lets damrs verify them — bounded by the connector's own row, in
+        // `delivery::bound_by_connector`.
+        .with_connector_auth(cfg.sealing_keyring(), deps.delivery_tenant_slug.clone()),
     );
 
     // Built before the API router so the two share one `SearchState` and one `DownloadState` — the MCP tools

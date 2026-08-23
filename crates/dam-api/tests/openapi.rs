@@ -229,6 +229,7 @@ fn route_inspection_deps() -> dam_api::app::AppDeps {
             dam_core::Secret::new("route-inspection".to_owned()),
         ),
         delivery_tenant: uuid::Uuid::nil(),
+        delivery_tenant_slug: dam_core::TenantSlug::new("acme").expect("a slug"),
         // Never called: OPTIONS is answered by the routing table before any handler runs.
         model_transport: std::sync::Arc::new(dam_ai::testing::Recorded::always(
             200,

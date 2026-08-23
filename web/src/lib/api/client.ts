@@ -1597,3 +1597,56 @@ export async function loadInsights(days = 30): Promise<Insights> {
 export async function exportInsights(report: InsightsReport, days = 30): Promise<Blob> {
 	return requestBlob(`/insights/export.csv?report=${report}&days=${days}`);
 }
+
+// ─── connected sites (M3d) ──────────────────────────────────────────────────
+
+export type Connector = components['schemas']['ConnectorView'];
+export type Registered = components['schemas']['RegisteredView'];
+
+export async function listConnectors(): Promise<Connector[]> {
+	return request<Connector[]>('/connectors');
+}
+
+/**
+ * Registers a site.
+ *
+ * The response carries the API key and the signing secret, and it is the only time either exists in readable
+ * form — the key is stored as a hash and the secret encrypted at rest. So the screen has to show them once and
+ * say so; a UI that quietly discards them produces a support ticket a week later.
+ */
+export async function registerConnector(body: {
+	kind: string;
+	label: string;
+	site_url: string;
+	asset_group_ids?: string[];
+	all_asset_groups?: boolean;
+	allow_original?: boolean;
+	allow_restore?: boolean;
+}): Promise<Registered> {
+	return request<Registered>('/connectors', { method: 'POST', body: JSON.stringify(body) });
+}
+
+/**
+ * Replaces the signing secret.
+ *
+ * `keepPrevious` is not a default anywhere, because the two situations want opposite answers: a scheduled
+ * rotation keeps the old secret verifying for a week while the site's own deploy lands, and a leak must stop it
+ * now. The screen asks.
+ */
+export async function rotateConnector(id: string, keepPrevious: boolean): Promise<Registered> {
+	return request<Registered>(`/connectors/${id}/rotate`, {
+		method: 'POST',
+		body: JSON.stringify({ keep_previous: keepPrevious })
+	});
+}
+
+/** Pauses, resumes, or revokes. Revoking is terminal and clears both secrets. */
+export async function setConnectorStatus(
+	id: string,
+	status: 'active' | 'paused' | 'revoked'
+): Promise<Connector> {
+	return request<Connector>(`/connectors/${id}/status`, {
+		method: 'POST',
+		body: JSON.stringify({ status })
+	});
+}

@@ -104,6 +104,23 @@ pub struct DeliveryState {
     /// it silently do not — a fixed fake `now` in the test and a real one in the handler had an "expired"
     /// token still in the future.
     clock: Arc<dyn Clock>,
+    /// What connector-signed URLs need (M3d·2), or `None` if they are not honoured here.
+    ///
+    /// `None` is the fail-closed default: a deployment that cannot open a connector's secret must refuse its
+    /// tokens rather than fall back to the server keyring, where they would verify as nothing and be served as
+    /// everything.
+    connectors: Option<ConnectorAuth>,
+}
+
+/// The two things a connector-signed token needs, together.
+///
+/// Both or neither, structurally. The secret is sealed against `{tenant}:connector:{id}`, so a keyring paired
+/// with the wrong slug opens nothing — and the failure would look like every connector URL being forged rather
+/// than like a misconfiguration.
+#[derive(Clone)]
+struct ConnectorAuth {
+    sealing: dam_core::sealed::SealingKeyring,
+    tenant_slug: dam_core::TenantSlug,
 }
 
 impl std::fmt::Debug for DeliveryState {
@@ -130,7 +147,26 @@ impl DeliveryState {
             tenant_id,
             public_url: None,
             clock: Arc::new(dam_core::SystemClock),
+            connectors: None,
         }
+    }
+
+    /// Enables connector-signed URLs, with the keyring that opens their secrets.
+    ///
+    /// Takes the slug as well as the keyring because the secret is sealed against it — see [`ConnectorAuth`].
+    /// Without this, a token naming a connector key is refused: falling back to the server keyring for an
+    /// unopenable connector secret would turn a configuration problem into a bypass.
+    #[must_use]
+    pub fn with_connector_auth(
+        mut self,
+        sealing: dam_core::sealed::SealingKeyring,
+        tenant_slug: dam_core::TenantSlug,
+    ) -> Self {
+        self.connectors = Some(ConnectorAuth {
+            sealing,
+            tenant_slug,
+        });
+        self
     }
 
     /// Sets the origin absolute delivery URLs are built from.
@@ -605,12 +641,43 @@ async fn deliver(
 ) -> Result<Response, Refusal> {
     let now = state.now();
 
+    // Step 0. Which keyring verifies this (M3d·2).
+    //
+    // A connector signs its own render URLs so a page render never blocks on an API call (§11.3), which means
+    // some tokens are signed with a secret damrs holds but did not use. Selecting the keyring from an
+    // *unverified* key id is unavoidable — verification needs a key before it can decide anything — and safe,
+    // because naming the wrong key produces a signature that does not match. What it must never do is let the
+    // choice of key confer anything, which is what `bound_by_connector` below is for.
+    let connector = match signed_url::key_id_of(&token) {
+        Some(key_id) if key_id.starts_with(CONNECTOR_KEY_PREFIX) => {
+            Some(connector_for(&state, &key_id, now).await?)
+        }
+        _ => None,
+    };
+
     // Step 1. Establishes that we issued this request unaltered. Every failure mode collapses to one
     // answer — see `Refusal::NotDeliverable`.
-    let claim = signed_url::verify(&state.keyring, &token, now).map_err(|reason| {
+    let claim = signed_url::verify(
+        connector.as_ref().map_or(&state.keyring, |c| &c.keyring),
+        &token,
+        now,
+    )
+    .map_err(|reason| {
         tracing::debug!(?reason, "delivery token rejected");
         Refusal::NotDeliverable
     })?;
+
+    // Step 1a. What this connector is allowed to have asked for.
+    //
+    // Everything above proves the token was signed by somebody holding the secret. For a connector that is the
+    // *site*, which signs whatever it likes — so without this the signing secret is a bypass of every rule §11
+    // claims the connector enforces. Kept adjacent to verification rather than pushed down into the steps
+    // below, because each of those already has its own reasons to refuse and a bound buried among them is a
+    // bound somebody removes while fixing something else.
+    let claim = match &connector {
+        Some(connected) => bound_by_connector(&state, connected, claim, now).await?,
+        None => claim,
+    };
 
     // Re-checked before anything else about the asset. A revoked share must stop working immediately, and it
     // must stop working *for the same reason* whether the URL was minted a second or a day ago.
@@ -778,6 +845,182 @@ async fn rendition_exists(
             .await?
             .is_some(),
     )
+}
+
+/// The key-id prefix a connector-signed token carries.
+///
+/// `connector:<id>`. Stable across a secret rotation, deliberately: the *site* decides when to switch secrets,
+/// so an id that changed with the secret would mean every URL signed before the site's own deploy naming a key
+/// that no longer exists. `Keyring::find` returning every secret under one id is what makes that work.
+pub const CONNECTOR_KEY_PREFIX: &str = "connector:";
+
+/// A connected site, with the keyring that verifies what it signed.
+struct Connected {
+    row: dam_db::connectors::Connector,
+    keyring: Keyring,
+}
+
+/// Resolves the connector a token names, and the keyring that can verify it.
+///
+/// Every failure is the same flat refusal an unsigned token gets: a malformed id, an unknown connector, a
+/// paused or revoked one, a deployment with no sealing keyring, a secret that will not open. Distinguishing
+/// them would tell whoever holds the URL which connectors exist and what state they are in.
+async fn connector_for(
+    state: &DeliveryState,
+    key_id: &str,
+    now: DateTime<Utc>,
+) -> Result<Connected, Refusal> {
+    let id: Uuid = key_id
+        .trim_start_matches(CONNECTOR_KEY_PREFIX)
+        .parse()
+        .map_err(|_| Refusal::NotDeliverable)?;
+
+    // No fallback to the server keyring. A deployment that cannot open connector secrets must refuse their
+    // tokens: falling back would verify them against a key the site never had, which fails — until the day
+    // somebody "fixes" it by trying both.
+    let auth = state.connectors.as_ref().ok_or_else(|| {
+        tracing::error!("a connector-signed token arrived with no connector auth configured");
+        Refusal::NotDeliverable
+    })?;
+
+    let mut conn = state
+        .global
+        .acquire()
+        .await
+        .map_err(dam_db::Error::from)
+        .map_err(|error| {
+            tracing::error!(%error, "acquiring a connection to resolve a connector");
+            Refusal::Internal
+        })?;
+    let row = dam_db::connectors::by_id(&mut conn, id)
+        .await?
+        .ok_or(Refusal::NotDeliverable)?;
+    drop(conn);
+
+    // A paused or revoked connector's URLs stop working immediately, which is the whole point of having the
+    // states — and it works on URLs already issued, exactly as a revoked share does.
+    if !row.status.may_render() {
+        return Err(Refusal::NotDeliverable);
+    }
+
+    let aad = dam_db::connectors::associated_data(auth.tenant_slug.as_str(), row.id);
+    let current = auth
+        .sealing
+        .open(&row.sealed_secret, &aad)
+        .map_err(|error| {
+            tracing::error!(%error, connector = %row.id, "opening a connector signing secret");
+            Refusal::NotDeliverable
+        })?;
+    let mut keyring = Keyring::single(key_id, current);
+    // The superseded secret, only while it is inside its window. `previous_is_live` reads the clock rather
+    // than a cleared column — see `dam_db::connectors`.
+    if let Some(previous) = row.live_previous(now)
+        && let Ok(opened) = auth.sealing.open(previous, &aad)
+    {
+        keyring = keyring.with_retired(key_id, opened);
+    }
+
+    Ok(Connected { row, keyring })
+}
+
+/// What a connector is allowed to have asked for.
+///
+/// Four bounds, and each closes a way the signing secret would otherwise be a bypass:
+///
+/// **Distribution only.** `Purpose::InternalPreview` skips the rights check (A.7), because an unlicensed asset
+/// is the normal state of a freshly uploaded one and gating the grid's thumbnails on the distribution verdict
+/// makes a correct DAM unusable. A connector is external — it is a customer's public website — so a preview
+/// purpose from one would be a licence check skipped on a live page. This is the bound that matters most.
+///
+/// **No share link.** A share's authority belongs to the share. A connector claiming one would be borrowing
+/// it, and while `shares::is_live` means it could not exceed what the share allows, "could not exceed" is a
+/// worse property than "cannot claim".
+///
+/// **Originals only if allowed.** `allow_original` is off by default: a CMS wants renditions, and a site that
+/// can fetch masters is a site that can leak the deliverable a customer paid for.
+///
+/// **Only assets the connector can see.** Through the connector's own grants and the ordinary predicate —
+/// §11.1's claim that "a misconfigured Drupal view cannot surface an unapproved asset" is only true if this
+/// check exists, because a site that knows an asset id can sign a URL for it whether or not it was ever shown
+/// one.
+///
+/// And one substitution rather than a refusal: when the original is cold and `allow_restore` is off, the claim
+/// is rewritten to the master proxy. §11.1 is explicit — "a page render must never trigger a Glacier restore"
+/// — and a proxy is what the `<img>` tag wanted anyway. Refusing instead would blank an image on a live page
+/// for a storage-class reason the site cannot do anything about.
+async fn bound_by_connector(
+    state: &DeliveryState,
+    connected: &Connected,
+    claim: DeliveryClaim,
+    now: DateTime<Utc>,
+) -> Result<DeliveryClaim, Refusal> {
+    if !claim.purpose.is_distribution() {
+        tracing::warn!(
+            connector = %connected.row.id,
+            "a connector-signed token claimed an internal preview; refusing",
+        );
+        return Err(Refusal::NotDeliverable);
+    }
+    if claim.share_link_id.is_some() {
+        tracing::warn!(
+            connector = %connected.row.id,
+            "a connector-signed token claimed a share link; refusing",
+        );
+        return Err(Refusal::NotDeliverable);
+    }
+    if claim.transform == dam_media::profiles::ORIGINAL && !connected.row.allow_original {
+        return Err(Refusal::NotDeliverable);
+    }
+
+    // The connector's own predicate, resolved the ordinary way: its key's identity holds a role carrying its
+    // asset groups, so this is `grants_for` and `policy::compile` exactly as for any caller. Reading the
+    // groups off the connector row and compiling them here would be a second place where a connector's scope
+    // is decided, and the two would drift.
+    let api_key_id = connected.row.api_key_id.ok_or_else(|| {
+        tracing::error!(connector = %connected.row.id, "a connector with no api key signed a URL");
+        Refusal::NotDeliverable
+    })?;
+    let identity: Option<Uuid> = sqlx::query_scalar(
+        "SELECT identity_id FROM dam_global.api_keys          WHERE id = $1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())",
+    )
+    .bind(api_key_id)
+    .fetch_optional(&state.global)
+    .await
+    .map_err(dam_db::Error::from)?
+    .flatten();
+    // A revoked or expired key stops the URLs too. Otherwise revoking a connector's credential would leave
+    // its render URLs working for as long as the site kept signing them, which is indefinitely.
+    let identity = identity.ok_or(Refusal::NotDeliverable)?;
+
+    let mut conn = state
+        .global
+        .acquire()
+        .await
+        .map_err(dam_db::Error::from)
+        .map_err(|_| Refusal::Internal)?;
+    let grants =
+        dam_db::auth::grants_for(&state.global, &mut *conn, state.tenant_id, identity, &[]).await?;
+    let predicate = dam_core::policy::compile(&grants, dam_core::policy::Action::Read, now);
+    let visible = dam_db::assets::visible_among(&mut *conn, &predicate, &[claim.asset_id]).await?;
+    drop(conn);
+    if visible.is_empty() {
+        return Err(Refusal::NotDeliverable);
+    }
+
+    // The cold-original substitution. Checked here rather than left to `archived_wait` below, because that
+    // function's answer is a 202 with an ETA — the right answer for a person who asked for a master, and the
+    // wrong one for an `<img>` tag on a page nobody is watching.
+    if claim.transform == dam_media::profiles::ORIGINAL
+        && !connected.row.allow_restore
+        && archived_wait(state, &claim, now).await?.is_some()
+    {
+        return Ok(DeliveryClaim {
+            transform: dam_media::profiles::WEB_2048.name.to_owned(),
+            ..claim
+        });
+    }
+
+    Ok(claim)
 }
 
 async fn object_key(

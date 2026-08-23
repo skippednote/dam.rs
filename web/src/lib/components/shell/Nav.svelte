@@ -49,6 +49,9 @@
 		// After the content screens: a webhook is how the library talks to everything outside it, which is
 		// closer to Settings than to anything a curator opens daily.
 		{ href: resolve('/webhooks'), label: 'Webhooks' },
+		// Beside Webhooks for the same reason, and because they are the two halves of one thing: a webhook is
+		// how the library tells another system something changed, and a connected site is that system.
+		{ href: resolve('/connectors'), label: 'Sites' },
 		{ href: resolve('/style'), label: 'Style' },
 		// Beside Settings, because it is configuration rather than content — and it is the one screen where a
 		// tenant makes the application look like theirs.
@@ -81,14 +84,14 @@
 	<!--
 		Wrapping, and a minimum height rather than a fixed one.
 
-		Seventeen sections do not fit one row: measured, the nav wants 1461px, so at 1024 and 1280 — an iPad in
+		Eighteen sections do not fit one row: measured, the nav wants 1461px, so at 1024 and 1280 — an iPad in
 		landscape and the default MacBook Air — the last item sat outside the viewport entirely, unreachable
 		by mouse. I added six of those sections over this session without once checking the row still fitted,
 		which is exactly the kind of thing that only shows up in a screenshot.
 
 		Wrapping is the honest minimum: nothing becomes unreachable and it degrades predictably at every
-		width. It is not the right *design* — seventeen flat sections wants grouping, with the configuration
-		half (Schema, Vocabularies, Storage, Webhooks, Branding, Style) under Settings and the eleven daily
+		width. It is not the right *design* — eighteen flat sections wants grouping, with the configuration
+		half (Schema, Vocabularies, Storage, Webhooks, Sites, Branding, Style) under Settings and the eleven daily
 		ones on top — but that is a routing change, and a nav that clips is a bug while a nav that wraps is
 		only plain.
 	-->

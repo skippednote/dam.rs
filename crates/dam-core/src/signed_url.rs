@@ -204,14 +204,42 @@ impl Keyring {
         self.keys.first()
     }
 
-    fn find(&self, key_id: &str) -> Option<&Secret<String>> {
-        // Compared in constant time: a key *id* is not secret, but an early-return comparison over the set
-        // would leak which ids exist, and there is no reason to give that away.
+    /// Every secret filed under `key_id`, in the order they were added.
+    ///
+    /// **Every**, not the first, and that is what makes a connector rotation work. The ordinary case gives one
+    /// key one id, so rotation means a new id and this returns a single secret. But a connector signs its own
+    /// URLs (§11.3) and *it* decides when to switch, so during the grace window the same id is in use with two
+    /// different secrets and damrs cannot tell which from the token. Returning only the first would mean every
+    /// URL signed with the superseded secret failing — a rotation that takes the site down, which is the exact
+    /// outage the grace window exists to prevent.
+    ///
+    /// Compared in constant time: a key *id* is not secret, but an early-return comparison over the set would
+    /// leak which ids exist, and there is no reason to give that away.
+    fn find(&self, key_id: &str) -> impl Iterator<Item = &Secret<String>> {
         self.keys
             .iter()
-            .find(|(id, _)| id.as_bytes().ct_eq(key_id.as_bytes()).into())
+            .filter(move |(id, _)| id.as_bytes().ct_eq(key_id.as_bytes()).into())
             .map(|(_, secret)| secret)
     }
+}
+
+/// The key id a token claims, without verifying anything.
+///
+/// **Unauthenticated by construction**, and the only safe use is the one it exists for: choosing which key to
+/// verify with. Every field in the payload is attacker-controlled until the signature checks out, so a caller
+/// that read anything else out of this would be trusting a forgery.
+///
+/// Selecting a key from an unverified id is not a weakness — it is unavoidable, because verification needs a key
+/// before it can decide anything, and it is safe because naming the wrong key produces a signature that does not
+/// match. What it must not do is let the *choice* of key confer anything: see `dam_api::delivery`, where a token
+/// naming a connector key is bounded by that connector's own row before its bytes are served.
+#[must_use]
+pub fn key_id_of(token: &str) -> Option<String> {
+    let encoder = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let (payload_b64, _) = token.split_once('.')?;
+    let payload = encoder.decode(payload_b64).ok()?;
+    let claim = parse(&payload).ok()?;
+    (!claim.key_id.is_empty()).then_some(claim.key_id)
 }
 
 /// Signs `claim`, returning the token to put in the URL.
@@ -258,12 +286,26 @@ pub fn verify(
     if claim.key_id.is_empty() {
         return Err(VerifyError::Malformed);
     }
-    let secret = keyring.find(&claim.key_id).ok_or(VerifyError::UnknownKey)?;
+    // Every secret under that id, not just the first — see `Keyring::find`. Written as a fold rather than a
+    // short-circuiting `any` so the number of HMACs computed does not depend on which secret matched: an
+    // early return here would time-leak whether a token was signed with the current secret or the superseded
+    // one, which is a hint about how far through a rotation a site is.
+    let mut matched = false;
+    let mut known = false;
+    for secret in keyring.find(&claim.key_id) {
+        known = true;
+        let Some(expected) = mac(secret, &payload) else {
+            continue;
+        };
+        matched |= bool::from(expected.ct_eq(&signature));
+    }
+    if !known {
+        return Err(VerifyError::UnknownKey);
+    }
 
     // The signature is checked before the expiry. An expired token with a forged signature must report as
     // a bad signature, not as expired — the second tells an attacker their forgery was otherwise accepted.
-    let expected = mac(secret, &payload).ok_or(VerifyError::BadSignature)?;
-    if !bool::from(expected.ct_eq(&signature)) {
+    if !matched {
         return Err(VerifyError::BadSignature);
     }
     if now >= claim.expires_at {
