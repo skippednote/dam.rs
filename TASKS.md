@@ -30,12 +30,13 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **Go-live Tier 1** Deployment image, backups, metrics, rate limiting, virus scan, C2PA | **done** — all six, each verified against the running stack |
 | **Archival** Tiering engine, restores, the storage screen | **done** — the sweep and poll jobs, the plan/quote/request/approve API, delivery's 202, bulk archive and restore, the restore panel |
 | **M3d** Drupal 11 connector | not started |
-| **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
+| **M4** Local AI: embeddings, OCR, ASR, faces, dedup, colour | dedup and colour **done** (M4a); the rest needs model files — see M4 below |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | **done** — two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query, the MCP server |
 | **M6** Workflow/proofing, annotations, analytics | not started |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** M4 local AI → M6 workflow/proofing → M3d Drupal connector → Pre-GA.
+**Next up, in order:** M4b local models (needs a decision on model distribution — see below) → M6
+workflow/proofing → M3d Drupal connector → Pre-GA.
 
 **`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
 note carried; `DECISIONS.md` records what was chosen. Two of them needed code: a portal may now be backed by a
@@ -2804,6 +2805,64 @@ different target pool asks for a copy between buckets and halts as unsupported r
 representable in the schema, planned, not performed. And `only_superseded`, which `object_placements` has no
 version dimension to express.
 
+
+## M4 — Local AI
+
+### M4a — the model-free half (done)
+
+- [x] **Perceptual hashing, near-duplicate detection and dominant colour.** `asset_phashes`, `asset_colors`
+  and `duplicate_candidates` had been in migration 0003 since the start with nothing writing to them, and
+  `image_hasher` had been a declared dependency used only by a test. All of this is pure computation over the
+  master proxy — no ONNX runtime, no model files, no GPU — which is why it is the part of M4 that could be
+  built and verified on a laptop.
+
+      Two hashes, because they fail differently: the gradient hash survives brightness and contrast changes, the
+      DCT hash survives a rescale. `distance` takes the closer of the two, excluding a collapsed one.
+
+      **What running it over 162 real assets found.** 84 pairs, of which 33 were byte-identical — 0003 says
+      exact duplicates are caught at ingest and this table is for *near* ones, so nearly half the queue was
+      work nobody needed. And a 932-byte test pattern was paired with an MP4 at distance 0, because both had
+      `dhash = 0` and the blind minimum let the useless hash decide. Queue is now 33, every survivor plausible.
+
+      **My first fix for the second was wrong.** Gating on the hash's population count cannot work for a DCT
+      hash: it is a median comparison, so about half the bits are set for a photograph and a blank page alike.
+      Two unrelated flat colours measured 11 apart — inside the 12-bit threshold. The gate is on the *image*
+      now: below a luma standard deviation of 6 no hash is stored at all, which excludes the asset from both
+      directions with no column and no filter. Colours are still stored, which is what tells a grey square from
+      a blue one.
+
+      **And a test had been hiding it.** The rescale case passed only because `min()` was picking `dhash = 0`;
+      it never exercised the DCT hash. Two subsequent rounds of "the hash is broken" were my own fixture
+      regenerating a fixed pixel-frequency pattern at two sizes — two different pictures, not one rescaled,
+      the same mistake twice. Truly resized, the DCT hash is fine.
+
+      One limitation is recorded rather than papered over: a smooth ramp keeps its hash and is unstable across
+      a rescale (22 bits), because all its energy sits in two DCT coefficients. Two rescaled gradients will not
+      be found as duplicates. That is the algorithm, not a constant to tune.
+
+      16 media cases, 12 db cases, 7 API cases, 8 browser cases. Also fixed a nav that had quietly started
+      clipping: six sections added over one session took it to 1461px, so its last item was outside the
+      viewport at 1024 and 1280 — the two commonest laptop widths.
+
+### M4b — the model-dependent half (blocked on a decision)
+
+- [ ] **Embeddings (SigLIP), OCR, transcription, face detect/identify, saliency.** Every one needs an ONNX
+  model file: hundreds of megabytes to a couple of gigabytes, plus the ONNX Runtime shared library. That is a
+  decision about *distribution* rather than a coding task, and it should be made deliberately:
+
+      - **Where do model files come from?** Baked into the deployment image (large, versioned, no runtime
+        download), fetched on first use (small image, a startup dependency on Hugging Face), or mounted
+        (operator's problem, awkward for a hosted product).
+      - **What does CI do?** The suites here run on real Postgres and real files by design. A model-dependent
+        stage either downloads a gigabyte per run, ships fixtures of pre-computed vectors, or is skipped —
+        and a skipped stage is one nobody notices breaking.
+      - **What about the GPU?** §8.1 says ~$0 marginal cost, which is true on CPU for embeddings and not for
+        Whisper on a large library.
+
+      Worth noting what is *already* in place for it: `asset_image_embeddings` and `asset_text_embeddings`
+      exist with HNSW indexes, `ai_models` and `taxonomy_terms.ai_threshold` exist, the zero-shot vocabulary
+      query exists and is now governed (Q.20b), and `duplicate_candidates.cosine` is the column the embedding
+      half would fill — which is also why `relation` currently only claims `near_identical` or `variant`.
 
 ## M5 — Hosted-model enrichment
 
