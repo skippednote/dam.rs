@@ -54,6 +54,32 @@ pub const NEAR_DUPLICATE_DISTANCE: u32 = 12;
 /// feature and a much larger table. `asset_colors.rank` is a smallint precisely because this is a short list.
 pub const COLOURS_KEPT: usize = 5;
 
+/// Everything one decode of an image yields.
+///
+/// One entry point taking bytes, because decoding is the expensive part and the caller wants both halves —
+/// asking for hashes and colours separately would decode twice for every asset in the library. It also keeps
+/// image decoding inside this crate: the pipeline orchestrates and does not need an `image` dependency of its
+/// own to do it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Analysis {
+    pub hashes: Hashes,
+    pub colours: Vec<Colour>,
+}
+
+/// Hashes and colours one encoded image.
+///
+/// The pixel budget is enforced by the decode itself here rather than probed first: this runs on a *proxy*,
+/// which the derive pass has already bounded, so the guard `probe::perceptual_hash` needs for arbitrary
+/// uploaded bytes is already upstream.
+pub fn analyse(bytes: &[u8]) -> Result<Analysis> {
+    let image = image::load_from_memory(bytes)
+        .map_err(|error| Error::Decode(format!("decoding for similarity: {error}")))?;
+    Ok(Analysis {
+        hashes: hashes(&image),
+        colours: colours(&image)?,
+    })
+}
+
 /// Both perceptual hashes of one image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Hashes {

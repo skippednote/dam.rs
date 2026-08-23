@@ -21,6 +21,7 @@ pub mod bulk_exec;
 pub mod derive;
 pub mod enrich;
 pub mod finalise;
+pub mod similarity;
 pub mod tiering;
 pub mod webhooks;
 pub mod worker;

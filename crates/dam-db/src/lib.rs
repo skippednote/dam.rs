@@ -40,6 +40,7 @@ pub mod restores;
 pub mod rights;
 pub mod saved_searches;
 pub mod shares;
+pub mod similarity;
 pub mod suggest;
 pub mod taxonomy;
 pub mod tenant_conn;

@@ -55,6 +55,8 @@ pub mod kind {
     pub const RESTORE_POLL: &str = "restore_poll";
     /// One batch of the webhook outbox is signed and sent (§11).
     pub const WEBHOOK_DISPATCH: &str = "webhook_dispatch";
+    /// One asset is perceptually hashed and coloured, and its near-duplicates queued (§8.1).
+    pub const SIMILARITY: &str = "similarity";
 }
 
 /// How long to wait when the queue is empty.
@@ -269,12 +271,39 @@ pub async fn handle(context: &Context, job: &Job) -> Result<()> {
             // draw. The other order makes a result render as a placeholder for however long the derive takes.
             enqueue_index(&context.global, job.tenant_id, asset_id).await?;
 
+            // Hashed and coloured, unconditionally. Unlike enrichment this needs no credential, no budget and
+            // no tenant opt-in — it is arithmetic over a proxy the library already has, so there is nothing to
+            // switch on and nothing to bill. Queued here because this is where the proxy starts existing.
+            enqueue_similarity(&context.global, job.tenant_id, asset_id).await?;
+
             // And described, if the tenant has switched that on. Checked *before* enqueueing rather than only
             // inside the stage: this is the one queue where a job costs money, and a tenant with enrichment off
             // should not accumulate a million rows that exist to say "off". The stage checks again anyway,
             // because a setting can change between the two.
             if context.ai.is_some() && enrichment_enabled(&context.global, &slug).await? {
                 enqueue_enrich(&context.global, job.tenant_id, asset_id).await?;
+            }
+            Ok(())
+        }
+
+        kind::SIMILARITY => {
+            let asset_id = uuid_field(job, "asset_id")?;
+            match crate::similarity::analyse(
+                &context.global,
+                context.store.as_ref() as &dyn BlobStore,
+                &slug,
+                asset_id,
+            )
+            .await?
+            {
+                Some(analysed) => tracing::info!(
+                    %asset_id,
+                    colours = analysed.colours,
+                    candidates = analysed.candidates,
+                    "hashed and coloured",
+                ),
+                // Not an image. A library is full of files nothing can look at, and that is not a failure.
+                None => tracing::debug!(%asset_id, "nothing to hash"),
             }
             Ok(())
         }
@@ -675,6 +704,27 @@ pub async fn requeue_tier_sweep(
     after: chrono::Duration,
 ) -> Result<Uuid> {
     Ok(jobs::enqueue(global, sweep_spec(tenant_id, after)).await?)
+}
+
+/// Queues the similarity pass for one asset.
+///
+/// Deduped per asset, so a re-derive does not queue a second pass for work that is idempotent anyway — the
+/// hashes upsert and the candidate insert ignores conflicts, so a duplicate job would be harmless and wasted.
+pub async fn enqueue_similarity(
+    global: &sqlx::PgPool,
+    tenant_id: Uuid,
+    asset_id: Uuid,
+) -> Result<Uuid> {
+    Ok(jobs::enqueue(
+        global,
+        jobs::JobSpec::new(tenant_id, kind::SIMILARITY)
+            .payload(serde_json::json!({ "asset_id": asset_id }))
+            // Below the interactive kinds and below indexing: a duplicate candidate is useful within the hour,
+            // and a thumbnail is somebody waiting.
+            .priority(70)
+            .dedupe_key(format!("similarity:{asset_id}")),
+    )
+    .await?)
 }
 
 /// Starts a tenant's webhook dispatch chain.

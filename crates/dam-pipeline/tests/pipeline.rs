@@ -1685,7 +1685,9 @@ async fn the_whole_chain_runs_through_the_worker() {
         .await
         .expect("complete");
 
-    // Which queued the index — in that order, so an asset reaching search already has a thumbnail to draw.
+    // Which queued the index and the similarity pass. Both, because a proxy now exists: indexing so an asset
+    // reaching search already has a thumbnail to draw, and similarity because that is where the bytes it
+    // hashes start existing. Run in whatever order the queue hands them over — neither depends on the other.
     let claimed = dam_db::jobs::claim(
         &f.global,
         "test-worker",
@@ -1693,14 +1695,23 @@ async fn the_whole_chain_runs_through_the_worker() {
     )
     .await
     .expect("claim");
-    assert_eq!(claimed.len(), 1, "derivation must have queued an index");
-    assert_eq!(claimed[0].kind, dam_pipeline::worker::kind::INDEX);
-    dam_pipeline::worker::handle(&context, &claimed[0])
-        .await
-        .expect("index");
-    dam_db::jobs::complete(&f.global, claimed[0].id)
-        .await
-        .expect("complete");
+    let kinds: Vec<&str> = claimed.iter().map(|job| job.kind.as_str()).collect();
+    assert!(
+        kinds.contains(&dam_pipeline::worker::kind::INDEX),
+        "derivation must have queued an index: {kinds:?}"
+    );
+    assert!(
+        kinds.contains(&dam_pipeline::worker::kind::SIMILARITY),
+        "and the similarity pass, which needs the proxy derivation just made: {kinds:?}"
+    );
+    for job in &claimed {
+        dam_pipeline::worker::handle(&context, job)
+            .await
+            .unwrap_or_else(|error| panic!("{}: {error}", job.kind));
+        dam_db::jobs::complete(&f.global, job.id)
+            .await
+            .expect("complete");
+    }
 
     // The asset exists, has a thumbnail, and is searchable.
     let asset_id: Uuid = sqlx::query_scalar("SELECT id FROM assets WHERE filename = 'chained.jpg'")
@@ -1715,6 +1726,32 @@ async fn the_whole_chain_runs_through_the_worker() {
     .await
     .expect("count");
     assert_eq!(thumbs, 1);
+
+    // And the similarity pass ran over the proxy the same derivation produced. Asserted here rather than in
+    // its own test because the point is the *chain*: these rows exist because a real upload went through a
+    // real worker, not because a fixture wrote them.
+    let (phash, dhash): (i64, i64) =
+        sqlx::query_as("SELECT phash, dhash FROM asset_phashes WHERE asset_id = $1")
+            .bind(asset_id)
+            .fetch_one(&f.tenant)
+            .await
+            .expect("the asset was hashed");
+    assert_ne!(phash, dhash, "two algorithms, two values");
+    let colours: i64 = sqlx::query_scalar("SELECT count(*) FROM asset_colors WHERE asset_id = $1")
+        .bind(asset_id)
+        .fetch_one(&f.tenant)
+        .await
+        .expect("count colours");
+    assert!(
+        (1..=5).contains(&colours),
+        "between one and five dominant colours, got {colours}"
+    );
+    // Nothing else in this fixture, so nothing to be a duplicate of.
+    let candidates: i64 = sqlx::query_scalar("SELECT count(*) FROM duplicate_candidates")
+        .fetch_one(&f.tenant)
+        .await
+        .expect("count candidates");
+    assert_eq!(candidates, 0, "one asset is a duplicate of nothing");
 
     let schema = dam_search::IndexSchema::new(dam_db::fields::load(&f.tenant).await.expect("defs"));
     let open = context
