@@ -34,6 +34,22 @@ enum Command {
         #[arg(long)]
         name: Option<String>,
     },
+    /// Set up, review, dry-run and roll back a migration (G7).
+    ///
+    /// Records arrive as **JSON lines on stdin** — one object of source fields per line — rather than through a
+    /// built-in reader per vendor. That is §G7's architecture read the other way round: the mapping is the hard
+    /// part and it is source-agnostic, so anything that can emit JSON lines is a source. `jq` over a Widen API
+    /// response, a spreadsheet exported and converted, a script walking a file share.
+    ///
+    /// Vendor connectors and a CSV reader are a later slice; a CSV reader in particular wants a dependency
+    /// decision rather than a hand-rolled quoting parser.
+    Import {
+        #[arg(long)]
+        tenant: String,
+        #[command(subcommand)]
+        action: ImportAction,
+    },
+
     /// Set or clear a tenant's cap (G19).
     ///
     /// Here rather than in the API, deliberately: a tenant raising its own limit is not a feature, and putting
@@ -166,6 +182,71 @@ enum Command {
         /// Write to openapi.json at the repository root instead of stdout.
         #[arg(long)]
         write: bool,
+    },
+}
+
+/// What to do with a migration.
+#[derive(clap::Subcommand, Debug)]
+enum ImportAction {
+    /// Register a run. Prints its id.
+    New {
+        /// `widen`, `bynder`, `brandfolder`, `aprimo`, `canto`, `sharepoint`, `gdrive`, `s3_bucket`,
+        /// `filesystem` or `csv` — the set migration 0008 allows.
+        #[arg(long)]
+        source: String,
+        /// How an operator tells two runs apart.
+        #[arg(long)]
+        label: String,
+        /// Assets per batch. A migration moves in batches with a QA gate between them, not in one run.
+        #[arg(long, default_value_t = 1000)]
+        batch_size: i32,
+    },
+
+    /// Print every run and where it has got to.
+    List,
+
+    /// Load the crosswalk from a JSON file and move the run to `crosswalk_review`.
+    ///
+    /// A file rather than flags, because the file *is* the reviewed artifact: a mapping of forty fields is not
+    /// something anybody types at a prompt twice, and it wants to live in version control beside the migration.
+    Crosswalk {
+        #[arg(long)]
+        job: uuid::Uuid,
+        /// `{ "rules": [{ "source": …, "target": …, "transform": … }], "ignored": [] }`.
+        #[arg(long)]
+        file: std::path::PathBuf,
+    },
+
+    /// Map every record on stdin and print the report, writing nothing to the library.
+    ///
+    /// The artifact §G7 says the customer signs off on. Stored on the job as well as printed, so it can be
+    /// pointed at after the run rather than living in a terminal window.
+    DryRun {
+        #[arg(long)]
+        job: uuid::Uuid,
+        /// Which field of each record identifies it at the source. Retained permanently — 0008 keeps
+        /// `source_id` because "two years later, 'which Widen asset did this come from' is a question that
+        /// gets asked".
+        #[arg(long, default_value = "id")]
+        id_field: String,
+    },
+
+    /// Print the run's stored report.
+    Report {
+        #[arg(long)]
+        job: uuid::Uuid,
+    },
+
+    /// Roll back everything this run created.
+    ///
+    /// Soft-deletes the assets and marks the records, keeping the records — a second attempt needs to know what
+    /// the first one did.
+    Rollback {
+        #[arg(long)]
+        job: uuid::Uuid,
+        /// Required. A rollback removes work, so it does not happen because somebody pressed up-arrow.
+        #[arg(long)]
+        confirm: bool,
     },
 }
 
@@ -579,6 +660,265 @@ async fn main() -> anyhow::Result<()> {
             }
         }
 
+        Command::Import { tenant, action } => {
+            let slug = TenantSlug::new(&tenant).context("tenant slug")?;
+            let url = cfg.database.url.expose();
+            let pool = connect(url, &cfg).await?;
+            let tenant_pool = dam_db::tenant_conn::single_tenant_pool(
+                url,
+                &slug,
+                cfg.database.max_connections.min(4),
+            )
+            .await
+            .context("connecting to the tenant's schema")?;
+            let mut conn = tenant_pool
+                .acquire()
+                .await
+                .context("acquiring a connection")?;
+            let _ = &pool;
+
+            match action {
+                ImportAction::New {
+                    source,
+                    label,
+                    batch_size,
+                } => {
+                    let id = uuid::Uuid::now_v7();
+                    dam_db::imports::create(
+                        &mut conn,
+                        &dam_db::imports::NewImport {
+                            id,
+                            source: &source,
+                            label: &label,
+                            config: serde_json::json!({}),
+                            batch_size,
+                            created_by: None,
+                        },
+                    )
+                    .await
+                    .context("registering the import")?;
+                    println!("{id}");
+                }
+
+                ImportAction::List => {
+                    println!("id	phase	source	label	discovered	migrated	failed");
+                    for job in dam_db::imports::all(&mut conn)
+                        .await
+                        .context("reading the imports")?
+                    {
+                        println!(
+                            "{}	{}	{}	{}	{}	{}	{}",
+                            job.id,
+                            job.phase.as_str(),
+                            job.source,
+                            job.label,
+                            job.discovered_count,
+                            job.migrated_count,
+                            job.failed_count,
+                        );
+                    }
+                }
+
+                ImportAction::Crosswalk { job, file } => {
+                    let text = std::fs::read_to_string(&file)
+                        .with_context(|| format!("reading {}", file.display()))?;
+                    let parsed: serde_json::Value =
+                        serde_json::from_str(&text).context("parsing the crosswalk")?;
+                    // Parsed into the real type before it is stored, so a malformed rule is refused here rather
+                    // than at the dry run — where it would look like a data problem. The same type the mapper
+                    // uses, so what is reviewed and what runs cannot differ.
+                    let _: dam_core::crosswalk::Crosswalk =
+                        serde_json::from_value(parsed.clone()).context("the crosswalk's shape")?;
+                    dam_db::imports::set_crosswalk(
+                        &mut conn,
+                        job,
+                        &parsed,
+                        &serde_json::json!({}),
+                        &serde_json::json!([]),
+                    )
+                    .await
+                    .context("storing the crosswalk")?;
+                    // Only advance if it is still at discovery: re-loading a corrected mapping mid-run must not
+                    // rewind the phase.
+                    if dam_db::imports::by_id(&mut conn, job)
+                        .await
+                        .context("reading the import")?
+                        .map(|found| found.phase)
+                        == Some(dam_db::imports::Phase::Discover)
+                    {
+                        dam_db::imports::advance(
+                            &mut conn,
+                            job,
+                            dam_db::imports::Phase::CrosswalkReview,
+                        )
+                        .await
+                        .context("advancing to review")?;
+                    }
+                    println!("crosswalk stored");
+                }
+
+                ImportAction::DryRun { job, id_field } => {
+                    let found = dam_db::imports::by_id(&mut conn, job)
+                        .await
+                        .context("reading the import")?
+                        .ok_or_else(|| anyhow::anyhow!("no import {job}"))?;
+                    let mut crosswalk: dam_core::crosswalk::Crosswalk =
+                        serde_json::from_value(found.crosswalk.clone())
+                            .context("the stored crosswalk")?;
+                    // The id column is consumed as the source identifier, so it is not a loss. Left in, it
+                    // appeared in every report as a column that arrives nowhere — noise in the one place the
+                    // report has to be trusted, and it took writing a real crosswalk to notice.
+                    if !crosswalk.ignored.iter().any(|one| one == &id_field) {
+                        crosswalk.ignored.push(id_field.clone());
+                    }
+                    let defs = dam_db::fields::load(&mut *conn)
+                        .await
+                        .context("reading the field definitions")?;
+
+                    let mut report = dam_core::crosswalk::Report::default();
+                    let mut discovered = 0i64;
+                    // Line by line rather than slurped: a 400k-record extraction is a large file, and holding
+                    // it in memory to count it would be a needless limit on the thing this exists to size.
+                    for line in std::io::stdin().lines() {
+                        let line = line.context("reading stdin")?;
+                        if line.trim().is_empty() {
+                            continue;
+                        }
+                        let record: serde_json::Map<String, serde_json::Value> =
+                            serde_json::from_str(&line).context("parsing a record")?;
+                        discovered += 1;
+
+                        let source_id = record
+                            .get(&id_field)
+                            .and_then(|value| value.as_str().map(str::to_owned))
+                            .unwrap_or_else(|| discovered.to_string());
+
+                        let mapped = dam_core::crosswalk::apply(&crosswalk, &record, &defs);
+                        // The real validator. A dry run with its own idea of validity would certify something
+                        // different from what the transfer does.
+                        let outcome = dam_core::fields::validate(
+                            &defs,
+                            &mapped.payload,
+                            dam_core::fields::Mode::Create,
+                            dam_core::fields::Writer::Human,
+                            &serde_json::Map::new(),
+                        );
+                        if let Err(rejections) = &outcome {
+                            dam_core::crosswalk::accrue_rejections(&mut report, rejections);
+                        }
+                        dam_core::crosswalk::accrue(
+                            &mut report,
+                            &crosswalk,
+                            &record,
+                            &mapped,
+                            outcome.is_ok(),
+                        );
+
+                        let warnings = serde_json::to_value(
+                            mapped
+                                .warnings
+                                .iter()
+                                .map(|warning| {
+                                    serde_json::json!({
+                                        "source": warning.source,
+                                        "code": warning.code,
+                                        "detail": warning.detail,
+                                    })
+                                })
+                                .collect::<Vec<_>>(),
+                        )
+                        .unwrap_or_else(|_| serde_json::json!([]));
+                        dam_db::imports::note(
+                            &mut conn,
+                            job,
+                            &source_id,
+                            None,
+                            &warnings,
+                            mapped.fatal.as_ref().map(|f| f.detail.as_str()),
+                        )
+                        .await
+                        .context("noting a record")?;
+                    }
+
+                    let stored = serde_json::json!({
+                        "records": report.records,
+                        "would_arrive": report.would_arrive,
+                        "would_fail": report.would_fail,
+                        "would_be_invalid": report.would_be_invalid,
+                        "warnings": report.warnings,
+                        "rejections": report.rejections,
+                        "coverage": report.coverage.iter().map(|(name, coverage)| {
+                            (name.clone(), serde_json::json!({
+                                "present": coverage.present,
+                                "mapped": coverage.mapped,
+                                "ignored": coverage.ignored,
+                            }))
+                        }).collect::<serde_json::Map<_, _>>(),
+                    });
+                    dam_db::imports::set_report(&mut conn, job, discovered, &stored)
+                        .await
+                        .context("storing the report")?;
+                    if found.phase == dam_db::imports::Phase::CrosswalkReview {
+                        dam_db::imports::advance(&mut conn, job, dam_db::imports::Phase::DryRun)
+                            .await
+                            .context("advancing to dry run")?;
+                    }
+                    print_report(&report);
+                }
+
+                ImportAction::Report { job } => {
+                    let found = dam_db::imports::by_id(&mut conn, job)
+                        .await
+                        .context("reading the import")?
+                        .ok_or_else(|| anyhow::anyhow!("no import {job}"))?;
+                    println!("{}", serde_json::to_string_pretty(&found.report)?);
+                }
+
+                ImportAction::Rollback { job, confirm } => {
+                    if !confirm {
+                        anyhow::bail!(
+                            "a rollback removes every asset this run created; pass --confirm to mean it"
+                        );
+                    }
+                    let assets = dam_db::imports::created_assets(&mut conn, job)
+                        .await
+                        .context("reading the manifest")?;
+                    // Soft-deleted, and only what the run created and nothing has touched since — see
+                    // `created_assets`. A legal hold still refuses, which is correct: a hold outranks a
+                    // migration's tidy-up.
+                    let mut removed = 0u64;
+                    for asset_id in &assets {
+                        removed += sqlx::query(
+                            "UPDATE assets SET deleted_at = now(), status = 'deleted',                                     updated_at = now()                               WHERE id = $1 AND deleted_at IS NULL AND NOT legal_hold",
+                        )
+                        .bind(asset_id)
+                        .execute(&mut *conn)
+                        .await
+                        .context("removing an asset")?
+                        .rows_affected();
+                    }
+                    let marked = dam_db::imports::mark_rolled_back(&mut conn, job)
+                        .await
+                        .context("marking the records")?;
+                    dam_db::imports::advance(&mut conn, job, dam_db::imports::Phase::RolledBack)
+                        .await
+                        .context("advancing to rolled back")?;
+                    println!(
+                        "removed {removed} of {} assets; {marked} records marked rolled back",
+                        assets.len()
+                    );
+                    if removed < assets.len() as u64 {
+                        // Said rather than swallowed: an asset under legal hold is the one case where a
+                        // rollback leaves something behind, and it is a thing somebody has to know.
+                        eprintln!(
+                            "{} were left in place — a legal hold outranks a migration's rollback",
+                            assets.len() as u64 - removed
+                        );
+                    }
+                }
+            }
+        }
+
         Command::Quota {
             tenant,
             key,
@@ -717,6 +1057,46 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Prints a dry-run report the way somebody reads one.
+///
+/// Totals first, then the columns that never arrive, then the warning codes. That order because the first
+/// question is "would this work", the second is "what would I lose", and the third is "what exactly is
+/// wrong" — and a report that led with forty thousand warning lines would answer none of them.
+fn print_report(report: &dam_core::crosswalk::Report) {
+    println!("records\t{}", report.records);
+    println!("would_arrive\t{}", report.would_arrive);
+    println!("would_be_invalid\t{}", report.would_be_invalid);
+    println!("would_fail\t{}", report.would_fail);
+
+    let losses = report.total_losses();
+    if losses.is_empty() {
+        println!("\nevery source column that carried a value arrived somewhere");
+    } else {
+        println!("\nsource columns that arrive nowhere (records affected):");
+        for (name, coverage) in losses {
+            println!("  {name}\t{}", coverage.present);
+        }
+    }
+
+    if !report.warnings.is_empty() {
+        println!("\nwarnings:");
+        for (code, count) in &report.warnings {
+            println!("  {code}\t{count}");
+        }
+    }
+    if !report.rejections.is_empty() {
+        println!("\nvalidation refusals:");
+        for (code, count) in &report.rejections {
+            println!("  {code}\t{count}");
+        }
+    }
+    if report.is_futile() {
+        println!(
+            "\nNOTHING would arrive. The crosswalk needs work before this run is worth doing."
+        );
+    }
 }
 
 /// The index pool, built from configuration.

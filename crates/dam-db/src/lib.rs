@@ -26,6 +26,7 @@ pub mod enrichment;
 pub mod events;
 pub mod facets;
 pub mod fields;
+pub mod imports;
 pub mod insights;
 pub mod jobs;
 pub mod judgements;

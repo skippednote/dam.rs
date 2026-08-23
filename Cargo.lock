@@ -2203,6 +2203,7 @@ dependencies = [
  "dam-store",
  "dam-telemetry",
  "figment",
+ "serde_json",
  "sqlx 0.9.0",
  "tokio",
  "tracing",

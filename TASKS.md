@@ -33,9 +33,9 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, colour | dedup and colour **done** (M4a); the rest needs model files — see M4 below |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | **done** — two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query, the MCP server |
 | **M6** Workflow/proofing, annotations, analytics | **done** — annotations (M6a), proofing (M6b), analytics (M6c) |
-| **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | quotas/metering enforcement **done** (G19); import, SCIM/BYOK/audit open |
+| **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | G19 **done**; G7 crosswalk and dry-run **done**, transfer needs a source connector; G10 open |
 
-**Next up, in order:** Pre-GA G7 import → G10 SCIM/BYOK/audit. M3d·5 (the Drupal module) is deferred until there is a Drupal environment to verify against — see its entry. M4b (local ONNX models) stays parked on the model-distribution question.
+**Next up, in order:** Pre-GA G10 SCIM/BYOK/audit → G7·2 source connectors (which wants a decision on the `csv` crate). M3d·5 (the Drupal module) is deferred until there is a Drupal environment to verify against — see its entry. M4b (local ONNX models) stays parked on the model-distribution question.
 M4b (local models) is parked on a distribution decision — see the M4 section.
 
 **`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
@@ -1359,7 +1359,70 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   boot pass measured 183 assets, a cap of 100 refused the next upload with 507, softening it returned 201,
   raising it returned 201, and forcing a metering pass stamped `exceeded_at`.
 
-- [ ] **G7 Import.** FTP/bulk import (§ Pre-GA).
+- [x] **G7·1 The crosswalk, the dry-run report and the phase machine.** `import_jobs` and `import_records` have
+  been in the schema since tenant 0008 with nothing reading them. §G7 is blunt about which part matters:
+  "underestimating metadata cleanup is the single most common cause of failed DAM migrations." Moving bytes is a
+  loop and a `PUT`; the mapping is what fails.
+
+  **The dry run uses the real validator.** `crosswalk::apply` produces a payload and nothing more; whether it is
+  *acceptable* is `fields::validate`'s answer, and the dry run asks it. A dry run with its own idea of validity
+  would certify something different from what the transfer does — a signed-off report followed by a failed run,
+  which is worse than no report.
+
+  **An empty source cell is not a finding.** A CSV header lists every column and most rows leave most blank.
+  Reporting each would bury the twelve that matter under forty thousand that do not, and a report nobody reads
+  certifies nothing. But a value that carried and went nowhere is *always* a finding — unless the crosswalk
+  says it was decided against, which is why `ignored` exists as a separate list from "not mapped yet".
+
+  That distinction produced the one design change my own test caught: `total_losses()` was listing deliberately
+  ignored columns among its losses, which defeats the point of being able to decide against a field. The column
+  an operator scans has to be able to shrink to nothing, or they stop scanning it.
+
+  **Nothing is guessed.** An unparseable date is dropped and named rather than parsed hopefully — `03/04/2026`
+  is two different dates depending on locale, and a plausible wrong date is worse than a missing one because
+  nobody notices it for two years. A mapping miss is the caller's decision in all three directions, because
+  keep, drop and fail are each right somewhere: an open keyword vocabulary wants keep, a closed list wants drop,
+  and anything a rights decision rests on wants the asset not to arrive at all.
+
+  **The phase machine advances one step, with one loop.** A jump from `discover` to `transfer` would move a
+  library under a crosswalk nobody reviewed. Writing that rule as "forward only" lost something the design
+  needs, and the test caught it: `verify → transfer` has to be legal, because "phased/incremental transfer
+  rather than single cutover" means the transfer/verify pair runs once per batch, many times, before anything
+  completes. `failed` is deliberately not terminal — a run that failed on a bad mapping is fixed by changing the
+  mapping, which is what 0008 means by "editable between phases".
+
+  **Records are never deleted, not even by a rollback.** 0008 retains `source_id` permanently because "two
+  years later, 'which Widen asset did this come from' is a question that gets asked", and a second attempt needs
+  to know what the first one did. A rollback takes only what the job created *and nothing has touched since*, so
+  an escape hatch cannot become a second incident — and a legal hold still refuses, which the command says out
+  loud rather than swallowing.
+
+  **Records arrive as JSON lines on stdin**, not through a reader per vendor. That is §G7's architecture read
+  the other way round: the mapping is the hard part and it is source-agnostic, so anything that can emit JSON
+  lines is a source — `jq` over a Widen response, a spreadsheet converted, a script walking a file share. It
+  also avoided a dependency decision that is not mine to make: a correct CSV reader wants the `csv` crate rather
+  than a hand-rolled quoting parser.
+
+  11 pure crosswalk cases, 8 db cases. Verified live against the dev tenant's real twelve fields: a first-pass
+  crosswalk reported `Photographer` arriving nowhere across every record and two unparseable dates; correcting
+  it reported "every source column that carried a value arrived somewhere" with one warning left — and that
+  warning is a genuine finding the tool surfaced, because the source data has **mixed date formats** and no
+  single crosswalk can handle both. Which is exactly the metadata cleanup §G7 says migrations underestimate.
+
+  Two things writing a real crosswalk file caught. `Transform` was externally tagged, so a transform with no
+  parameters spelled `"copy"` while one with parameters spelled `{"split":{"on":";"}}` — and `{"copy":{}}` failed
+  with "invalid type: map, expected unit". It is internally tagged on a `type` field now, one uniform shape. And
+  the id column was appearing in every report as a column that arrives nowhere; it is consumed as the source
+  identifier, so it is not a loss.
+
+- [ ] **G7·2 Source connectors and transfer.** Blocked on the same thing, and in the honest direction: a
+  transfer needs *bytes*, and bytes come from a source connector. The JSON-lines records carry metadata. So
+  `damctl import transfer` is not a command yet — shipping one that could only ever move nothing would be worse
+  than its absence. Widen API v2 is the obvious first connector (§G7 says so), and a CSV/filesystem reader wants
+  the `csv` crate.
+
+  The rollback machinery is already built and tested against real records, so the transfer slice does not have
+  to build its own escape hatch under pressure.
 
 - [ ] **G10 SCIM, BYOK, audit export.**
 

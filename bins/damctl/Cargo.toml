@@ -15,6 +15,8 @@ dam-db = { path = "../../crates/dam-db" }
 dam-store = { path = "../../crates/dam-store" }
 dam-backup = { path = "../../crates/dam-backup" }
 dam-search = { path = "../../crates/dam-search" }
+# A crosswalk is reviewed as a JSON file and stored as jsonb; the import records arrive as JSON lines.
+serde_json = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing = { workspace = true }
