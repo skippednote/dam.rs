@@ -587,3 +587,69 @@ pub async fn revive(conn: &mut sqlx::PgConnection, id: Uuid) -> Result<bool, Err
     .rows_affected();
     Ok(updated > 0)
 }
+
+// ─── the event vocabulary ───────────────────────────────────────────────────
+
+/// The event kinds damrs emits.
+///
+/// One place, because a subscription filters on these strings: a producer that invented `asset.publish` beside
+/// `asset.published` would leave every filtered subscription silently missing half its events, and the mistake
+/// is invisible until a customer notices their CMS is out of step.
+///
+/// Named in the past tense throughout. An outbox row is written after the change, in the same transaction, so
+/// every one of these is a statement about something that has already happened — `asset.publish` would read as
+/// an instruction, which is the opposite of what a webhook is.
+pub mod kind {
+    /// An asset became visible on a public surface.
+    pub const PUBLISHED: &str = "asset.published";
+    /// An asset was withdrawn from public surfaces. The bytes are still there.
+    pub const UNPUBLISHED: &str = "asset.unpublished";
+    /// A new version became current. The asset id is unchanged, which is the point of a version.
+    pub const VERSION_CREATED: &str = "asset.version_created";
+    /// An asset was soft-deleted.
+    pub const DELETED: &str = "asset.deleted";
+    /// An asset's metadata changed.
+    pub const METADATA_UPDATED: &str = "asset.metadata_updated";
+    /// An asset's lifecycle status changed — archived, restored, back to active.
+    pub const STATUS_CHANGED: &str = "asset.status_changed";
+
+    /// Every kind, for the subscription form and for validating a filter.
+    #[must_use]
+    pub const fn all() -> [&'static str; 6] {
+        [
+            PUBLISHED,
+            UNPUBLISHED,
+            VERSION_CREATED,
+            DELETED,
+            METADATA_UPDATED,
+            STATUS_CHANGED,
+        ]
+    }
+}
+
+/// Queues an asset event, with the payload shape every consumer can rely on.
+///
+/// **Reference, not copy** — §11's premise. The payload carries the ids and the facts a consumer needs to
+/// decide what to invalidate, and never the bytes or a URL to them: a connected CMS stores an asset id and
+/// renders signed transform URLs, which is what makes rights withdrawal and expiry actually take effect
+/// downstream. A payload with a download link in it would be a cache nobody can invalidate.
+///
+/// Deliberately thin for the same reason. A receiver that needs the metadata calls `/assets/{id}` with its own
+/// credential, and gets what *it* is allowed to see — whereas a fat payload would be damrs deciding, at write
+/// time, what an endpoint's scope will be at read time. The event says what changed; the API says what it is.
+pub async fn enqueue_asset_event(
+    conn: &mut sqlx::PgConnection,
+    event_kind: &str,
+    asset_id: Uuid,
+    detail: Value,
+) -> Result<u64, Error> {
+    let payload = serde_json::json!({
+        "event": event_kind,
+        "asset_id": asset_id,
+        // The tenant's clock at enqueue, which is when the change happened — not when the delivery is
+        // attempted. A consumer reconciling a backlog after an outage needs the former.
+        "occurred_at": Utc::now(),
+        "detail": detail,
+    });
+    enqueue(conn, event_kind, Some(asset_id), &payload).await
+}

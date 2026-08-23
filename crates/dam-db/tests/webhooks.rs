@@ -739,6 +739,78 @@ async fn removing_a_subscription_takes_its_queue(pool: &PgPool) {
     let _ = pool;
 }
 
+async fn the_event_vocabulary_is_one_list(pool: &PgPool) {
+    // A subscription filters on these strings, so a producer that invented `asset.publish` beside
+    // `asset.published` would leave every filtered subscription silently missing half its events — and the
+    // mistake is invisible until a customer notices their CMS is out of step. Hence one list, and this
+    // asserts the shape a filter depends on.
+    let kinds = dam_db::webhooks::kind::all();
+    assert_eq!(kinds.len(), 6);
+    for kind in kinds {
+        assert!(
+            kind.starts_with("asset."),
+            "{kind} should be namespaced, or a filter cannot be written by prefix"
+        );
+        // Past tense throughout: an outbox row is written after the change, in the same transaction, so every
+        // one of these is a statement about something that already happened. `asset.publish` would read as an
+        // instruction, which is the opposite of what a webhook is.
+        let verb = kind.split('.').nth(1).expect("a verb");
+        assert!(
+            verb.ends_with("ed")
+                || verb.ends_with("_created")
+                || verb.ends_with("_updated")
+                || verb.ends_with("_changed"),
+            "{kind} should be past tense"
+        );
+    }
+    let mut sorted = kinds.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(sorted.len(), kinds.len(), "no duplicates");
+    let _ = pool;
+}
+
+async fn an_asset_event_carries_ids_and_never_bytes(pool: &PgPool) {
+    // §11's premise is reference, not copy: a connected CMS stores an asset id and renders signed transform
+    // URLs, which is what makes rights withdrawal and expiry take effect downstream. A payload carrying a
+    // download link would be a cache nobody can invalidate — so this asserts what is *absent*.
+    let (_pg, fresh) = db().await;
+    let subscription = subscribe(&fresh, "https://example.test/shape", &[]).await;
+    let photo = asset(&fresh, "shape").await;
+
+    webhooks::enqueue_asset_event(
+        &mut *held(&fresh).await,
+        webhooks::kind::PUBLISHED,
+        photo,
+        json!({"published": true}),
+    )
+    .await
+    .expect("enqueue");
+
+    let claimed = webhooks::claim(&mut *held(&fresh).await, 1)
+        .await
+        .expect("claim")
+        .remove(0);
+    assert_eq!(claimed.event_kind, webhooks::kind::PUBLISHED);
+    assert_eq!(claimed.asset_id, Some(photo));
+    assert_eq!(claimed.payload["event"], webhooks::kind::PUBLISHED);
+    assert_eq!(claimed.payload["asset_id"], photo.to_string());
+    assert_eq!(claimed.payload["detail"]["published"], true);
+    // `occurred_at` is when the change happened, not when the delivery is attempted: a consumer reconciling a
+    // backlog after an outage needs the former.
+    assert!(claimed.payload["occurred_at"].is_string());
+
+    let rendered = claimed.payload.to_string();
+    for absent in ["/d/", "http", "content_hash", "object_key", "bytes"] {
+        assert!(
+            !rendered.contains(absent),
+            "a payload must not carry {absent:?}: {rendered}"
+        );
+    }
+    let _ = subscription;
+    let _ = pool;
+}
+
 async fn the_log_withholds_the_payload(pool: &PgPool) {
     // A log endpoint returning every payload would be the cheapest way to read a tenant's whole change history
     // in one request — and it is the largest column, on the query a UI runs most often.
@@ -785,5 +857,7 @@ async fn the_outbox_delivers_in_order_and_stops_when_nobody_is_listening() {
     a_worker_that_died_does_not_halt_an_assets_stream(&pool).await;
     a_released_delivery_costs_no_attempt(&pool).await;
     removing_a_subscription_takes_its_queue(&pool).await;
+    the_event_vocabulary_is_one_list(&pool).await;
+    an_asset_event_carries_ids_and_never_bytes(&pool).await;
     the_log_withholds_the_payload(&pool).await;
 }

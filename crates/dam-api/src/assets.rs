@@ -528,6 +528,17 @@ pub async fn update_metadata(
         .await
         .map_err(dam_db::Error::from)?;
 
+    // The outbox row, in this transaction. Both edit paths emit — this one and the bulk executor's — because
+    // a consumer cannot tell which route an edit took, and an event that fired for one and not the other
+    // would be a cache that goes stale depending on how many assets somebody selected.
+    dam_db::webhooks::enqueue_asset_event(
+        conn.executor(),
+        dam_db::webhooks::kind::METADATA_UPDATED,
+        asset_id,
+        serde_json::json!({ "fields": edited }),
+    )
+    .await?;
+
     conn.commit().await?;
 
     Ok(Json(MetadataAccepted { values: stored }))

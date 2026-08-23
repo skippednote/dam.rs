@@ -11,10 +11,20 @@
 //!
 //! ## The URL is validated on the way in
 //!
-//! `https` only outside development, no credentials in the URL, and a host that is not a loopback or
-//! link-local address. That last one is the important one: a subscription is a server-side request to a URL a
-//! tenant chose, which is the definition of SSRF — without it a tenant could point a webhook at
-//! `http://169.254.169.254/` and have damrs fetch cloud instance credentials on their behalf.
+//! No credentials in the URL, and no private, loopback or link-local host. That last one is the important
+//! one: a subscription is a server-side request to a URL a tenant chose, which is the definition of SSRF —
+//! without it a tenant could point a webhook at `http://169.254.169.254/` and have damrs fetch cloud instance
+//! credentials on their behalf, then read the response out of their own delivery log.
+//!
+//! **Development relaxes two of these, and not the third.** `http` and *loopback* are permitted there, because
+//! a developer building an integration runs their receiver on `localhost` and the first version of this
+//! refused it — which made developing against webhooks impossible without writing SQL, a workaround no
+//! customer has. There is no privilege boundary to cross on a developer's own machine: the tenant, the server
+//! and the receiver are all theirs.
+//!
+//! Link-local and private ranges stay refused *everywhere*, including development. `169.254.169.254` is the
+//! cloud metadata service, and a development box is often a cloud VM — nobody has a reason to point a webhook
+//! at it, so the one address where a mistake is unrecoverable is never allowed.
 //!
 //! ## Deliveries are read-only except for a retry
 //!
@@ -40,14 +50,19 @@ const LOG_PAGE: i64 = 50;
 
 pub struct WebhookState {
     pub global: PgPool,
-    /// Whether to insist on `https`. False in development, where a receiver on localhost is the normal case.
-    pub require_https: bool,
+    /// Whether this is a developer's own machine.
+    ///
+    /// One flag rather than two, because the two concessions it makes always move together and naming them
+    /// separately would invite enabling one in production. It permits `http` and a loopback host — the shape
+    /// of a receiver a developer is writing — and changes nothing else: private and link-local addresses stay
+    /// refused, because a development box is often a cloud VM and the metadata service is reachable from it.
+    pub development: bool,
 }
 
 impl std::fmt::Debug for WebhookState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WebhookState")
-            .field("require_https", &self.require_https)
+            .field("development", &self.development)
             .finish_non_exhaustive()
     }
 }
@@ -148,7 +163,7 @@ pub async fn create(
 ) -> Result<(StatusCode, Json<CreatedView>), Failure> {
     let caller = caller::authorize(&state.global, &headers, Action::Manage).await?;
     let url = body.url.trim();
-    check_url(url, state.require_https).map_err(Failure::Unprocessable)?;
+    check_url(url, state.development).map_err(Failure::Unprocessable)?;
 
     // Generated here, not accepted from the caller. A client-chosen secret is a client-chosen *weak* secret,
     // and there is no reason to allow one: the value is opaque to everybody except the two ends.
@@ -376,12 +391,15 @@ pub async fn retry(
 /// address actually connected to, which belongs in the sender rather than in a validation function that runs
 /// once. This blocks the literal forms, which is what a mistake looks like; a determined operator with DNS
 /// they control is a different threat and needs the egress rules a deployment already has to have.
-fn check_url(url: &str, require_https: bool) -> Result<(), String> {
+///
+/// `development` permits `http` and a loopback host. It does **not** permit a private or link-local address —
+/// see the module docs on why the metadata service is refused even on a developer's machine.
+fn check_url(url: &str, development: bool) -> Result<(), String> {
     let parsed = url::Url::parse(url).map_err(|error| format!("{url:?} is not a URL: {error}"))?;
 
     match parsed.scheme() {
         "https" => {}
-        "http" if !require_https => {}
+        "http" if development => {}
         "http" => {
             return Err(
                 "a webhook URL must be https; a delivery carries a signature and a payload \
@@ -404,38 +422,72 @@ fn check_url(url: &str, require_https: bool) -> Result<(), String> {
     let Some(host) = parsed.host() else {
         return Err("a webhook URL needs a host".to_owned());
     };
-    if is_internal(&host) {
-        return Err(format!(
-            "{host} is a loopback, private or link-local address, and this server will not post to one"
-        ));
+    match reach(&host) {
+        Reach::Public => Ok(()),
+        Reach::Loopback if development => Ok(()),
+        Reach::Loopback => Err(format!(
+            "{host} is a loopback address, and this server posts from the server rather than from your              browser — so it would be reaching itself"
+        )),
+        Reach::Internal => Err(format!(
+            "{host} is a private or link-local address, and this server will not post to one even in \
+             development: that range carries the cloud metadata service"
+        )),
     }
-    Ok(())
 }
 
-/// Whether a host is one no tenant should be able to make this server talk to.
-fn is_internal(host: &url::Host<&str>) -> bool {
+/// How far away a host is.
+///
+/// Three levels rather than a boolean, because development relaxes exactly one of them. Collapsing loopback
+/// and private into "internal" is what made a developer's own receiver unregisterable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reach {
+    /// Somewhere on the internet. Always allowed.
+    Public,
+    /// This machine. Allowed on a developer's box, where there is no privilege boundary to cross.
+    Loopback,
+    /// Somebody else's network, or the metadata service. Never allowed.
+    Internal,
+}
+
+fn reach(host: &url::Host<&str>) -> Reach {
     match host {
         url::Host::Ipv4(address) => {
-            // 169.254/16 is the one that matters most: it carries the cloud metadata service.
-            address.is_loopback()
-                || address.is_private()
+            if address.is_loopback() {
+                Reach::Loopback
+            } else if address.is_private()
+                // 169.254/16 is the one that matters most: it carries the cloud metadata service.
                 || address.is_link_local()
                 || address.is_unspecified()
                 || address.is_broadcast()
+            {
+                Reach::Internal
+            } else {
+                Reach::Public
+            }
         }
         url::Host::Ipv6(address) => {
-            address.is_loopback()
-                || address.is_unspecified()
+            if address.is_loopback() {
+                Reach::Loopback
+            } else if address.is_unspecified()
                 // Unique-local (fc00::/7) and link-local (fe80::/10), which the standard library has no
                 // stable predicate for on this edition.
                 || (address.segments()[0] & 0xfe00) == 0xfc00
                 || (address.segments()[0] & 0xffc0) == 0xfe80
+            {
+                Reach::Internal
+            } else {
+                Reach::Public
+            }
         }
-        // `localhost` and anything ending in it, which resolves to loopback everywhere. Other names are not
-        // resolved here — see the note on this function's limits.
+        // `localhost` and anything under it resolve to loopback everywhere. Other names are not resolved here
+        // — see the note on this function's limits.
         url::Host::Domain(name) => {
             let name = name.trim_end_matches('.').to_ascii_lowercase();
-            name == "localhost" || name.ends_with(".localhost")
+            if name == "localhost" || name.ends_with(".localhost") {
+                Reach::Loopback
+            } else {
+                Reach::Public
+            }
         }
     }
 }

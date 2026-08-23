@@ -30,9 +30,9 @@ struct Fixture {
     _pg: PostgresHarness,
     global: PgPool,
     acme: PgPool,
-    /// Insists on https, like staging and production.
+    /// Staging and production: https, and no loopback.
     app: axum::Router,
-    /// Permits http, like development.
+    /// A developer's machine: http and loopback permitted, private and link-local still refused.
     dev: axum::Router,
     key: String,
     read_only_key: String,
@@ -75,11 +75,11 @@ async fn fixture() -> Fixture {
         _pg: pg,
         app: router(WebhookState {
             global: global.clone(),
-            require_https: true,
+            development: false,
         }),
         dev: router(WebhookState {
             global: global.clone(),
-            require_https: false,
+            development: true,
         }),
         key: issue(&global, tenant_id, Some(admin), &[]).await,
         read_only_key: issue(&global, tenant_id, Some(admin), &["asset:read"]).await,
@@ -238,26 +238,60 @@ async fn the_server_refuses_to_post_to_itself_or_its_host(f: &Fixture) {
         );
     }
 
-    // http is permitted in development only, because that is how anybody develops against this.
-    let (status, _) = call_on(
-        &f.dev,
-        "POST",
-        "/webhooks",
-        Some(&f.key),
-        Some(json!({ "url": "http://example.test/hook" })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED);
-    // But loopback stays refused even there: the SSRF rule is not a production-only nicety.
-    let (status, _) = call_on(
-        &f.dev,
-        "POST",
-        "/webhooks",
-        Some(&f.key),
-        Some(json!({ "url": "http://169.254.169.254/" })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    // Development permits exactly two of those: http, and a loopback receiver. The second one is a defect
+    // fix rather than a convenience — the first version of this refused `http://127.0.0.1:9099/hook`, which
+    // is the shape of every receiver a developer writes, so building a webhook integration locally was
+    // impossible without hand-written SQL. There is no privilege boundary to cross on a developer's own
+    // machine: the tenant, the server and the receiver are all theirs.
+    for url in [
+        "http://example.test/hook",
+        "http://127.0.0.1:9099/hook",
+        "http://localhost:9099/hook",
+        "http://[::1]:9099/hook",
+    ] {
+        let (status, body) = call_on(
+            &f.dev,
+            "POST",
+            "/webhooks",
+            Some(&f.key),
+            Some(json!({ "url": url })),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "{url} should register in development: {body}"
+        );
+    }
+
+    // And the one that stays refused everywhere, including development: a development box is often a cloud
+    // VM, and 169.254.169.254 is the metadata service. Nobody has a reason to point a webhook at it, so the
+    // one address where a mistake is unrecoverable is never allowed.
+    for url in [
+        "http://169.254.169.254/latest/meta-data/",
+        "http://10.0.0.5/hook",
+        "http://192.168.1.1/hook",
+        "http://[fd00::1]/hook",
+    ] {
+        let (status, body) = call_on(
+            &f.dev,
+            "POST",
+            "/webhooks",
+            Some(&f.key),
+            Some(json!({ "url": url })),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{url} must be refused even in development: {body}"
+        );
+        let reason = body["reason"].as_str().unwrap_or_default();
+        assert!(
+            reason.contains("even in development"),
+            "the refusal should say the rule is not relaxed here: {reason}"
+        );
+    }
 }
 
 // ─── the secret ─────────────────────────────────────────────────────────────

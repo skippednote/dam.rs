@@ -317,6 +317,15 @@ async fn apply_delete(conn: &mut sqlx::PgConnection, asset_id: Uuid) -> Result<A
     .rows_affected();
 
     if deleted > 0 {
+        dam_db::webhooks::enqueue_asset_event(
+            conn,
+            dam_db::webhooks::kind::DELETED,
+            asset_id,
+            // The kind of deletion, because the two mean different things downstream: a soft delete is
+            // recoverable and a consumer may want to hide rather than forget.
+            serde_json::json!({ "soft": true }),
+        )
+        .await?;
         return Ok(Applied::Done);
     }
 
@@ -439,6 +448,16 @@ async fn apply_status(
     .rows_affected();
 
     if changed > 0 {
+        dam_db::webhooks::enqueue_asset_event(
+            conn,
+            dam_db::webhooks::kind::STATUS_CHANGED,
+            asset_id,
+            // Both ends, so a consumer can act on the transition rather than having to remember the previous
+            // state itself. An archived asset still resolves through the API but its original may need a
+            // restore first, which is exactly what a CMS wants to know before rendering a download link.
+            serde_json::json!({ "from": from, "to": to }),
+        )
+        .await?;
         return Ok(Applied::Done);
     }
     // Why it did not change, in the asset's own words. A bulk run over a mixed selection is *expected* to
@@ -474,6 +493,21 @@ async fn apply_publication(
     let at = published.then(chrono::Utc::now);
     let changed = dam_db::assets::set_published(conn, asset_id, at).await?;
     if changed {
+        // In the same transaction as the change, which is the whole point of an outbox: announcing after the
+        // commit loses the event on a crash, and announcing before it announces something that may roll back.
+        // Only when it *changed*, so a re-publication that was already published emits nothing — a consumer
+        // invalidating a cache on every no-op is a consumer doing our idempotence for us.
+        dam_db::webhooks::enqueue_asset_event(
+            conn,
+            if published {
+                dam_db::webhooks::kind::PUBLISHED
+            } else {
+                dam_db::webhooks::kind::UNPUBLISHED
+            },
+            asset_id,
+            serde_json::json!({ "published": published }),
+        )
+        .await?;
         return Ok(Applied::Done);
     }
     let exists: Option<(bool,)> =
@@ -564,6 +598,18 @@ async fn apply_metadata(
         .execute(&mut *conn)
         .await
         .map_err(dam_db::Error::from)?;
+
+    // The *keys* that changed, not the values. A consumer needs to know whether the field it renders was
+    // touched, which the keys answer; the values would put a tenant's metadata in a delivery log and in
+    // whatever the receiver writes its request bodies to — and a receiver that wants them can read the asset
+    // with its own credential and get what it is allowed to see.
+    dam_db::webhooks::enqueue_asset_event(
+        conn,
+        dam_db::webhooks::kind::METADATA_UPDATED,
+        asset_id,
+        serde_json::json!({ "fields": values.keys().collect::<Vec<_>>() }),
+    )
+    .await?;
 
     Ok(Applied::Done)
 }

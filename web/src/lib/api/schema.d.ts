@@ -1821,6 +1821,97 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/webhooks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list"];
+        put?: never;
+        post: operations["create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/webhooks/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["remove"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/webhooks/{id}/deliveries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The recent deliveries for one subscription, newest first.
+         * @description **No payloads.** It is the largest column, on the query a screen runs most often, and returning them would
+         *     make this the cheapest way to read a tenant's whole change history in one request.
+         */
+        get: operations["deliveries"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/webhooks/{id}/deliveries/{delivery_id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Re-queues an abandoned delivery.
+         * @description Only a `dead` one, so this cannot be used to jump the queue for something in flight — which would break the
+         *     per-asset ordering the outbox exists to keep.
+         */
+        post: operations["retry"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/webhooks/{id}/enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Re-enables a subscription the system disabled. */
+        post: operations["enable"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/worklists": {
         parameters: {
             query?: never;
@@ -2554,6 +2645,18 @@ export interface components {
             token: string;
         };
         /**
+         * @description A newly created subscription, with its signing key.
+         *
+         *     The only response that ever carries the secret. A receiver cannot verify a delivery without it, so it has
+         *     to be shown once — and once only, for the same reason an API key is.
+         */
+        CreatedView: components["schemas"]["SubscriptionView"] & {
+            /** @description Shown now and never again. Store it: it is what verifies every delivery's signature. */
+            secret: string;
+            /** @description How to check a delivery, so the answer does not have to be looked up elsewhere. */
+            signature_note: string;
+        };
+        /**
          * @description Whether a credential is withdrawn or in use.
          *
          *     Named for the credential rather than reusing `conversions::ActiveRequest`: utoipa keys components by type
@@ -2629,6 +2732,34 @@ export interface components {
             is_default?: boolean;
             key: string;
             label: string;
+        };
+        /** @description One delivery attempt, as an operator sees it. No payload — see [`deliveries`]. */
+        DeliveryView: {
+            /** Format: uuid */
+            asset_id?: string | null;
+            /** Format: int32 */
+            attempts: number;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            delivered_at?: string | null;
+            event_kind: string;
+            /** Format: uuid */
+            id: string;
+            last_error?: string | null;
+            /**
+             * Format: date-time
+             * @description When the next attempt is due. In the past for one that is waiting to be picked up.
+             */
+            next_attempt_at: string;
+            /**
+             * Format: int32
+             * @description The HTTP status, when there was one. Absent for a timeout or a connection failure, which is a different
+             *     diagnosis and must not read as a zero.
+             */
+            response_status?: number | null;
+            /** @description `pending`, `delivering`, `delivered`, `failed` or `dead`. */
+            state: string;
         };
         /** @description A URL to fetch, or word that the format is being made. */
         DownloadIssued: {
@@ -2990,6 +3121,12 @@ export interface components {
              */
             saved_search_id?: string | null;
             title: string;
+        };
+        /** @description An endpoint to register. */
+        NewSubscriptionBody: {
+            /** @description Which events to send. Omit or leave empty for all of them. */
+            event_kinds?: string[];
+            url: string;
         };
         /** @description A term to add. */
         NewTermBody: {
@@ -3606,6 +3743,24 @@ export interface components {
          * @enum {string}
          */
         StorageClass: "STANDARD" | "STANDARD_IA" | "ONEZONE_IA" | "INTELLIGENT_TIERING" | "GLACIER_IR" | "GLACIER" | "DEEP_ARCHIVE";
+        /** @description One subscription. Never carries the secret. */
+        SubscriptionView: {
+            active: boolean;
+            /**
+             * Format: int32
+             * @description Deliveries abandoned in a row. Reset by any success, and by enabling it again.
+             */
+            consecutive_failures: number;
+            /** Format: date-time */
+            created_at: string;
+            /** @description Why the system disabled it. Present only when it did. */
+            disabled_reason?: string | null;
+            /** @description The event kinds wanted. Empty means all of them. */
+            event_kinds: string[];
+            /** Format: uuid */
+            id: string;
+            url: string;
+        };
         /** @description A tag waiting for a decision. */
         SuggestedTagView: {
             /**
@@ -8225,6 +8380,166 @@ export interface operations {
             };
             /** @description The key has no person behind it */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every subscription, without secrets */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubscriptionView"][];
+                };
+            };
+        };
+    };
+    create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewSubscriptionBody"];
+            };
+        };
+        responses: {
+            /** @description Registered; the secret is in this response only */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreatedView"];
+                };
+            };
+            /** @description The URL is not one this server will post to */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    remove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed, with its queued deliveries */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such subscription */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deliveries: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                /** @description The subscription */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Recent deliveries, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeliveryView"][];
+                };
+            };
+        };
+    };
+    retry: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                delivery_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Queued for another round of attempts */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such delivery, or it was not abandoned */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    enable: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Enabled, with its failure count forgiven */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubscriptionView"];
+                };
+            };
+            /** @description No such subscription */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

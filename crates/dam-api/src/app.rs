@@ -153,9 +153,10 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
         }))
         .merge(crate::webhooks::router(crate::webhooks::WebhookState {
             global: deps.global.clone(),
-            // Development is the exception, because a receiver on localhost is how anybody develops against
-            // this. Everywhere else a delivery carries a signature and a payload over the open internet.
-            require_https: !matches!(cfg.environment, dam_core::config::Environment::Development),
+            // A developer's receiver is on localhost over http, and the first version of this refused it —
+            // which made developing a webhook integration impossible without writing SQL. Permits those two
+            // things and nothing else: private and link-local stay refused everywhere.
+            development: matches!(cfg.environment, dam_core::config::Environment::Development),
         }))
         .merge(crate::vocabularies::router(
             crate::vocabularies::VocabularyState {

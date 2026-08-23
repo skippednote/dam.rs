@@ -118,8 +118,13 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 		throw new ApiError(response.status, describe(response.status, body), body);
 	}
 
-	if (response.status === 204) return undefined as T;
-	return (await response.json()) as T;
+	// Read the body, then decide — rather than deciding from the status code. The first version special-cased
+	// 204 alone, so the first endpoint to answer 202 with no content (the webhook retry) threw a JSON parse
+	// error inside a successful call, which surfaced as "could not retry" for a retry that had worked. Any
+	// no-content response is now handled, whatever status it carries.
+	const text = await response.text();
+	if (text.length === 0) return undefined as T;
+	return JSON.parse(text) as T;
 }
 
 /** A sentence a user can act on, from a status and whatever body came with it. */
@@ -1365,4 +1370,47 @@ export async function mergeVocabularyTerm(
 		method: 'POST',
 		body: JSON.stringify({ into })
 	});
+}
+
+// ─── webhooks (Q.20c) ───────────────────────────────────────────────────────
+
+export type Webhook = components['schemas']['SubscriptionView'];
+export type WebhookCreated = components['schemas']['CreatedView'];
+export type WebhookDelivery = components['schemas']['DeliveryView'];
+
+export async function listWebhooks(): Promise<Webhook[]> {
+	return request<Webhook[]>('/webhooks');
+}
+
+/**
+ * Registers an endpoint.
+ *
+ * The response is the only place the signing secret ever appears — a receiver cannot verify a delivery
+ * without it, and returning it on every read would put it in the response of an endpoint an integration
+ * polls. So the screen has to show it once and say so.
+ */
+export async function createWebhook(url: string, eventKinds: string[]): Promise<WebhookCreated> {
+	return request<WebhookCreated>('/webhooks', {
+		method: 'POST',
+		body: JSON.stringify({ url, event_kinds: eventKinds })
+	});
+}
+
+export async function deleteWebhook(id: string): Promise<void> {
+	await request<void>(`/webhooks/${id}`, { method: 'DELETE' });
+}
+
+/** Re-enables a subscription the system disabled, forgiving its failure count. */
+export async function enableWebhook(id: string): Promise<Webhook> {
+	return request<Webhook>(`/webhooks/${id}/enable`, { method: 'POST' });
+}
+
+/** Recent deliveries, newest first. Carries no payloads. */
+export async function webhookDeliveries(id: string): Promise<WebhookDelivery[]> {
+	return request<WebhookDelivery[]>(`/webhooks/${id}/deliveries`);
+}
+
+/** Re-queues an abandoned delivery. Only a dead one. */
+export async function retryWebhookDelivery(id: string, deliveryId: string): Promise<void> {
+	await request<void>(`/webhooks/${id}/deliveries/${deliveryId}/retry`, { method: 'POST' });
 }

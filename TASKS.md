@@ -2363,7 +2363,7 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
 
 - [x] **Q.19b Dependent metadata fields.** A field whose relevance depends on another field's value: shown when
       the parent matches, and required only when shown. (Shipped in `0461f0f`; the box was never ticked.)
-- [ ] **Q.20 Site branding, webhook delivery.** Worklists done (Q.20a); tag vocabulary done (Q.20b).
+- [ ] **Q.20 Site branding.** Worklists done (Q.20a); tag vocabulary (Q.20b); webhook delivery (Q.20c).
 - [x] **Q.20a The admin worklists.** Ten lists, each one SQL over data damrs already holds: no table, no queue,
   no state to fall out of date, so an asset leaves a list the moment somebody fixes the thing. `Read`, not
   `Manage` — the person who files an uncategorised asset is whoever can edit it, and gating the *finding* behind
@@ -2437,6 +2437,57 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
       closed with the count in the sentence, merged with the survivor named, a 1.5 threshold reported back as 1,
       and retired — with two copy fixes that only showed up on real data ("its 0 assets keep it", and "every one
       of these 0 terms is in the prompt" for a vocabulary whose terms were all retired).
+
+- [x] **Q.20c Webhook delivery, and an ordering guarantee the schema could not keep.** Migration 0004 has
+  carried the whole design since the start — subscriptions, a transactional outbox, per-asset ordering, retry,
+  dead-lettering, auto-disable — and nothing had ever written a row to it. `dam-connect/src/lib.rs` was a
+  one-line doc comment.
+
+      **The bug in 0004's own promise.** It guaranteed "delivery is sequential per (subscription, asset)" and
+      gave `created_at timestamptz DEFAULT now()` to order by. Those are incompatible: `now()` is the
+      *transaction* timestamp, identical for every statement in it, so two events enqueued together tie and
+      the tie-break falls to `gen_random_uuid()` — random order, on the table whose entire purpose is order.
+      Not a corner case, because an outbox row is written in the transaction that made the change, so "publish
+      this version and expire the old one" is exactly one transaction with two events for one asset — 0004's
+      own example of what must not be reordered. Migration 0035 adds a sequence and re-cuts the ordering index
+      onto it. What a sequence does *not* promise is written into the migration rather than left to be found:
+      it is allocated at INSERT, not at COMMIT, so ordering is exact within a transaction and best-effort
+      across concurrent ones.
+
+      **A signature a customer can check.** The signed string is `timestamp.body`, because a signature over
+      the body alone is valid forever — and replaying the `asset.published` that preceded an `asset.expired`
+      un-withdraws an asset. `verify()` ships in the crate rather than living in the test, so the scheme has
+      one implementation. The delimiter is safe only because a decimal integer contains no `.`, which is a
+      property of the field rather than the format, so it is asserted along with the collision it would allow.
+
+      **The subscription URL is an SSRF vector**, and closing it exposed a product defect on the first real
+      use: the guard refused `http://127.0.0.1:9099/hook`, which is the shape of every receiver a developer
+      writes — so building a webhook integration locally was impossible without hand-written SQL, a workaround
+      no customer has. Development now permits `http` and *loopback*, and nothing else. Private and link-local
+      stay refused everywhere including development, because a development box is often a cloud VM and
+      `169.254.169.254` is the metadata service.
+
+      **Producers, so this is not a sixth guard rail with no road.** Six event kinds in one place, emitted from
+      the real code paths — the bulk executor and the single-asset endpoints both, because a consumer cannot
+      tell which route an edit took and an event that fired for one and not the other would be a cache that
+      goes stale depending on how many assets somebody selected. A no-op emits nothing. Payloads carry ids and
+      never bytes (§11's reference-not-copy premise), and a metadata event carries the *keys* that changed
+      rather than the values.
+
+      **The dispatcher never holds a connection through somebody else's timeout**: three short transactions
+      with the HTTP between them, because a handful of slow endpoints holding pooled connections is how an
+      integration becomes an outage. Concurrency needs no semaphore — `claim` already refuses two deliveries
+      for one asset, so a batch is concurrent exactly where it is safe.
+
+      Also caught: `unwrap_or_default()` on the worker's HTTP client builder would have silently fallen back to
+      a client that follows redirects, undoing the one security property that builder exists to set. And
+      `cargo fmt` collapsed a line-continued string literal while keeping its padding, putting "post to one
+      even in              development" in a user-facing refusal — found by a test asserting the sentence.
+
+      17 db cases, 11 over a real socket, 8 API cases, 2 producer cases. Verified end to end against the
+      running stack with an independent Node receiver: two publications and a metadata edit delivered, every
+      signature VERIFIED using only the documented scheme, a deliberate 503 retried to success with the same
+      delivery id, and the metadata payload carrying `["title"]` while the value appeared nowhere.
 
 Absorbed by the existing roadmap rather than duplicated here: the AI set (tags, faces, document text,
 transcripts, semantic search, duplicate detection) is M4; conversational access is M5's MCP server; workflow

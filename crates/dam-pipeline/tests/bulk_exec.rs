@@ -456,6 +456,9 @@ async fn bulk_execution_holds() {
     a_vanished_operation_is_permanent(&f).await;
     the_worker_runs_it_and_queues_the_reindex(&f).await;
     publishing_stamps_once_and_unpublishing_clears_it(&f).await;
+    // Last, and in this order: the first leaves a subscription behind that the second removes.
+    a_bulk_change_lands_in_the_outbox(&f).await;
+    no_subscription_means_no_queue(&f).await;
     archiving_moves_only_what_is_active_and_says_why_not(&f).await;
 }
 
@@ -550,6 +553,142 @@ async fn archiving_moves_only_what_is_active_and_says_why_not(f: &Fixture) {
     let executed = run(f, back).await.expect("run");
     assert_eq!(executed.done, 2, "both were archived, so both come back");
     assert_eq!(statuses(vec![active]).await[0].1, "active",);
+}
+
+// ─── the webhook outbox (Q.20c) ─────────────────────────────────────────────
+
+/// Every state change a consumer cares about lands in the outbox, in the transaction that made it.
+///
+/// The point of testing this *here* rather than against `enqueue` directly: a webhook system whose producers
+/// are never called is a schema with no code, which is what the outbox was for its entire life before Q.20c.
+/// So this drives the real bulk operations and reads the queue afterwards.
+///
+/// And it asserts the *absence* that matters: a no-op emits nothing. A consumer invalidating a cache on every
+/// re-publication of an already-published asset is a consumer doing our idempotence for us.
+async fn a_bulk_change_lands_in_the_outbox(f: &Fixture) {
+    let subscription: Uuid = sqlx::query_scalar(
+        "INSERT INTO webhook_subscriptions (id, url, secret) \
+         VALUES (gen_random_uuid(), 'https://example.test/hook', 'k') RETURNING id",
+    )
+    .fetch_one(&f.tenant)
+    .await
+    .expect("subscription");
+
+    let queued = |kind: &'static str| {
+        let pool = f.tenant.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM webhook_deliveries WHERE event_kind = $1",
+            )
+            .bind(kind)
+            .fetch_one(&pool)
+            .await
+            .expect("count")
+        }
+    };
+
+    let one = asset(f, "outbox-one.jpg").await;
+    let two = asset(f, "outbox-two.jpg").await;
+
+    let id = operation(f, "publish", serde_json::json!({}), &[one, two]).await;
+    run(f, id).await.expect("run");
+    assert_eq!(
+        queued("asset.published").await,
+        2,
+        "one event per asset that changed"
+    );
+
+    // The no-op. `one` is already published, so publishing it again changes nothing and must announce nothing.
+    let again = operation(f, "publish", serde_json::json!({}), &[one]).await;
+    run(f, again).await.expect("run");
+    assert_eq!(
+        queued("asset.published").await,
+        2,
+        "a re-publication that changed nothing must not emit an event"
+    );
+
+    let off = operation(f, "unpublish", serde_json::json!({}), &[one]).await;
+    run(f, off).await.expect("run");
+    assert_eq!(queued("asset.unpublished").await, 1);
+
+    let archived = operation(f, "archive", serde_json::json!({}), &[two]).await;
+    run(f, archived).await.expect("run");
+    assert_eq!(queued("asset.status_changed").await, 1);
+
+    let edited = operation(
+        f,
+        "metadata_set",
+        serde_json::json!({"values": {"caption": "a harbour at dawn"}}),
+        &[one],
+    )
+    .await;
+    run(f, edited).await.expect("run");
+    assert_eq!(queued("asset.metadata_updated").await, 1);
+    // The keys, never the values: a tenant's metadata has no business in a delivery log or in whatever the
+    // receiver writes its request bodies to.
+    let payload: serde_json::Value = sqlx::query_scalar(
+        "SELECT payload FROM webhook_deliveries WHERE event_kind = 'asset.metadata_updated'",
+    )
+    .fetch_one(&f.tenant)
+    .await
+    .expect("payload");
+    assert_eq!(payload["detail"]["fields"], serde_json::json!(["caption"]));
+    let rendered = payload.to_string();
+    assert!(
+        !rendered.contains("harbour at dawn"),
+        "the value must not travel: {rendered}"
+    );
+
+    let removed = operation(f, "delete", serde_json::json!({}), &[one]).await;
+    run(f, removed).await.expect("run");
+    assert_eq!(queued("asset.deleted").await, 1);
+
+    // Every event went to the one subscription, and each carries the asset it is about — which is what the
+    // per-asset ordering rule keys on.
+    let total: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM webhook_deliveries WHERE subscription_id = $1")
+            .bind(subscription)
+            .fetch_one(&f.tenant)
+            .await
+            .expect("count");
+    assert_eq!(total, 6);
+    let without_asset: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM webhook_deliveries WHERE asset_id IS NULL")
+            .fetch_one(&f.tenant)
+            .await
+            .expect("count");
+    assert_eq!(without_asset, 0, "an asset event names its asset");
+}
+
+/// With no subscription there is no queue, and the operations still work.
+///
+/// The common case — most deployments have no webhooks — and the one where a bug would be a per-asset insert
+/// into a table nobody reads. `enqueue` is a single `INSERT … SELECT` over the subscriptions precisely so that
+/// this costs one statement that matches nothing rather than a read plus a write per asset.
+async fn no_subscription_means_no_queue(f: &Fixture) {
+    sqlx::query("DELETE FROM webhook_subscriptions")
+        .execute(&f.tenant)
+        .await
+        .expect("clear");
+    sqlx::query("DELETE FROM webhook_deliveries")
+        .execute(&f.tenant)
+        .await
+        .expect("clear");
+
+    let one = asset(f, "unwatched.jpg").await;
+    let id = operation(f, "publish", serde_json::json!({}), &[one]).await;
+    let executed = run(f, id).await.expect("run");
+    assert_eq!(executed.state, "completed");
+    assert_eq!(
+        executed.done, 1,
+        "the operation is unaffected by nobody listening"
+    );
+
+    let queued: i64 = sqlx::query_scalar("SELECT count(*) FROM webhook_deliveries")
+        .fetch_one(&f.tenant)
+        .await
+        .expect("count");
+    assert_eq!(queued, 0);
 }
 
 // ─── publish / unpublish (Q.14) ─────────────────────────────────────────────

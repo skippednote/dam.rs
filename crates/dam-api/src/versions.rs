@@ -132,6 +132,17 @@ pub async fn add(
         .await?;
     }
 
+    // Against the asset whose id a consumer already holds — the one being superseded — not the new row. A CMS
+    // stores the id it was given, so an event naming a row it has never seen is an event it cannot act on.
+    // The new id travels in the detail for anybody who wants it.
+    dam_db::webhooks::enqueue_asset_event(
+        conn.executor(),
+        dam_db::webhooks::kind::VERSION_CREATED,
+        asset_id,
+        serde_json::json!({ "new_asset_id": request.new_asset_id }),
+    )
+    .await?;
+
     let found = versions::history(conn.executor(), request.new_asset_id, &caller.predicate)
         .await
         .map_err(Refused)?;

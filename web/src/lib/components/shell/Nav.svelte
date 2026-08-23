@@ -34,6 +34,9 @@
 		// Beside Review for the same reason, and because the review queue is where a badly-set threshold shows
 		// up: the terms a model proposes come from here.
 		{ href: resolve('/vocabularies'), label: 'Vocabularies' },
+		// After the content screens: a webhook is how the library talks to everything outside it, which is
+		// closer to Settings than to anything a curator opens daily.
+		{ href: resolve('/webhooks'), label: 'Webhooks' },
 		{ href: resolve('/style'), label: 'Style' },
 		{ href: resolve('/settings'), label: 'Settings' }
 	];
