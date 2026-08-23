@@ -32,11 +32,11 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, colour | dedup and colour **done** (M4a); the rest needs model files — see M4 below |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | **done** — two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query, the MCP server |
-| **M6** Workflow/proofing, annotations, analytics | not started |
+| **M6** Workflow/proofing, annotations, analytics | annotations **done** (M6a); proofing and analytics open |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** M4b local models (needs a decision on model distribution — see below) → M6
-workflow/proofing → M3d Drupal connector → Pre-GA.
+**Next up, in order:** M6b proofing rounds → M6c analytics rollups → M3d Drupal connector → Pre-GA.
+M4b (local models) is parked on a distribution decision — see the M4 section.
 
 **`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
 note carried; `DECISIONS.md` records what was chosen. Two of them needed code: a portal may now be backed by a
@@ -2863,6 +2863,43 @@ version dimension to express.
       exist with HNSW indexes, `ai_models` and `taxonomy_terms.ai_threshold` exist, the zero-shot vocabulary
       query exists and is now governed (Q.20b), and `duplicate_candidates.cosine` is the column the embedding
       half would fill — which is also why `relation` currently only claims `near_identical` or `variant`.
+
+## M6 — Workflow, proofing, annotations, analytics
+
+Little of this was designed in ARCHITECTURE beyond the milestone row, so the design is being made here.
+
+- [x] **M6a Annotations.** A comment with an anchor: a rectangle on the picture, a moment in a track, or both.
+  The same row as a comment (migration 0037 adds five columns to `asset_comments`) rather than a table of its
+  own, because a thread mixes them — "the logo is wrong" pinned to a corner and "approved" about the whole
+  thing belong in one conversation, and a join per comment read would be the cost of separating them.
+
+      **Coordinates are fractions, never pixels.** One asset renders as a thumbnail, a preview, a proxy and an
+      original, so a mark stored in pixels lands correctly on exactly one of them. The refusal names the likely
+      cause — "were these pixels rather than fractions?" — because that is the mistake an integrator makes.
+
+      **What the tests found.** The letterbox guard failed the moment it was written: the lightbox uses
+      `max-w-full max-h-full object-contain`, under which the element shrinks to the image, so there are no
+      bands and every coordinate assertion would have passed either way. A second test forces a fixed-size box
+      — and with letterboxing finally real, the drag came back clamped to the left edge, because the
+      `ResizeObserver` watched the container rather than the image and the measurement was stale.
+
+      **A gap, stated rather than hidden:** drawing needs a pointer. Existing regions are buttons so reading
+      and focusing work from the keyboard, but a drag is a pointer gesture. `role="application"` would have
+      silenced the linter while telling a screen reader to stop intercepting keys — worse for the users it
+      appears to help. A keyboard path for *creating* an annotation is still missing, and is a design question
+      (a control that annotates a named region without a drag) rather than an attribute.
+
+      9 db cases, 9 browser cases including axe.
+
+- [ ] **M6b Proofing rounds.** `asset_comments.status` already carries `approved` and `changes_requested`, and
+  0020's own comment says nothing enforces them — deliberately, because a status that gated publishing would be
+  a rights decision. What is missing is the *round*: a named review with a set of assets, a list of reviewers,
+  a due date, and a verdict per reviewer rather than per comment. The annotation half now exists to hang it on.
+
+- [ ] **M6c Analytics rollups and Insights exports.** `events` is already partitioned by month and
+  `dam_global.tenant_usage_daily` exists. What is missing is the rollup job and the read surface — and the
+  scoping question is the interesting one, because §7 says a count is a disclosure and an analytics screen is
+  entirely counts.
 
 ## M5 — Hosted-model enrichment
 
