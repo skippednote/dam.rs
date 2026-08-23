@@ -1195,3 +1195,80 @@ export async function planLifecyclePolicy(id: string): Promise<LifecyclePlan> {
 export async function runLifecycleSweep(): Promise<RunQueued> {
 	return request<RunQueued>('/lifecycle/runs', { method: 'POST' });
 }
+
+// ─── collections (Q.14b) ────────────────────────────────────────────────────
+
+export type Collection = components['schemas']['CollectionView'];
+export type CollectionItem = components['schemas']['ItemView'];
+export type Added = components['schemas']['AddedView'];
+
+/** Every collection, with its size. Administration, so this needs Manage. */
+export async function listCollections(): Promise<Collection[]> {
+	return request<Collection[]>('/collections');
+}
+
+/**
+ * Creates a collection.
+ *
+ * `key` is what a portal will reference and cannot be changed afterwards, which is why the form asks for it
+ * separately from the label rather than deriving one.
+ */
+export async function createCollection(body: {
+	key: string;
+	label: string;
+	description?: string;
+	visibility?: string;
+	pin_hot?: boolean;
+}): Promise<Collection> {
+	return request<Collection>('/collections', { method: 'POST', body: JSON.stringify(body) });
+}
+
+/** Changes everything except the key. */
+export async function amendCollection(
+	id: string,
+	body: { label: string; description?: string; visibility: string; pin_hot: boolean }
+): Promise<Collection> {
+	return request<Collection>(`/collections/${id}`, {
+		method: 'PATCH',
+		body: JSON.stringify(body)
+	});
+}
+
+/** Deletes a collection. Refused with a 409 while a portal publishes it. */
+export async function deleteCollection(id: string): Promise<void> {
+	await request<void>(`/collections/${id}`, { method: 'DELETE' });
+}
+
+export async function collectionItems(id: string): Promise<CollectionItem[]> {
+	return request<CollectionItem[]>(`/collections/${id}/items`);
+}
+
+/**
+ * Adds assets to a collection.
+ *
+ * `out_of_scope` on the response counts ids the caller cannot see. Shown rather than hidden, because
+ * "I selected forty and thirty-eight arrived" needs an answer — and counted rather than named, because
+ * naming them would confirm assets exist that this caller may not know about.
+ */
+export async function addToCollection(id: string, assetIds: string[]): Promise<Added> {
+	return request<Added>(`/collections/${id}/items`, {
+		method: 'POST',
+		body: JSON.stringify({ asset_ids: assetIds })
+	});
+}
+
+export async function removeFromCollection(id: string, assetId: string): Promise<void> {
+	await request<void>(`/collections/${id}/items/${assetId}`, { method: 'DELETE' });
+}
+
+/** Moves an asset within a collection, returning the whole new order. */
+export async function moveInCollection(
+	id: string,
+	assetId: string,
+	position: number
+): Promise<CollectionItem[]> {
+	return request<CollectionItem[]>(`/collections/${id}/items/${assetId}/position`, {
+		method: 'POST',
+		body: JSON.stringify({ position })
+	});
+}

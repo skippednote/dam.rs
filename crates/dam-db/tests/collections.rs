@@ -30,6 +30,16 @@ async fn db() -> (PostgresHarness, PgPool) {
     (pg, pool)
 }
 
+/// One connection out of the pool.
+///
+/// These functions take a connection rather than a pool because in production they run inside a tenant
+/// transaction — the `search_path` that makes `collections` mean `t_acme.collections` is set on a
+/// connection, and a pool would hand out a different one on the next call. The tests borrow one the same
+/// way, per statement, so nothing here depends on state a pool would not preserve.
+async fn held(pool: &PgPool) -> sqlx::pool::PoolConnection<sqlx::Postgres> {
+    pool.acquire().await.expect("acquire")
+}
+
 async fn collection(pool: &PgPool, key: &str, pin_hot: bool) -> Uuid {
     let id = Uuid::new_v4();
     sqlx::query("INSERT INTO collections (id, key, label, pin_hot) VALUES ($1, $2, $2, $3)")
@@ -58,7 +68,7 @@ async fn asset(pool: &PgPool, label: &str) -> Uuid {
 }
 
 async fn order(pool: &PgPool, collection_id: Uuid) -> Vec<Uuid> {
-    collections::items(pool, collection_id)
+    collections::items(&mut *held(pool).await, collection_id)
         .await
         .expect("items")
         .into_iter()
@@ -68,7 +78,7 @@ async fn order(pool: &PgPool, collection_id: Uuid) -> Vec<Uuid> {
 
 /// The positions, to assert density independently of order.
 async fn positions(pool: &PgPool, collection_id: Uuid) -> Vec<i32> {
-    collections::items(pool, collection_id)
+    collections::items(&mut *held(pool).await, collection_id)
         .await
         .expect("items")
         .into_iter()
@@ -84,7 +94,9 @@ async fn assets_keep_the_order_they_were_added_in(pool: &PgPool) {
     let b = asset(pool, "b1").await;
     let c = asset(pool, "c1").await;
     for id in [a, b, c] {
-        collections::add(pool, deck, id, None).await.expect("add");
+        collections::add(&mut *held(pool).await, deck, id, None)
+            .await
+            .expect("add");
     }
 
     assert_eq!(order(pool, deck).await, vec![a, b, c]);
@@ -101,10 +113,14 @@ async fn adding_the_same_asset_twice_does_not_move_it(pool: &PgPool) {
     let deck = collection(pool, "deck2", false).await;
     let a = asset(pool, "a2").await;
     let b = asset(pool, "b2").await;
-    collections::add(pool, deck, a, None).await.expect("add a");
-    collections::add(pool, deck, b, None).await.expect("add b");
+    collections::add(&mut *held(pool).await, deck, a, None)
+        .await
+        .expect("add a");
+    collections::add(&mut *held(pool).await, deck, b, None)
+        .await
+        .expect("add b");
 
-    collections::add(pool, deck, a, None)
+    collections::add(&mut *held(pool).await, deck, a, None)
         .await
         .expect("re-adding must be idempotent");
     assert_eq!(order(pool, deck).await, vec![a, b]);
@@ -119,18 +135,24 @@ async fn removing_an_asset_closes_the_gap(pool: &PgPool) {
     let b = asset(pool, "b3").await;
     let c = asset(pool, "c3").await;
     for id in [a, b, c] {
-        collections::add(pool, deck, id, None).await.expect("add");
+        collections::add(&mut *held(pool).await, deck, id, None)
+            .await
+            .expect("add");
     }
 
     assert!(
-        collections::remove(pool, deck, b).await.expect("remove"),
+        collections::remove(&mut *held(pool).await, deck, b)
+            .await
+            .expect("remove"),
         "removing a present asset reports true"
     );
     assert_eq!(order(pool, deck).await, vec![a, c]);
     assert_eq!(positions(pool, deck).await, vec![0, 1]);
 
     assert!(
-        !collections::remove(pool, deck, b).await.expect("remove"),
+        !collections::remove(&mut *held(pool).await, deck, b)
+            .await
+            .expect("remove"),
         "removing an absent asset is not an error, and reports false"
     );
 }
@@ -141,14 +163,16 @@ async fn moving_an_asset_up_shifts_the_ones_it_passed(pool: &PgPool) {
         let mut out = Vec::new();
         for n in 0..5 {
             let id = asset(pool, &format!("a4-{n}")).await;
-            collections::add(pool, deck, id, None).await.expect("add");
+            collections::add(&mut *held(pool).await, deck, id, None)
+                .await
+                .expect("add");
             out.push(id);
         }
         out
     };
 
     // The fourth item becomes the second.
-    collections::move_item(pool, deck, ids[3], 1)
+    collections::move_item(&mut *held(pool).await, deck, ids[3], 1)
         .await
         .expect("move");
     assert_eq!(
@@ -163,11 +187,13 @@ async fn moving_an_asset_down_shifts_the_ones_it_passed(pool: &PgPool) {
     let mut ids = Vec::new();
     for n in 0..4 {
         let id = asset(pool, &format!("a5-{n}")).await;
-        collections::add(pool, deck, id, None).await.expect("add");
+        collections::add(&mut *held(pool).await, deck, id, None)
+            .await
+            .expect("add");
         ids.push(id);
     }
 
-    collections::move_item(pool, deck, ids[0], 2)
+    collections::move_item(&mut *held(pool).await, deck, ids[0], 2)
         .await
         .expect("move");
     assert_eq!(
@@ -184,15 +210,19 @@ async fn a_move_past_the_end_is_clamped_rather_than_refused(pool: &PgPool) {
     let deck = collection(pool, "deck6", false).await;
     let a = asset(pool, "a6").await;
     let b = asset(pool, "b6").await;
-    collections::add(pool, deck, a, None).await.expect("add");
-    collections::add(pool, deck, b, None).await.expect("add");
+    collections::add(&mut *held(pool).await, deck, a, None)
+        .await
+        .expect("add");
+    collections::add(&mut *held(pool).await, deck, b, None)
+        .await
+        .expect("add");
 
-    collections::move_item(pool, deck, a, 99)
+    collections::move_item(&mut *held(pool).await, deck, a, 99)
         .await
         .expect("move");
     assert_eq!(order(pool, deck).await, vec![b, a]);
 
-    collections::move_item(pool, deck, a, -5)
+    collections::move_item(&mut *held(pool).await, deck, a, -5)
         .await
         .expect("move");
     assert_eq!(order(pool, deck).await, vec![a, b]);
@@ -205,7 +235,7 @@ async fn moving_an_asset_that_is_not_a_member_is_not_found(pool: &PgPool) {
     let deck = collection(pool, "deck7", false).await;
     let stranger = asset(pool, "a7").await;
     assert!(
-        collections::move_item(pool, deck, stranger, 0)
+        collections::move_item(&mut *held(pool).await, deck, stranger, 0)
             .await
             .is_err()
     );
@@ -219,15 +249,23 @@ async fn two_collections_order_independently(pool: &PgPool) {
     let a = asset(pool, "a8").await;
     let b = asset(pool, "b8").await;
 
-    collections::add(pool, first, a, None).await.expect("add");
-    collections::add(pool, first, b, None).await.expect("add");
-    collections::add(pool, second, b, None).await.expect("add");
-    collections::add(pool, second, a, None).await.expect("add");
+    collections::add(&mut *held(pool).await, first, a, None)
+        .await
+        .expect("add");
+    collections::add(&mut *held(pool).await, first, b, None)
+        .await
+        .expect("add");
+    collections::add(&mut *held(pool).await, second, b, None)
+        .await
+        .expect("add");
+    collections::add(&mut *held(pool).await, second, a, None)
+        .await
+        .expect("add");
 
     assert_eq!(order(pool, first).await, vec![a, b]);
     assert_eq!(order(pool, second).await, vec![b, a]);
 
-    collections::move_item(pool, first, b, 0)
+    collections::move_item(&mut *held(pool).await, first, b, 0)
         .await
         .expect("move");
     assert_eq!(order(pool, first).await, vec![b, a]);
@@ -246,9 +284,11 @@ async fn membership_of_a_pinned_collection_blocks_tiering(pool: &PgPool) {
     let pinned = collection(pool, "portal9", true).await;
     let a = asset(pool, "a9").await;
     let unpinned_asset = asset(pool, "b9").await;
-    collections::add(pool, pinned, a, None).await.expect("add");
+    collections::add(&mut *held(pool).await, pinned, a, None)
+        .await
+        .expect("add");
 
-    let pins = collections::pins(pool, &[a, unpinned_asset])
+    let pins = collections::pins(&mut *held(pool).await, &[a, unpinned_asset])
         .await
         .expect("pins");
     let pin = pins.get(&a).expect("the pinned asset must be reported");
@@ -267,11 +307,11 @@ async fn membership_of_a_pinned_collection_blocks_tiering(pool: &PgPool) {
 async fn an_unpinned_collection_does_not_pin(pool: &PgPool) {
     let ordinary = collection(pool, "ordinary10", false).await;
     let a = asset(pool, "a10").await;
-    collections::add(pool, ordinary, a, None)
+    collections::add(&mut *held(pool).await, ordinary, a, None)
         .await
         .expect("add");
     assert!(
-        collections::pins(pool, &[a])
+        collections::pins(&mut *held(pool).await, &[a])
             .await
             .expect("pins")
             .is_empty()
@@ -285,10 +325,14 @@ async fn removal_from_one_pinned_collection_leaves_the_other_pin_standing(pool: 
     let first = collection(pool, "portal11a", true).await;
     let second = collection(pool, "portal11b", true).await;
     let a = asset(pool, "a11").await;
-    collections::add(pool, first, a, None).await.expect("add");
-    collections::add(pool, second, a, None).await.expect("add");
+    collections::add(&mut *held(pool).await, first, a, None)
+        .await
+        .expect("add");
+    collections::add(&mut *held(pool).await, second, a, None)
+        .await
+        .expect("add");
 
-    let pin = collections::pins(pool, &[a])
+    let pin = collections::pins(&mut *held(pool).await, &[a])
         .await
         .expect("pins")
         .remove(&a)
@@ -299,17 +343,21 @@ async fn removal_from_one_pinned_collection_leaves_the_other_pin_standing(pool: 
         "every pinning collection must be reported, so an operator knows how many to deal with"
     );
 
-    collections::remove(pool, first, a).await.expect("remove");
-    let still = collections::pins(pool, &[a])
+    collections::remove(&mut *held(pool).await, first, a)
+        .await
+        .expect("remove");
+    let still = collections::pins(&mut *held(pool).await, &[a])
         .await
         .expect("pins")
         .remove(&a)
         .expect("must still be pinned by the second collection");
     assert_eq!(still.collections, vec!["portal11b"]);
 
-    collections::remove(pool, second, a).await.expect("remove");
+    collections::remove(&mut *held(pool).await, second, a)
+        .await
+        .expect("remove");
     assert!(
-        collections::pins(pool, &[a])
+        collections::pins(&mut *held(pool).await, &[a])
             .await
             .expect("pins")
             .is_empty(),
@@ -320,9 +368,11 @@ async fn removal_from_one_pinned_collection_leaves_the_other_pin_standing(pool: 
 async fn clearing_pin_hot_releases_the_assets(pool: &PgPool) {
     let deck = collection(pool, "portal12", true).await;
     let a = asset(pool, "a12").await;
-    collections::add(pool, deck, a, None).await.expect("add");
+    collections::add(&mut *held(pool).await, deck, a, None)
+        .await
+        .expect("add");
     assert!(
-        !collections::pins(pool, &[a])
+        !collections::pins(&mut *held(pool).await, &[a])
             .await
             .expect("pins")
             .is_empty()
@@ -334,7 +384,7 @@ async fn clearing_pin_hot_releases_the_assets(pool: &PgPool) {
         .await
         .expect("unpin");
     assert!(
-        collections::pins(pool, &[a])
+        collections::pins(&mut *held(pool).await, &[a])
             .await
             .expect("pins")
             .is_empty(),
@@ -348,7 +398,9 @@ async fn deleting_a_collection_releases_the_pin_but_keeps_the_asset(pool: &PgPoo
     // never delete the assets — and it must not leave a pin behind that nothing can now explain.
     let deck = collection(pool, "portal13", true).await;
     let a = asset(pool, "a13").await;
-    collections::add(pool, deck, a, None).await.expect("add");
+    collections::add(&mut *held(pool).await, deck, a, None)
+        .await
+        .expect("add");
 
     sqlx::query("DELETE FROM collections WHERE id = $1")
         .bind(deck)
@@ -357,7 +409,7 @@ async fn deleting_a_collection_releases_the_pin_but_keeps_the_asset(pool: &PgPoo
         .expect("delete");
 
     assert!(
-        collections::pins(pool, &[a])
+        collections::pins(&mut *held(pool).await, &[a])
             .await
             .expect("pins")
             .is_empty()
@@ -377,7 +429,9 @@ async fn a_deleted_asset_is_not_pinned_by_collection_membership(pool: &PgPool) {
     // blocks tiering *and* purge.
     let deck = collection(pool, "portal14", true).await;
     let a = asset(pool, "a14").await;
-    collections::add(pool, deck, a, None).await.expect("add");
+    collections::add(&mut *held(pool).await, deck, a, None)
+        .await
+        .expect("add");
 
     sqlx::query("UPDATE assets SET deleted_at = now() WHERE id = $1")
         .bind(a)
@@ -385,7 +439,7 @@ async fn a_deleted_asset_is_not_pinned_by_collection_membership(pool: &PgPool) {
         .await
         .expect("soft delete");
     assert!(
-        collections::pins(pool, &[a])
+        collections::pins(&mut *held(pool).await, &[a])
             .await
             .expect("pins")
             .is_empty(),
@@ -396,7 +450,344 @@ async fn a_deleted_asset_is_not_pinned_by_collection_membership(pool: &PgPool) {
 async fn pins_of_an_empty_batch_does_not_query(pool: &PgPool) {
     // The lifecycle worker's last page is often empty, and `= ANY('{}')` is a pointless round trip on
     // every pass.
-    assert!(collections::pins(pool, &[]).await.expect("pins").is_empty());
+    assert!(
+        collections::pins(&mut *held(pool).await, &[])
+            .await
+            .expect("pins")
+            .is_empty()
+    );
+}
+
+// ─── the collection itself ──────────────────────────────────────────────────
+
+async fn a_new_collection_is_listed_with_a_count_of_zero(pool: &PgPool) {
+    let id = collections::create(
+        &mut *held(pool).await,
+        &collections::NewCollection {
+            key: "spring",
+            label: "Spring",
+            description: Some("campaign"),
+            visibility: "private",
+            pin_hot: true,
+            owner_id: None,
+        },
+    )
+    .await
+    .expect("create");
+
+    let listed = collections::all(&mut *held(pool).await).await.expect("all");
+    let made = listed
+        .iter()
+        .find(|one| one.id == id)
+        .expect("a newly created collection appears in the list before anything is in it");
+    assert_eq!(made.key, "spring");
+    assert_eq!(made.description.as_deref(), Some("campaign"));
+    assert!(made.pin_hot);
+    assert_eq!(
+        made.item_count, 0,
+        "an empty collection counts zero rather than vanishing"
+    );
+
+    let found = collections::by_key(&mut *held(pool).await, "spring")
+        .await
+        .expect("by_key")
+        .expect("the key a portal would reference resolves");
+    assert_eq!(found.id, id);
+    assert!(
+        collections::by_key(&mut *held(pool).await, "no-such-key")
+            .await
+            .expect("by_key")
+            .is_none()
+    );
+}
+
+async fn a_taken_key_is_refused_by_name(pool: &PgPool) {
+    let new = collections::NewCollection {
+        key: "twice",
+        label: "Twice",
+        description: None,
+        visibility: "private",
+        pin_hot: false,
+        owner_id: None,
+    };
+    collections::create(&mut *held(pool).await, &new)
+        .await
+        .expect("first");
+    let again = collections::create(&mut *held(pool).await, &new).await;
+    let message = match again {
+        Err(dam_db::Error::Unsupported(message)) => message,
+        other => panic!("a taken key should be refused by name, got {other:?}"),
+    };
+    assert!(
+        message.contains("twice"),
+        "the refusal names the key the person typed, so they can fix it: {message}"
+    );
+}
+
+async fn an_invented_visibility_is_refused_before_the_insert(pool: &PgPool) {
+    // Checked in Rust as well as by the CHECK constraint, so the caller gets a sentence naming the three
+    // valid values rather than a 500 carrying a constraint name.
+    let refused = collections::create(
+        &mut *held(pool).await,
+        &collections::NewCollection {
+            key: "invented",
+            label: "Invented",
+            description: None,
+            visibility: "world-readable",
+            pin_hot: false,
+            owner_id: None,
+        },
+    )
+    .await;
+    assert!(matches!(refused, Err(dam_db::Error::Unsupported(_))));
+    assert!(
+        collections::by_key(&mut *held(pool).await, "invented")
+            .await
+            .expect("by_key")
+            .is_none(),
+        "a refused visibility inserts nothing"
+    );
+}
+
+async fn rename_changes_the_label_and_never_the_key(pool: &PgPool) {
+    let id = collections::create(
+        &mut *held(pool).await,
+        &collections::NewCollection {
+            key: "stable-key",
+            label: "Before",
+            description: None,
+            visibility: "private",
+            pin_hot: false,
+            owner_id: None,
+        },
+    )
+    .await
+    .expect("create");
+
+    assert!(
+        collections::rename(
+            &mut *held(pool).await,
+            id,
+            "After",
+            Some("now described"),
+            "public",
+            true
+        )
+        .await
+        .expect("rename")
+    );
+
+    let after = collections::by_key(&mut *held(pool).await, "stable-key")
+        .await
+        .expect("by_key")
+        .expect("the key is the same key");
+    assert_eq!(after.label, "After");
+    assert_eq!(after.description.as_deref(), Some("now described"));
+    assert_eq!(after.visibility, "public");
+    assert!(
+        after.pin_hot,
+        "pinning is part of the same form, so it saves with it"
+    );
+
+    assert!(
+        !collections::rename(
+            &mut *held(pool).await,
+            Uuid::new_v4(),
+            "Nobody",
+            None,
+            "private",
+            false
+        )
+        .await
+        .expect("rename"),
+        "renaming a collection that is not there reports false rather than inventing one"
+    );
+}
+
+async fn turning_on_pinning_pins_what_is_already_inside(pool: &PgPool) {
+    // The union in `pins` reads `collections.pin_hot` live, so an existing collection that becomes pinned
+    // protects its existing members — this is how somebody rescues a set that is about to tier.
+    let id = collections::create(
+        &mut *held(pool).await,
+        &collections::NewCollection {
+            key: "late-pin",
+            label: "Late pin",
+            description: None,
+            visibility: "private",
+            pin_hot: false,
+            owner_id: None,
+        },
+    )
+    .await
+    .expect("create");
+    let a = asset(pool, "latepin").await;
+    collections::add(&mut *held(pool).await, id, a, None)
+        .await
+        .expect("add");
+    assert!(
+        collections::pins(&mut *held(pool).await, &[a])
+            .await
+            .expect("pins")
+            .is_empty()
+    );
+
+    collections::rename(
+        &mut *held(pool).await,
+        id,
+        "Late pin",
+        None,
+        "private",
+        true,
+    )
+    .await
+    .expect("pin it");
+    let pins = collections::pins(&mut *held(pool).await, &[a])
+        .await
+        .expect("pins");
+    assert_eq!(pins.len(), 1);
+    assert_eq!(pins[&a].collections, vec!["late-pin".to_owned()]);
+}
+
+async fn a_published_collection_cannot_be_deleted(pool: &PgPool) {
+    let id = collections::create(
+        &mut *held(pool).await,
+        &collections::NewCollection {
+            key: "published",
+            label: "Published",
+            description: None,
+            visibility: "public",
+            pin_hot: true,
+            owner_id: None,
+        },
+    )
+    .await
+    .expect("create");
+
+    sqlx::query(
+        "INSERT INTO portals (id, key, title, kind, collection_id) \
+         VALUES ($1, 'a-portal', 'A portal', 'standard', $2)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(id)
+    .execute(pool)
+    .await
+    .expect("portal");
+
+    let refused = collections::delete(&mut *held(pool).await, id).await;
+    let message = match refused {
+        Err(dam_db::Error::Unsupported(message)) => message,
+        other => panic!("deleting a published collection should be refused, got {other:?}"),
+    };
+    assert!(
+        message.contains('1') && message.contains("portal"),
+        "the refusal says how many portals and what to do about them: {message}"
+    );
+
+    // Still there, and still usable: the refusal is a guard, not a half-delete.
+    assert!(
+        collections::by_key(&mut *held(pool).await, "published")
+            .await
+            .expect("by_key")
+            .is_some()
+    );
+
+    // A retired portal does not hold the collection hostage — that is what `retired_at IS NULL` is for, and
+    // the first version of the guard read `deleted_at`, a column portals do not have.
+    sqlx::query("UPDATE portals SET retired_at = now() WHERE key = 'a-portal'")
+        .execute(pool)
+        .await
+        .expect("retire");
+    assert!(
+        collections::delete(&mut *held(pool).await, id)
+            .await
+            .expect("delete")
+    );
+    assert!(
+        !collections::delete(&mut *held(pool).await, id)
+            .await
+            .expect("delete"),
+        "deleting it twice reports false rather than erroring"
+    );
+}
+
+async fn the_delete_guard_leaves_the_transaction_usable(pool: &PgPool) {
+    // The regression that motivates this: the guard used to swallow its own query error with `unwrap_or(0)`.
+    // Inside the caller's transaction a failed statement aborts the whole transaction, so the damage showed
+    // up on the *next* statement as "current transaction is aborted" — far from the line that caused it.
+    // Here the guard refuses legitimately; what is asserted is that the connection still works afterwards.
+    let id = collections::create(
+        &mut *held(pool).await,
+        &collections::NewCollection {
+            key: "guarded",
+            label: "Guarded",
+            description: None,
+            visibility: "private",
+            pin_hot: false,
+            owner_id: None,
+        },
+    )
+    .await
+    .expect("create");
+    sqlx::query(
+        "INSERT INTO portals (id, key, title, kind, collection_id) \
+         VALUES ($1, 'guarded-portal', 'Guarded', 'brand', $2)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(id)
+    .execute(pool)
+    .await
+    .expect("portal");
+
+    let mut tx = pool.begin().await.expect("begin");
+    assert!(collections::delete(&mut tx, id).await.is_err());
+    let still: i64 = sqlx::query_scalar("SELECT count(*) FROM collections WHERE id = $1")
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await
+        .expect("the transaction is still usable after a refused delete");
+    assert_eq!(still, 1);
+    tx.commit().await.expect("commit");
+}
+
+async fn items_carry_what_a_screen_needs_to_draw_them(pool: &PgPool) {
+    let id = collections::create(
+        &mut *held(pool).await,
+        &collections::NewCollection {
+            key: "drawable",
+            label: "Drawable",
+            description: None,
+            visibility: "private",
+            pin_hot: false,
+            owner_id: None,
+        },
+    )
+    .await
+    .expect("create");
+    let a = asset(pool, "drawme").await;
+    collections::add(&mut *held(pool).await, id, a, None)
+        .await
+        .expect("add");
+
+    let items = collections::items(&mut *held(pool).await, id)
+        .await
+        .expect("items");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].filename, "drawme.jpg");
+    assert_eq!(items[0].mime, "image/jpeg");
+
+    // A member whose asset was deleted is not a member anybody can act on, and a portal must not publish it.
+    sqlx::query("UPDATE assets SET status = 'deleted' WHERE id = $1")
+        .bind(a)
+        .execute(pool)
+        .await
+        .expect("soft delete");
+    assert!(
+        collections::items(&mut *held(pool).await, id)
+            .await
+            .expect("items")
+            .is_empty(),
+        "a deleted asset drops out of the curated order rather than appearing as a hole"
+    );
 }
 
 #[tokio::test]
@@ -419,4 +810,13 @@ async fn the_collection_invariants_hold() {
     deleting_a_collection_releases_the_pin_but_keeps_the_asset(&pool).await;
     a_deleted_asset_is_not_pinned_by_collection_membership(&pool).await;
     pins_of_an_empty_batch_does_not_query(&pool).await;
+
+    a_new_collection_is_listed_with_a_count_of_zero(&pool).await;
+    a_taken_key_is_refused_by_name(&pool).await;
+    an_invented_visibility_is_refused_before_the_insert(&pool).await;
+    rename_changes_the_label_and_never_the_key(&pool).await;
+    turning_on_pinning_pins_what_is_already_inside(&pool).await;
+    a_published_collection_cannot_be_deleted(&pool).await;
+    the_delete_guard_leaves_the_transaction_usable(&pool).await;
+    items_carry_what_a_screen_needs_to_draw_them(&pool).await;
 }

@@ -21,13 +21,16 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import {
+		addToCollection,
 		ApiError,
 		bulkStatus,
 		createBulk,
+		listCollections,
 		placeOrder,
 		previewBulk,
 		type BulkPreview,
 		type BulkStatus,
+		type Collection,
 		type FieldDefinition
 	} from '$lib/api/client';
 
@@ -57,6 +60,19 @@
 	let error = $state('');
 	/** The metadata mini-form. */
 	let metadataOpen = $state(false);
+	/**
+	 * The collection picker.
+	 *
+	 * Not routed through the bulk machinery, unlike publish and archive, and the reason is what a bulk
+	 * operation is *for*: an actor, a target count and a per-item outcome recorded as an audit trail. Adding to
+	 * a collection is arranging a working set — reversible, unaudited by design, and expected to be done
+	 * dozens of times an hour. Putting it through `bulk_operations` would fill that table with noise and make
+	 * the rows that matter — deletions, publications — harder to find.
+	 */
+	let collectionsOpen = $state(false);
+	let collections = $state<Collection[]>([]);
+	let addingTo = $state('');
+	let addedNote = $state('');
 	/**
 	 * The order mini-form (Q.13).
 	 *
@@ -154,6 +170,41 @@
 	function dismiss() {
 		flow = { step: 'idle' };
 		error = '';
+	}
+
+	async function openCollections() {
+		collectionsOpen = !collectionsOpen;
+		addedNote = '';
+		if (!collectionsOpen) return;
+		try {
+			collections = await listCollections();
+		} catch (caught) {
+			error =
+				caught instanceof ApiError && caught.status === 403
+					? 'Collections are administration; this key does not hold Manage.'
+					: 'Could not read the collections.';
+			collectionsOpen = false;
+		}
+	}
+
+	async function addTo(collection: Collection) {
+		addingTo = collection.id;
+		error = '';
+		try {
+			const added = await addToCollection(collection.id, assetIds);
+			// The server's numbers, not the selection's. A stale grid can hold ids that were re-scoped a moment
+			// ago, and reporting the selection size would claim work that did not happen — the same reason the
+			// bulk confirmation shows the preview count rather than the selection count.
+			addedNote =
+				added.out_of_scope > 0
+					? `Added ${added.added} to ${collection.label}. ${added.out_of_scope} were outside your scope.`
+					: `Added ${added.added} to ${collection.label}.`;
+			collections = await listCollections();
+		} catch (caught) {
+			error = caught instanceof Error ? caught.message : 'Could not add to that collection.';
+		} finally {
+			addingTo = '';
+		}
 	}
 
 	function finishAndClear() {
@@ -295,6 +346,19 @@
 				fetchable. Deliberately beside Unpublish rather than beside Delete, because that is the
 				company it keeps — a reversible decision about visibility, not about existence.
 			-->
+			<!--
+				Collections. Loaded on open rather than on mount: the bar appears on every selection and most
+				selections never touch a collection, so a list fetched eagerly would be a request per
+				click-to-select.
+			-->
+			<button
+				type="button"
+				class="rounded-md border border-line px-2.5 py-1 hover:bg-raised"
+				onclick={openCollections}
+			>
+				Add to collection…
+			</button>
+
 			<button
 				type="button"
 				class="rounded-md border border-line px-2.5 py-1 hover:bg-raised"
@@ -327,6 +391,32 @@
 			<button type="button" class="ml-auto text-xs text-muted underline" onclick={onclear}>
 				Clear selection
 			</button>
+		{/if}
+
+		{#if collectionsOpen && flow.step === 'idle'}
+			<div class="flex w-full flex-wrap items-center gap-2 border-t border-line pt-2">
+				{#if collections.length === 0}
+					<p class="text-xs text-muted">
+						No collections yet. Make one on the Collections screen — a portal publishes a
+						collection, so that is where a public page starts.
+					</p>
+				{:else}
+					{#each collections as collection (collection.id)}
+						<button
+							type="button"
+							class="rounded-md border border-line px-2.5 py-1 text-xs hover:bg-raised disabled:opacity-50"
+							disabled={addingTo === collection.id}
+							onclick={() => addTo(collection)}
+						>
+							{collection.label}
+							<span class="text-muted">{collection.item_count}</span>
+						</button>
+					{/each}
+				{/if}
+				{#if addedNote}
+					<p role="status" class="text-xs text-muted">{addedNote}</p>
+				{/if}
+			</div>
 		{:else if flow.step === 'confirm'}
 			<span>
 				{describe(flow.kind, flow.preview.target_count)}?

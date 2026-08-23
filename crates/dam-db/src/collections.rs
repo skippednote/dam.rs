@@ -35,6 +35,11 @@ use uuid::Uuid;
 pub struct Item {
     pub asset_id: Uuid,
     pub position: i32,
+    /// Joined from `assets`, so a screen can show a curated order as pictures rather than as a column of
+    /// uuids. A member whose asset row is gone does not appear at all — the join is inner deliberately: a
+    /// dangling membership is nothing a curator can act on and nothing a portal should publish.
+    pub filename: String,
+    pub mime: String,
 }
 
 /// Why an asset may not be tiered.
@@ -63,15 +68,18 @@ impl Pin {
 /// Idempotent. Re-adding an asset already present leaves its position alone rather than moving it to the
 /// end — a retried request must not silently reorder somebody's curation.
 pub async fn add(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     collection_id: Uuid,
     asset_id: Uuid,
     added_by: Option<Uuid>,
 ) -> Result<(), Error> {
-    let mut tx = pool.begin().await?;
-
-    // `position` is computed inside the transaction, so two concurrent adds cannot both take the same
-    // slot. The `ON CONFLICT DO NOTHING` then makes the whole thing idempotent.
+    // `position` is computed in the same statement as the insert, so two concurrent adds cannot both take the
+    // same slot, and `ON CONFLICT DO NOTHING` makes the whole thing idempotent.
+    //
+    // **The caller's transaction is the boundary.** This opened its own from a pool in the first version,
+    // which read as self-contained and made the function unreachable: a tenant table needs the tenant's
+    // `search_path`, that lives on a `TenantConn`'s connection, and a pool handed these queries the
+    // `dam_global` path instead. The same reason `restores` and `provenance` were dead code.
     sqlx::query(
         "INSERT INTO collection_items (collection_id, asset_id, position, added_by) \
          SELECT $1, $2, coalesce(max(position) + 1, 0), $3 \
@@ -81,10 +89,9 @@ pub async fn add(
     .bind(collection_id)
     .bind(asset_id)
     .bind(added_by)
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?;
 
-    tx.commit().await?;
     Ok(())
 }
 
@@ -93,23 +100,21 @@ pub async fn add(
 /// The renumber is what keeps positions dense. Leaving a hole would be cheaper and would make the
 /// density invariant unstateable, so the next bug in this area would have nothing to assert against.
 pub async fn remove(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     collection_id: Uuid,
     asset_id: Uuid,
 ) -> Result<bool, Error> {
-    let mut tx = pool.begin().await?;
     let deleted =
         sqlx::query("DELETE FROM collection_items WHERE collection_id = $1 AND asset_id = $2")
             .bind(collection_id)
             .bind(asset_id)
-            .execute(&mut *tx)
+            .execute(&mut *conn)
             .await?
             .rows_affected();
 
     if deleted > 0 {
-        renumber(&mut tx, collection_id).await?;
+        renumber(&mut *conn, collection_id).await?;
     }
-    tx.commit().await?;
     Ok(deleted > 0)
 }
 
@@ -119,19 +124,17 @@ pub async fn remove(
 /// 30" is a rounding difference between what the client and server think the list is, and refusing the
 /// drop loses the user's action over an off-by-one.
 pub async fn move_item(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     collection_id: Uuid,
     asset_id: Uuid,
     to_position: i32,
 ) -> Result<(), Error> {
-    let mut tx = pool.begin().await?;
-
     let current: Option<i32> = sqlx::query_scalar(
         "SELECT position FROM collection_items WHERE collection_id = $1 AND asset_id = $2",
     )
     .bind(collection_id)
     .bind(asset_id)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut *conn)
     .await?;
     let Some(current) = current else {
         // Not an inconsistency: reordering something a concurrent request just removed is ordinary,
@@ -145,12 +148,11 @@ pub async fn move_item(
     let count: i64 =
         sqlx::query_scalar("SELECT count(*) FROM collection_items WHERE collection_id = $1")
             .bind(collection_id)
-            .fetch_one(&mut *tx)
+            .fetch_one(&mut *conn)
             .await?;
     let last = i32::try_from(count.saturating_sub(1)).unwrap_or(i32::MAX);
     let target = to_position.clamp(0, last);
     if target == current {
-        tx.commit().await?;
         return Ok(());
     }
 
@@ -162,7 +164,7 @@ pub async fn move_item(
     )
     .bind(collection_id)
     .bind(asset_id)
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?;
 
     if target < current {
@@ -174,7 +176,7 @@ pub async fn move_item(
         .bind(collection_id)
         .bind(target)
         .bind(current)
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await?;
     } else {
         sqlx::query(
@@ -184,7 +186,7 @@ pub async fn move_item(
         .bind(collection_id)
         .bind(current)
         .bind(target)
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await?;
     }
 
@@ -194,10 +196,9 @@ pub async fn move_item(
     .bind(collection_id)
     .bind(asset_id)
     .bind(target)
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?;
 
-    tx.commit().await?;
     Ok(())
 }
 
@@ -205,18 +206,25 @@ pub async fn move_item(
 ///
 /// Ordered by `(position, asset_id)`. The tiebreak is not decoration: without it two rows that somehow
 /// share a position order differently between reads, and a customer's presentation reshuffles itself.
-pub async fn items(pool: &sqlx::PgPool, collection_id: Uuid) -> Result<Vec<Item>, Error> {
-    let rows = sqlx::query_as::<_, (Uuid, i32)>(
-        "SELECT asset_id, position FROM collection_items WHERE collection_id = $1 \
-         ORDER BY position, asset_id",
+pub async fn items(conn: &mut sqlx::PgConnection, collection_id: Uuid) -> Result<Vec<Item>, Error> {
+    let rows = sqlx::query_as::<_, (Uuid, i32, String, String)>(
+        "SELECT i.asset_id, i.position, a.filename, a.mime \
+         FROM collection_items i JOIN assets a ON a.id = i.asset_id \
+         WHERE i.collection_id = $1 AND a.status <> 'deleted' \
+         ORDER BY i.position, i.asset_id",
     )
     .bind(collection_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
 
     Ok(rows
         .into_iter()
-        .map(|(asset_id, position)| Item { asset_id, position })
+        .map(|(asset_id, position, filename, mime)| Item {
+            asset_id,
+            position,
+            filename,
+            mime,
+        })
         .collect())
 }
 
@@ -228,7 +236,10 @@ pub async fn items(pool: &sqlx::PgPool, collection_id: Uuid) -> Result<Vec<Item>
 /// Deleted assets are absent even when they sit in a `pin_hot` collection. The pin exists to keep
 /// something reachable for people, and nobody is reaching a deleted asset; a legal hold, which is a
 /// different mechanism, still blocks tiering *and* purge.
-pub async fn pins(pool: &sqlx::PgPool, asset_ids: &[Uuid]) -> Result<HashMap<Uuid, Pin>, Error> {
+pub async fn pins(
+    conn: &mut sqlx::PgConnection,
+    asset_ids: &[Uuid],
+) -> Result<HashMap<Uuid, Pin>, Error> {
     if asset_ids.is_empty() {
         return Ok(HashMap::new());
     }
@@ -242,7 +253,7 @@ pub async fn pins(pool: &sqlx::PgPool, asset_ids: &[Uuid]) -> Result<HashMap<Uui
          ORDER BY ci.asset_id, c.key",
     )
     .bind(asset_ids)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
 
     let mut pins: HashMap<Uuid, Pin> = HashMap::new();
@@ -262,10 +273,7 @@ pub async fn pins(pool: &sqlx::PgPool, asset_ids: &[Uuid]) -> Result<HashMap<Uui
 ///
 /// One statement via a window function. The alternative — reading the rows and issuing an UPDATE each —
 /// is N round trips and leaves a window in which the collection is half-renumbered.
-async fn renumber(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    collection_id: Uuid,
-) -> Result<(), Error> {
+async fn renumber(conn: &mut sqlx::PgConnection, collection_id: Uuid) -> Result<(), Error> {
     sqlx::query(
         "UPDATE collection_items ci SET position = ranked.rank \
          FROM (SELECT asset_id, \
@@ -275,7 +283,184 @@ async fn renumber(
            AND ci.position <> ranked.rank",
     )
     .bind(collection_id)
-    .execute(&mut **tx)
+    .execute(&mut *conn)
     .await?;
     Ok(())
+}
+
+// ─── the collections themselves (Q.14b) ─────────────────────────────────────
+//
+// Membership, ordering and pinning have existed since 2.3. Making a collection has not — so every function
+// above operated on rows that only a test could create, and a portal, which publishes a collection, could not
+// be set up by the person who wanted one.
+
+/// One collection, as an administrator sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Collection {
+    pub id: Uuid,
+    /// The stable name a portal references. Immutable after creation — see [`rename`].
+    pub key: String,
+    pub label: String,
+    pub description: Option<String>,
+    pub visibility: String,
+    /// Whether membership blocks tiering (§6.4).
+    pub pin_hot: bool,
+    pub item_count: i64,
+}
+
+/// What a new collection needs.
+#[derive(Debug, Clone)]
+pub struct NewCollection<'a> {
+    pub key: &'a str,
+    pub label: &'a str,
+    pub description: Option<&'a str>,
+    pub visibility: &'a str,
+    pub pin_hot: bool,
+    pub owner_id: Option<Uuid>,
+}
+
+/// Every collection, with its size.
+///
+/// The count comes from a lateral rather than a `GROUP BY` join, so a collection with no members still appears.
+/// An empty collection is the normal state of a newly created one, and a list that hid them would make "did
+/// that save?" unanswerable.
+pub async fn all(conn: &mut sqlx::PgConnection) -> Result<Vec<Collection>, Error> {
+    let rows = sqlx::query_as::<_, (Uuid, String, String, Option<String>, String, bool, i64)>(
+        "SELECT c.id, c.key, c.label, c.description, c.visibility, c.pin_hot, \
+                coalesce(n.count, 0) \
+         FROM collections c \
+         LEFT JOIN LATERAL ( \
+             SELECT count(*) AS count FROM collection_items ci WHERE ci.collection_id = c.id \
+         ) n ON true \
+         ORDER BY c.label",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(id, key, label, description, visibility, pin_hot, item_count)| Collection {
+                id,
+                key,
+                label,
+                description,
+                visibility,
+                pin_hot,
+                item_count,
+            },
+        )
+        .collect())
+}
+
+/// One collection by its key.
+pub async fn by_key(conn: &mut sqlx::PgConnection, key: &str) -> Result<Option<Collection>, Error> {
+    Ok(all(conn)
+        .await?
+        .into_iter()
+        .find(|collection| collection.key == key))
+}
+
+/// Creates a collection.
+///
+/// A taken key is a [`Error::Unsupported`] naming it rather than a constraint violation, because "key already
+/// exists" is something the person typing can fix and a 500 is not.
+pub async fn create(conn: &mut sqlx::PgConnection, new: &NewCollection<'_>) -> Result<Uuid, Error> {
+    if !matches!(new.visibility, "private" | "shared" | "public") {
+        return Err(Error::Unsupported(format!(
+            "{:?} is not a collection visibility; use private, shared or public",
+            new.visibility
+        )));
+    }
+    let id = Uuid::now_v7();
+    let inserted: Option<Uuid> = sqlx::query_scalar(
+        "INSERT INTO collections (id, key, label, description, visibility, pin_hot, owner_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7) \
+         ON CONFLICT (key) DO NOTHING \
+         RETURNING id",
+    )
+    .bind(id)
+    .bind(new.key)
+    .bind(new.label)
+    .bind(new.description)
+    .bind(new.visibility)
+    .bind(new.pin_hot)
+    .bind(new.owner_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+
+    inserted.ok_or_else(|| {
+        Error::Unsupported(format!(
+            "a collection with the key {:?} already exists",
+            new.key
+        ))
+    })
+}
+
+/// Changes a collection's label, description, visibility or pinning.
+///
+/// **Not its key.** A portal references a collection by key, so renaming one would silently repoint or break
+/// every portal built on it — and the label is the thing anybody actually wanted to change. Stated here
+/// because "rename" is exactly what somebody would expect to move the key.
+pub async fn rename(
+    conn: &mut sqlx::PgConnection,
+    id: Uuid,
+    label: &str,
+    description: Option<&str>,
+    visibility: &str,
+    pin_hot: bool,
+) -> Result<bool, Error> {
+    if !matches!(visibility, "private" | "shared" | "public") {
+        return Err(Error::Unsupported(format!(
+            "{visibility:?} is not a collection visibility; use private, shared or public"
+        )));
+    }
+    let updated = sqlx::query(
+        "UPDATE collections \
+         SET label = $2, description = $3, visibility = $4, pin_hot = $5, updated_at = now() \
+         WHERE id = $1",
+    )
+    .bind(id)
+    .bind(label)
+    .bind(description)
+    .bind(visibility)
+    .bind(pin_hot)
+    .execute(&mut *conn)
+    .await?
+    .rows_affected();
+    Ok(updated > 0)
+}
+
+/// Deletes a collection. Membership goes with it by cascade; the assets do not.
+///
+/// Refused while a portal publishes it, because a portal whose collection vanished is a public page that
+/// serves nothing with no explanation — and the fix an operator wants is to delete the portal first, which
+/// they can only choose if they are told.
+pub async fn delete(conn: &mut sqlx::PgConnection, id: Uuid) -> Result<bool, Error> {
+    // Propagated, never defaulted. The first version ended this with `unwrap_or(0)`, which looks like
+    // graceful degradation and is the opposite of it twice over: a guard that reads "no portals" when it
+    // could not ask is a guard that permits the delete it exists to refuse, and a failed statement inside the
+    // *caller's* transaction aborts that transaction — so the swallowed error resurfaced on the next
+    // statement as "current transaction is aborted", pointing at the wrong line entirely.
+    //
+    // It also had the column name wrong (`deleted_at`; portals retire via `retired_at`), which is exactly the
+    // class of mistake `unwrap_or` hides.
+    let portals: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM portals WHERE collection_id = $1 AND retired_at IS NULL",
+    )
+    .bind(id)
+    .fetch_one(&mut *conn)
+    .await?;
+    if portals > 0 {
+        return Err(Error::Unsupported(format!(
+            "{portals} portal(s) publish this collection; delete or repoint them first"
+        )));
+    }
+
+    let deleted = sqlx::query("DELETE FROM collections WHERE id = $1")
+        .bind(id)
+        .execute(&mut *conn)
+        .await?
+        .rows_affected();
+    Ok(deleted > 0)
 }

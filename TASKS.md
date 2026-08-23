@@ -26,8 +26,8 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M0–M3c** Foundation, ingest, metadata/search/rights, delivery/sharing/restore | complete |
 | **F** The UI: browse, detail, upload, filter rail, lightbox, bulk bar, design pass | complete |
 | **F.11b** Share/portal UI, schema administration, metadata types | complete, restore UX included |
-| **Q** Acquia parity, 20 slices | Q.1–Q.19 done; Q.14b and Q.20 open |
-| **Go-live Tier 1** Deployment image, backups + restore drills | image and `docker/DEPLOY.md` done; backups and drills done; metrics, rate limiting, virus scan, C2PA open |
+| **Q** Acquia parity, 20 slices | Q.1–Q.19 done including Q.14b; Q.20 open |
+| **Go-live Tier 1** Deployment image, backups, metrics, rate limiting, virus scan, C2PA | **done** — all six, each verified against the running stack |
 | **Archival** Tiering engine, restores, the storage screen | **done** — the sweep and poll jobs, the plan/quote/request/approve API, delivery's 202, bulk archive and restore, the restore panel |
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, semantic search | schema exists, behaviour unwritten |
@@ -35,7 +35,7 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M6** Workflow/proofing, annotations, analytics | not started |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** Q.14b collections in the app → Q.20 sundries → M4 local AI → M6 → M3d → Pre-GA.
+**Next up, in order:** Q.20 sundries → M4 local AI → M6 → M3d → Pre-GA.
 
 **`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
 note carried; `DECISIONS.md` records what was chosen. Two of them needed code: a portal may now be backed by a
@@ -2131,13 +2131,44 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
       selection look broken for doing what it was told. Ten mutations caught; one survivor was a test that
       published *everything*, so the gate it was checking had nothing left to exclude.
 
-      **Not done:** the tenant-facing screen for *making* one — see Q.14b, which is the slice that makes a
-      collection something a person can create and curate. Until then a portal is created through the API.
-- [ ] **Q.14b Collections in the application.** Q.14 exposed the gap: `dam_db::collections` has been done since
-  2.3 — membership, dense ordering, `pin_hot` — and there is no way to make or fill one outside a test. A portal
-  publishes a collection, so a portal cannot be created by the person who would want one. Needs a small API
-  (list, create, rename, add and remove members, reorder), the bulk-bar action that puts a selection into one,
-  and the portal administration screen on top of it.
+      **Done in Q.14b:** the tenant-facing screen for *making* one.
+- [x] **Q.14b Collections in the application.** Q.14 exposed the gap: `dam_db::collections` had been done since
+  2.3 — membership, dense ordering, `pin_hot` — and there was no way to make or fill one outside a test. A portal
+  publishes a collection, so a portal could not be created by the person who would want one.
+
+      **Why it was unreachable, again.** All five existing functions took `&sqlx::PgPool`. A handler holds a
+      `TenantConn`, whose transaction is the thing carrying the `search_path` that makes `collections` mean
+      `t_acme.collections` — so a pool signature could not be called from one at all. That is the fifth module
+      this session where dead code and a `&PgPool` signature turned out to be the same fact. Converted to
+      `&mut PgConnection`, internal transactions removed, and `all`/`by_key`/`create`/`rename`/`delete` added.
+
+      **`rename` does not move the key.** A portal references a collection by key, so renaming one would break
+      or silently repoint every portal built on it — and the label is what anybody actually wanted to change.
+      The screen says so twice: on the create form and again in the edit panel.
+
+      **`delete` refuses while a portal publishes.** With the count and the fix in the sentence, because a
+      public page whose collection vanished serves nothing with no explanation. Two bugs found writing it: the
+      guard read `deleted_at` when portals retire via `retired_at`, and it ended in `unwrap_or(0)` — which is a
+      guard that permits the delete it exists to refuse, *and* leaves the caller's transaction aborted so the
+      swallowed error resurfaces on a later statement as "current transaction is aborted".
+
+      **The predicate applies in both directions.** `add` filters the ids through the caller's scope, so a
+      collection cannot put an unseeable asset onto a public page; `items` filters the same way, so it cannot
+      be used to learn such an asset exists. The second half is the easy one to miss — the leak arrives when a
+      narrowly scoped curator opens a collection somebody wider curated. Out-of-scope ids are *counted*, never
+      named. The real positions are kept, so a gap is the honest signal that the set holds more than this.
+
+      **Members carry a thumbnail**, minted through `assets::thumbnail_url` rather than a second signing path,
+      because curation is visual: reordering photographs by filename is a different and much worse job.
+
+      **The bulk-bar action is not a bulk operation.** Publish and archive go through preview/confirm and an
+      audited `bulk_operations` row; adding to a collection is arranging a working set — reversible, expected
+      dozens of times an hour, and recording it would bury the rows that matter.
+
+      **What the browser caught:** removing a member filtered the list locally, but a removal renumbers on the
+      server — so the screen showed stale positions and then used the resulting hole to claim the collection
+      held assets outside the caller's scope. Now every mutation takes the server's list back. Nine API cases,
+      eight new db cases, eight browser cases including axe, and one more on the bulk bar.
 - [x] **Q.15 The built-in facets:** asset status, orientation, average rating, has-attachment.
 
       **None of these can be a field definition**, which is the whole reason they needed building. `facetable`

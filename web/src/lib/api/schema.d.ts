@@ -761,6 +761,92 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/collections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list"];
+        put?: never;
+        post: operations["create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/collections/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["remove"];
+        options?: never;
+        head?: never;
+        patch: operations["amend"];
+        trace?: never;
+    };
+    "/collections/{id}/items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["items"];
+        put?: never;
+        /**
+         * Adds assets, in the order given, ignoring any already present.
+         * @description Filtered through the caller's own predicate first. Without that, a scoped curator could add an asset they
+         *     cannot see to a collection a portal publishes — which would turn a collection into a way to read around
+         *     ABAC rather than a way to arrange what you can already read.
+         */
+        post: operations["add"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/collections/{id}/items/{asset_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["remove_item"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/collections/{id}/items/{asset_id}/position": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["reorder"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/comments/{comment_id}": {
         parameters: {
             query?: never;
@@ -1654,6 +1740,10 @@ export interface components {
             /** Format: date-time */
             occurred_at: string;
         };
+        /** @description Assets to add. */
+        AddBody: {
+            asset_ids: string[];
+        };
         /** @description Which already-uploaded asset becomes the new version. */
         AddVersionRequest: {
             /**
@@ -1661,6 +1751,24 @@ export interface components {
              * @description An asset this caller uploaded through the ordinary route. See the module docs on why it is not a file.
              */
             new_asset_id: string;
+        };
+        /** @description What an add did. */
+        AddedView: {
+            added: number;
+            /**
+             * @description Ids the caller cannot see, counted rather than named.
+             *
+             *     Counted because naming them would confirm they exist, which is the existence oracle the asset rule
+             *     exists to close. Reported at all because "I selected forty and got thirty-eight" needs an answer.
+             */
+            out_of_scope: number;
+        };
+        /** @description What may be changed. Not the key. */
+        AmendBody: {
+            description?: string | null;
+            label: string;
+            pin_hot?: boolean;
+            visibility: string;
         };
         /** @description What to change about a comment. One of the two, never both — see the module docs. */
         AmendCommentRequest: {
@@ -2116,6 +2224,21 @@ export interface components {
             /** @description Whether the state is final, so a client polls this instead of re-implementing the state vocabulary. */
             terminal: boolean;
         };
+        /** @description One collection. */
+        CollectionView: {
+            description?: string | null;
+            /** Format: uuid */
+            id: string;
+            /** Format: int64 */
+            item_count: number;
+            /** @description Stable, and not changeable. A portal references this. */
+            key: string;
+            label: string;
+            /** @description Whether membership blocks tiering (§6.4). A pinned collection's assets stay instantly fetchable. */
+            pin_hot: boolean;
+            /** @description `private`, `shared` or `public`. */
+            visibility: string;
+        };
         /** @description One comment, as a thread draws it. */
         CommentView: {
             /** Format: uuid */
@@ -2524,6 +2647,28 @@ export interface components {
             values: string[];
         };
         /**
+         * @description A collection's members, in their curated order.
+         *
+         *     Only the ones this caller can see. Reading membership is the mirror of [`add`]: if a scoped curator
+         *     listed a collection curated by somebody with a wider scope, the ids and the count would tell them about
+         *     assets they cannot read — the same existence oracle, arrived at from the other side. The positions are
+         *     the real ones, so a gap in the numbering is the honest signal that the collection holds more than this.
+         */
+        ItemView: {
+            /** Format: uuid */
+            asset_id: string;
+            filename: string;
+            mime: string;
+            /** Format: int32 */
+            position: number;
+            /**
+             * @description A short-lived preview link, present only when the asset has a thumbnail derivative *and* delivery is
+             *     configured. Curation is visual: reordering a set of photographs by filename is a different and much
+             *     worse job than reordering it by looking at them.
+             */
+            thumbnail_url?: string | null;
+        };
+        /**
          * @description How long a `GET` takes to become possible.
          *
          *     The download path and the UI branch on **this**, not on the provider name. That is
@@ -2621,6 +2766,19 @@ export interface components {
             is_default: boolean;
             key: string;
             label: string;
+        };
+        /** @description What a new collection needs. */
+        NewCollectionBody: {
+            description?: string | null;
+            /** @description The stable name a portal will reference. Lowercase, and it cannot be changed later. */
+            key: string;
+            label: string;
+            pin_hot?: boolean;
+            /**
+             * @description Defaults to `private`, which is the safe direction: a collection that became public because somebody
+             *     omitted a field is a disclosure caused by a default.
+             */
+            visibility?: string;
         };
         /** @description A credential to store. The only shape in this API that carries a plaintext key. */
         NewCredentialRequest: {
@@ -2932,6 +3090,15 @@ export interface components {
             preview_url?: string | null;
             /** Format: int32 */
             width?: number | null;
+        };
+        /** @description Where to move an asset. */
+        PositionBody: {
+            /**
+             * Format: int32
+             * @description Clamped rather than refused when out of range — a drag-and-drop that reports "position 47 of 12" is a
+             *     UI bug the user cannot act on, and the intent was clearly "the end".
+             */
+            position: number;
         };
         /** @description A comment to post. */
         PostCommentRequest: {
@@ -5337,6 +5504,254 @@ export interface operations {
                 };
             };
             /** @description No such category tree */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every collection, with its size */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CollectionView"][];
+                };
+            };
+        };
+    };
+    create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewCollectionBody"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CollectionView"];
+                };
+            };
+            /** @description The key is taken */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Not a valid visibility */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    remove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such collection */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A portal publishes it */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    amend: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AmendBody"];
+            };
+        };
+        responses: {
+            /** @description Amended */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CollectionView"];
+                };
+            };
+            /** @description No such collection */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    items: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Members in order */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemView"][];
+                };
+            };
+        };
+    };
+    add: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddBody"];
+            };
+        };
+        responses: {
+            /** @description How many were added and how many the caller could not see */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AddedView"];
+                };
+            };
+            /** @description No such collection */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    remove_item: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed, and the positions closed up */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not a member */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    reorder: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PositionBody"];
+            };
+        };
+        responses: {
+            /** @description Moved, with the collection's new order */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemView"][];
+                };
+            };
+            /** @description Not a member */
             404: {
                 headers: {
                     [name: string]: unknown;

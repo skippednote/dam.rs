@@ -16,6 +16,7 @@ pub mod auto_import;
 pub mod bulk;
 pub mod caller;
 pub mod categories;
+pub mod collections;
 pub mod comments;
 pub mod conversions;
 pub mod csv_export;

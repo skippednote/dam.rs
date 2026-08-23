@@ -205,15 +205,18 @@ type Recorder = {
 		url: string;
 		body: {
 			kind: string;
-			asset_ids: string[]; /** What the Order action sent: how many assets, and the reason. */
-			ordered: string[];
+			asset_ids: string[];
 		};
 	}[];
+	/** What the Order action sent: how many assets, and the reason. */
+	ordered: string[];
+	/** What the "Add to collection" action sent, as `collection-key:count`. */
+	added: string[];
 };
 let bulkPolls = 0;
 
 async function connect(page: Page): Promise<Recorder> {
-	const recorder: Recorder = { urls: [], patches: [], bulk: [], ordered: [] };
+	const recorder: Recorder = { urls: [], patches: [], bulk: [], ordered: [], added: [] };
 	bulkPolls = 0;
 
 	// Before any navigation: the session reads `localStorage` at module load, so setting it afterwards
@@ -311,6 +314,28 @@ async function connect(page: Page): Promise<Recorder> {
 					default_territory: 'WORLD'
 				}
 			});
+		}
+		if (path.pathname === '/collections' && route.request().method() === 'GET') {
+			return route.fulfill({
+				json: [
+					{
+						id: 'c-press',
+						key: 'press-kit',
+						label: 'Press kit',
+						description: null,
+						visibility: 'shared',
+						pin_hot: false,
+						item_count: 4
+					}
+				]
+			});
+		}
+		if (path.pathname.endsWith('/items') && route.request().method() === 'POST') {
+			const body = route.request().postDataJSON() as { asset_ids: string[] };
+			recorder.added.push(`press-kit:${body.asset_ids.length}`);
+			// One of the two is outside this caller's scope, which is the case the counted reply exists for —
+			// and the reason it is counted rather than named.
+			return route.fulfill({ json: { added: body.asset_ids.length - 1, out_of_scope: 1 } });
 		}
 		if (path.pathname === '/orders' && route.request().method() === 'POST') {
 			const body = route.request().postDataJSON() as { asset_ids: string[]; purpose: string };
@@ -1172,6 +1197,30 @@ test('ordering a selection reports the server’s count', async ({ page }) => {
 	// The mock returns one fewer item than asked for, so the count is stated rather than assumed.
 	await expect(bar).toContainText('1 of 2 are yours to ask for');
 	expect(recorder.ordered).toEqual(['2:The spring brochure']);
+});
+
+test('adding a selection to a collection reports what the server took', async ({ page }) => {
+	// Not routed through the bulk preview/confirm flow, and deliberately: adding to a collection is arranging
+	// a working set, not an audited operation over a target set. What it keeps is the honesty about numbers —
+	// the server filters the ids through the caller's own scope, so the bar states what arrived rather than
+	// implying the whole selection did.
+	const recorder = await connect(page);
+	await page.goto('/assets');
+	await page.getByRole('gridcell').nth(0).click();
+	await page
+		.getByRole('gridcell')
+		.nth(1)
+		.click({ modifiers: ['ControlOrMeta'] });
+
+	const bar = page.getByRole('toolbar', { name: 'Bulk operations' });
+	await bar.getByRole('button', { name: 'Add to collection…' }).click();
+	// The list is fetched on open rather than on mount: the bar appears on every selection and most selections
+	// never touch a collection.
+	await bar.getByRole('button', { name: /Press kit/ }).click();
+
+	await expect(bar).toContainText('Added 1 to Press kit');
+	await expect(bar).toContainText('1 were outside your scope');
+	expect(recorder.added).toEqual(['press-kit:2']);
 });
 
 test('an order needs a reason before it can be sent', async ({ page }) => {

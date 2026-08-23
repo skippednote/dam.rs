@@ -20,6 +20,9 @@
 		{ href: resolve('/favourites'), label: 'Favourites' },
 		{ href: resolve('/watches'), label: 'Watching' },
 		{ href: resolve('/shares'), label: 'Shares' },
+		// Between Shares and Orders because that is the neighbourhood it belongs to: a collection is what a
+		// portal publishes, and a portal is a share with a front door.
+		{ href: resolve('/collections'), label: 'Collections' },
 		{ href: resolve('/orders'), label: 'Orders' },
 		{ href: resolve('/schema'), label: 'Schema' },
 		{ href: resolve('/storage'), label: 'Storage' },

@@ -2304,6 +2304,326 @@
         }
       }
     },
+    "/collections": {
+      "get": {
+        "tags": [
+          "collections"
+        ],
+        "operationId": "list",
+        "responses": {
+          "200": {
+            "description": "Every collection, with its size",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CollectionView"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "collections"
+        ],
+        "operationId": "create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewCollectionBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionView"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The key is taken",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Not a valid visibility",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/collections/{id}": {
+      "delete": {
+        "tags": [
+          "collections"
+        ],
+        "operationId": "remove",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "404": {
+            "description": "No such collection"
+          },
+          "409": {
+            "description": "A portal publishes it",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "collections"
+        ],
+        "operationId": "amend",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AmendBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Amended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such collection"
+          }
+        }
+      }
+    },
+    "/collections/{id}/items": {
+      "get": {
+        "tags": [
+          "collections"
+        ],
+        "operationId": "items",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Members in order",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ItemView"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "collections"
+        ],
+        "summary": "Adds assets, in the order given, ignoring any already present.",
+        "description": "Filtered through the caller's own predicate first. Without that, a scoped curator could add an asset they\ncannot see to a collection a portal publishes — which would turn a collection into a way to read around\nABAC rather than a way to arrange what you can already read.",
+        "operationId": "add",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "How many were added and how many the caller could not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AddedView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such collection"
+          }
+        }
+      }
+    },
+    "/collections/{id}/items/{asset_id}": {
+      "delete": {
+        "tags": [
+          "collections"
+        ],
+        "operationId": "remove_item",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed, and the positions closed up"
+          },
+          "404": {
+            "description": "Not a member"
+          }
+        }
+      }
+    },
+    "/collections/{id}/items/{asset_id}/position": {
+      "post": {
+        "tags": [
+          "collections"
+        ],
+        "operationId": "reorder",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PositionBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Moved, with the collection's new order",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ItemView"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not a member"
+          }
+        }
+      }
+    },
     "/comments/{comment_id}": {
       "delete": {
         "tags": [
@@ -4595,6 +4915,22 @@
           }
         }
       },
+      "AddBody": {
+        "type": "object",
+        "description": "Assets to add.",
+        "required": [
+          "asset_ids"
+        ],
+        "properties": {
+          "asset_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        }
+      },
       "AddVersionRequest": {
         "type": "object",
         "description": "Which already-uploaded asset becomes the new version.",
@@ -4606,6 +4942,50 @@
             "type": "string",
             "format": "uuid",
             "description": "An asset this caller uploaded through the ordinary route. See the module docs on why it is not a file."
+          }
+        }
+      },
+      "AddedView": {
+        "type": "object",
+        "description": "What an add did.",
+        "required": [
+          "added",
+          "out_of_scope"
+        ],
+        "properties": {
+          "added": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "out_of_scope": {
+            "type": "integer",
+            "description": "Ids the caller cannot see, counted rather than named.\n\nCounted because naming them would confirm they exist, which is the existence oracle the asset rule\nexists to close. Reported at all because \"I selected forty and got thirty-eight\" needs an answer.",
+            "minimum": 0
+          }
+        }
+      },
+      "AmendBody": {
+        "type": "object",
+        "description": "What may be changed. Not the key.",
+        "required": [
+          "label",
+          "visibility"
+        ],
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
+          "pin_hot": {
+            "type": "boolean"
+          },
+          "visibility": {
+            "type": "string"
           }
         }
       },
@@ -5503,6 +5883,49 @@
           "terminal": {
             "type": "boolean",
             "description": "Whether the state is final, so a client polls this instead of re-implementing the state vocabulary."
+          }
+        }
+      },
+      "CollectionView": {
+        "type": "object",
+        "description": "One collection.",
+        "required": [
+          "id",
+          "key",
+          "label",
+          "visibility",
+          "pin_hot",
+          "item_count"
+        ],
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "item_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "key": {
+            "type": "string",
+            "description": "Stable, and not changeable. A portal references this."
+          },
+          "label": {
+            "type": "string"
+          },
+          "pin_hot": {
+            "type": "boolean",
+            "description": "Whether membership blocks tiering (§6.4). A pinned collection's assets stay instantly fetchable."
+          },
+          "visibility": {
+            "type": "string",
+            "description": "`private`, `shared` or `public`."
           }
         }
       },
@@ -6404,6 +6827,39 @@
           }
         }
       },
+      "ItemView": {
+        "type": "object",
+        "description": "A collection's members, in their curated order.\n\nOnly the ones this caller can see. Reading membership is the mirror of [`add`]: if a scoped curator\nlisted a collection curated by somebody with a wider scope, the ids and the count would tell them about\nassets they cannot read — the same existence oracle, arrived at from the other side. The positions are\nthe real ones, so a gap in the numbering is the honest signal that the collection holds more than this.",
+        "required": [
+          "asset_id",
+          "position",
+          "filename",
+          "mime"
+        ],
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "mime": {
+            "type": "string"
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "thumbnail_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A short-lived preview link, present only when the asset has a thumbnail derivative *and* delivery is\nconfigured. Curation is visual: reordering a set of photographs by filename is a different and much\nworse job than reordering it by looking at them."
+          }
+        }
+      },
       "LatencyClass": {
         "type": "string",
         "description": "How long a `GET` takes to become possible.\n\nThe download path and the UI branch on **this**, not on the provider name. That is\nwhat lets Azure Archive or LTO tape slot in later without special-casing (§6.1).",
@@ -6583,6 +7039,36 @@
           },
           "label": {
             "type": "string"
+          }
+        }
+      },
+      "NewCollectionBody": {
+        "type": "object",
+        "description": "What a new collection needs.",
+        "required": [
+          "key",
+          "label"
+        ],
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "key": {
+            "type": "string",
+            "description": "The stable name a portal will reference. Lowercase, and it cannot be changed later."
+          },
+          "label": {
+            "type": "string"
+          },
+          "pin_hot": {
+            "type": "boolean"
+          },
+          "visibility": {
+            "type": "string",
+            "description": "Defaults to `private`, which is the safe direction: a collection that became public because somebody\nomitted a field is a disclosure caused by a default."
           }
         }
       },
@@ -7358,6 +7844,20 @@
               "null"
             ],
             "format": "int32"
+          }
+        }
+      },
+      "PositionBody": {
+        "type": "object",
+        "description": "Where to move an asset.",
+        "required": [
+          "position"
+        ],
+        "properties": {
+          "position": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Clamped rather than refused when out of range — a drag-and-drop that reports \"position 47 of 12\" is a\nUI bug the user cannot act on, and the intent was clearly \"the end\"."
           }
         }
       },
