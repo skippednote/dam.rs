@@ -2783,6 +2783,188 @@
         }
       }
     },
+    "/connectors": {
+      "get": {
+        "tags": [
+          "connectors"
+        ],
+        "operationId": "list",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ConnectorView"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "connectors"
+        ],
+        "operationId": "register",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegisteredView"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "That kind is already connected to that site"
+          },
+          "422": {
+            "description": "Not a connector kind, or a label or site URL that will not do"
+          }
+        }
+      }
+    },
+    "/connectors/{id}": {
+      "get": {
+        "tags": [
+          "connectors"
+        ],
+        "operationId": "read",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such connector"
+          }
+        }
+      }
+    },
+    "/connectors/{id}/rotate": {
+      "post": {
+        "tags": [
+          "connectors"
+        ],
+        "operationId": "rotate",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RotateBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The new secret, shown once",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegisteredView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such connector"
+          },
+          "409": {
+            "description": "The connector is revoked"
+          }
+        }
+      }
+    },
+    "/connectors/{id}/status": {
+      "post": {
+        "tags": [
+          "connectors"
+        ],
+        "operationId": "set_status",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StatusBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such connector, or it is already revoked"
+          }
+        }
+      }
+    },
     "/conversions": {
       "get": {
         "tags": [
@@ -7336,6 +7518,100 @@
           }
         }
       },
+      "ConnectorView": {
+        "type": "object",
+        "description": "A connected site, as an operator sees it.\n\nCarries no secret and no ciphertext. The sealed form is not itself dangerous, but putting it in the response\nof an endpoint an administration screen polls is how it ends up in a log, a browser cache and a bug report.",
+        "required": [
+          "id",
+          "kind",
+          "label",
+          "site_url",
+          "status",
+          "may_render",
+          "allow_original",
+          "allow_restore",
+          "all_asset_groups",
+          "asset_group_ids",
+          "previous_secret_live",
+          "created_at"
+        ],
+        "properties": {
+          "all_asset_groups": {
+            "type": "boolean"
+          },
+          "allow_original": {
+            "type": "boolean"
+          },
+          "allow_restore": {
+            "type": "boolean"
+          },
+          "asset_group_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`drupal`, `wordpress`, `adobe_cc`, `figma`, `hubspot`, `salesforce` or `generic`."
+          },
+          "label": {
+            "type": "string"
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_seen_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "may_render": {
+            "type": "boolean",
+            "description": "Whether URLs this connector signed are still honoured. `error` still renders — whatever went wrong is\nnot a reason to blank the images on somebody's home page."
+          },
+          "previous_secret_live": {
+            "type": "boolean",
+            "description": "Whether the superseded secret is still inside its grace window *right now*. Computed rather than\nstored, so a screen can say \"the old secret stops working on Friday\" instead of \"a secret was rotated\"."
+          },
+          "remote_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What the remote says it is running, e.g. `drupal 11.1 / damrs_dam 1.2.0`. The one fact damrs cannot\ninfer, and the first thing worth knowing when a site starts failing."
+          },
+          "secret_rotated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the signing secret was last replaced."
+          },
+          "site_url": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "description": "`active`, `paused`, `error` or `revoked`."
+          }
+        }
+      },
       "ContributorView": {
         "type": "object",
         "description": "A person and what they did.",
@@ -9826,6 +10102,75 @@
           }
         }
       },
+      "RegisterBody": {
+        "type": "object",
+        "description": "A site to connect.",
+        "required": [
+          "kind",
+          "label",
+          "site_url"
+        ],
+        "properties": {
+          "all_asset_groups": {
+            "type": "boolean"
+          },
+          "allow_original": {
+            "type": "boolean",
+            "description": "May it fetch masters? Off unless asked for: a CMS wants renditions, and a site that can fetch originals\nis a site that can leak the deliverable a customer paid for."
+          },
+          "allow_restore": {
+            "type": "boolean",
+            "description": "May a render trigger a restore? Off unless asked for, and §11.1 is emphatic: a page render must never\nwake Glacier."
+          },
+          "asset_group_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Which asset groups the site may see. Empty with `all_asset_groups` false means it sees nothing, which is\na legitimate way to register a connector before deciding what it may have."
+          },
+          "config": {},
+          "kind": {
+            "type": "string",
+            "description": "`drupal`, `wordpress`, `adobe_cc`, `figma`, `hubspot`, `salesforce` or `generic`."
+          },
+          "label": {
+            "type": "string"
+          },
+          "site_url": {
+            "type": "string",
+            "description": "The remote's canonical origin. Also the CORS allowlist entry for the asset picker and the audience of\nissued tokens, so it has to be the origin the browser will actually send."
+          }
+        }
+      },
+      "RegisteredView": {
+        "type": "object",
+        "description": "What a registration returns, once.",
+        "required": [
+          "connector",
+          "api_key",
+          "signing_secret",
+          "warning"
+        ],
+        "properties": {
+          "api_key": {
+            "type": "string",
+            "description": "The API key the remote authenticates with. Stored as a hash, so this is the only time it exists."
+          },
+          "connector": {
+            "$ref": "#/components/schemas/ConnectorView"
+          },
+          "signing_secret": {
+            "type": "string",
+            "description": "The secret the remote signs render URLs with. Stored sealed, so this is the only time it is readable."
+          },
+          "warning": {
+            "type": "string",
+            "description": "Said in the response body, because a UI that forgets to say it produces a support ticket a week later."
+          }
+        }
+      },
       "RemovedField": {
         "type": "object",
         "description": "What a removal did.",
@@ -10061,6 +10406,19 @@
           "unknown"
         ]
       },
+      "RotateBody": {
+        "type": "object",
+        "description": "Whether the superseded secret keeps working.",
+        "required": [
+          "keep_previous"
+        ],
+        "properties": {
+          "keep_previous": {
+            "type": "boolean",
+            "description": "`true` for a scheduled rotation: the old secret keeps verifying for a week while the site's own\nconfiguration change is deployed. `false` when the secret has leaked — then the week would be a week of\nforgery.\n\nNo default. The two situations want opposite answers, and picking one for a caller who did not say\nwould be wrong half the time in the direction that matters."
+          }
+        }
+      },
       "RoundAssetView": {
         "type": "object",
         "description": "One asset in a round, in snapshot order.",
@@ -10276,6 +10634,15 @@
           }
         }
       },
+      "SettableStatus": {
+        "type": "string",
+        "description": "The statuses an operator may set.",
+        "enum": [
+          "active",
+          "paused",
+          "revoked"
+        ]
+      },
       "ShareRequest": {
         "type": "object",
         "description": "What a client asks for when sharing an asset.",
@@ -10471,6 +10838,19 @@
           },
           "name": {
             "type": "string"
+          }
+        }
+      },
+      "StatusBody": {
+        "type": "object",
+        "description": "What to set a connector to.",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/SettableStatus",
+            "description": "`active`, `paused` or `revoked`. Not `error` — that is something the dispatcher records, not a state an\noperator sets."
           }
         }
       },

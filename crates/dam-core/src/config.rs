@@ -409,6 +409,16 @@ impl Default for TelemetryConfig {
 }
 
 impl Config {
+    /// The deployment's sealing keyring.
+    ///
+    /// Configured under `[ai]` because model credentials were its first consumer, and it stayed there when
+    /// connectors became the second: one deployment has one sealing key, and moving the setting would break
+    /// every existing configuration file to make a name read better. New consumers ask the deployment through
+    /// here rather than reaching into the AI section for something that is not about AI.
+    #[must_use]
+    pub fn sealing_keyring(&self) -> crate::sealed::SealingKeyring {
+        self.ai.keyring()
+    }
     /// Loads from the process environment, optionally layered over a TOML file.
     ///
     /// Precedence is merge order: **defaults -> file -> env**, later wins.

@@ -19,6 +19,7 @@ pub mod caller;
 pub mod categories;
 pub mod collections;
 pub mod comments;
+pub mod connectors;
 pub mod conversions;
 pub mod csv_export;
 pub mod dashboard;

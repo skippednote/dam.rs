@@ -29,13 +29,13 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **Q** Acquia parity, 20 slices | **complete** — Q.1–Q.20, including Q.14b collections and Q.20a–d |
 | **Go-live Tier 1** Deployment image, backups, metrics, rate limiting, virus scan, C2PA | **done** — all six, each verified against the running stack |
 | **Archival** Tiering engine, restores, the storage screen | **done** — the sweep and poll jobs, the plan/quote/request/approve API, delivery's 202, bulk archive and restore, the restore panel |
-| **M3d** Drupal 11 connector | not started |
+| **M3d** Drupal 11 connector | registry done (M3d·1); signed delivery, browse/oEmbed, usage index and the module open |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, colour | dedup and colour **done** (M4a); the rest needs model files — see M4 below |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | **done** — two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query, the MCP server |
 | **M6** Workflow/proofing, annotations, analytics | **done** — annotations (M6a), proofing (M6b), analytics (M6c) |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** M3d Drupal connector → Pre-GA (G7 import, G10 SCIM/BYOK/audit, G19 metering enforcement, quotas). M4b (local ONNX models) stays parked on the model-distribution question.
+**Next up, in order:** M3d·2 connector-signed delivery → M3d·3 browse/oEmbed → M3d·4 usage index → M3d·5 the Drupal module → Pre-GA (G7 import, G10 SCIM/BYOK/audit, G19 metering enforcement, quotas). M4b (local ONNX models) stays parked on the model-distribution question.
 M4b (local models) is parked on a distribution decision — see the M4 section.
 
 **`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
@@ -1321,6 +1321,69 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   *Not done here:* render-on-demand. A cache miss is an honest `404` until the render path is wired; what it
   must never do is fall back to a name match. Tenant-defined profiles need a table of their own — see the
   note in `dam_media::profiles`.
+### M3d — the Drupal connector
+
+Five slices. The damrs side first, because the Drupal module is a client of it and a module written against an
+API that does not exist yet is a module written twice.
+
+- [x] **M3d·1 Connector registry.** `connectors` has existed since migration 0004 with nothing writing to it,
+  and `rights_usage.connector_id` has pointed at it the whole time.
+
+  **Registration composes the ordinary machinery rather than adding a second one.** A connector needs to
+  authenticate and to be scoped to asset groups, and both already exist — so registering a site creates an
+  identity, a membership, a role carrying the groups, and an API key, and nothing new. That is what makes
+  §11.1's claim true: "a misconfigured Drupal view cannot surface an unapproved asset, because the ABAC
+  predicate already excluded it" only holds if the connector goes *through* the predicate. The test that
+  matters drives the returned key against the real asset listing rather than asserting what the role row says.
+
+  **The service account is deliberately not a person.** It needs an email because `identities.email` is unique
+  and not null, so it gets one at `.invalid` — the reserved TLD (RFC 2606) that can never resolve and can never
+  receive a password reset. A synthetic address in a real domain eventually belongs to somebody.
+
+  **Two secrets, two lifetimes, both shown once.** The API key is how the remote calls damrs; the signing secret
+  is how it signs render URLs itself so a page render never blocks on an API call (§11.3) — which makes it a
+  forgery capability for whatever that site may render. So it is sealed with the deployment's keyring exactly as
+  a model credential is, and the sealed form carries its own key id, so no column was added. Reading a connector
+  back returns neither, not even the ciphertext.
+
+  **Rotation asks which situation it is.** A scheduled rotation keeps the old secret verifying for a week,
+  because the DAM-side rotation and the site-side config change are separate deploys and a rotation with no
+  window is an outage. A leak does not, because that week would be a week of forgery. The endpoint takes the
+  answer rather than picking one, and the window is enforced by comparing `secret_rotated_at` rather than by a
+  job that clears the column — a cleanup job that fails leaves a superseded secret valid forever and nothing
+  says so. Revoking clears both secrets and is terminal.
+
+  A connector scoped to no groups is a **403**, not an empty library. That is `caller::authorize`'s existing
+  rule — a predicate matching nothing is a refusal — and it is the better answer here: an empty picker reads as
+  "the DAM has no assets" and sends a site operator looking in the wrong place. I wrote the test expecting a
+  200 with zero rows, which was the second time this session I asserted against a deliberate codebase rule
+  rather than reading it first.
+
+  9 db cases, 10 API cases. No screen yet: a registry whose URLs are not honoured is a screen for a feature
+  that does not work end to end, so the screen lands with M3d·2.
+
+- [ ] **M3d·2 Connector-signed delivery.** The property the whole integration rests on: the remote signs render
+  URLs in PHP from the shared secret, so a damrs outage degrades to stale-but-working pages rather than white
+  screens. `dam_core::signed_url` already has the shape — a `Keyring` that signs with one key and verifies with
+  retired ones — so a connector's current and previous secrets map straight onto it.
+
+  The security work is at *verification*: a connector that signs its own URLs can sign anything, so what it may
+  ask for has to be bounded by its own row. `allow_original` false must refuse `transform = original`;
+  `Purpose::InternalPreview` must be refused outright, because it skips the rights check and a connector is
+  external; the asset must be inside the connector's groups; and `allow_restore` false must resolve a cold
+  original to the proxy rather than answering 202. Without those four, the signing secret is a bypass of
+  everything §11 claims the connector enforces.
+
+- [ ] **M3d·3 Browse and oEmbed.** `GET /browse` (CORS-enabled search + facets for the embedded picker) and
+  `GET /oembed` (provider, for CKEditor inline embeds).
+
+- [ ] **M3d·4 The usage index.** `connector_asset_refs` — "this asset appears on 12 pages of site X". Three
+  things depend on it: usage reporting, takedown impact before pulling an asset, and a pin-hot signal for the
+  lifecycle engine, since an asset live on a production site is a poor tiering candidate whatever its download
+  history says.
+
+- [ ] **M3d·5 The Drupal module.** `integrations/drupal/`, Drupal 11+ only, six submodules (§11.2).
+
 - [ ] **3.x AWS-native features to rely on instead of building.** *Raised 2026-08-18; needs a decision on
   items 1 and 2 because they change architecture.* Every item is AWS-only while D1 says S3-compatible, so
   each belongs behind `dam_store::Capabilities` with a fallback — the pattern already exists, and the

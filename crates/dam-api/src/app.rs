@@ -193,6 +193,15 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
         .merge(crate::versions::router(crate::versions::VersionState {
             global: deps.global.clone(),
         }))
+        .merge(crate::connectors::router(
+            crate::connectors::ConnectorState {
+                global: deps.global.clone(),
+                // The deployment's sealing keyring, built once. A connector's signing secret is a forgery
+                // capability for whatever that site may render, so it is encrypted at rest exactly as a
+                // model credential is.
+                keyring: cfg.sealing_keyring(),
+            },
+        ))
         .merge(crate::insights::router(crate::insights::InsightsState {
             global: deps.global.clone(),
         }))

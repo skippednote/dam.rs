@@ -17,6 +17,7 @@ pub mod bulk;
 pub mod categories;
 pub mod collections;
 pub mod comments;
+pub mod connectors;
 pub mod conversions;
 pub mod derivatives;
 pub mod engagement;
