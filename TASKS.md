@@ -32,10 +32,10 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, colour | dedup and colour **done** (M4a); the rest needs model files — see M4 below |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | **done** — two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query, the MCP server |
-| **M6** Workflow/proofing, annotations, analytics | annotations **done** (M6a); proofing **done** (M6b); analytics open |
+| **M6** Workflow/proofing, annotations, analytics | **done** — annotations (M6a), proofing (M6b), analytics (M6c) |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** M6c analytics rollups → M3d Drupal connector → Pre-GA.
+**Next up, in order:** M3d Drupal connector → Pre-GA (G7 import, G10 SCIM/BYOK/audit, G19 metering enforcement, quotas). M4b (local ONNX models) stays parked on the model-distribution question.
 M4b (local models) is parked on a distribution decision — see the M4 section.
 
 **`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
@@ -2929,10 +2929,62 @@ Little of this was designed in ARCHITECTURE beyond the milestone row, so the des
   mock swallowed the grid's own listing; a bad `/search/facets` shape then left the page stuck on "Searching…"
   with no error anywhere, which is worth remembering as a symptom.
 
-- [ ] **M6c Analytics rollups and Insights exports.** `events` is already partitioned by month and
-  `dam_global.tenant_usage_daily` exists. What is missing is the rollup job and the read surface — and the
-  scoping question is the interesting one, because §7 says a count is a disclosure and an analytics screen is
-  entirely counts.
+- [x] **M6c Analytics rollups and Insights exports.** `events` was already partitioned by month and
+  `dam_global.tenant_usage_daily` existed since migration 0001. What was missing was the rollup job, the read
+  surface — and, it turned out, a writer for the number the dashboard had been showing all along.
+
+  **Two surfaces with opposite scoping rules, and that is the whole design.** `dam_db::insights` is the
+  customer's view and every query in it runs through the caller's predicate, because §7 says a count is a
+  disclosure. `dam_db::metering` is the operator's view and runs through nothing, because a bill narrowed to
+  what one reader can see is not a bill. Nothing tenant-facing reads the second; serving an Insights screen
+  from `tenant_usage_daily` would hand a scoped curator the library-wide totals in one field.
+
+  The consequence of scoping is stated on the screen rather than left to be found: two people see different
+  charts, there is no library-wide total anywhere, and the contributors list says out loud that it is *not* a
+  performance measure — Ada's upload count is of the ones you can see, so it changes with the reader.
+
+  **The seventh instance of the recurring pattern, and the most consequential.** `Kind::Downloaded` existed in
+  `dam_db::events` and nothing wrote it. 0005's own comment said `rights_usage` was populated from "download
+  events (0001 events)"; the ledger half was written and the events half never was. So
+  `downloads_this_week` on the dashboard had been structurally zero since the day it shipped — verified on the
+  dev library: eleven real downloads in `rights_usage`, zero download events, dashboard reporting 0. The
+  download endpoint now writes both, and the number moved to 1 the moment I took one.
+
+  Two tables, deliberately, because neither answers the other's question: `rights_usage` is licence
+  consumption attributed to a scope and enforced against `max_downloads` (so its write may fail the request);
+  `events` is what happened and who did it (so its write is logged and never fatal). Insights reads the ledger
+  for downloads, because a share-link download is a real download and `events.actor_id` is an identity — a
+  share token cannot go in it.
+
+  **A level is not a flow.** `downloads`, `restores` and the token counters are things that happened between
+  one midnight and the next, and the rows carry timestamps. `asset_count` and `bytes_by_pool` are how much is
+  *stored*, which `object_placements` only knows as of now. So `metering::measure` refuses a day older than
+  yesterday rather than recording today's storage against last March, which would draw a flat cost curve out
+  of one number repeated. The cost is real and accepted: a fresh deployment meters from the day the worker
+  first runs, and an operator wanting an older day's AI spend reads `enrichment_runs` directly.
+
+  The rollup is a job chain like the tier sweep, started at worker boot rather than at provision — a tenant
+  created before this existed has to start being metered too, and a hole in a billing series is
+  indistinguishable from a worker that was down. Verified live: two tenants × two days, including an empty
+  tenant that correctly meters as rows of zeroes rather than as no rows.
+
+  **What driving the real page caught that the mocked tests could not.** Three things, and none of them were
+  visible in a fixture:
+
+  - `never_downloaded` came back **20 of 180** on a 183-asset library. The screen presented twenty rows as the
+    answer, which reads as "we have twenty unused assets" — the difference between a tidy-up and a storage
+    problem. A most-downloaded top-20 explains its own cap; a list of things nobody uses does not, so the
+    endpoint now returns the total and the screen says "showing the 20 oldest of 180".
+  - Contributors read **"ada@example.com ada@example.com"** on every row, because `display_name` falls back to
+    the email when nobody set one — which is most people in a fresh tenant.
+  - The stacked chart was **unreadable**: one day with 160 uploads made every other series a hairline, so the
+    downloads that actually varied (2, 3, 6, 1) were invisible. Any library that has ever done a bulk import
+    would look like that forever. Replaced with one labelled row per kind, each scaled to its own peak, with
+    the peak stated — which is what keeps five different scales honest.
+
+  Six reports export as CSV through the same functions the screen calls, because a second query written for
+  the export is how a file comes to disagree with the page that offered it. 15 db cases, 12 API cases, 3
+  pipeline cases, 13 browser cases.
 
 ## M5 — Hosted-model enrichment
 

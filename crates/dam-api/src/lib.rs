@@ -28,6 +28,7 @@ pub mod dto;
 pub mod duplicates;
 pub mod engagement;
 pub mod history;
+pub mod insights;
 pub mod observability;
 pub mod openapi;
 pub mod orders;

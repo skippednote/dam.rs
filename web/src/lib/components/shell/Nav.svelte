@@ -38,6 +38,9 @@
 		// duplicate queue are computed, while a round is somebody having *asked*. It sits with them because a
 		// reviewer opening the application to see what is waiting on them should find all three together.
 		{ href: resolve('/proofing'), label: 'Proofing' },
+		// After the queues rather than beside Settings: Insights is read-only and about the library, not about
+		// how the library is configured. It is the one screen here that answers "is any of this being used".
+		{ href: resolve('/insights'), label: 'Insights' },
 		// Next to Schema because it is the same kind of work: deciding what the library's own vocabulary means.
 		{ href: resolve('/review'), label: 'Review' },
 		// Beside Review for the same reason, and because the review queue is where a badly-set threshold shows
@@ -78,14 +81,14 @@
 	<!--
 		Wrapping, and a minimum height rather than a fixed one.
 
-		Sixteen sections do not fit one row: measured, the nav wants 1461px, so at 1024 and 1280 — an iPad in
+		Seventeen sections do not fit one row: measured, the nav wants 1461px, so at 1024 and 1280 — an iPad in
 		landscape and the default MacBook Air — the last item sat outside the viewport entirely, unreachable
 		by mouse. I added six of those sections over this session without once checking the row still fitted,
 		which is exactly the kind of thing that only shows up in a screenshot.
 
 		Wrapping is the honest minimum: nothing becomes unreachable and it degrades predictably at every
-		width. It is not the right *design* — sixteen flat sections wants grouping, with the configuration
-		half (Schema, Vocabularies, Storage, Webhooks, Branding, Style) under Settings and the ten daily
+		width. It is not the right *design* — seventeen flat sections wants grouping, with the configuration
+		half (Schema, Vocabularies, Storage, Webhooks, Branding, Style) under Settings and the eleven daily
 		ones on top — but that is a routing change, and a nav that clips is a bug while a nav that wraps is
 		only plain.
 	-->

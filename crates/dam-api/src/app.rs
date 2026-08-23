@@ -193,6 +193,9 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
         .merge(crate::versions::router(crate::versions::VersionState {
             global: deps.global.clone(),
         }))
+        .merge(crate::insights::router(crate::insights::InsightsState {
+            global: deps.global.clone(),
+        }))
         .merge(crate::dashboard::router(crate::dashboard::DashboardState {
             global: deps.global.clone(),
         }))

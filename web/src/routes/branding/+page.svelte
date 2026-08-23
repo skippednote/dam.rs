@@ -32,6 +32,16 @@
 	import { branding as shell, DEFAULT_ACCENT } from '$lib/api/branding.svelte';
 	import { session } from '$lib/api/session.svelte';
 
+	/**
+	 * Six hex digits, as a named constant rather than inline.
+	 *
+	 * `{6}` inside an attribute is a Svelte *expression*, so written literally this becomes
+	 * `pattern="#[0-9a-fA-F]6"` — a regex that quietly accepts the wrong thing. Escaping the braces inline
+	 * works and reads as noise, and eslint's `no-useless-mustaches` flags it. Naming it is the version that
+	 * is both correct and legible.
+	 */
+	const ACCENT_PATTERN = '#[0-9a-fA-F]{6}';
+
 	let loaded = $state<Branding | null>(null);
 	let loading = $state(true);
 	let error = $state('');
@@ -160,7 +170,7 @@
 						/>
 						<input
 							bind:value={accent}
-							pattern="#[0-9a-fA-F]{'{'}6{'}'}"
+							pattern={ACCENT_PATTERN}
 							class="w-32 rounded-md border border-line bg-surface px-2 py-1.5 font-mono text-sm"
 						/>
 					</span>

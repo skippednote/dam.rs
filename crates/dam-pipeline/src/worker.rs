@@ -57,6 +57,8 @@ pub mod kind {
     pub const WEBHOOK_DISPATCH: &str = "webhook_dispatch";
     /// One asset is perceptually hashed and coloured, and its near-duplicates queued (§8.1).
     pub const SIMILARITY: &str = "similarity";
+    /// One tenant's usage is measured and written to the control plane's daily rollup (M6c).
+    pub const USAGE_ROLLUP: &str = "usage_rollup";
 }
 
 /// How long to wait when the queue is empty.
@@ -123,6 +125,26 @@ impl std::fmt::Debug for Context {
 pub async fn run(context: &Context, shutdown: impl std::future::Future<Output = ()>) {
     let shutdown = std::pin::pin!(shutdown);
     let mut shutdown = shutdown;
+
+    // Metering chains, once at boot (M6c).
+    //
+    // Here rather than at provision, and deliberately: a tenant created before this feature existed has to
+    // start being metered too, and a billing series with a hole in it is indistinguishable from a worker that
+    // was down. `enqueue_usage_rollup` is deduped per tenant, so two workers starting together, or one
+    // restarting ten times, still leave one chain each.
+    //
+    // A failure is logged and dropped. Metering is the least urgent thing this process does, and refusing to
+    // start a worker because one tenant's row could not be queued would stop every thumbnail in the fleet.
+    match active_tenants(&context.global).await {
+        Ok(tenants) => {
+            for tenant_id in tenants {
+                if let Err(error) = enqueue_usage_rollup(&context.global, tenant_id).await {
+                    tracing::warn!(%error, %tenant_id, "starting the metering chain");
+                }
+            }
+        }
+        Err(error) => tracing::warn!(%error, "listing tenants to meter"),
+    }
 
     loop {
         // Before claiming, so a crashed worker's jobs re-enter the queue rather than waiting for whichever
@@ -410,6 +432,18 @@ pub async fn handle(context: &Context, job: &Job) -> Result<()> {
             // `requeue_backfill_collect` documents at length: this job is still `running`, so a shared key
             // would resolve to itself and the chain would end here.
             requeue_tier_sweep(&context.global, job.tenant_id, crate::tiering::SWEEP_EVERY).await?;
+            Ok(())
+        }
+
+        kind::USAGE_ROLLUP => {
+            let rolled =
+                crate::metering::roll(&context.global, &slug, job.tenant_id, chrono::Utc::now())
+                    .await?;
+            tracing::info!(days = rolled.days, refused = rolled.refused, "usage rollup");
+            // Tomorrow's pass, from inside today's — the chain `requeue_tier_sweep` documents. Not deduped:
+            // this job is still `running`, so a shared key would resolve to itself and the chain would end.
+            requeue_usage_rollup(&context.global, job.tenant_id, crate::metering::ROLL_EVERY)
+                .await?;
             Ok(())
         }
 
@@ -763,6 +797,49 @@ fn sweep_spec(tenant_id: Uuid, after: chrono::Duration) -> jobs::JobSpec {
     jobs::JobSpec::new(tenant_id, kind::TIER_SWEEP)
         // Below every interactive kind. A sweep is housekeeping and a thumbnail is somebody waiting.
         .priority(90)
+        .run_after(chrono::Utc::now() + after)
+}
+
+/// Every tenant that should be metered.
+///
+/// `active` only: a suspended tenant is not accruing a bill anybody will send, and a deprovisioned one may have
+/// no schema left to read. The list is small — tenants, not assets — and read once per worker start.
+async fn active_tenants(global: &sqlx::PgPool) -> Result<Vec<Uuid>> {
+    Ok(
+        sqlx::query_scalar("SELECT id FROM dam_global.tenants WHERE status = 'active'")
+            .fetch_all(global)
+            .await
+            .map_err(dam_db::Error::from)?,
+    )
+}
+
+/// Starts a tenant's metering chain.
+///
+/// Deduped per tenant, and started at provision rather than on first activity: a tenant with no assets still
+/// has a row of zeroes, and a gap in a billing series is indistinguishable from a gap in the worker.
+pub async fn enqueue_usage_rollup(global: &sqlx::PgPool, tenant_id: Uuid) -> Result<Uuid> {
+    Ok(jobs::enqueue(
+        global,
+        rollup_spec(tenant_id, chrono::Duration::zero())
+            .dedupe_key(format!("usage_rollup:{tenant_id}")),
+    )
+    .await?)
+}
+
+/// Queues the next pass. Not deduped — see [`requeue_tier_sweep`].
+pub async fn requeue_usage_rollup(
+    global: &sqlx::PgPool,
+    tenant_id: Uuid,
+    after: chrono::Duration,
+) -> Result<Uuid> {
+    Ok(jobs::enqueue(global, rollup_spec(tenant_id, after)).await?)
+}
+
+fn rollup_spec(tenant_id: Uuid, after: chrono::Duration) -> jobs::JobSpec {
+    jobs::JobSpec::new(tenant_id, kind::USAGE_ROLLUP)
+        // The lowest priority of anything queued. Nobody is waiting on a bill, and a metering pass that
+        // delayed a thumbnail would be the wrong trade in every deployment.
+        .priority(95)
         .run_after(chrono::Utc::now() + after)
 }
 

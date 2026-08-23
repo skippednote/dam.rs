@@ -193,8 +193,8 @@
 			</h2>
 			{#if assets.length === 0}
 				<p class="text-sm text-muted">
-					Every asset in this round has since been deleted. The verdicts stand as a record of what was
-					decided.
+					Every asset in this round has since been deleted. The verdicts stand as a record of what
+					was decided.
 				</p>
 			{:else}
 				<ul class="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4" data-testid="round-assets">
@@ -264,22 +264,21 @@
 			<h2 id="verdict" class="text-sm font-semibold tracking-tight">Your verdict</h2>
 			{#if closed}
 				<p class="max-w-2xl text-sm text-muted">
-					This round is closed, so no further verdict can be recorded on it. A further review is a new
-					round over the same assets — select them on the grid and send a second pass, which will
-					point back at this one.
+					This round is closed, so no further verdict can be recorded on it. A further review is a
+					new round over the same assets — select them on the grid and send a second pass, which
+					will point back at this one.
 				</p>
 			{:else}
 				<label class="block space-y-1">
 					<span class="text-xs text-muted">
-						A covering note, if you have one. Anything about a particular picture belongs in a comment
-						on it, where it can be pinned to the part you mean.
+						A covering note, if you have one. Anything about a particular picture belongs in a
+						comment on it, where it can be pinned to the part you mean.
 					</span>
 					<textarea
 						class="w-full rounded-md border border-line bg-bg px-2 py-1 text-sm"
 						rows="2"
 						bind:value={note}
-						data-testid="note"
-					></textarea>
+						data-testid="note"></textarea>
 				</label>
 				<div class="flex flex-wrap gap-2 text-sm">
 					<button

@@ -144,9 +144,9 @@
 		<h1 class="text-2xl font-semibold tracking-tight">Proofing</h1>
 		<p class="max-w-2xl text-sm text-muted">
 			Rounds of review over a fixed set of assets. A round records that people agreed — it gates
-			nothing, so approving one does not publish anything and an unapproved asset is not blocked. Each
-			round's outcome is worked out from its verdicts, which is why one person asking for changes shows
-			as <em>changes requested</em> however many others approved.
+			nothing, so approving one does not publish anything and an unapproved asset is not blocked.
+			Each round's outcome is worked out from its verdicts, which is why one person asking for
+			changes shows as <em>changes requested</em> however many others approved.
 		</p>
 	</header>
 
@@ -181,9 +181,7 @@
 			<h2 id="every" class="text-sm font-semibold tracking-tight">
 				All rounds you can see
 				{#if all.length > 0}
-					<span class="font-normal text-muted"
-						>· {open.length} open of {all.length}</span
-					>
+					<span class="font-normal text-muted">· {open.length} open of {all.length}</span>
 				{/if}
 			</h2>
 			<p class="max-w-2xl text-xs text-muted">
@@ -193,8 +191,7 @@
 			</p>
 			{#if all.length === 0}
 				<p class="text-sm text-muted">
-					No rounds. Select assets on the grid and use <em>Review…</em> to ask somebody to look at
-					them.
+					No rounds. Select assets on the grid and use <em>Review…</em> to ask somebody to look at them.
 				</p>
 			{:else}
 				<ul class="space-y-2" data-testid="all">

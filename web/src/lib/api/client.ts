@@ -183,20 +183,22 @@ export async function loadFacets(q: string): Promise<Facet[]> {
 }
 
 /**
- * The current search as a CSV file (Q.18).
+ * A file from an authenticated endpoint.
  *
  * A `fetch` rather than a link, because the export is authenticated and an `<a href>` carries no header. The
  * blob is handed back rather than saved here: what to do with a file is the page's decision, and a helper that
  * clicked an invisible anchor would be a side effect hidden in a data function.
  *
- * The 422 the server answers for an oversized set arrives as an `ApiError` with the count in its message, which
- * is the sentence worth showing — "too many" without a number is not something anybody can act on.
+ * One function rather than one per export, for the reason the Rust `csv_export` module gives about itself:
+ * written twice they drift, and the person who notices is the one whose download silently returns a JSON error
+ * body with a `.csv` name on it. The server's own sentence is kept — the 422 for an oversized set carries the
+ * count, and "too many" without a number is not something anybody can act on.
  */
-export async function exportSearchCsv(q: string): Promise<Blob> {
+async function requestBlob(path: string): Promise<Blob> {
 	if (!session.connected) {
 		throw new ApiError(401, 'Not connected. Add an API key in Settings.');
 	}
-	const response = await fetch(`${session.base}/search/export.csv?${new URLSearchParams({ q })}`, {
+	const response = await fetch(`${session.base}${path}`, {
 		headers: { Authorization: `Bearer ${session.key}` }
 	});
 	if (!response.ok) {
@@ -208,6 +210,11 @@ export async function exportSearchCsv(q: string): Promise<Blob> {
 		throw new ApiError(response.status, message, body);
 	}
 	return response.blob();
+}
+
+/** The current search as a CSV file (Q.18). */
+export async function exportSearchCsv(q: string): Promise<Blob> {
+	return requestBlob(`/search/export.csv?${new URLSearchParams({ q })}`);
 }
 
 /**
@@ -1560,3 +1567,33 @@ export async function cancelRound(id: string): Promise<Round> {
 	return request<Round>(`/proofing/${id}/cancel`, { method: 'POST' });
 }
 
+// ─── insights (M6c) ─────────────────────────────────────────────────────────
+
+export type Insights = components['schemas']['Insights'];
+export type InsightsDay = components['schemas']['DayView'];
+export type InsightsAsset = components['schemas']['AssetCountView'];
+export type InsightsClass = components['schemas']['ClassView'];
+export type InsightsContributor = components['schemas']['ContributorView'];
+export type InsightsReport = components['schemas']['Report'];
+
+/**
+ * Everything the Insights screen draws, in one call.
+ *
+ * Every number is narrowed to what this caller can see, so two people legitimately see different charts — the
+ * same rule as the dashboard, and the reason there is no tenant-wide total anywhere on this surface. The
+ * response echoes the window it actually used, so a chart can be labelled honestly: a request for ten years
+ * comes back as 366 days.
+ */
+export async function loadInsights(days = 30): Promise<Insights> {
+	return request<Insights>(`/insights?days=${days}`);
+}
+
+/**
+ * One report as a CSV, from the same query the screen used.
+ *
+ * A blob rather than a URL because the request needs the API key header; a plain link would be an
+ * unauthenticated fetch. The caller creates and revokes the object URL, as the search export does.
+ */
+export async function exportInsights(report: InsightsReport, days = 30): Promise<Blob> {
+	return requestBlob(`/insights/export.csv?report=${report}&days=${days}`);
+}

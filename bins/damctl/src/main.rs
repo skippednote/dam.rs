@@ -34,6 +34,20 @@ enum Command {
         #[arg(long)]
         name: Option<String>,
     },
+    /// Print the daily usage rollup for one tenant, or for the whole fleet (M6c).
+    ///
+    /// Operator-facing, and there is deliberately no API route onto this. `tenant_usage_daily` is not scoped
+    /// to a reader — it is the tenant's bill, and a bill narrowed to what one person can see is not a bill.
+    /// The tenant-facing view of the same activity is `/insights`, where every number *is* scoped.
+    Usage {
+        /// One tenant. Omitted, every active tenant, which is the fleet view the table exists for.
+        #[arg(long)]
+        tenant: Option<String>,
+        /// How many days back to read, ending today.
+        #[arg(long, default_value_t = 30)]
+        days: i64,
+    },
+
     /// Print the resolved configuration. Secrets stay redacted.
     Config,
 
@@ -535,6 +549,72 @@ async fn main() -> anyhow::Result<()> {
                     }
                     Some(_) => {}
                 }
+            }
+        }
+
+        Command::Usage { tenant, days } => {
+            let pool = connect(cfg.database.url.expose(), &cfg).await?;
+            let today = chrono::Utc::now().date_naive();
+            let from = today - chrono::Duration::days(days.clamp(1, 3650) - 1);
+
+            // Resolved here rather than inside `dam_db::metering`, which takes ids: D2 means there is no join
+            // that could do this, so the fleet view is a loop over tenants by construction.
+            let tenants: Vec<(uuid::Uuid, String)> = match &tenant {
+                Some(slug) => {
+                    sqlx::query_as("SELECT id, slug FROM dam_global.tenants WHERE slug = $1")
+                        .bind(slug)
+                        .fetch_all(&pool)
+                        .await
+                        .context("looking up the tenant")?
+                }
+                None => sqlx::query_as(
+                    "SELECT id, slug FROM dam_global.tenants WHERE status = 'active' ORDER BY slug",
+                )
+                .fetch_all(&pool)
+                .await
+                .context("listing tenants")?,
+            };
+            if tenants.is_empty() {
+                bail!(
+                    "no such tenant{}",
+                    tenant.map_or_else(String::new, |slug| format!(": {slug}"))
+                );
+            }
+
+            println!("tenant\tday\tassets\tstored_bytes\tdownloads\trestores\tai_tokens\tcents");
+            let mut rows_printed = 0usize;
+            for (tenant_id, slug) in &tenants {
+                let rows = dam_db::metering::window(&pool, *tenant_id, from, today)
+                    .await
+                    .with_context(|| format!("reading usage for {slug}"))?;
+                for row in &rows {
+                    // Summed across classes for the one-line view. The per-class breakdown is in the column
+                    // and an operator who needs it can read the JSON; a terminal table with a column per
+                    // storage class would have seven of them, mostly empty.
+                    let stored = row.totals.stored_bytes();
+                    println!(
+                        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                        slug,
+                        row.day,
+                        row.totals.asset_count,
+                        stored,
+                        row.totals.downloads,
+                        row.totals.restores,
+                        row.totals.ai_input_tokens + row.totals.ai_output_tokens,
+                        row.totals.est_cost_cents,
+                    );
+                }
+                rows_printed += rows.len();
+            }
+
+            if rows_printed == 0 {
+                // Said rather than printed as an empty table, because "no rows" here has one likely cause and
+                // it is worth naming: nothing has metered yet. The chain starts when a worker starts.
+                eprintln!(
+                    "no rollup rows between {from} and {today}. The metering chain starts when dam-worker \
+                     starts; days before that are not recoverable — object_placements only knows what is \
+                     stored now."
+                );
             }
         }
 

@@ -1044,6 +1044,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/insights": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["insights"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/insights/export.csv": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["export"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/lifecycle/policies": {
         parameters: {
             query?: never;
@@ -2280,6 +2312,20 @@ export interface components {
             /** @description The query, in the same syntax a person types. Put it in the search box and search. */
             shorthand: string;
         };
+        /** @description An asset with a number against it. */
+        AssetCountView: {
+            /** Format: uuid */
+            asset_id: string;
+            /** Format: int64 */
+            count: number;
+            filename: string;
+            /**
+             * Format: date-time
+             * @description Absent in the never-downloaded list, where there is no last time by definition.
+             */
+            last_at?: string | null;
+            mime: string;
+        };
         /** @description One asset in full, as the detail panel draws it. */
         AssetDetail: components["schemas"]["AssetSummary"] & {
             color_space?: string | null;
@@ -2696,6 +2742,15 @@ export interface components {
             relation?: string | null;
             right: components["schemas"]["Side"];
         };
+        /** @description What the library holds, by media class. */
+        ClassView: {
+            /** Format: int64 */
+            assets: number;
+            /** Format: int64 */
+            bytes: number;
+            /** @description `image`, `video`, `audio`, `document` or `other`. */
+            class: string;
+        };
         /** @description One collection. */
         CollectionView: {
             description?: string | null;
@@ -2761,6 +2816,16 @@ export interface components {
             status_by?: null | components["schemas"]["PersonView"];
             /** @description `public` or `private`. A private comment reaches its author and its recipients, and nobody else. */
             visibility: string;
+        };
+        /** @description A person and what they did. */
+        ContributorView: {
+            /** Format: int64 */
+            comments: number;
+            /** Format: int64 */
+            edits: number;
+            person: components["schemas"]["PersonView"];
+            /** Format: int64 */
+            uploads: number;
         };
         /** @description A conversion to create or redefine. */
         ConversionRequest: {
@@ -2954,6 +3019,25 @@ export interface components {
             counts: components["schemas"]["Counts"];
             /** @description Saved searches this caller may open, theirs first. */
             spotlights: components["schemas"]["Spotlight"][];
+        };
+        /** @description One day on the chart. */
+        DayView: {
+            /** Format: int64 */
+            comments: number;
+            /** Format: date */
+            day: string;
+            /**
+             * Format: int64
+             * @description From the rights ledger, so a download taken through a share link is counted. The activity feed cannot
+             *     hold those — its actor is an identity and a share token is not one.
+             */
+            downloads: number;
+            /** Format: int64 */
+            edits: number;
+            /** Format: int64 */
+            shares: number;
+            /** Format: int64 */
+            uploads: number;
         };
         /** @description A decision. */
         DecisionRequest: {
@@ -3179,6 +3263,30 @@ export interface components {
             key: string;
             /** @description The values that make this one apply. Compared as text, so `true` and `2026` work as written. */
             values: string[];
+        };
+        /** @description Everything the Insights screen draws. */
+        Insights: {
+            by_class: components["schemas"]["ClassView"][];
+            contributors: components["schemas"]["ContributorView"][];
+            /**
+             * Format: int64
+             * @description The window these numbers cover, in days, after clamping. Echoed so a screen can say what it is showing
+             *     rather than what was asked for — a request for ten years comes back as a year.
+             */
+            days: number;
+            most_downloaded: components["schemas"]["AssetCountView"][];
+            /** @description Never downloaded *ever*, oldest first — not "not in this window". */
+            never_downloaded: components["schemas"]["AssetCountView"][];
+            /**
+             * Format: int64
+             * @description How many there are altogether, of which `never_downloaded` is the oldest few.
+             *
+             *     Sent because the list is capped and this one's cap misleads: twenty rows of assets nobody has ever
+             *     taken reads as "we have twenty unused assets", and on a real library that was twenty of a far larger
+             *     number. A most-downloaded top-20 explains its own cap; this does not.
+             */
+            never_downloaded_total: number;
+            series: components["schemas"]["DayView"][];
         };
         /**
          * @description A collection's members, in their curated order.
@@ -3839,6 +3947,14 @@ export interface components {
         ReplaceKeyRequest: {
             api_key: string;
         };
+        /**
+         * @description The reports that can be exported.
+         *
+         *     A closed set rather than a free string: the name selects a query, and a name this build does not know has to
+         *     be a refusal that lists the ones it does rather than an empty file.
+         * @enum {string}
+         */
+        Report: "activity" | "most-downloaded" | "never-downloaded" | "storage" | "contributors";
         /** @description A verdict. */
         ResolveBody: {
             /**
@@ -6968,6 +7084,66 @@ export interface operations {
             };
             /** @description Authenticated, and holds no read scope */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    insights: {
+        parameters: {
+            query?: {
+                /** @description Days to cover, ending today. Clamped to `[1, 366]`. */
+                days?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Insights"];
+                };
+            };
+            /** @description The credential holds no read scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    export: {
+        parameters: {
+            query: {
+                /** @description `activity`, `most-downloaded`, `never-downloaded`, `storage` or `contributors`. */
+                report: components["schemas"]["Report"];
+                days?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description text/csv */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": unknown;
+                };
+            };
+            /** @description Not a report this build knows */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

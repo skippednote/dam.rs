@@ -3111,6 +3111,80 @@
         }
       }
     },
+    "/insights": {
+      "get": {
+        "tags": [
+          "insights"
+        ],
+        "operationId": "insights",
+        "parameters": [
+          {
+            "name": "days",
+            "in": "query",
+            "description": "Days to cover, ending today. Clamped to `[1, 366]`.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Insights"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The credential holds no read scope"
+          }
+        }
+      }
+    },
+    "/insights/export.csv": {
+      "get": {
+        "tags": [
+          "insights"
+        ],
+        "operationId": "export",
+        "parameters": [
+          {
+            "name": "report",
+            "in": "query",
+            "description": "`activity`, `most-downloaded`, `never-downloaded`, `storage` or `contributors`.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Report"
+            }
+          },
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "text/csv",
+            "content": {
+              "text/csv": {}
+            }
+          },
+          "422": {
+            "description": "Not a report this build knows"
+          }
+        }
+      }
+    },
     "/lifecycle/policies": {
       "get": {
         "tags": [
@@ -6297,6 +6371,40 @@
           }
         }
       },
+      "AssetCountView": {
+        "type": "object",
+        "description": "An asset with a number against it.",
+        "required": [
+          "asset_id",
+          "filename",
+          "mime",
+          "count"
+        ],
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "last_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Absent in the never-downloaded list, where there is no last time by definition."
+          },
+          "mime": {
+            "type": "string"
+          }
+        }
+      },
       "AssetDetail": {
         "allOf": [
           {
@@ -7048,6 +7156,29 @@
           }
         }
       },
+      "ClassView": {
+        "type": "object",
+        "description": "What the library holds, by media class.",
+        "required": [
+          "class",
+          "assets",
+          "bytes"
+        ],
+        "properties": {
+          "assets": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "class": {
+            "type": "string",
+            "description": "`image`, `video`, `audio`, `document` or `other`."
+          }
+        }
+      },
       "CollectionView": {
         "type": "object",
         "description": "One collection.",
@@ -7202,6 +7333,33 @@
           "visibility": {
             "type": "string",
             "description": "`public` or `private`. A private comment reaches its author and its recipients, and nobody else."
+          }
+        }
+      },
+      "ContributorView": {
+        "type": "object",
+        "description": "A person and what they did.",
+        "required": [
+          "person",
+          "uploads",
+          "edits",
+          "comments"
+        ],
+        "properties": {
+          "comments": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "edits": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "person": {
+            "$ref": "#/components/schemas/PersonView"
+          },
+          "uploads": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },
@@ -7641,6 +7799,45 @@
               "$ref": "#/components/schemas/Spotlight"
             },
             "description": "Saved searches this caller may open, theirs first."
+          }
+        }
+      },
+      "DayView": {
+        "type": "object",
+        "description": "One day on the chart.",
+        "required": [
+          "day",
+          "uploads",
+          "downloads",
+          "edits",
+          "comments",
+          "shares"
+        ],
+        "properties": {
+          "comments": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "day": {
+            "type": "string",
+            "format": "date"
+          },
+          "downloads": {
+            "type": "integer",
+            "format": "int64",
+            "description": "From the rights ledger, so a download taken through a share link is counted. The activity feed cannot\nhold those — its actor is an identity and a share token is not one."
+          },
+          "edits": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "shares": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "uploads": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },
@@ -8115,6 +8312,62 @@
               "type": "string"
             },
             "description": "The values that make this one apply. Compared as text, so `true` and `2026` work as written."
+          }
+        }
+      },
+      "Insights": {
+        "type": "object",
+        "description": "Everything the Insights screen draws.",
+        "required": [
+          "days",
+          "series",
+          "most_downloaded",
+          "never_downloaded",
+          "never_downloaded_total",
+          "by_class",
+          "contributors"
+        ],
+        "properties": {
+          "by_class": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClassView"
+            }
+          },
+          "contributors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContributorView"
+            }
+          },
+          "days": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The window these numbers cover, in days, after clamping. Echoed so a screen can say what it is showing\nrather than what was asked for — a request for ten years comes back as a year."
+          },
+          "most_downloaded": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AssetCountView"
+            }
+          },
+          "never_downloaded": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AssetCountView"
+            },
+            "description": "Never downloaded *ever*, oldest first — not \"not in this window\"."
+          },
+          "never_downloaded_total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many there are altogether, of which `never_downloaded` is the oldest few.\n\nSent because the list is capped and this one's cap misleads: twenty rows of assets nobody has ever\ntaken reads as \"we have twenty unused assets\", and on a real library that was twenty of a far larger\nnumber. A most-downloaded top-20 explains its own cap; this does not."
+          },
+          "series": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DayView"
+            }
           }
         }
       },
@@ -9606,6 +9859,17 @@
             "type": "string"
           }
         }
+      },
+      "Report": {
+        "type": "string",
+        "description": "The reports that can be exported.\n\nA closed set rather than a free string: the name selects a query, and a name this build does not know has to\nbe a refusal that lists the ones it does rather than an empty file.",
+        "enum": [
+          "activity",
+          "most-downloaded",
+          "never-downloaded",
+          "storage",
+          "contributors"
+        ]
       },
       "ResolveBody": {
         "type": "object",

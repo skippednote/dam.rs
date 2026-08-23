@@ -474,6 +474,38 @@ pub async fn issue(
         },
     )
     .await?;
+
+    // And the activity event, in the same transaction (M6c).
+    //
+    // Two tables, two questions, and neither answers the other's. `rights_usage` is licence consumption
+    // attributed to a scope, a channel and a territory — it is what `max_downloads` is enforced against, which
+    // is why the write above may fail the request. `events` is what happened and who did it: the activity feed
+    // and every count on the dashboard read it.
+    //
+    // 0005's own comment said `rights_usage` was populated from "download events (0001 events)", and the events
+    // half was never written — so `downloads_this_week` on the dashboard has been structurally zero since the
+    // day it shipped. Not a wrong query: a number with no writer.
+    //
+    // Recorded only for an identified caller. A share-link download is a real download and a real ledger row,
+    // but `events.actor_id` is an identity and a link is not one; writing the link's own id there would put a
+    // share token into a feed that resolves actor ids to people's names. `insights` reads the ledger for
+    // exactly that reason.
+    if let Some(actor) = caller.identity_id
+        && let Err(error) = dam_db::events::record(
+            conn.executor(),
+            dam_db::events::NewEvent::by(dam_db::events::Kind::Downloaded, asset_id, actor).with(
+                // The format, because "downloaded harbour.jpg" and "downloaded the web-720 rendition of
+                // harbour.jpg" are different facts to somebody reading a feed for licence trouble.
+                serde_json::json!({ "format": transform, "channel": usage.channel }),
+            ),
+        )
+        .await
+    {
+        // Logged, never fatal: `events` docs say recording must not fail a request, and a download that
+        // happened and then failed to write its feed entry has still happened. The ledger row above is the one
+        // that may refuse.
+        tracing::warn!(%error, %asset_id, "recording a download event");
+    }
     conn.commit().await?;
 
     // `issue` returns the token; the URL is built by the state that knows the public origin. Returning the bare

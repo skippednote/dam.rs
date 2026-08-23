@@ -233,7 +233,9 @@ test('nothing waiting on you says so, and says the rest are below', async ({ pag
 	// An empty list here is the good outcome and must not read like a failure to load.
 	await connect(page, { mine: [] });
 	await page.goto('/proofing');
-	await expect(page.getByTestId('none-waiting')).toContainText('Nothing is waiting on your verdict');
+	await expect(page.getByTestId('none-waiting')).toContainText(
+		'Nothing is waiting on your verdict'
+	);
 	await expect(page.getByTestId('none-waiting')).toContainText('not asked about are below');
 });
 
@@ -306,12 +308,17 @@ test('a round shows its pictures, and says when one has none rendered', async ({
 	await expect(page.getByText('quayside.jpg')).toBeVisible();
 });
 
-test('a verdict takes its outcome from the server, not from the button pressed', async ({ page }) => {
+test('a verdict takes its outcome from the server, not from the button pressed', async ({
+	page
+}) => {
 	// Approving does not make a round approved: somebody else may have asked for changes. The reply carries
 	// the derived outcome and the screen reports that.
 	const recorder = await connect(page, {
 		assets: [asset('harbour')],
-		afterVerdict: round({ outcome: 'open', reviewers: [reviewer(BOB, { verdict: 'approved' }), reviewer(CARA)] })
+		afterVerdict: round({
+			outcome: 'open',
+			reviewers: [reviewer(BOB, { verdict: 'approved' }), reviewer(CARA)]
+		})
 	});
 	await page.goto('/proofing/aaaaaaaa-1111-4111-8111-111111111111');
 
@@ -358,7 +365,9 @@ test('withdrawing is confirmed inline and keeps the verdicts already given', asy
 	expect(recorder.cancelled).toEqual(['aaaaaaaa-1111-4111-8111-111111111111']);
 });
 
-test('a round you cannot fully see reads as one refusal, not as a load failure', async ({ page }) => {
+test('a round you cannot fully see reads as one refusal, not as a load failure', async ({
+	page
+}) => {
 	// The server gives the same 404 for "no such round" and "not all of its assets are visible", deliberately —
 	// distinguishing them would confirm the round exists. The screen has to say both without implying a bug.
 	await connect(page, { refuse: { suffix: '111111111111', status: 404 } });

@@ -164,9 +164,7 @@
 	}
 
 	function toggleReviewer(id: string) {
-		reviewers = reviewers.includes(id)
-			? reviewers.filter((one) => one !== id)
-			: [...reviewers, id];
+		reviewers = reviewers.includes(id) ? reviewers.filter((one) => one !== id) : [...reviewers, id];
 	}
 
 	function submitReview() {
