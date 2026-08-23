@@ -26,12 +26,15 @@
 		bulkStatus,
 		createBulk,
 		listCollections,
+		listPeople,
+		openRound,
 		placeOrder,
 		previewBulk,
 		type BulkPreview,
 		type BulkStatus,
 		type Collection,
-		type FieldDefinition
+		type FieldDefinition,
+		type Person
 	} from '$lib/api/client';
 
 	let {
@@ -82,6 +85,19 @@
 	let orderOpen = $state(false);
 	let orderPurpose = $state('');
 	let ordered = $state('');
+	/**
+	 * The review mini-form (M6b).
+	 *
+	 * Here, and only here, because the selection *is* the round: a round is a fixed set of assets, and asking
+	 * for one from anywhere else would mean building a second way to choose assets. The set is snapshotted when
+	 * the round opens — a reviewer who approved eleven pictures did not approve a twelfth added afterwards — so
+	 * there is deliberately no way to widen a round later.
+	 */
+	let reviewOpen = $state(false);
+	let reviewTitle = $state('');
+	let people = $state<Person[]>([]);
+	let reviewers = $state<string[]>([]);
+	let reviewed = $state('');
 	let metadataField = $state('');
 	let metadataValue = $state('');
 
@@ -125,6 +141,61 @@
 				orderPurpose = '';
 			} catch (caught) {
 				error = caught instanceof ApiError ? caught.message : 'That order could not be sent.';
+			}
+		})();
+	}
+
+	/**
+	 * Opens the review form, loading the people who could be asked.
+	 *
+	 * The list is loaded on opening rather than on mount: this bar renders on every selection change, and a
+	 * tenant's directory is not worth a request per click of a checkbox.
+	 */
+	async function openReview() {
+		reviewOpen = !reviewOpen;
+		reviewed = '';
+		if (!reviewOpen) return;
+		try {
+			people = await listPeople();
+		} catch (caught) {
+			error = caught instanceof ApiError ? caught.message : 'Could not read the people list.';
+			reviewOpen = false;
+		}
+	}
+
+	function toggleReviewer(id: string) {
+		reviewers = reviewers.includes(id)
+			? reviewers.filter((one) => one !== id)
+			: [...reviewers, id];
+	}
+
+	function submitReview() {
+		error = '';
+		reviewed = '';
+		void (async () => {
+			try {
+				const round = await openRound({
+					title: reviewTitle.trim(),
+					asset_ids: assetIds,
+					reviewer_ids: reviewers
+				});
+				// The server's count, not the selection's — it narrows the set to what the requester may see,
+				// and claiming a picture went into a round when it did not is the mismatch that makes every
+				// other number on this bar untrustworthy.
+				reviewed =
+					round.asset_count === assetIds.length
+						? `Sent to ${round.reviewers.length} for review.`
+						: `Sent to ${round.reviewers.length} for review — ${round.asset_count} of ${assetIds.length} are yours to send.`;
+				reviewOpen = false;
+				reviewTitle = '';
+				reviewers = [];
+			} catch (caught) {
+				error =
+					caught instanceof ApiError && caught.status === 403
+						? 'Asking people to review is administration; this key does not hold Manage.'
+						: caught instanceof Error
+							? caught.message
+							: 'That round could not be opened.';
 			}
 		})();
 	}
@@ -318,6 +389,65 @@
 
 			{#if ordered}
 				<span class="text-xs text-muted">{ordered}</span>
+			{/if}
+
+			<button
+				type="button"
+				class="rounded-md border border-line px-2.5 py-1 hover:bg-raised"
+				onclick={() => openReview()}
+				aria-expanded={reviewOpen}
+				data-testid="review-open"
+			>
+				Review…
+			</button>
+
+			{#if reviewOpen}
+				<!--
+					A title and who to ask. Nothing else, and the two are not optional: a round with no title is
+					a line in somebody's list saying nothing, and a round with no reviewers asks nobody
+					anything. The brief and the due date are on the round afterwards; these two are the
+					question.
+				-->
+				<label class="flex items-center gap-1.5">
+					<span class="text-xs text-muted">Title</span>
+					<input
+						class="rounded-md border border-line bg-bg px-2 py-1 text-sm"
+						bind:value={reviewTitle}
+						placeholder="Spring campaign crops"
+						data-testid="review-title"
+					/>
+				</label>
+				<fieldset class="flex flex-wrap items-center gap-x-2 gap-y-1">
+					<legend class="sr-only">Who to ask</legend>
+					{#each people as person (person.id)}
+						<label class="flex items-center gap-1 text-xs">
+							<input
+								type="checkbox"
+								class="rounded border-line"
+								checked={reviewers.includes(person.id)}
+								onchange={() => toggleReviewer(person.id)}
+								data-testid="reviewer-{person.id}"
+							/>
+							<!-- The email too, because two colleagues can share a display name and asking the
+							     wrong person to review a client's photographs is not a small mistake. -->
+							<span>{person.name}</span>
+							<span class="text-muted">{person.email}</span>
+						</label>
+					{/each}
+				</fieldset>
+				<button
+					type="button"
+					class="rounded-md bg-accent px-2.5 py-1 font-medium text-accent-fg disabled:opacity-50"
+					disabled={!reviewTitle.trim() || reviewers.length === 0}
+					onclick={() => submitReview()}
+					data-testid="review-send"
+				>
+					Send for review
+				</button>
+			{/if}
+
+			{#if reviewed}
+				<span class="text-xs text-muted" data-testid="reviewed">{reviewed}</span>
 			{/if}
 
 			<!--

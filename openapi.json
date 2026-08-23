@@ -3735,6 +3735,255 @@
         }
       }
     },
+    "/proofing": {
+      "get": {
+        "tags": [
+          "proofing"
+        ],
+        "operationId": "list",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Rounds you can see, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RoundView"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "proofing"
+        ],
+        "operationId": "open",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenRoundBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoundView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "No assets, no reviewers, or assets you cannot see"
+          }
+        }
+      }
+    },
+    "/proofing/mine": {
+      "get": {
+        "tags": [
+          "proofing"
+        ],
+        "summary": "The rounds waiting on the caller, most urgent first.",
+        "operationId": "mine",
+        "responses": {
+          "200": {
+            "description": "Rounds waiting on you, dated ones first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RoundView"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/proofing/{id}": {
+      "get": {
+        "tags": [
+          "proofing"
+        ],
+        "operationId": "read",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoundView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such round, or one over assets you cannot all see"
+          }
+        }
+      }
+    },
+    "/proofing/{id}/assets": {
+      "get": {
+        "tags": [
+          "proofing"
+        ],
+        "summary": "The assets a round is about.",
+        "description": "Separate from the round itself because the round is what a list screen draws — twenty of them, with their\nreviewers — and its assets are what one detail screen draws. Folding the pictures into every row of a list\nwould sign a preview URL for every asset of every open round on a page nobody has opened yet.",
+        "operationId": "round_assets",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The snapshot, in order",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RoundAssetView"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such round, or not all of its assets are visible to you"
+          }
+        }
+      }
+    },
+    "/proofing/{id}/cancel": {
+      "post": {
+        "tags": [
+          "proofing"
+        ],
+        "summary": "Withdraws a round. Verdicts already given are kept.",
+        "operationId": "cancel",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Withdrawn",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoundView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such round, or already withdrawn"
+          }
+        }
+      }
+    },
+    "/proofing/{id}/verdict": {
+      "post": {
+        "tags": [
+          "proofing"
+        ],
+        "summary": "Records the caller's verdict on a round.",
+        "description": "**Only `Read`**, deliberately. A reviewer is somebody asked to look at pictures, and requiring `Manage` to\nanswer would mean only administrators could ever be asked to review anything. The round's own reviewer list\nis the authorisation: somebody not on it is refused, and the assets still have to be visible.",
+        "operationId": "decide",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerdictBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Recorded, with the round's new outcome",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoundView"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not a reviewer on this round"
+          },
+          "409": {
+            "description": "The round is closed; a further review is a new round"
+          },
+          "422": {
+            "description": "Not a verdict"
+          }
+        }
+      }
+    },
     "/restores/{id}/approve": {
       "post": {
         "tags": [
@@ -8371,6 +8620,54 @@
           }
         }
       },
+      "OpenRoundBody": {
+        "type": "object",
+        "description": "A round to open.",
+        "required": [
+          "title",
+          "asset_ids",
+          "reviewer_ids"
+        ],
+        "properties": {
+          "asset_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "The assets to review, in the order to show them. Snapshotted: a round cannot be widened afterwards."
+          },
+          "brief": {
+            "type": "string"
+          },
+          "due_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "reviewer_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Who to ask. At least one, or nobody is being asked anything."
+          },
+          "supersedes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The round this follows, when it is a second pass. Its number is taken from that one plus one."
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
       "OrderItemView": {
         "type": "object",
         "description": "One asset in an order.",
@@ -9460,6 +9757,36 @@
           }
         }
       },
+      "ReviewerView": {
+        "type": "object",
+        "description": "One reviewer's standing.",
+        "required": [
+          "person",
+          "verdict",
+          "note"
+        ],
+        "properties": {
+          "decided_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Absent while pending — and a pending reviewer has no decision moment, which the schema enforces."
+          },
+          "note": {
+            "type": "string",
+            "description": "Their covering note. The specifics live in comments on the assets."
+          },
+          "person": {
+            "$ref": "#/components/schemas/PersonView"
+          },
+          "verdict": {
+            "type": "string",
+            "description": "`pending`, `approved` or `changes_requested`."
+          }
+        }
+      },
       "RightsState": {
         "type": "string",
         "description": "Rights evaluation outcome for an asset. Mirrors the `assets.rights_state` CHECK.",
@@ -9469,6 +9796,121 @@
           "denied",
           "unknown"
         ]
+      },
+      "RoundAssetView": {
+        "type": "object",
+        "description": "One asset in a round, in snapshot order.",
+        "required": [
+          "asset_id",
+          "position",
+          "filename",
+          "mime"
+        ],
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "mime": {
+            "type": "string"
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "thumbnail_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A short-lived preview link, present only when the asset has a thumbnail derivative *and* delivery is\nconfigured. Absent is not an error — it means there is nothing rendered yet — and the screen says so\nrather than showing a broken image."
+          }
+        }
+      },
+      "RoundView": {
+        "type": "object",
+        "description": "A round.",
+        "required": [
+          "id",
+          "title",
+          "brief",
+          "number",
+          "created_at",
+          "outcome",
+          "asset_count",
+          "reviewers"
+        ],
+        "properties": {
+          "asset_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many assets are in it. Shrinks if one is deleted."
+          },
+          "brief": {
+            "type": "string"
+          },
+          "closed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "due_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "number": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Round 1, 2, 3 of a sequence."
+          },
+          "outcome": {
+            "type": "string",
+            "description": "`open`, `approved`, `changes_requested` or `cancelled`.\n\n**Derived from the verdicts, never stored** — see `dam_db::proofing`. `changes_requested` wins over any\nnumber of approvals."
+          },
+          "requested_by": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PersonView"
+              }
+            ]
+          },
+          "reviewers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReviewerView"
+            }
+          },
+          "supersedes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The round this one follows, when it is a second pass."
+          },
+          "title": {
+            "type": "string"
+          }
+        }
       },
       "RunQueued": {
         "type": "object",
@@ -10136,6 +10578,23 @@
           "key": {
             "type": "string",
             "description": "The payload key, or the field key for a missing required field."
+          }
+        }
+      },
+      "VerdictBody": {
+        "type": "object",
+        "description": "A verdict.",
+        "required": [
+          "verdict"
+        ],
+        "properties": {
+          "note": {
+            "type": "string",
+            "description": "A covering note. The specifics belong in comments on the assets, where they can be pinned to a region."
+          },
+          "verdict": {
+            "type": "string",
+            "description": "`approved` or `changes_requested`. Not `pending` — that is a starting state, not an answer."
           }
         }
       },

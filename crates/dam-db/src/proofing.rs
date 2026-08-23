@@ -499,6 +499,51 @@ pub async fn waiting_on(
     Ok(out)
 }
 
+/// One asset in a round's snapshot, with enough joined from `assets` to draw it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Item {
+    pub asset_id: Uuid,
+    pub position: i32,
+    /// Joined, so a review screen shows pictures rather than a column of uuids. The join is inner and skips
+    /// `deleted`: a round is a snapshot of *what was asked about*, and an asset deleted since then is
+    /// something a reviewer can neither see nor judge. `asset_count` on the round shrinks with it, which is
+    /// why that field's own note says it shrinks.
+    pub filename: String,
+    pub mime: String,
+}
+
+/// A round's assets in snapshot order, for the caller who can see them.
+///
+/// Visibility is checked by [`read`] before this is called, and `read` refuses a round whose assets the
+/// caller cannot *all* see — so there is no per-item filtering here. That is deliberate rather than lax: a
+/// review screen that silently dropped two of eleven pictures would show an approval of a set nobody
+/// reviewed, and the whole-round refusal is what makes this list safe to draw entire.
+pub async fn items(
+    conn: &mut sqlx::PgConnection,
+    round_id: Uuid,
+) -> Result<Vec<Item>, ProofRefusal> {
+    let rows = sqlx::query_as::<_, (Uuid, i32, String, String)>(
+        "SELECT r.asset_id, r.position, a.filename, a.mime \
+         FROM proof_round_assets r JOIN assets a ON a.id = r.asset_id \
+         WHERE r.round_id = $1 AND a.status <> 'deleted' \
+         ORDER BY r.position, r.asset_id",
+    )
+    .bind(round_id)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(Error::from)?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(asset_id, position, filename, mime)| Item {
+            asset_id,
+            position,
+            filename,
+            mime,
+        })
+        .collect())
+}
+
 /// The assets in a round, in the order they were put in.
 pub async fn assets_in(
     conn: &mut sqlx::PgConnection,

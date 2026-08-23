@@ -32,6 +32,7 @@ pub mod observability;
 pub mod openapi;
 pub mod orders;
 pub mod portals;
+pub mod proofing;
 pub mod schema;
 pub mod search;
 pub mod shares;

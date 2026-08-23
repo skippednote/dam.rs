@@ -151,6 +151,10 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
         .merge(crate::archival::router(crate::archival::ArchivalState {
             global: deps.global.clone(),
         }))
+        .merge(crate::proofing::router(crate::proofing::ProofingState {
+            global: deps.global.clone(),
+            delivery: Some(Arc::clone(&delivery)),
+        }))
         .merge(crate::duplicates::router(
             crate::duplicates::DuplicateState {
                 global: deps.global.clone(),

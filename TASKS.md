@@ -32,10 +32,10 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M3d** Drupal 11 connector | not started |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, colour | dedup and colour **done** (M4a); the rest needs model files — see M4 below |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | **done** — two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query, the MCP server |
-| **M6** Workflow/proofing, annotations, analytics | annotations **done** (M6a); proofing and analytics open |
+| **M6** Workflow/proofing, annotations, analytics | annotations **done** (M6a); proofing **done** (M6b); analytics open |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | not started |
 
-**Next up, in order:** M6b proofing rounds → M6c analytics rollups → M3d Drupal connector → Pre-GA.
+**Next up, in order:** M6c analytics rollups → M3d Drupal connector → Pre-GA.
 M4b (local models) is parked on a distribution decision — see the M4 section.
 
 **`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
@@ -2891,10 +2891,43 @@ Little of this was designed in ARCHITECTURE beyond the milestone row, so the des
 
       9 db cases, 9 browser cases including axe.
 
-- [ ] **M6b Proofing rounds.** `asset_comments.status` already carries `approved` and `changes_requested`, and
-  0020's own comment says nothing enforces them — deliberately, because a status that gated publishing would be
-  a rights decision. What is missing is the *round*: a named review with a set of assets, a list of reviewers,
-  a due date, and a verdict per reviewer rather than per comment. The annotation half now exists to hang it on.
+- [x] **M6b Proofing rounds.** `asset_comments.status` already carried `approved` and `changes_requested`, and
+  0020's own comment said nothing enforced them — deliberately, because a status that gated publishing would be
+  a rights decision. What was missing was the *round*: a named review with a set of assets, a list of reviewers,
+  a due date, and a verdict per reviewer rather than per comment.
+
+  Migration 0038 adds three tables — `proof_rounds`, `proof_round_assets` (the snapshot) and
+  `proof_round_reviewers`. Four things are worth recording about the shape:
+
+  **The outcome is derived, never stored.** Only `closed_at` and `cancelled_at` are columns;
+  `proofing::decide_outcome` works out `open` / `approved` / `changes_requested` / `cancelled` from the verdicts
+  every time it is read, and `changes_requested` wins over any number of approvals. A stored status column is a
+  second source of truth that can disagree with the verdicts underneath it, which is the failure mode people
+  expect from review tools — three approvals and one request for changes showing as approved.
+
+  **The asset set is snapshotted and cannot be widened.** A reviewer who approved eleven pictures did not
+  approve a twelfth added afterwards. A second pass is a new round with `supersedes` set, which is also what
+  makes "approved" distinguishable from "approved eventually".
+
+  **Giving a verdict needs only `Read`.** A reviewer is somebody asked to look at pictures; requiring `Manage`
+  to answer would mean only administrators could ever be asked to review anything. The round's own reviewer
+  list is the authorisation, and the assets still have to be visible. Opening and cancelling need `Manage`,
+  because both are the requester's act.
+
+  **A partly visible round is not visible at all.** `read` refuses a round whose assets the caller cannot *all*
+  see, with the same 404 it gives for a round that does not exist — distinguishing them would confirm the round
+  exists. That whole-round rule is what makes `/proofing/{id}/assets` safe to draw entire: a review screen
+  showing two of eleven pictures would be asking somebody to approve a set they never saw.
+
+  Six endpoints, 12 db cases, 12 API cases and 13 browser cases. It gates nothing: approving a round publishes
+  nothing and an unapproved asset is not blocked, because whether an asset may be published is a rights
+  question and answering it here would put a collaboration table in the delivery path.
+
+  Two things the browser suite caught that the Rust suites could not. The grid's live region announced a
+  one-asset library as **"1 assets"** — a string only a screen-reader user ever hears, which is exactly why it
+  had survived. And in the e2e harness itself, `'/assets'.endsWith('/assets')` is true, so the round-assets
+  mock swallowed the grid's own listing; a bad `/search/facets` shape then left the page stuck on "Searching…"
+  with no error anywhere, which is worth remembering as a symptom.
 
 - [ ] **M6c Analytics rollups and Insights exports.** `events` is already partitioned by month and
   `dam_global.tenant_usage_daily` exists. What is missing is the rollup job and the read surface — and the

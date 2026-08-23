@@ -217,10 +217,19 @@
 		});
 	}
 
+	/**
+	 * What the live region announces.
+	 *
+	 * Pluralised on the *total*, because a one-asset library announced itself as "1 assets" — a string only a
+	 * screen-reader user ever hears, which is exactly why nobody had noticed it. The selected count needs no
+	 * such care: it is always followed by "of N", so it never sits against a noun.
+	 */
 	const selectionMessage = $derived(
 		selected.size === 0
-			? `${total.toLocaleString()} assets`
-			: `${selected.size.toLocaleString()} of ${total.toLocaleString()} assets selected`
+			? `${total.toLocaleString()} ${total === 1 ? 'asset' : 'assets'}`
+			: `${selected.size.toLocaleString()} of ${total.toLocaleString()} ${
+					total === 1 ? 'asset' : 'assets'
+				} selected`
 	);
 </script>
 

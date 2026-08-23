@@ -1325,6 +1325,116 @@ export interface paths {
         patch: operations["present"];
         trace?: never;
     };
+    "/proofing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list"];
+        put?: never;
+        post: operations["open"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/proofing/mine": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The rounds waiting on the caller, most urgent first. */
+        get: operations["mine"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/proofing/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["read"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/proofing/{id}/assets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The assets a round is about.
+         * @description Separate from the round itself because the round is what a list screen draws — twenty of them, with their
+         *     reviewers — and its assets are what one detail screen draws. Folding the pictures into every row of a list
+         *     would sign a preview URL for every asset of every open round on a page nobody has opened yet.
+         */
+        get: operations["round_assets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/proofing/{id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Withdraws a round. Verdicts already given are kept. */
+        post: operations["cancel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/proofing/{id}/verdict": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Records the caller's verdict on a round.
+         * @description **Only `Read`**, deliberately. A reviewer is somebody asked to look at pictures, and requiring `Manage` to
+         *     answer would mean only administrators could ever be asked to review anything. The round's own reviewer list
+         *     is the authorisation: somebody not on it is refused, and the assets still have to be visible.
+         */
+        post: operations["decide"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/restores/{id}/approve": {
         parameters: {
             query?: never;
@@ -3312,6 +3422,22 @@ export interface components {
             retired: boolean;
             slug: string;
         };
+        /** @description A round to open. */
+        OpenRoundBody: {
+            /** @description The assets to review, in the order to show them. Snapshotted: a round cannot be widened afterwards. */
+            asset_ids: string[];
+            brief?: string;
+            /** Format: date-time */
+            due_at?: string | null;
+            /** @description Who to ask. At least one, or nobody is being asked anything. */
+            reviewer_ids: string[];
+            /**
+             * Format: uuid
+             * @description The round this follows, when it is a second pass. Its number is taken from that one plus one.
+             */
+            supersedes?: string | null;
+            title: string;
+        };
         /** @description One asset in an order. */
         OrderItemView: {
             /** Format: uuid */
@@ -3796,11 +3922,76 @@ export interface components {
             mime: string;
             suggested: components["schemas"]["SuggestedTagView"][];
         };
+        /** @description One reviewer's standing. */
+        ReviewerView: {
+            /**
+             * Format: date-time
+             * @description Absent while pending — and a pending reviewer has no decision moment, which the schema enforces.
+             */
+            decided_at?: string | null;
+            /** @description Their covering note. The specifics live in comments on the assets. */
+            note: string;
+            person: components["schemas"]["PersonView"];
+            /** @description `pending`, `approved` or `changes_requested`. */
+            verdict: string;
+        };
         /**
          * @description Rights evaluation outcome for an asset. Mirrors the `assets.rights_state` CHECK.
          * @enum {string}
          */
         RightsState: "allowed" | "expiring" | "denied" | "unknown";
+        /** @description One asset in a round, in snapshot order. */
+        RoundAssetView: {
+            /** Format: uuid */
+            asset_id: string;
+            filename: string;
+            mime: string;
+            /** Format: int32 */
+            position: number;
+            /**
+             * @description A short-lived preview link, present only when the asset has a thumbnail derivative *and* delivery is
+             *     configured. Absent is not an error — it means there is nothing rendered yet — and the screen says so
+             *     rather than showing a broken image.
+             */
+            thumbnail_url?: string | null;
+        };
+        /** @description A round. */
+        RoundView: {
+            /**
+             * Format: int64
+             * @description How many assets are in it. Shrinks if one is deleted.
+             */
+            asset_count: number;
+            brief: string;
+            /** Format: date-time */
+            closed_at?: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            due_at?: string | null;
+            /** Format: uuid */
+            id: string;
+            /**
+             * Format: int32
+             * @description Round 1, 2, 3 of a sequence.
+             */
+            number: number;
+            /**
+             * @description `open`, `approved`, `changes_requested` or `cancelled`.
+             *
+             *     **Derived from the verdicts, never stored** — see `dam_db::proofing`. `changes_requested` wins over any
+             *     number of approvals.
+             */
+            outcome: string;
+            requested_by?: null | components["schemas"]["PersonView"];
+            reviewers: components["schemas"]["ReviewerView"][];
+            /**
+             * Format: uuid
+             * @description The round this one follows, when it is a second pass.
+             */
+            supersedes?: string | null;
+            title: string;
+        };
         /** @description What a queued run reports. */
         RunQueued: {
             /** Format: uuid */
@@ -4071,6 +4262,13 @@ export interface components {
             detail: string;
             /** @description The payload key, or the field key for a missing required field. */
             key: string;
+        };
+        /** @description A verdict. */
+        VerdictBody: {
+            /** @description A covering note. The specifics belong in comments on the assets, where they can be pinned to a region. */
+            note?: string;
+            /** @description `approved` or `changes_requested`. Not `pending` — that is a starting state, not an answer. */
+            verdict: string;
         };
         /** @description What a verification call found out. */
         VerifyResult: {
@@ -7303,6 +7501,211 @@ export interface operations {
             };
             /** @description No such portal, or it is retired */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rounds you can see, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoundView"][];
+                };
+            };
+        };
+    };
+    open: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpenRoundBody"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoundView"];
+                };
+            };
+            /** @description No assets, no reviewers, or assets you cannot see */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    mine: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rounds waiting on you, dated ones first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoundView"][];
+                };
+            };
+        };
+    };
+    read: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoundView"];
+                };
+            };
+            /** @description No such round, or one over assets you cannot all see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    round_assets: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The snapshot, in order */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoundAssetView"][];
+                };
+            };
+            /** @description No such round, or not all of its assets are visible to you */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cancel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Withdrawn */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoundView"];
+                };
+            };
+            /** @description No such round, or already withdrawn */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    decide: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VerdictBody"];
+            };
+        };
+        responses: {
+            /** @description Recorded, with the round's new outcome */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoundView"];
+                };
+            };
+            /** @description Not a reviewer on this round */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The round is closed; a further review is a new round */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not a verdict */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

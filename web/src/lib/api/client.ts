@@ -1484,3 +1484,79 @@ export async function resolveDuplicate(
 export async function listColours(): Promise<ColourBucket[]> {
 	return request<ColourBucket[]>('/colours');
 }
+
+// ─── proofing rounds (M6b) ──────────────────────────────────────────────────
+
+export type Round = components['schemas']['RoundView'];
+export type Reviewer = components['schemas']['ReviewerView'];
+export type RoundAsset = components['schemas']['RoundAssetView'];
+
+/**
+ * Rounds this caller can see, newest first.
+ *
+ * "Can see" is per-round and whole: a round is visible only when *all* of its assets are, so two people
+ * legitimately see different lists. That is the same rule the server applies to a single round, which is why a
+ * round missing from this list also 404s when addressed directly.
+ */
+export async function listRounds(limit = 50): Promise<Round[]> {
+	return request<Round[]>(`/proofing?limit=${limit}`);
+}
+
+/**
+ * The rounds waiting on *this* caller's verdict.
+ *
+ * Not "rounds I can see" and not "rounds I am on" — rounds where my own verdict is still pending. Answering
+ * removes a round from here while leaving it open for everybody else who has not.
+ */
+export async function myRounds(): Promise<Round[]> {
+	return request<Round[]>('/proofing/mine');
+}
+
+export async function readRound(id: string): Promise<Round> {
+	return request<Round>(`/proofing/${id}`);
+}
+
+/** The assets a round is about, in the order they were put in. */
+export async function roundAssets(id: string): Promise<RoundAsset[]> {
+	return request<RoundAsset[]>(`/proofing/${id}/assets`);
+}
+
+/**
+ * Opens a round.
+ *
+ * The asset list is snapshotted: a round cannot be widened afterwards, because a reviewer who approved eleven
+ * pictures did not approve a twelfth added later. A second pass is a new round with `supersedes` set.
+ */
+export async function openRound(body: {
+	title: string;
+	brief?: string;
+	asset_ids: string[];
+	reviewer_ids: string[];
+	due_at?: string | null;
+	supersedes?: string | null;
+}): Promise<Round> {
+	return request<Round>('/proofing', { method: 'POST', body: JSON.stringify(body) });
+}
+
+/**
+ * Records this caller's verdict, and returns the round's new outcome.
+ *
+ * `pending` is not offered: it is a starting state, not an answer. The note is a covering remark — anything
+ * about a particular picture belongs in a comment on it, where it can be pinned to a region.
+ */
+export async function decideRound(
+	id: string,
+	verdict: 'approved' | 'changes_requested',
+	note = ''
+): Promise<Round> {
+	return request<Round>(`/proofing/${id}/verdict`, {
+		method: 'POST',
+		body: JSON.stringify({ verdict, note })
+	});
+}
+
+/** Withdraws a round. Verdicts already given are kept and still shown. */
+export async function cancelRound(id: string): Promise<Round> {
+	return request<Round>(`/proofing/${id}/cancel`, { method: 'POST' });
+}
+
