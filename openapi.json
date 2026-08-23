@@ -2678,6 +2678,31 @@
         }
       }
     },
+    "/colours": {
+      "get": {
+        "tags": [
+          "duplicates"
+        ],
+        "summary": "The colour buckets present in the library.",
+        "description": "**Not scoped to the caller**, and that is a deliberate exception worth stating. Every other count in this\ncodebase runs through the reader's predicate, because §7 says a count is a disclosure. A colour bucket is\nthe one place that reasoning does not reach: \"eleven assets are mostly blue\" names no asset, and the facet\nexists to tell somebody whether clicking it is worth anything. The *results* of clicking it are scoped like\nevery other search, so the disclosure is a number with nothing behind it.",
+        "operationId": "colours",
+        "responses": {
+          "200": {
+            "description": "Colour buckets, most common first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ColourBucket"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/comments/{comment_id}": {
       "delete": {
         "tags": [
@@ -2934,6 +2959,80 @@
           },
           "403": {
             "description": "The credential holds no read scope"
+          }
+        }
+      }
+    },
+    "/duplicates": {
+      "get": {
+        "tags": [
+          "duplicates"
+        ],
+        "operationId": "list",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Open pairs, most alike first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CandidateView"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/duplicates/{id}": {
+      "post": {
+        "tags": [
+          "duplicates"
+        ],
+        "operationId": "resolve",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Recorded"
+          },
+          "404": {
+            "description": "No such open pair, or one you cannot see both sides of"
+          },
+          "422": {
+            "description": "Not a verdict"
           }
         }
       }
@@ -6656,6 +6755,50 @@
           }
         }
       },
+      "CandidateView": {
+        "type": "object",
+        "description": "A pair awaiting a verdict.",
+        "required": [
+          "id",
+          "left",
+          "right"
+        ],
+        "properties": {
+          "cosine": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "Absent until embeddings exist — the model-dependent half of M4."
+          },
+          "hamming": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Bits differing out of 64, from the closer of the two hashes. Lower is more alike."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "left": {
+            "$ref": "#/components/schemas/Side"
+          },
+          "relation": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`near_identical` or `variant`. The finer relations need an embedding to tell apart."
+          },
+          "right": {
+            "$ref": "#/components/schemas/Side"
+          }
+        }
+      },
       "CollectionView": {
         "type": "object",
         "description": "One collection.",
@@ -6696,6 +6839,25 @@
           "visibility": {
             "type": "string",
             "description": "`private`, `shared` or `public`."
+          }
+        }
+      },
+      "ColourBucket": {
+        "type": "object",
+        "description": "One colour bucket and how many assets lead with it.",
+        "required": [
+          "bucket",
+          "count"
+        ],
+        "properties": {
+          "bucket": {
+            "type": "string",
+            "description": "`red`, `orange`, `grey`, `brown` and so on — a coarse name, so a facet groups into something clickable."
+          },
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Assets whose *primary* colour is in this bucket."
           }
         }
       },
@@ -9110,6 +9272,19 @@
           }
         }
       },
+      "ResolveBody": {
+        "type": "object",
+        "description": "A verdict.",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "state": {
+            "type": "string",
+            "description": "`confirmed`, `dismissed` or `merged`.\n\n**`merged` records a decision and merges nothing.** Which asset survives, and what happens to the\nother's rights and references, is not something this endpoint can decide — see the module docs."
+          }
+        }
+      },
       "RestoreOptions": {
         "type": "object",
         "description": "What a caller asks for.\n\nQuery parameters rather than a body, and not only for tidiness. A restore has no entity to send — the\nasset is in the path and these two are modifiers — and an empty body under a JSON content-type is an\nextractor rejection, which axum returns *before* the handler runs. That turned `POST .../restore` with no\nbody from a reader into a `400` about the body instead of the `403` the permission check owes them: the\ngate never ran. A request with nothing to send should not have to send `{}` to find out it was refused.",
@@ -9453,6 +9628,39 @@
           },
           "revoked": {
             "type": "boolean"
+          }
+        }
+      },
+      "Side": {
+        "type": "object",
+        "description": "One side of a candidate pair, with enough to look at it.",
+        "required": [
+          "asset_id",
+          "filename",
+          "mime",
+          "bytes"
+        ],
+        "properties": {
+          "asset_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "mime": {
+            "type": "string"
+          },
+          "thumbnail_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Absent when nothing has rendered a thumbnail, rather than a link that 404s."
           }
         }
       },

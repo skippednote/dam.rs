@@ -25,6 +25,7 @@ pub mod dashboard;
 pub mod delivery;
 pub mod downloads;
 pub mod dto;
+pub mod duplicates;
 pub mod engagement;
 pub mod history;
 pub mod observability;
