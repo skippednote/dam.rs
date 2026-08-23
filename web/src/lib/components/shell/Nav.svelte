@@ -71,7 +71,24 @@
 </script>
 
 {#if !portal}
-	<nav aria-label="Main" class="flex h-12 items-center gap-1 border-b border-line px-4">
+	<!--
+		Wrapping, and a minimum height rather than a fixed one.
+
+		Fifteen sections do not fit one row: measured, the nav wants 1461px, so at 1024 and 1280 — an iPad in
+		landscape and the default MacBook Air — the last item sat outside the viewport entirely, unreachable
+		by mouse. I added six of those sections over this session without once checking the row still fitted,
+		which is exactly the kind of thing that only shows up in a screenshot.
+
+		Wrapping is the honest minimum: nothing becomes unreachable and it degrades predictably at every
+		width. It is not the right *design* — fifteen flat sections wants grouping, with the configuration
+		half (Schema, Vocabularies, Storage, Webhooks, Branding, Style) under Settings and the nine daily
+		ones on top — but that is a routing change, and a nav that clips is a bug while a nav that wraps is
+		only plain.
+	-->
+	<nav
+		aria-label="Main"
+		class="flex min-h-12 flex-wrap items-center gap-x-1 gap-y-0.5 border-b border-line px-4 py-1"
+	>
 		<!--
 			The tenant's own name, and **nothing** until it is known.
 
