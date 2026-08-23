@@ -2462,8 +2462,45 @@ Asked for after the go-live gap analysis. Ordered cheapest-first among items tha
       itself once the scanner came back.
 
       Not built: re-scanning existing assets when signatures update. A scan happens once, at ingest.
-- [ ] **L.6 C2PA (task 1.9, G1).** Unblocked since 2026-08-21 and still unbuilt. GAPS.md calls the current
-      behaviour "a bug in the current design, not a missing feature": every derivative strips provenance.
+- [x] **L.6 C2PA verification on ingest (task 1.9, G1).** Not unbuilt after all — `dam_media::provenance` is
+      493 lines of verify, sign and state mapping, `dam_db::provenance` records and reports it, and the schema
+      has carried `provenance_manifests`, `provenance_actions` and a `provenance_gaps` view from the start.
+      **Nothing called any of it.** The fourth instance of this pattern in a week, after the archival executor,
+      the backups, and the rate limiter.
+
+      Two things blocked the wiring, and both were the shape of a guard rail with no road behind it:
+
+      1. **`SigningIdentity` had only an `ephemeral` constructor**, which refuses outside `Development` with a
+         message telling the operator to "configure a real signing certificate" — and there was no way to
+         configure one. `from_pem` now exists, taking a chain, a key, a stated algorithm and an optional
+         timestamp authority. The algorithm is stated rather than sniffed because a mismatch produces a
+         manifest that verifies nowhere, and a TSA is worth configuring because without one every signature
+         stops verifying the day the certificate expires — for an archive, the difference between provenance
+         and a decoration with a shelf life.
+      2. **`record_inbound`, `record_signed` and `insert` required `E: PgExecutor + Copy`** — a pool — so they
+         were unreachable from a `TenantConn`'s `&mut PgConnection`. Exactly why `dam_db::restores` was dead
+         code too. They take a connection now.
+
+      Verification runs on the original after the asset row is committed, over the whole object rather than the
+      header window: a manifest lives in a JUMBF box whose position depends on the format, and reading a prefix
+      would report `absent` for a credential sitting past it — indistinguishable from "we did not look". The
+      manifest is stored as its own tier-exempt object, because §2 archives masters and a credential that lived
+      only inside the original's bytes would become unverifiable the moment it went cold.
+
+      Verified end to end with a genuinely signed JPEG (there is an example binary that produces one):
+      `provenance_state=untrusted`, `had_inbound_manifest=true`, an `inbound` row naming the signer, the claim
+      generator and the spec version, a `c2pa.created` action row, and a 13,099-byte manifest object in the
+      bucket. `untrusted` rather than `valid` is the point — the signature verifies and chains to nobody — and
+      all 187 pre-existing assets stayed `none` rather than being flooded with rows.
+
+      Placement was wrong on the first attempt: recorded before the transaction that inserts the asset
+      committed, so a separate connection could not see the row its foreign key referenced. It surfaced as an
+      FK violation on the first credentialed upload, and only because this path logs rather than fails.
+
+- [ ] **L.6b Re-signing derivatives.** The remaining half of G1, and the half that makes the pipeline stop
+      destroying credentials. `sign` exists and is tested; `record_signed` is now callable; what is missing is
+      the call in `derive` and a configured signing identity to make it with. Until then a derivative carries
+      no manifest and `provenance_gaps` is the view that says so.
 
 
 ## Archival — tiering, restores, and the storage screen (§6.4, §6.5)

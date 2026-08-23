@@ -89,17 +89,14 @@ pub struct NewManifest<'a> {
 /// is the point: `had_inbound_manifest` is what makes a later missing derivative manifest detectable as
 /// a *bug* rather than an absence, so a flow that recorded the manifest without setting the flag would
 /// disable the very alarm this exists to arm.
-pub async fn record_inbound<'e, E>(
-    executor: E,
+pub async fn record_inbound(
+    conn: &mut sqlx::PgConnection,
     asset_id: Uuid,
     manifest: &NewManifest<'_>,
-) -> Result<Uuid, Error>
-where
-    E: sqlx::PgExecutor<'e> + Copy,
-{
+) -> Result<Uuid, Error> {
     let id = Uuid::new_v4();
     insert(
-        executor,
+        &mut *conn,
         id,
         Some(asset_id),
         None,
@@ -117,7 +114,7 @@ where
     )
     .bind(asset_id)
     .bind(manifest.validation_state)
-    .execute(executor)
+    .execute(&mut *conn)
     .await?;
 
     Ok(id)
@@ -128,18 +125,15 @@ where
 /// The chain link is a parameter rather than something looked up here, because the caller is the one
 /// that knows which manifest it actually chained to in the signed bytes. Deriving it from the asset
 /// would let the row claim a lineage the manifest itself does not contain.
-pub async fn record_signed<'e, E>(
-    executor: E,
+pub async fn record_signed(
+    conn: &mut sqlx::PgConnection,
     derivative_id: Uuid,
     parent_manifest_id: Option<Uuid>,
     manifest: &NewManifest<'_>,
-) -> Result<Uuid, Error>
-where
-    E: sqlx::PgExecutor<'e> + Copy,
-{
+) -> Result<Uuid, Error> {
     let id = Uuid::new_v4();
     insert(
-        executor,
+        &mut *conn,
         id,
         None,
         Some(derivative_id),
@@ -151,18 +145,15 @@ where
     Ok(id)
 }
 
-async fn insert<'e, E>(
-    executor: E,
+async fn insert(
+    conn: &mut sqlx::PgConnection,
     id: Uuid,
     asset_id: Option<Uuid>,
     derivative_id: Option<Uuid>,
     role: Role,
     parent_manifest_id: Option<Uuid>,
     manifest: &NewManifest<'_>,
-) -> Result<(), Error>
-where
-    E: sqlx::PgExecutor<'e> + Copy,
-{
+) -> Result<(), Error> {
     sqlx::query(
         "INSERT INTO provenance_manifests \
          (id, asset_id, derivative_id, role, object_key, bytes, parent_manifest_id, \
@@ -183,7 +174,7 @@ where
     .bind(manifest.claim_generator)
     .bind(manifest.spec_version)
     .bind(manifest.captured_at)
-    .execute(executor)
+    .execute(&mut *conn)
     .await?;
 
     for (index, action) in manifest.actions.iter().enumerate() {
@@ -199,7 +190,7 @@ where
         .bind(seq)
         .bind(action)
         .bind(manifest.claim_generator)
-        .execute(executor)
+        .execute(&mut *conn)
         .await?;
     }
     Ok(())

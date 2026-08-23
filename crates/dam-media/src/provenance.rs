@@ -283,6 +283,68 @@ impl SigningIdentity {
             ephemeral: true,
         })
     }
+
+    /// A real identity, from a PEM certificate chain and private key.
+    ///
+    /// Without this there was no way to sign anywhere but development: `ephemeral` is the only other
+    /// constructor and it refuses outside `Development` by design. So the refusal was correct and complete,
+    /// and the thing it pointed at — "configure a real signing certificate" — could not be done. That is the
+    /// same shape as a `storage.endpoint` default that made real AWS inexpressible: a guard rail with no road
+    /// behind it.
+    ///
+    /// The algorithm is taken rather than sniffed from the key. C2PA's own profile allows a specific set, a
+    /// mismatch between the key and the declared algorithm produces a manifest that verifies nowhere, and
+    /// guessing would make that failure silent — so a deployment states it and a wrong statement fails at
+    /// startup rather than on the thousandth derivative.
+    ///
+    /// A timestamp authority is optional and worth configuring: without one, every signature stops verifying
+    /// the day the certificate expires, because there is nothing to prove the signing happened while it was
+    /// valid. With one, credentials outlive the certificate — which for an archive is the difference between
+    /// provenance and a decoration with a shelf life.
+    pub fn from_pem(
+        certificate_chain: &[u8],
+        private_key: &[u8],
+        algorithm: &str,
+        timestamp_authority: Option<String>,
+    ) -> Result<Self> {
+        let alg: c2pa::SigningAlg = algorithm.parse().map_err(|_| {
+            Error::Refused(format!(
+                "{algorithm:?} is not a C2PA signing algorithm; the profile allows es256, es384, es512,                  ps256, ps384, ps512, ed25519"
+            ))
+        })?;
+        let signer = c2pa::create_signer::from_keys(
+            certificate_chain,
+            private_key,
+            alg,
+            timestamp_authority,
+        )
+        .map_err(|e| {
+            // The message names both inputs because the two failures — a malformed chain and a key that does
+            // not match it — look identical from the outside and are fixed differently.
+            Error::Signing(format!(
+                "building a signer from the configured certificate and key: {e}"
+            ))
+        })?;
+        let common_name = common_name_of(certificate_chain)
+            .unwrap_or_else(|| "configured signing certificate".to_owned());
+        Ok(Self {
+            signer,
+            common_name,
+            ephemeral: false,
+        })
+    }
+}
+
+/// The subject common name out of a PEM chain, for logging and for the manifest's signer label.
+///
+/// Deliberately shallow: this parses far enough to name the certificate in a log line and no further. A full
+/// X.509 parse would be a second opinion about a chain that `from_keys` has already accepted or rejected, and
+/// two opinions about a certificate is one more than a deployment can act on.
+fn common_name_of(pem: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(pem).ok()?;
+    text.lines()
+        .find(|line| line.contains("CN=") || line.contains("Subject:"))
+        .map(|line| line.trim().to_owned())
 }
 
 /// One entry in the action chain.

@@ -264,6 +264,32 @@ pub async fn upload(
     .await
     .map_err(dam_db::Error::from)?;
 
+    // Content credentials, read before anything transforms the bytes (D13, G1).
+    //
+    // On the *original*, and on the whole object rather than the header window: a C2PA manifest lives in a
+    // JUMBF box whose position depends on the format, and reading a prefix would report `absent` for a
+    // perfectly good credential sitting past it — which is the worst available answer, because absence is
+    // indistinguishable from "we did not look".
+    //
+    // Recorded whatever the verdict, including `invalid`. D13 prohibits stripping and a broken chain is the
+    // customer's evidence of what broke; discarding it would destroy the only artefact that says so.
+    if let Err(error) = record_provenance(
+        global,
+        store,
+        slug,
+        tenant_id,
+        asset_id,
+        &promoted.mime,
+        &original,
+    )
+    .await
+    {
+        // Logged, not fatal. A credential we could not read is a fact about the file, and refusing the upload
+        // over it would make every malformed manifest in the world a reason a photograph cannot be filed.
+        // `provenance_gaps` is the view that finds these afterwards.
+        tracing::warn!(%error, %asset_id, "could not record content credentials");
+    }
+
     // Everything the file says about itself, kept whether or not this tenant maps any of it.
     //
     // Auto-import is a *projection*: a tag reaches `values` only where a mapping names a field for it (Q.4).
@@ -416,6 +442,37 @@ pub async fn upload(
 
     conn.commit().await?;
 
+    // Content credentials (D13, G1), after the commit that creates the asset row.
+    //
+    // **After**, deliberately: `provenance_manifests.asset_id` is a foreign key and the asset is inserted
+    // inside the transaction above, so recording before the commit meant a separate connection could not see
+    // the row it referenced. That surfaced as an FK violation on the very first credentialed upload — visible
+    // only because this is logged rather than fatal.
+    //
+    // Read from the *original*, and from the whole object rather than the header window: a C2PA manifest
+    // lives in a JUMBF box whose position depends on the format, so reading a prefix would report `absent`
+    // for a perfectly good credential sitting past it. Absence is indistinguishable from "we did not look",
+    // which makes it the worst available wrong answer.
+    //
+    // Recorded whatever the verdict, `invalid` included. D13 prohibits stripping, and a broken chain is the
+    // customer's evidence of what broke.
+    if let Err(error) = record_provenance(
+        global,
+        store,
+        slug,
+        tenant_id,
+        asset_id,
+        &promoted.mime,
+        &original,
+    )
+    .await
+    {
+        // Logged, not fatal. A credential that cannot be read is a fact about the file; refusing the upload
+        // over it would make every malformed manifest in the world a reason a photograph cannot be filed.
+        // `provenance_gaps` is the view that finds these afterwards.
+        tracing::warn!(%error, %asset_id, "could not record content credentials");
+    }
+
     // Last, and only after the row is durable — see the module docs. A failure here leaves a staging object
     // for the reaper rather than an asset with no bytes.
     if let Err(error) = store.delete(&staging).await {
@@ -451,6 +508,109 @@ async fn default_pool(global: &sqlx::PgPool) -> Result<Uuid> {
                 .to_owned(),
         )
     })
+}
+
+/// Verifies the original's content credentials and records what it found.
+///
+/// Three things land: the manifest as its own object under a tier-exempt key, a `provenance_manifests` row
+/// with the validation state and codes, and `assets.provenance_state` plus `had_inbound_manifest`.
+///
+/// The manifest is stored separately from the asset deliberately. §2 keeps metadata hot while masters tier to
+/// Deep Archive, so a credential that lived only inside the original's bytes would become unverifiable the
+/// moment the original was archived — and "unverifiable because we filed it somewhere slow" is not a
+/// provenance story anybody can use.
+async fn record_provenance(
+    global: &sqlx::PgPool,
+    store: &dyn ResumableStore,
+    slug: &dam_core::TenantSlug,
+    tenant_id: Uuid,
+    asset_id: Uuid,
+    mime: &str,
+    original: &dam_store::Key,
+) -> Result<()> {
+    let bytes = match store.get(original, None).await? {
+        dam_store::GetOutcome::Bytes(bytes) => bytes,
+        // Freshly promoted, so this is unreachable rather than a case to handle — but reading it as "no
+        // credential" would record an absence that was never checked.
+        dam_store::GetOutcome::NotAvailable(ticket) => {
+            return Err(Error::Transient(format!(
+                "cannot read the original to verify credentials: it is {}",
+                ticket.class
+            )));
+        }
+    };
+
+    let verified = dam_media::provenance::verify(mime, &bytes)
+        .map_err(|error| Error::Permanent(format!("verifying content credentials: {error}")))?;
+
+    // Nothing to record and nothing to store. `provenance_state` already defaults to `none`, and writing a
+    // row saying "there was no manifest" for every ordinary photograph would bury the interesting rows.
+    if verified.manifest.is_none() && verified.state == dam_core::rights::ProvenanceState::None {
+        return Ok(());
+    }
+
+    let object_key = match &verified.manifest {
+        Some(manifest) => {
+            let key = dam_store::Key::manifest(tenant_id, &content_hash_of(original))
+                .map_err(|error| Error::Permanent(format!("manifest key: {error}")))?;
+            store
+                .put(
+                    &key,
+                    bytes::Bytes::from(manifest.clone()),
+                    StorageClass::Standard,
+                )
+                .await?;
+            key.as_str().to_owned()
+        }
+        // A state without a manifest is `invalid` with nothing extractable. The row still matters — it is the
+        // tamper signal — so it is recorded with an empty key rather than dropped.
+        None => String::new(),
+    };
+
+    let mut conn = TenantConn::begin(global, slug).await?;
+    dam_db::provenance::record_inbound(
+        conn.executor(),
+        asset_id,
+        &dam_db::provenance::NewManifest {
+            object_key: &object_key,
+            bytes: verified.manifest.as_ref().map_or(0, |m| m.len() as i64),
+            validation_state: verified.state.as_validation_state(),
+            validation_detail: serde_json::json!({
+                "codes": verified.detail,
+                "source_types": verified.source_types,
+                "ingredients": verified.ingredient_count,
+            }),
+            signer_cn: verified.signer_cn.as_deref(),
+            claim_generator: verified.claim_generator.as_deref(),
+            spec_version: verified.spec_version.as_deref(),
+            captured_at: None,
+            actions: verified.actions.clone(),
+        },
+    )
+    .await?;
+    conn.commit().await?;
+
+    tracing::info!(
+        %asset_id,
+        state = verified.state.as_validation_state(),
+        ingredients = verified.ingredient_count,
+        "content credentials recorded",
+    );
+    Ok(())
+}
+
+/// The content hash out of an original's key.
+///
+/// The key *is* `<tenant>/o/<aa>/<bb>/<hash>`, so the hash is its last segment. Taken from the key rather
+/// than threaded through as an argument because the key is the thing that cannot be wrong: it was derived
+/// from the digest at promotion.
+fn content_hash_of(original: &dam_store::Key) -> String {
+    original
+        .as_str()
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .to_owned()
 }
 
 /// Scans a staged upload, refusing anything the scanner objects to.

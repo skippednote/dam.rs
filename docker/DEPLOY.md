@@ -146,6 +146,29 @@ the environment cleared, and delivery is a signed redirect rather than a served 
 
 Not built: re-scanning existing assets when signatures update. Today a scan happens once, at ingest.
 
+## Content credentials (D13, G1)
+
+Every upload's original is verified on ingest and the result recorded — no configuration needed, because
+reading a credential requires no key. `assets.provenance_state` is one of `none`, `valid`, `untrusted` or
+`invalid`, and the distinction between the last three matters:
+
+| State | Means |
+|---|---|
+| `valid` | Verifies **and** chains to a known root. |
+| `untrusted` | Signature verifies; nobody recognises the signer. Self-signed certificates land here. |
+| `invalid` | The binding fails. Possible tampering — and the manifest is kept, because it is the evidence. |
+| `none` | No credential. The common case, and not a claim about anything. |
+
+The manifest is stored as its own object under a tier-exempt key, so it stays verifiable after the master
+tiers to Deep Archive.
+
+**Signing derivatives is not wired yet.** `security.*` has no signing certificate setting because the call in
+the derive stage does not exist — so today every derivative carries no credential, which is what
+`provenance_gaps` reports. That is G1's remaining half and it is the reason GAPS.md calls the pipeline's
+behaviour a bug rather than an omission. When it lands, a deployment will need a real certificate: an
+ephemeral one is refused outside development, deliberately, because a test-signed credential looks like
+provenance and verifies against nothing.
+
 ## Backups (§17, G11)
 
 ```sh
