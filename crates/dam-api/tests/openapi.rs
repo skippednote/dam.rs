@@ -134,6 +134,68 @@ fn the_document_ends_with_a_newline_so_it_is_a_well_formed_text_file() {
 /// OPTIONS would have been the obvious probe and is the wrong one: the CORS layer answers a preflight for any
 /// path at all, so every probe came back 200 and the guard passed while three routers were removed. Found by
 /// mutation-testing the guard itself.
+/// The connector-facing endpoints must not receive the deployment-wide CORS policy.
+///
+/// This is a regression test for a bug that every endpoint test missed and one `curl` found. `/browse` and
+/// `/oembed` set `Access-Control-Allow-Origin` themselves, per connector, because a browse token lives in a
+/// browser and the only origin that should be able to read with it is that connector's own `site_url`.
+/// `tower_http`'s `CorsLayer` **overwrites** that header — so while those two were mounted under the global
+/// layer, the deployed answer was `*` in development and whatever `server.allowed_origins` listed in
+/// production. Their own tests drove the routers in isolation, where no global layer exists, so they passed.
+///
+/// Asserted structurally rather than by driving a request: with nothing connected, `/browse` answers 401 before
+/// reaching the code that sets the header, so what is observable is exactly the thing that was wrong — whether
+/// the global layer touched the response at all.
+#[tokio::test]
+async fn the_connector_endpoints_keep_their_own_cors_policy() {
+    use axum::body::Body;
+    use axum::http::{Request, header};
+    use tower::ServiceExt as _;
+
+    let app = dam_api::app::router(
+        &dam_core::config::Config::default(),
+        route_inspection_deps(),
+    );
+
+    let allow_origin = async |path: &str| {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(path)
+                    .header(header::ORIGIN, "https://somebody.example")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("router");
+        response
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+    };
+
+    // The ordinary API keeps the deployment-wide policy — permissive in development, configured in production.
+    // Asserted so this test fails if the global layer is ever removed by accident rather than silently
+    // passing for the wrong reason.
+    assert_eq!(
+        allow_origin("/assets").await.as_deref(),
+        Some("*"),
+        "the global CORS layer should still apply to the ordinary API",
+    );
+
+    for path in ["/browse", "/oembed?url=x"] {
+        assert_eq!(
+            allow_origin(path).await,
+            None,
+            "{path} must be mounted outside the global CORS layer, or its per-connector \
+             Access-Control-Allow-Origin is overwritten",
+        );
+    }
+}
+
 #[tokio::test]
 async fn every_documented_path_is_mounted_on_the_app_router() {
     use axum::body::Body;

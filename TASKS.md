@@ -1453,6 +1453,22 @@ API that does not exist yet is a module written twice.
 
   9 token cases, 9 browse cases, 8 oEmbed cases.
 
+  **And a bug every one of those tests missed, that one `curl` found.** `tower_http`'s `CorsLayer`
+  *overwrites* `Access-Control-Allow-Origin`, so while `/browse` and `/oembed` were mounted under the global
+  layer, the per-connector header they set was replaced — by `*` in development, and by whatever
+  `server.allowed_origins` lists in production. The endpoint tests drove the routers in isolation, where no
+  global layer exists, so they passed while the deployed answer was a wildcard.
+
+  Both are now mounted *outside* that layer, and the regression test asserts it structurally: `/assets` still
+  gets the deployment-wide policy and `/browse` gets no header from it at all. Their origin policy is per
+  *credential* rather than per deployment — a browse token lives in a browser, so the only origin that should
+  read with it is that connector's own — and a deployment-wide list cannot express that.
+
+  Verified live with the independent Python signer: the connector's own origin comes back echoed, another origin
+  comes back `null`, and the rest of the API still answers `*`. oEmbed too — a photo with a real signed URL and
+  correct dimensions, `maxwidth` picking 256/1024/2048, and each refusal at its spec status (401 no credential,
+  400 another provider's URL, 501 for XML, 404 for an unknown asset).
+
 - [ ] **M3d·4 The usage index.** `connector_asset_refs` — "this asset appears on 12 pages of site X". Three
   things depend on it: usage reporting, takedown impact before pulling an asset, and a pin-hot signal for the
   lifecycle engine, since an asset live on a production site is a poor tiering candidate whatever its download

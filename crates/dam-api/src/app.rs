@@ -119,6 +119,39 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
         indexes: Arc::clone(&deps.indexes),
         delivery: Some(Arc::clone(&delivery)),
     });
+    // The two connector-facing endpoints, built here and merged **outside** the global CORS layer below.
+    //
+    // That placement is the whole point and it was a real bug: `tower_http`'s `CorsLayer` *overwrites*
+    // `Access-Control-Allow-Origin`, so the per-connector header these handlers set was replaced — by `*` in
+    // development, and by whatever `server.allowed_origins` happens to list in production. The endpoint tests
+    // drove the routers in isolation, where no global layer exists, so they passed while the deployed behaviour
+    // was a wildcard. Only curling the running server showed it.
+    //
+    // Their origin policy is per *credential* rather than per deployment: a browse token lives in a browser, so
+    // the only origin that should be able to read with it is the connector's own `site_url`. A deployment-wide
+    // list cannot express that, which is why these two carry their own.
+    let connector_facing = Router::new()
+        .merge(crate::browse::router(crate::browse::BrowseState {
+            search: Arc::clone(&search_state),
+            global: deps.global.clone(),
+            connectors: Some(crate::browse::ConnectorAuth {
+                sealing: cfg.sealing_keyring(),
+                tenant_slug: deps.delivery_tenant_slug.clone(),
+            }),
+        }))
+        .merge(crate::oembed::router(crate::oembed::OembedState {
+            browse: Arc::new(crate::browse::BrowseState {
+                search: Arc::clone(&search_state),
+                global: deps.global.clone(),
+                connectors: Some(crate::browse::ConnectorAuth {
+                    sealing: cfg.sealing_keyring(),
+                    tenant_slug: deps.delivery_tenant_slug.clone(),
+                }),
+            }),
+            delivery: Some(Arc::clone(&delivery)),
+            public_url: cfg.server.public_url.clone(),
+        }));
+
     let download_state = Arc::new(crate::downloads::DownloadState {
         global: deps.global.clone(),
         delivery: Some(Arc::clone(&delivery)),
@@ -202,29 +235,6 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
         }))
         .merge(crate::versions::router(crate::versions::VersionState {
             global: deps.global.clone(),
-        }))
-        // The picker's endpoint, sharing the search state so it cannot answer differently from `/search`.
-        .merge(crate::browse::router(crate::browse::BrowseState {
-            search: Arc::clone(&search_state),
-            global: deps.global.clone(),
-            connectors: Some(crate::browse::ConnectorAuth {
-                sealing: cfg.sealing_keyring(),
-                tenant_slug: deps.delivery_tenant_slug.clone(),
-            }),
-        }))
-        // The oEmbed provider, over the same two credentials — it shares the browse state rather than building
-        // a second one, because a second one would be a second place a connector's identity is established.
-        .merge(crate::oembed::router(crate::oembed::OembedState {
-            browse: Arc::new(crate::browse::BrowseState {
-                search: Arc::clone(&search_state),
-                global: deps.global.clone(),
-                connectors: Some(crate::browse::ConnectorAuth {
-                    sealing: cfg.sealing_keyring(),
-                    tenant_slug: deps.delivery_tenant_slug.clone(),
-                }),
-            }),
-            delivery: Some(Arc::clone(&delivery)),
-            public_url: cfg.server.public_url.clone(),
         }))
         .merge(crate::connectors::router(
             crate::connectors::ConnectorState {
@@ -327,6 +337,8 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
             HeaderValue::from_static("nosniff"),
         ))
         .layer(cors(cfg))
+        // After the CORS layer, so these two keep the origin header they set. See `connector_facing`.
+        .merge(connector_facing)
         // Outermost of the application layers, so the timing it records is what a client experienced —
         // including the time spent in the timeout layer and in CORS — rather than only the handler. A
         // middleware placed under the timeout would report a fast request for one the client saw as a 504.
