@@ -126,8 +126,8 @@ pub struct Authenticated {
 
 /// Authenticates a presented key.
 ///
-/// `Ok(None)` covers every reason a key does not work — unknown, revoked, expired, or belonging to a tenant
-/// that is not active. They are deliberately indistinguishable to the caller: telling a prober which of their
+/// `Ok(None)` covers every reason a key does not work — unknown, revoked, expired, belonging to a tenant that
+/// is not active, or issued to a person who is no longer one. They are deliberately indistinguishable to the caller: telling a prober which of their
 /// guesses had the right *shape* hands them the cheap half of the search. A suspended tenant's user gets the
 /// same answer as somebody guessing keys, which is correct — the place to explain a suspension is the billing
 /// page, not an API that has just refused a credential.
@@ -157,6 +157,19 @@ pub async fn authenticate(
     // undetected — with a left join `t.status` is NULL for a missing tenant, and `NULL = 'active'` is not
     // true, so the row is excluded either way. The status check subsumes the join's protection; the inner
     // join stays because it says what is meant.
+    //
+    // **And the identity must still be a usable one.** `identities.status` and
+    // `identities.deprovisioned_at` have existed since 0001 and 0002 and this query never looked at either,
+    // so disabling a person did nothing at all: their keys kept working, in every tenant they belonged to.
+    // Removing their `tenant_members` row left them authenticated too — `authorize` then finds no roles and
+    // refuses, which covers the asset surface but not an endpoint that authenticates without authorising.
+    // Deprovisioning that does not reach this query is a flag, and a flag is exactly what a security
+    // questionnaire is asking about when it asks how an account is removed.
+    //
+    // A `LEFT JOIN` because `api_keys.identity_id` is nullable: a machine key belongs to no person, and an
+    // inner join here would have refused every one of them. Allowlisted on `status = 'active'` rather than
+    // denylisting `disabled`, so a status added later refuses by default instead of authenticating by
+    // omission — which is the direction an auth predicate should fail in.
     let row = sqlx::query_as::<
         _,
         (
@@ -171,10 +184,13 @@ pub async fn authenticate(
         "SELECT k.id, k.tenant_id, t.slug, k.identity_id, k.scopes, k.last_used_at \
          FROM dam_global.api_keys k \
          JOIN dam_global.tenants t ON t.id = k.tenant_id \
+         LEFT JOIN dam_global.identities i ON i.id = k.identity_id \
          WHERE k.key_hash = $1 \
            AND t.status = 'active' \
            AND k.revoked_at IS NULL \
-           AND (k.expires_at IS NULL OR k.expires_at > now())",
+           AND (k.expires_at IS NULL OR k.expires_at > now()) \
+           AND (k.identity_id IS NULL \
+                OR (i.status = 'active' AND i.deprovisioned_at IS NULL))",
     )
     .bind(&hash)
     .fetch_optional(global)

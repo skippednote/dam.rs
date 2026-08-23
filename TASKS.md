@@ -1533,6 +1533,24 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   button", and the bar does not honour it — `assets.legal_hold` is on `Detail` and not on `Summary`, so the
   grid cannot currently know. That is a listing-query change and belongs in its own slice.
 
+- [x] **G10·2a·0 Disabling a person did nothing.** Found while scoping the removal half of user
+  administration. `auth::authenticate` joined `tenants` and checked its status — a fix with its own write-up —
+  and never joined `identities` at all. So `identities.status`, there since 0001, and
+  `identities.deprovisioned_at`, there since 0002, had no effect on anything: a disabled person's keys kept
+  working, in every tenant they belonged to.
+
+  Removing a `tenant_members` row did lock them out of the asset surface, because `authorize` then finds no
+  roles and a predicate matching nothing is a refusal — but that is authorisation covering for authentication,
+  and it does not cover an endpoint that authenticates without authorising.
+
+  A `LEFT JOIN`, because `api_keys.identity_id` is nullable and an inner join would have refused every machine
+  key in the fleet. Allowlisted on `status = 'active'` rather than denylisting `disabled`, so a status added
+  later refuses by default instead of authenticating by omission. Reversible, like a tenant suspension:
+  re-enabling somebody does not require reissuing their key. `deprovisioned_at` refuses on its own, even while
+  the status still reads active, because the two columns mean different things.
+
+  2 cases. This is what makes the deprovisioning in G10·2a a removal rather than a flag.
+
 - [ ] **G10·2a User administration.** Read while scoping SCIM, and it changes the order of the work:
   **there is no way to add a person to a tenant.** `tenant_members` is read by `caller`, `auth`, `browse` and
   `comments`, and written in exactly one place — connector registration, inserting a service account. No

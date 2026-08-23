@@ -217,6 +217,96 @@ async fn only_an_active_tenant_authenticates() {
 }
 
 #[tokio::test]
+async fn a_key_belonging_to_a_person_who_is_no_longer_one_is_refused() {
+    // `identities.status` has existed since 0001 and `deprovisioned_at` since 0002, and this query looked at
+    // neither — so disabling somebody did nothing at all, in every tenant they belonged to. That makes
+    // deprovisioning a flag, which is precisely what a security questionnaire means when it asks how an
+    // account is removed.
+    let (_pg, global, _tenant, tenant_id) = setup().await;
+    let identity_id = identity(&global, "leaver@example.com").await;
+    let key = issue(&global, tenant_id, identity_id, &[], None).await;
+
+    assert!(
+        auth::authenticate(&global, &key)
+            .await
+            .expect("query")
+            .is_some(),
+        "the premise: this key works while the person does"
+    );
+
+    // Allowlisted rather than denylisted, so `invited` — a status nothing writes yet — refuses by default
+    // instead of authenticating by omission.
+    for status in ["disabled", "invited"] {
+        sqlx::query("UPDATE dam_global.identities SET status = $2 WHERE id = $1")
+            .bind(identity_id)
+            .bind(status)
+            .execute(&global)
+            .await
+            .expect("set status");
+        assert!(
+            auth::authenticate(&global, &key)
+                .await
+                .expect("query")
+                .is_none(),
+            "a key issued to a {status} identity must not authenticate"
+        );
+    }
+
+    // Reversible, like a tenant suspension: re-enabling somebody must not need their key reissued.
+    sqlx::query("UPDATE dam_global.identities SET status = 'active' WHERE id = $1")
+        .bind(identity_id)
+        .execute(&global)
+        .await
+        .expect("reactivate");
+    assert!(
+        auth::authenticate(&global, &key)
+            .await
+            .expect("query")
+            .is_some()
+    );
+
+    // Deprovisioning is the terminal one, and it refuses even while the status still reads active — the two
+    // columns mean different things and either alone must be enough.
+    sqlx::query("UPDATE dam_global.identities SET deprovisioned_at = now() WHERE id = $1")
+        .bind(identity_id)
+        .execute(&global)
+        .await
+        .expect("deprovision");
+    assert!(
+        auth::authenticate(&global, &key)
+            .await
+            .expect("query")
+            .is_none(),
+        "a deprovisioned identity must not authenticate even with status active"
+    );
+}
+
+#[tokio::test]
+async fn a_machine_key_with_no_identity_still_authenticates() {
+    // The identity check is a LEFT JOIN for exactly this: `api_keys.identity_id` is nullable, and an inner
+    // join would have refused every machine integration in the fleet.
+    let (_pg, global, _tenant, tenant_id) = setup().await;
+    let key = auth::ApiKey::generate();
+    sqlx::query(
+        "INSERT INTO dam_global.api_keys \
+         (id, tenant_id, identity_id, name, key_prefix, key_hash, scopes) \
+         VALUES (gen_random_uuid(), $1, NULL, 'machine', $2, $3, '{}')",
+    )
+    .bind(tenant_id)
+    .bind(key.prefix())
+    .bind(key.hash())
+    .execute(&global)
+    .await
+    .expect("issue");
+
+    let found = auth::authenticate(&global, key.plaintext())
+        .await
+        .expect("query")
+        .expect("a machine key authenticates");
+    assert_eq!(found.identity_id, None);
+}
+
+#[tokio::test]
 async fn a_valid_key_authenticates_to_its_tenant_and_identity() {
     let (_pg, global, _tenant, tenant_id) = setup().await;
     let who = identity(&global, "alice@example.com").await;
