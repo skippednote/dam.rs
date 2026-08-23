@@ -191,6 +191,26 @@ pub struct SecurityConfig {
     /// a DAM whose purpose is video masters cannot refuse every large file, and the honest thing is to say so
     /// rather than to imply coverage that does not exist.
     pub max_scan_bytes: u64,
+    /// PEM certificate chain for signing derivatives' content credentials (D13, G1).
+    ///
+    /// With this and `signing_key_pem` set, every rendered derivative carries a manifest chained to its
+    /// original. Without them nothing is signed and `provenance_gaps` reports the difference — which is the
+    /// default, because an ephemeral certificate is refused outside development on purpose: a test-signed
+    /// credential looks like provenance and verifies against nothing.
+    pub signing_cert_pem: Option<String>,
+    /// PEM private key matching `signing_cert_pem`.
+    pub signing_key_pem: Option<Secret<String>>,
+    /// The C2PA signing algorithm: `es256`, `es384`, `es512`, `ps256`, `ps384`, `ps512` or `ed25519`.
+    ///
+    /// Stated rather than derived from the key, because a mismatch produces manifests that verify nowhere and
+    /// guessing would make that silent.
+    pub signing_algorithm: String,
+    /// A timestamp authority URL.
+    ///
+    /// Worth configuring: without one, every signature stops verifying the day the certificate expires,
+    /// because nothing proves the signing happened while it was valid. For an archive that is the difference
+    /// between provenance and a decoration with a shelf life.
+    pub timestamp_authority: Option<String>,
 }
 
 /// Where the per-tenant Tantivy indexes live (§19).
@@ -370,6 +390,10 @@ impl Default for SecurityConfig {
         Self {
             clamd_address: None,
             max_scan_bytes: 100 * 1024 * 1024,
+            signing_cert_pem: None,
+            signing_key_pem: None,
+            signing_algorithm: "es256".to_owned(),
+            timestamp_authority: None,
         }
     }
 }

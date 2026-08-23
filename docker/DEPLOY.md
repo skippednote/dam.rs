@@ -162,12 +162,43 @@ reading a credential requires no key. `assets.provenance_state` is one of `none`
 The manifest is stored as its own object under a tier-exempt key, so it stays verifiable after the master
 tiers to Deep Archive.
 
-**Signing derivatives is not wired yet.** `security.*` has no signing certificate setting because the call in
-the derive stage does not exist — so today every derivative carries no credential, which is what
-`provenance_gaps` reports. That is G1's remaining half and it is the reason GAPS.md calls the pipeline's
-behaviour a bug rather than an omission. When it lands, a deployment will need a real certificate: an
-ephemeral one is refused outside development, deliberately, because a test-signed credential looks like
-provenance and verifies against nothing.
+### Signing derivatives
+
+Set all of these and every rendered derivative carries a manifest chained to its original:
+
+```
+DAMRS_SECURITY__SIGNING_CERT_PEM   # leaf certificate followed by its issuers, PEM
+DAMRS_SECURITY__SIGNING_KEY_PEM    # PKCS#8 private key ("BEGIN PRIVATE KEY")
+DAMRS_SECURITY__SIGNING_ALGORITHM  # es256 by default
+DAMRS_SECURITY__TIMESTAMP_AUTHORITY  # optional, and worth having
+```
+
+Three requirements that each produce a distinct, actionable error rather than a mystery:
+
+- **The key must be PKCS#8.** `openssl ecparam -genkey` writes SEC1 (`BEGIN EC PRIVATE KEY`); convert it with
+  `openssl pkcs8 -topk8 -nocrypt`. The error names the expected PEM label.
+- **The certificate must not be self-signed.** C2PA refuses one, so a real chain is needed — a leaf issued by
+  a CA, with the leaf first in the file. `keyUsage=critical,digitalSignature` and
+  `extendedKeyUsage=emailProtection` on the leaf.
+- **The algorithm must match the key.** It is stated rather than sniffed, because a mismatch produces
+  manifests that verify nowhere.
+
+Without a timestamp authority, every signature stops verifying the day the certificate expires — nothing
+proves the signing happened while it was valid. For an archive that is the difference between provenance and a
+decoration with a shelf life.
+
+Signing failures are logged and do not fail the render: a certificate problem should not stop a library from
+producing thumbnails. `dam-worker` logs `content credential signing enabled` at startup — the line to check —
+and `provenance_gaps` reports assets whose derivatives lack manifests.
+
+Verify what actually reached the bytes rather than trusting a row:
+
+```sh
+cargo run -p dam-media --example verify_file -- derivative.jpg image/jpeg
+```
+
+`ingredients 1` is the number that matters: it means the derivative names its parent rather than making a
+fresh claim about a file that appeared from nowhere.
 
 ## Backups (§17, G11)
 

@@ -668,10 +668,16 @@ async fn a_video_is_measured_even_though_nothing_renders_it(f: &Fixture) {
     .await
     .expect("finalise");
 
-    let derived =
-        dam_pipeline::derive::asset(&f.global, blob(f), &f.slug, f.tenant_id, finalised.asset_id)
-            .await
-            .expect("derive");
+    let derived = dam_pipeline::derive::asset(
+        &f.global,
+        blob(f),
+        &f.slug,
+        f.tenant_id,
+        finalised.asset_id,
+        None,
+    )
+    .await
+    .expect("derive");
 
     // Rendered from a frame of itself. All three profiles, through exactly the machinery a photograph uses —
     // which is what makes the thumbnail deliverable without a second delivery path.
@@ -714,10 +720,16 @@ async fn a_video_is_measured_even_though_nothing_renders_it(f: &Fixture) {
     )
     .await
     .expect("finalise");
-    let derived =
-        dam_pipeline::derive::asset(&f.global, blob(f), &f.slug, f.tenant_id, short.asset_id)
-            .await
-            .expect("derive");
+    let derived = dam_pipeline::derive::asset(
+        &f.global,
+        blob(f),
+        &f.slug,
+        f.tenant_id,
+        short.asset_id,
+        None,
+    )
+    .await
+    .expect("derive");
     assert!(
         derived.has_thumbnail(),
         "a one-second clip must still get a poster: {derived:?}"
@@ -742,9 +754,16 @@ async fn an_asset_whose_derivatives_all_exist_is_still_measured(f: &Fixture) {
     )
     .await
     .expect("finalise");
-    dam_pipeline::derive::asset(&f.global, blob(f), &f.slug, f.tenant_id, finalised.asset_id)
-        .await
-        .expect("derive");
+    dam_pipeline::derive::asset(
+        &f.global,
+        blob(f),
+        &f.slug,
+        f.tenant_id,
+        finalised.asset_id,
+        None,
+    )
+    .await
+    .expect("derive");
 
     // Now forget the dimensions, as an asset ingested before the measurement existed would have them.
     sqlx::query("UPDATE assets SET width = NULL, height = NULL WHERE id = $1")
@@ -753,10 +772,16 @@ async fn an_asset_whose_derivatives_all_exist_is_still_measured(f: &Fixture) {
         .await
         .expect("forget");
 
-    let again =
-        dam_pipeline::derive::asset(&f.global, blob(f), &f.slug, f.tenant_id, finalised.asset_id)
-            .await
-            .expect("derive");
+    let again = dam_pipeline::derive::asset(
+        &f.global,
+        blob(f),
+        &f.slug,
+        f.tenant_id,
+        finalised.asset_id,
+        None,
+    )
+    .await
+    .expect("derive");
     assert!(
         again.rendered.is_empty(),
         "nothing left to render: {again:?}"
@@ -808,9 +833,16 @@ async fn a_quarter_turn_swaps_the_axes_in_the_measurement(f: &Fixture) {
         .await
         .expect("forget");
 
-    dam_pipeline::derive::asset(&f.global, blob(f), &f.slug, f.tenant_id, finalised.asset_id)
-        .await
-        .expect("derive");
+    dam_pipeline::derive::asset(
+        &f.global,
+        blob(f),
+        &f.slug,
+        f.tenant_id,
+        finalised.asset_id,
+        None,
+    )
+    .await
+    .expect("derive");
 
     let (width, height): (Option<i32>, Option<i32>) =
         sqlx::query_as("SELECT width, height FROM assets WHERE id = $1")
@@ -848,9 +880,16 @@ async fn a_quarter_turn_swaps_the_axes_in_the_measurement(f: &Fixture) {
         .execute(&f.tenant)
         .await
         .expect("forget");
-    dam_pipeline::derive::asset(&f.global, blob(f), &f.slug, f.tenant_id, flipped.asset_id)
-        .await
-        .expect("derive");
+    dam_pipeline::derive::asset(
+        &f.global,
+        blob(f),
+        &f.slug,
+        f.tenant_id,
+        flipped.asset_id,
+        None,
+    )
+    .await
+    .expect("derive");
     let (width, height): (Option<i32>, Option<i32>) =
         sqlx::query_as("SELECT width, height FROM assets WHERE id = $1")
             .bind(flipped.asset_id)
@@ -889,9 +928,16 @@ async fn a_measurement_never_overwrites_one_that_already_exists(f: &Fixture) {
         .await
         .expect("seed");
 
-    dam_pipeline::derive::asset(&f.global, blob(f), &f.slug, f.tenant_id, finalised.asset_id)
-        .await
-        .expect("derive");
+    dam_pipeline::derive::asset(
+        &f.global,
+        blob(f),
+        &f.slug,
+        f.tenant_id,
+        finalised.asset_id,
+        None,
+    )
+    .await
+    .expect("derive");
 
     let (width, height): (Option<i32>, Option<i32>) =
         sqlx::query_as("SELECT width, height FROM assets WHERE id = $1")
@@ -917,10 +963,16 @@ async fn an_asset_gets_a_thumbnail_a_preview_and_a_proxy(f: &Fixture) {
     .await
     .expect("finalise");
 
-    let derived =
-        dam_pipeline::derive::asset(&f.global, blob(f), &f.slug, f.tenant_id, finalised.asset_id)
-            .await
-            .expect("derive");
+    let derived = dam_pipeline::derive::asset(
+        &f.global,
+        blob(f),
+        &f.slug,
+        f.tenant_id,
+        finalised.asset_id,
+        None,
+    )
+    .await
+    .expect("derive");
 
     let mut rendered = derived.rendered.clone();
     rendered.sort();
@@ -990,14 +1042,26 @@ async fn deriving_twice_records_one_row_per_profile(f: &Fixture) {
     .await
     .expect("finalise");
 
-    let first =
-        dam_pipeline::derive::asset(&f.global, blob(f), &f.slug, f.tenant_id, finalised.asset_id)
-            .await
-            .expect("first");
-    let second =
-        dam_pipeline::derive::asset(&f.global, blob(f), &f.slug, f.tenant_id, finalised.asset_id)
-            .await
-            .expect("second");
+    let first = dam_pipeline::derive::asset(
+        &f.global,
+        blob(f),
+        &f.slug,
+        f.tenant_id,
+        finalised.asset_id,
+        None,
+    )
+    .await
+    .expect("first");
+    let second = dam_pipeline::derive::asset(
+        &f.global,
+        blob(f),
+        &f.slug,
+        f.tenant_id,
+        finalised.asset_id,
+        None,
+    )
+    .await
+    .expect("second");
 
     assert_eq!(first.rendered.len(), 3);
     assert!(
@@ -1040,10 +1104,16 @@ async fn deriving_a_deleted_asset_is_permanent(f: &Fixture) {
         .await
         .expect("delete");
 
-    let error =
-        dam_pipeline::derive::asset(&f.global, blob(f), &f.slug, f.tenant_id, finalised.asset_id)
-            .await
-            .expect_err("a deleted asset has nothing to derive");
+    let error = dam_pipeline::derive::asset(
+        &f.global,
+        blob(f),
+        &f.slug,
+        f.tenant_id,
+        finalised.asset_id,
+        None,
+    )
+    .await
+    .expect_err("a deleted asset has nothing to derive");
     assert!(!error.is_transient(), "{error}");
 }
 
@@ -1100,10 +1170,16 @@ async fn a_file_no_renderer_can_read_is_not_a_failure(f: &Fixture) {
     .expect("a text file is a perfectly good asset");
     assert_eq!(finalised.mime, "text/plain");
 
-    let derived =
-        dam_pipeline::derive::asset(&f.global, blob(f), &f.slug, f.tenant_id, finalised.asset_id)
-            .await
-            .expect("a document with no image rendition is not a failed job");
+    let derived = dam_pipeline::derive::asset(
+        &f.global,
+        blob(f),
+        &f.slug,
+        f.tenant_id,
+        finalised.asset_id,
+        None,
+    )
+    .await
+    .expect("a document with no image rendition is not a failed job");
 
     assert!(
         derived.rendered.is_empty(),
@@ -1290,6 +1366,7 @@ async fn a_named_format_is_rendered_and_recorded(f: &Fixture) {
         f.tenant_id,
         finalised.asset_id,
         &key,
+        None,
     )
     .await
     .expect("render");
@@ -1359,6 +1436,7 @@ async fn rendering_the_same_format_twice_records_one_row(f: &Fixture) {
         f.tenant_id,
         finalised.asset_id,
         &key,
+        None,
     )
     .await
     .expect("render");
@@ -1369,6 +1447,7 @@ async fn rendering_the_same_format_twice_records_one_row(f: &Fixture) {
         f.tenant_id,
         finalised.asset_id,
         &key,
+        None,
     )
     .await
     .expect("render again");
@@ -1446,6 +1525,7 @@ async fn a_conversion_for_the_wrong_class_is_permanent(f: &Fixture) {
         f.tenant_id,
         finalised.asset_id,
         &key,
+        None,
     )
     .await
     .expect_err("a class mismatch must refuse");
@@ -1484,6 +1564,7 @@ async fn an_unknown_conversion_is_permanent(f: &Fixture) {
         f.tenant_id,
         finalised.asset_id,
         "no-such-format",
+        None,
     )
     .await
     .expect_err("an unknown format must refuse");
@@ -1523,6 +1604,7 @@ async fn a_withdrawn_conversion_still_renders(f: &Fixture) {
         f.tenant_id,
         finalised.asset_id,
         &key,
+        None,
     )
     .await
     .expect("a withdrawn format still renders for links already issued");
@@ -1541,6 +1623,7 @@ async fn the_whole_chain_runs_through_the_worker() {
         // No hosted-model context: these suites are about the queue and the render stages.
         ai: None,
         scanner: None,
+        signing_identity: None,
         global: f.global.clone(),
         store: Arc::clone(&f.store),
         indexes: Arc::new(dam_search::IndexPool::new(dam_search::PoolConfig::new(

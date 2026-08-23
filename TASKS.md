@@ -2497,10 +2497,37 @@ Asked for after the go-live gap analysis. Ordered cheapest-first among items tha
       committed, so a separate connection could not see the row its foreign key referenced. It surfaced as an
       FK violation on the first credentialed upload, and only because this path logs rather than fails.
 
-- [ ] **L.6b Re-signing derivatives.** The remaining half of G1, and the half that makes the pipeline stop
-      destroying credentials. `sign` exists and is tested; `record_signed` is now callable; what is missing is
-      the call in `derive` and a configured signing identity to make it with. Until then a derivative carries
-      no manifest and `provenance_gaps` is the view that says so.
+- [x] **L.6b Re-signing derivatives — G1 closed.** Every rendered derivative now carries a manifest chained to
+      its original as a `parentOf` ingredient, signed between render and store so the bytes that reach the
+      bucket are the signed ones.
+
+      Embedded rather than detached, unlike the inbound manifest, and the asymmetry is deliberate: a derivative
+      is the thing that *leaves* — downloaded, embedded in a page, fetched by a connector — so a credential
+      held only in our database would be provenance nobody downstream can check. An original goes the other
+      way because it tiers to Deep Archive and its credential has to outlive that.
+
+      `DerivedFrom`, never `Created`. `Created` would claim the file came into existence here, discarding what
+      the original said about a camera or a generative model — and for AI-generated originals that would
+      silently drop the Article 50 marking (D15) the derivative is obliged to carry.
+
+      Actions carry their parameters: `c2pa.resized` with the dimensions and `c2pa.converted` with the format.
+      "Resized" without a size records that something happened without recording what, which is not
+      provenance.
+
+      Signing failures are logged and do not fail the render. A missing identity is the ordinary case and a
+      certificate problem is an operator's to fix; neither is a reason for a library to have no thumbnails.
+
+      Three requirements found by making it work against a real certificate, each now producing a distinct
+      error rather than a mystery: the key must be **PKCS#8** (`openssl ecparam` writes SEC1), the certificate
+      must **not be self-signed** (C2PA refuses one, so a real leaf-and-CA chain is needed), and the algorithm
+      is **stated rather than sniffed** because a mismatch produces manifests that verify nowhere.
+
+      Verified in the bytes rather than in a row, which is the only verification that means anything here.
+      `examples/verify_file` on a downloaded `web-2048` reports `state untrusted`, `signer damrs signer`,
+      `generator damrs/0.1.0`, **`ingredients 1`**, and `c2pa.opened, c2pa.resized, c2pa.converted`. The
+      ingredient count is the number that matters: it means the derivative names its parent rather than making
+      a fresh claim about a file that appeared from nowhere. Relationally, four manifests for one asset — one
+      `inbound` and three `damrs_signed`, each with `parent_manifest_id` set.
 
 
 ## Archival — tiering, restores, and the storage screen (§6.4, §6.5)

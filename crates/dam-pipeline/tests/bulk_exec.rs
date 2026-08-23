@@ -386,6 +386,7 @@ async fn the_worker_runs_it_and_queues_the_reindex(f: &Fixture) {
         // No hosted-model context: these suites are about the queue and the render stages.
         ai: None,
         scanner: None,
+        signing_identity: None,
         global: f.global.clone(),
         store: std::sync::Arc::new(dam_store::FakeS3Store::with_test_clock().0),
         indexes: std::sync::Arc::new(dam_search::IndexPool::new(dam_search::PoolConfig::new(

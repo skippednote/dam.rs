@@ -80,6 +80,12 @@ pub struct Context {
     /// `finalise`, for the same reason the store is: the pipeline has no business knowing how the deployment
     /// is configured.
     pub scanner: Option<dam_media::antivirus::Scanner>,
+    /// The C2PA signing identity, when one is configured.
+    ///
+    /// `None` renders derivatives without credentials — the default, and what `provenance_gaps` reports. An
+    /// ephemeral identity is refused outside development by `SigningIdentity` itself, so a deployment either
+    /// has a real certificate or signs nothing.
+    pub signing_identity: Option<dam_media::provenance::SigningIdentity>,
     /// What a hosted-model call needs: the sealing keyring, the price list, and the transport.
     ///
     /// `None` disables the enrichment kind outright, which is what a deployment without a model configuration
@@ -239,6 +245,7 @@ pub async fn handle(context: &Context, job: &Job) -> Result<()> {
                 &slug,
                 job.tenant_id,
                 asset_id,
+                context.signing_identity.as_ref(),
             )
             .await?;
 
@@ -274,6 +281,7 @@ pub async fn handle(context: &Context, job: &Job) -> Result<()> {
                 job.tenant_id,
                 asset_id,
                 &key,
+                context.signing_identity.as_ref(),
             )
             .await?;
 

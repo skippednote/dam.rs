@@ -12,7 +12,7 @@ called out explicitly — those are corrections, not additions.
 >
 > | Gap | Addressed by |
 > |---|---|
-> | G1 provenance stripping | `tenant/0006_provenance.sql`, D13, §9 media table, `provenance_gaps` view |
+> | G1 provenance stripping | `tenant/0006_provenance.sql`, D13, §9 media table, `provenance_gaps` view — **and, since 2026-08-23, actually wired: verified on ingest and re-signed on every derivative** |
 > | G2 AI Act Art. 50 marking | `ai_disclosures` in `0006`, D15, unmarked-synthetic alarm index |
 > | G3 face recognition default | `tenant/0007_governance.sql` consent trigger + `global/0002` DPIA-gated flag, D14, §8.1 split detect/identify |
 > | G4 rights model | `tenant/0005_rights.sql` (7 tables + assets columns), D12 |

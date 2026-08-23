@@ -167,6 +167,7 @@ async fn each_pass_leaves_the_next_one_behind_it(f: &Fixture) {
         ))),
         ai: None,
         scanner: None,
+        signing_identity: None,
         worker: "tiering-test".to_owned(),
     };
 

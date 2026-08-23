@@ -60,6 +60,41 @@ async fn main() -> anyhow::Result<()> {
         ai: Some(ai),
         // Built from configuration here rather than inside the pipeline, like the store. `None` when no
         // `clamd` is configured, which scans nothing — see `security.clamd_address`.
+        // A signing identity only when both halves are configured. One without the other is a
+        // misconfiguration rather than a partial capability, and refusing to start would be worse than
+        // rendering unsigned and letting `provenance_gaps` say so.
+        signing_identity: match (
+            cfg.security.signing_cert_pem.as_deref(),
+            cfg.security.signing_key_pem.as_ref(),
+        ) {
+            (Some(cert), Some(key)) => {
+                match dam_media::provenance::SigningIdentity::from_pem(
+                    cert.as_bytes(),
+                    key.expose().as_bytes(),
+                    &cfg.security.signing_algorithm,
+                    cfg.security.timestamp_authority.clone(),
+                ) {
+                    Ok(identity) => {
+                        tracing::info!("content credential signing enabled");
+                        Some(identity)
+                    }
+                    // Logged loudly and not fatal: a certificate problem should not stop a library from
+                    // producing thumbnails, and the gap is reportable.
+                    Err(error) => {
+                        tracing::error!(%error, "signing certificate unusable; derivatives will be unsigned");
+                        None
+                    }
+                }
+            }
+            (None, None) => None,
+            _ => {
+                tracing::error!(
+                    "only one of security.signing_cert_pem and security.signing_key_pem is set; \
+                     derivatives will be unsigned"
+                );
+                None
+            }
+        },
         scanner: cfg.security.clamd_address.as_deref().map(|address| {
             tracing::info!(%address, "virus scanning enabled");
             dam_media::antivirus::Scanner::new(address, cfg.security.max_scan_bytes)

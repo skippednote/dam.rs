@@ -88,10 +88,28 @@ pub async fn asset(
     slug: &dam_core::TenantSlug,
     tenant_id: Uuid,
     asset_id: Uuid,
+    // The deployment's C2PA signing identity, when one is configured. `None` renders without credentials,
+    // which is the default and is why `provenance_gaps` exists. Passed in rather than read from configuration
+    // here, for the same reason the store is: the pipeline has no business knowing how the deployment is
+    // configured.
+    identity: Option<&dam_media::provenance::SigningIdentity>,
 ) -> Result<Derived> {
     let mut conn = TenantConn::begin(global, slug).await?;
-    let row = sqlx::query_as::<_, (String, String, i64, Option<i32>, Option<i32>, Option<i64>)>(
-        "SELECT content_hash, mime, bytes, width, height, duration_ms \
+    // `filename` rides along for the C2PA ingredient's title. A manifest whose parent is labelled with a
+    // content hash is technically complete and useless to a human reading the chain.
+    let row = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            i64,
+            Option<i32>,
+            Option<i32>,
+            Option<i64>,
+            String,
+        ),
+    >(
+        "SELECT content_hash, mime, bytes, width, height, duration_ms, filename \
          FROM assets WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind(asset_id)
@@ -100,7 +118,7 @@ pub async fn asset(
     .map_err(dam_db::Error::from)?;
     conn.commit().await?;
 
-    let Some((content_hash, mime, _bytes, width, height, duration_ms)) = row else {
+    let Some((content_hash, mime, _bytes, width, height, duration_ms, filename)) = row else {
         // Deleted between the job being queued and being claimed. Permanent, and not an error worth alarming
         // about: the queue is asynchronous and a user deleting an asset immediately after uploading it is
         // ordinary.
@@ -192,8 +210,19 @@ pub async fn asset(
             rendition: &profile.rendition,
             color_profile: profile.color_profile,
             op_hash: &op_hash,
+            source_mime: &mime,
+            source_title: &filename,
         };
-        match render_one(store, tenant_id, &content_hash, &renderable, &recipe).await {
+        match render_one(
+            store,
+            tenant_id,
+            &content_hash,
+            &renderable,
+            &recipe,
+            identity,
+        )
+        .await
+        {
             Ok(output) => {
                 // `record_on`, not `record`: this has to run on the tenant-scoped connection, or the
                 // unqualified `derivatives` resolves against whatever schema the pooled connection last had.
@@ -217,7 +246,29 @@ pub async fn asset(
                 conn.commit().await?;
 
                 match recorded {
-                    Ok(_) => rendered.push(profile.name.to_owned()),
+                    Ok(derivative) => {
+                        // The manifest relationally as well as embedded. `provenance_manifests` is what makes
+                        // "what did damrs do to this file" a query rather than an exercise in parsing every
+                        // derivative, and what allows a manifest to be regenerated after a certificate
+                        // rotation. Chained to the asset's inbound manifest where there is one, so the row
+                        // records the same lineage the signed bytes do.
+                        if let Some(manifest) = &output.manifest
+                            && let Err(error) = record_derivative_manifest(
+                                global,
+                                slug,
+                                asset_id,
+                                derivative.id,
+                                output.key.as_str(),
+                                manifest,
+                                profile.name,
+                            )
+                            .await
+                        {
+                            // The credential is in the bytes either way; only the index is missing.
+                            tracing::warn!(%error, %asset_id, "could not record a derivative manifest");
+                        }
+                        rendered.push(profile.name.to_owned());
+                    }
                     // An asset already has exactly one master proxy (D5), so a redefined `web-2048` refuses
                     // here and names `replace_proxy`. Reported rather than failing the job: the thumbnail and
                     // the preview still rendered, and a redefinition is an operator action rather than an
@@ -278,11 +329,14 @@ pub async fn conversion(
     tenant_id: Uuid,
     asset_id: Uuid,
     key: &str,
+    // As in [`asset`]: a tenant-defined conversion signs the same way a built-in profile does, or a download
+    // in a named format would be the one thing that leaves the system without credentials.
+    identity: Option<&dam_media::provenance::SigningIdentity>,
 ) -> Result<ConversionRendered> {
     let mut conn = TenantConn::begin(global, slug).await?;
     let found = dam_db::conversions::by_key(conn.executor(), key).await?;
-    let asset = sqlx::query_as::<_, (String, String)>(
-        "SELECT content_hash, mime FROM assets WHERE id = $1 AND deleted_at IS NULL",
+    let asset = sqlx::query_as::<_, (String, String, String)>(
+        "SELECT content_hash, mime, filename FROM assets WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind(asset_id)
     .fetch_optional(conn.executor())
@@ -298,7 +352,7 @@ pub async fn conversion(
             "no conversion named {key} in this tenant"
         )));
     };
-    let Some((content_hash, mime)) = asset else {
+    let Some((content_hash, mime, filename)) = asset else {
         // Deleted between the request and the job being claimed. Ordinary, and permanent.
         return Err(Error::Permanent(format!(
             "asset {asset_id} does not exist or was deleted"
@@ -348,8 +402,11 @@ pub async fn conversion(
         // one would change the cache key without changing the output. See `profiles::TENANT_COLOR_PROFILE`.
         color_profile: dam_media::profiles::TENANT_COLOR_PROFILE,
         op_hash: &op_hash,
+        source_mime: &mime,
+        source_title: &filename,
     };
-    let output = match render_one(store, tenant_id, &content_hash, &source, &recipe).await {
+    let output = match render_one(store, tenant_id, &content_hash, &source, &recipe, identity).await
+    {
         Ok(output) => output,
         // Unlike [`asset`], an unreadable source *is* this job's failure. There is no placeholder to fall back
         // to: somebody chose a format for a file that cannot be rendered into it, and the honest outcome is a
@@ -423,7 +480,111 @@ struct Output {
     key: Key,
     mime: &'static str,
     bytes: Vec<u8>,
+    /// The manifest embedded in `bytes`, when one was signed.
+    ///
+    /// Carried out so the caller can record it relationally as well: `provenance_manifests` is what makes
+    /// "what did damrs do to this file" a query, and what allows a manifest to be regenerated if a signing
+    /// certificate is rotated.
+    manifest: Option<Vec<u8>>,
     cost_ms: Option<i32>,
+}
+
+/// Records a derivative's signed manifest, chained to the asset's inbound one.
+///
+/// The parent link is looked up rather than passed down because the *asset's* inbound manifest is the thing a
+/// derivative chains to, and the render loop has no reason to hold it. Absent when the original arrived
+/// without credentials, which is the common case — a derivative of an uncredentialed original still gets its
+/// own manifest saying what damrs did, it just does not continue anybody else's chain.
+async fn record_derivative_manifest(
+    global: &sqlx::PgPool,
+    slug: &dam_core::TenantSlug,
+    asset_id: Uuid,
+    derivative_id: Uuid,
+    object_key: &str,
+    manifest: &[u8],
+    profile: &str,
+) -> Result<()> {
+    let mut conn = TenantConn::begin(global, slug).await?;
+    let parent = dam_db::provenance::for_asset(conn.executor(), asset_id)
+        .await?
+        .into_iter()
+        .find(|stored| stored.role == dam_db::provenance::Role::Inbound)
+        .map(|stored| stored.id);
+
+    dam_db::provenance::record_signed(
+        conn.executor(),
+        derivative_id,
+        parent,
+        &dam_db::provenance::NewManifest {
+            object_key,
+            bytes: i64::try_from(manifest.len()).unwrap_or(i64::MAX),
+            // Ours, freshly signed with our own certificate — so the state is whatever a verifier would say
+            // about that certificate. `untrusted` until the certificate chains to a root a verifier knows,
+            // which is a property of the deployment's PKI rather than of this manifest.
+            validation_state: "untrusted",
+            validation_detail: serde_json::json!({ "profile": profile }),
+            signer_cn: None,
+            claim_generator: Some(&dam_media::provenance::claim_generator()),
+            spec_version: None,
+            captured_at: None,
+            actions: vec!["c2pa.resized".to_owned(), "c2pa.converted".to_owned()],
+        },
+    )
+    .await?;
+    conn.commit().await?;
+    Ok(())
+}
+
+/// Signs one rendered derivative, chaining it to the original.
+///
+/// The action list is built from the recipe rather than being generic: `c2pa.resized` without a size records
+/// that something happened without recording what, which is not provenance. A format change adds
+/// `c2pa.converted` — two actions where two things happened.
+///
+/// `Provenance::DerivedFrom` rather than `Created`, which is the whole point. `Created` would claim this file
+/// came into existence here, discarding whatever the original said about a camera or a generative model — and
+/// for an AI-generated original that would silently drop the Article 50 marking (D15) the derivative is
+/// obliged to carry.
+fn sign_derivative(
+    identity: Option<&dam_media::provenance::SigningIdentity>,
+    source: &[u8],
+    rendered: &[u8],
+    recipe: &Recipe<'_>,
+) -> std::result::Result<(Vec<u8>, Option<Vec<u8>>), String> {
+    let Some(identity) = identity else {
+        return Err("no signing identity is configured".to_owned());
+    };
+
+    let mut actions = vec![dam_media::provenance::Action::resized(
+        recipe.rendition.width,
+        recipe.rendition.height,
+    )];
+    actions.push(dam_media::provenance::Action::converted(
+        recipe.rendition.format.extension(),
+    ));
+
+    let signed = dam_media::provenance::sign(
+        identity,
+        rendered,
+        recipe.rendition.format.mime(),
+        dam_media::provenance::Claim {
+            claim_generator: dam_media::provenance::claim_generator(),
+            provenance: dam_media::provenance::Provenance::DerivedFrom(
+                dam_media::provenance::Parent {
+                    // The original's bytes, which the caller already holds for rendering — so the ingredient
+                    // costs nothing extra here. Reading them again to sign would double the transfer on every
+                    // derivative of every asset.
+                    bytes: source.to_vec(),
+                    format: recipe.source_mime.to_owned(),
+                    title: recipe.source_title.to_owned(),
+                },
+            ),
+            actions,
+        },
+    )
+    .map_err(|error| error.to_string())?;
+
+    Ok((signed.bytes, signed.manifest))
 }
 
 /// One thing to render: the recipe, the colour treatment it is hashed under, and the cache key.
@@ -436,6 +597,12 @@ struct Recipe<'a> {
     rendition: &'a Rendition,
     color_profile: &'a str,
     op_hash: &'a str,
+    /// The original's media type and filename, for the C2PA ingredient.
+    ///
+    /// On the recipe rather than passed alongside it, so a tenant-defined conversion (Q.11) rendering through
+    /// this same function cannot forget them and produce a manifest whose ingredient claims the wrong format.
+    source_mime: &'a str,
+    source_title: &'a str,
 }
 
 /// Renders one recipe and stores it.
@@ -448,6 +615,7 @@ async fn render_one(
     content_hash: &str,
     source: &[u8],
     recipe: &Recipe<'_>,
+    identity: Option<&dam_media::provenance::SigningIdentity>,
 ) -> std::result::Result<Output, Refusal> {
     let started = std::time::Instant::now();
 
@@ -478,6 +646,30 @@ async fn render_one(
         }
     };
 
+    // Content credentials, embedded before the bytes are stored (D13, G1).
+    //
+    // This is the half of G1 that makes the pipeline stop *destroying* provenance. libvips, ffmpeg and pdfium
+    // all strip embedded metadata by default, so a rendered derivative arrives here with no manifest whatever
+    // the original had — reliably, not occasionally. Signing puts one back, chained to the original as a
+    // `parentOf` ingredient so the result is a continuation of the chain rather than a new claim about a file
+    // that appeared from nowhere.
+    //
+    // Embedded rather than detached, unlike the inbound manifest: a derivative is the thing that leaves —
+    // downloaded, embedded in a page, handed to a connector — and a credential that stayed behind in our
+    // database would be provenance nobody downstream can check. The inbound manifest is stored separately for
+    // the opposite reason: originals tier to Deep Archive, and the credential has to outlive that.
+    //
+    // Failure to sign is **not** failure to render. A missing signing identity is the ordinary case, and a
+    // signing error is an operator problem with a certificate — neither is a reason to have no thumbnail.
+    // `provenance_gaps` is the view that reports the difference afterwards.
+    let (bytes, manifest) = match sign_derivative(identity, source, &bytes, recipe) {
+        Ok(signed) => signed,
+        Err(reason) => {
+            tracing::warn!(%reason, profile = recipe.op_hash, "derivative signed with no credentials");
+            (bytes, None)
+        }
+    };
+
     let ext = recipe.rendition.format.extension();
     let key = Key::derivative(tenant_id, content_hash, recipe.op_hash, ext)
         .map_err(|e| Refusal::Failed(format!("deriving the object key: {e}")))?;
@@ -497,6 +689,7 @@ async fn render_one(
         key,
         mime: recipe.rendition.format.mime(),
         bytes,
+        manifest,
         cost_ms: i32::try_from(started.elapsed().as_millis()).ok(),
     })
 }

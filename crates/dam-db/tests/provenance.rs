@@ -96,7 +96,7 @@ async fn a_derivative_of_a_credentialed_asset_leaves_no_gap_once_its_manifest_is
     let asset_id = asset(pool, "credentialed").await;
 
     let inbound = provenance::record_inbound(
-        &mut *pool.acquire().await.expect("conn"),
+        &mut pool.acquire().await.expect("conn"),
         asset_id,
         &manifest("acme/c2pa/inbound", "valid", &["c2pa.created"]),
     )
@@ -105,7 +105,7 @@ async fn a_derivative_of_a_credentialed_asset_leaves_no_gap_once_its_manifest_is
 
     let derivative_id = derivative(pool, asset_id, "proxy").await;
     provenance::record_signed(
-        &mut *pool.acquire().await.expect("conn"),
+        &mut pool.acquire().await.expect("conn"),
         derivative_id,
         Some(inbound),
         &manifest("acme/c2pa/proxy", "valid", &["c2pa.opened", "c2pa.resized"]),
@@ -126,7 +126,7 @@ async fn a_derivative_with_no_manifest_is_reported_as_a_gap(pool: &PgPool) {
     // regression G1 describes: the derivative exists and is served, the credentials are gone.
     let asset_id = asset(pool, "stripped").await;
     provenance::record_inbound(
-        &mut *pool.acquire().await.expect("conn"),
+        &mut pool.acquire().await.expect("conn"),
         asset_id,
         &manifest("acme/c2pa/inbound", "valid", &["c2pa.created"]),
     )
@@ -157,7 +157,7 @@ async fn a_thumbnail_is_not_counted_but_a_proxy_is(pool: &PgPool) {
     // something.
     let asset_id = asset(pool, "mixed").await;
     provenance::record_inbound(
-        &mut *pool.acquire().await.expect("conn"),
+        &mut pool.acquire().await.expect("conn"),
         asset_id,
         &manifest("acme/c2pa/inbound", "valid", &["c2pa.created"]),
     )
@@ -184,7 +184,7 @@ async fn a_failed_inbound_manifest_is_recorded_and_still_requires_derivative_cov
     // silently exempt every derivative from the check.
     let asset_id = asset(pool, "broken").await;
     provenance::record_inbound(
-        &mut *pool.acquire().await.expect("conn"),
+        &mut pool.acquire().await.expect("conn"),
         asset_id,
         &manifest("acme/c2pa/inbound", "invalid", &["c2pa.created"]),
     )
@@ -217,7 +217,7 @@ async fn the_chain_is_reconstructible_without_parsing_any_manifest_blob(pool: &P
     // for.
     let asset_id = asset(pool, "chained").await;
     let inbound = provenance::record_inbound(
-        &mut *pool.acquire().await.expect("conn"),
+        &mut pool.acquire().await.expect("conn"),
         asset_id,
         &manifest("acme/c2pa/inbound", "valid", &["c2pa.created"]),
     )
@@ -225,7 +225,7 @@ async fn the_chain_is_reconstructible_without_parsing_any_manifest_blob(pool: &P
     .expect("inbound");
     let derivative_id = derivative(pool, asset_id, "proxy").await;
     let signed = provenance::record_signed(
-        &mut *pool.acquire().await.expect("conn"),
+        &mut pool.acquire().await.expect("conn"),
         derivative_id,
         Some(inbound),
         &manifest("acme/c2pa/proxy", "valid", &["c2pa.opened", "c2pa.resized"]),
@@ -262,7 +262,7 @@ async fn the_action_chain_is_stored_in_order(pool: &PgPool) {
     let asset_id = asset(pool, "actions").await;
     let derivative_id = derivative(pool, asset_id, "proxy").await;
     let id = provenance::record_signed(
-        &mut *pool.acquire().await.expect("conn"),
+        &mut pool.acquire().await.expect("conn"),
         derivative_id,
         None,
         &manifest(
@@ -293,7 +293,7 @@ async fn an_asset_can_only_have_one_inbound_manifest(pool: &PgPool) {
     // pick whichever came back first.
     let asset_id = asset(pool, "single").await;
     provenance::record_inbound(
-        &mut *pool.acquire().await.expect("conn"),
+        &mut pool.acquire().await.expect("conn"),
         asset_id,
         &manifest("acme/c2pa/first", "valid", &[]),
     )
@@ -301,7 +301,7 @@ async fn an_asset_can_only_have_one_inbound_manifest(pool: &PgPool) {
     .expect("first");
 
     let second = provenance::record_inbound(
-        &mut *pool.acquire().await.expect("conn"),
+        &mut pool.acquire().await.expect("conn"),
         asset_id,
         &manifest("acme/c2pa/second", "valid", &[]),
     )
