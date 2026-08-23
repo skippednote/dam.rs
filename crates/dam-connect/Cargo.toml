@@ -22,6 +22,12 @@ chrono = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 
+[dev-dependencies]
+# A real receiver to deliver to. The signature scheme and the retry policy are only worth anything if they
+# survive an actual HTTP round trip — a mocked client would test the code's opinion of itself.
+axum = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net"] }
+
 [lints.rust]
 unsafe_code = "forbid"
 missing_debug_implementations = "warn"
