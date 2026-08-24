@@ -19,10 +19,11 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
+	import { isPublicRoute } from '$lib/chrome';
 	import { resolve } from '$app/paths';
 	import { branding } from '$lib/api/branding.svelte';
 	import { session } from '$lib/api/session.svelte';
-	import brandMark from '$lib/assets/damrs-mark.png';
+	import brandMark from '$lib/assets/damrs-mark.svg';
 	import {
 		Browsers,
 		CaretLeft,
@@ -147,17 +148,10 @@
 		return page.url.pathname === href || page.url.pathname.startsWith(`${href}/`);
 	}
 
-	/**
-	 * A portal has no nav: its visitor is an external recipient with no account, and an app chrome saying
-	 * "Not connected" invites them to try to connect to something that was never theirs.
-	 *
-	 * Both addresses, which the browser suite caught: Q.14's named portals live under `/portal/`, and adding
-	 * the page without adding it here put the application's own navigation on a page meant for a tenant's
-	 * customers.
-	 */
-	const portal = $derived(
-		page.url.pathname.startsWith('/share/') || page.url.pathname.startsWith('/portal/')
-	);
+	// A portal has no nav: its visitor is an external recipient with no account, and an app chrome saying
+	// "Not connected" invites them to try to connect to something that was never theirs. `isPublicRoute` is
+	// shared with the layout, which drops the rail's margin on the same routes.
+	const portal = $derived(isPublicRoute(page.url.pathname));
 </script>
 
 {#if !portal}
@@ -216,6 +210,7 @@
 					style="background-color: {branding.accent}"
 				></span>
 			{:else}
+				<!-- Traced from the PNG it replaces; `docs/brand/README.md` has the measurements. -->
 				<img src={brandMark} alt="" class="brand-mark h-8 w-7 shrink-0 object-contain" />
 			{/if}
 			<span class="brand-copy min-w-0">

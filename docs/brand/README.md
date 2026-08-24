@@ -35,7 +35,7 @@ small sizes without becoming a literal camera, folder, shield, database, Rust cr
 | ------------------------------------------------------------------------------ | ------------------------------ |
 | [`web/static/brand/damrs-mark.png`](../../web/static/brand/damrs-mark.png)     | Public mark and documentation  |
 | [`web/src/lib/assets/damrs-mark.png`](../../web/src/lib/assets/damrs-mark.png) | Bundled app mark and favicon   |
-| [`signal-ledger-reference.png`](signal-ledger-reference.png)                   | Approved application direction |
+| [`signal-ledger-reference.jpg`](signal-ledger-reference.jpg)                   | Approved application direction |
 
 Give the mark clear space equal to the width of its vertical stem. Do not recolour it with semantic rights
 colours, add effects, place it inside another shape, or pair it with `DAMRS` in uppercase.
@@ -84,3 +84,25 @@ Write as the system already behaves:
 3. **Fail-closed:** uncertainty never becomes permission.
 4. **Reversible:** risky operational actions are staged, visible, and auditable.
 5. **Operator-first:** dense workflows stay fast without becoming cryptic.
+
+## The mark as shipped
+
+`web/src/lib/assets/damrs-mark.svg` — the rail's lockup, and `favicon.svg`, the same paths in a square frame
+because a favicon is rendered into a square and letterboxing a portrait mark leaves it smaller than the space
+allows.
+
+Both are **traced from the 793×1069 PNG they replace**, which spent 161KB of raster on four flat
+single-colour shapes and was drawn at 32×28. Every number came off that file's own pixel runs rather than
+from eyeballing it: stroke 60 for the brackets and the pin, 51 for the ring, and each cap and corner position
+derived from where the ink starts and stops. Verified by overlaying the rendered SVG on the original in
+difference blend, which comes out black to within antialiasing.
+
+Coordinates are kept in the source image's own space, so the mark's viewBox is its ink bounding box and any
+future measurement against the original still lines up. `favicon.svg` reuses those coordinates and only moves
+the frame.
+
+The files carry no comments, deliberately. Vite inlines anything under 4KB as a data URI, so a rationale in
+the asset is a rationale URL-encoded into every client's bundle — which is why it is here instead.
+
+Before the trace, the application's tab icon was the **Svelte logo**: the scaffold shipped it and nothing had
+replaced it, so the framework's mark had been the product's icon in every customer's browser.
