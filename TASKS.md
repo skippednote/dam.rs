@@ -1472,12 +1472,36 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   regressions on sight, and it wants one session spent on `browse.e2e.ts`'s waits rather than a
   retry count.
 
-- [ ] **G22 Put the tenant in the delivery claim.** Delivery resolves its tenant from configuration, so one
-  `damd` serves delivery for one tenant and a second tenant's URLs 404. Found by A.6; the design decision is
-  in DECISIONS.md and always expected this. The claim is length-prefixed and versioned, so adding a field is a
-  version bump and the refusal-on-old-version behaviour already exists — `signed_url.rs` documents why a v1
-  token must stop verifying rather than be reinterpreted. The work is the field, the bump, the mint sites, and
-  removing `server.delivery_tenant` along with the ambiguity refusal it exists to soften.
+- [x] **G22a The tenant is in the claim, and delivery refuses a token that names another one.**
+
+  `DeliveryClaim` carries `tenant_id`, first in the payload because every field after it is meaningless until
+  the tenant is fixed, and `VERSION` goes to 4. Both mint sites pass it; the connector tests carry it on
+  `Site` so the id, the secret and the tenant cannot drift apart.
+
+  **This turned out to close a hole rather than only prepare for the refactor.** Delivery now compares the
+  claim's tenant against the one the process serves, and removing that comparison makes an existing test
+  return **302** — the asset served — for a token naming a completely different tenant. Any two deployments
+  sharing a signing key produce exactly that token: a restored backup, a staging environment cloned from
+  production. Before this the tenant was not in the signature at all, so there was nothing to compare and
+  nothing to forge; the URL simply resolved against whichever library the process was configured for.
+
+  A v3 token now fails as `WrongVersion` rather than being reinterpreted, and that is the bump where it
+  matters most: with no tenant field, a v3 payload read under v4 rules lands its `asset_id` where the tenant
+  is expected and shifts every field after it — naming a plausible tenant it was never issued for. Refusing
+  costs nothing, since a delivery token lives at most 24 hours.
+
+- [ ] **G22b Resolve the tenant per request, and delete `server.delivery_tenant`.** The half that actually
+  lifts the limitation. Delivery still reads through a pool pinned to one tenant's `search_path`, so the
+  claim is *checked* against the configured tenant rather than *used* to select a library, and one `damd`
+  still serves one tenant.
+
+  **The obvious shortcut is closed off by design.** A per-tenant pool cache would make this fifteen
+  mechanical substitutions, and `single_tenant_pool` refuses in as many words: "Not for the server. The
+  server holds one pool for every tenant and scopes each request with `TenantConn`, because a pool per
+  tenant at a thousand tenants is a thousand idle connection sets." So the work is threading a `TenantConn`
+  through the handler's fifteen tenant-schema reads, which is a real refactor of the rights-enforcement path
+  and wants its own session rather than a tail end of one. `ConnectorAuth.tenant_slug` needs the same
+  treatment, and `damd`'s startup refusal goes with the config key.
 
 - [ ] **G7·2 Source connectors and transfer.** A transfer needs *bytes*, and bytes come from a source
   connector. Scoped by reading the code, so the next session starts here rather than rediscovering it.

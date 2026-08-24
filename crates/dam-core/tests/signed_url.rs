@@ -29,6 +29,7 @@ fn keyring() -> Keyring {
 fn claim() -> DeliveryClaim {
     DeliveryClaim {
         purpose: Purpose::Distribution,
+        tenant_id: Uuid::from_u128(0x7e9a),
         asset_id: Uuid::from_u128(0xa55e7),
         transform: "web-2048".to_owned(),
         channel: "web".to_owned(),
@@ -489,6 +490,33 @@ fn a_token_from_the_previous_format_version_is_refused_rather_than_defaulted() {
     assert_eq!(
         signed_url::verify(&keyring(), &downgraded, now()),
         Err(VerifyError::WrongVersion)
+    );
+}
+
+#[test]
+fn a_v3_token_stops_verifying_rather_than_reading_the_asset_as_the_tenant() {
+    // The bump G22 made, and the one where accepting the old layout would be a cross-tenant bug rather than
+    // a misparse. A v3 payload has no tenant field, so read under v4 rules its `asset_id` bytes land where
+    // the tenant is expected and every field after shifts by one — the token would name a plausible tenant
+    // it was never issued for.
+    //
+    // Refusing is not a compatibility cost worth weighing: delivery tokens live at most 24 hours
+    // (`delivery::MAX_TOKEN_TTL`), so every outstanding v3 token has expired within a day of a deploy.
+    let token = sign(&claim());
+    let encoder = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let (payload_b64, signature_b64) = token.split_once('.').expect("two parts");
+    let mut payload = base64::Engine::decode(&encoder, payload_b64).expect("decodes");
+    payload[0] = 3;
+
+    let previous = format!(
+        "{}.{}",
+        base64::Engine::encode(&encoder, &payload),
+        signature_b64
+    );
+    assert_eq!(
+        signed_url::verify(&keyring(), &previous, now()),
+        Err(VerifyError::WrongVersion),
+        "a token from the format immediately before the tenant existed must not verify"
     );
 }
 

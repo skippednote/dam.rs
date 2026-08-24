@@ -29,6 +29,12 @@ use uuid::Uuid;
 fn now() -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 8, 18, 12, 0, 0).unwrap()
 }
+/// The delivery tenant these tests run as.
+///
+/// A constant rather than a literal in two places: the fixture builds `DeliveryState` with it and the
+/// helpers below mint tokens claiming it, and since G22 put the tenant *inside* the signature those two
+/// have to agree or every token in this file verifies against the wrong library.
+const TENANT: Uuid = Uuid::from_u128(0xacc0);
 
 struct Fixture {
     _pg: PostgresHarness,
@@ -47,7 +53,7 @@ async fn fixture() -> Fixture {
 
     let store: Arc<dyn BlobStore> = Arc::new(FakeS3Store::with_test_clock().0);
     let keyring = Keyring::single("k1", Secret::new("a-signing-key".to_owned()));
-    let tenant_id = Uuid::from_u128(0xacc0);
+    let tenant_id = TENANT;
     // A fixed clock, so "expired" and "lapsed" mean the same thing to the test and the handler. With the
     // handler reading the wall clock, a token minted one second before the fixture's `now()` was still in
     // the *future* in real time, and the expiry case passed a 302 while claiming to test a 404.
@@ -1195,11 +1201,11 @@ fn mint_directly(
     usage: &Usage,
     expires_at: DateTime<Utc>,
 ) -> String {
-    let _ = f;
     dam_core::signed_url::sign(
         &Keyring::single("k1", Secret::new("a-signing-key".to_owned())),
         &dam_core::signed_url::DeliveryClaim {
             purpose: dam_core::signed_url::Purpose::Distribution,
+            tenant_id: f.tenant_id,
             asset_id,
             transform: transform.to_owned(),
             channel: usage.channel.clone(),
@@ -1211,6 +1217,56 @@ fn mint_directly(
         },
     )
     .expect("sign")
+}
+
+/// A token whose claim names a tenant other than the one this process serves.
+///
+/// Signed with the *same* keyring, which is the case that matters: a forged tenant is refused by the
+/// signature and needs no handler check, so the only interesting token is one that verifies cleanly and
+/// still names the wrong library. Two deployments sharing a signing key produce exactly that — a restored
+/// backup, a staging environment cloned from production.
+fn mint_for_another_tenant(asset_id: Uuid, transform: &str, usage: &Usage) -> String {
+    dam_core::signed_url::sign(
+        &Keyring::single("k1", Secret::new("a-signing-key".to_owned())),
+        &dam_core::signed_url::DeliveryClaim {
+            purpose: dam_core::signed_url::Purpose::Distribution,
+            // Not `TENANT`. Everything else about this token is valid.
+            tenant_id: Uuid::from_u128(0xd1ff),
+            asset_id,
+            transform: transform.to_owned(),
+            channel: usage.channel.clone(),
+            territory: usage.territory.clone(),
+            identity_id: None,
+            share_link_id: None,
+            expires_at: now() + Duration::minutes(10),
+            key_id: String::new(),
+        },
+    )
+    .expect("sign")
+}
+
+async fn a_token_for_another_tenant_is_refused_however_valid_it_is(f: &Fixture) {
+    // G22 put the tenant inside the signature. Before that a delivery URL named an asset and no tenant, so
+    // a process could only ever serve the one tenant its configuration named — and a token from a
+    // deployment sharing its signing key would be answered out of *this* library, hitting either a 404 for
+    // the wrong reason or, if the two happened to share an asset id, the wrong asset.
+    let id = asset_with_bytes(f, "cross-tenant").await;
+    licence(f, id, None).await;
+
+    // The premise: the same asset, same transform, same keyring, differing only in the tenant, is served.
+    let ours = mint_directly(f, id, "web-2048", &web(), now() + Duration::minutes(10));
+    assert_eq!(
+        get(&f.app, &ours).await.status(),
+        StatusCode::FOUND,
+        "the control: this token differs from the one below only in which tenant it names"
+    );
+
+    let theirs = mint_for_another_tenant(id, "web-2048", &web());
+    assert_eq!(
+        get(&f.app, &theirs).await.status(),
+        StatusCode::NOT_FOUND,
+        "a token naming another tenant is not deliverable here, and says nothing about why"
+    );
 }
 
 // ─── the internal-preview purpose (A.7) ─────────────────────────────────────
@@ -1245,6 +1301,7 @@ fn mint_preview(asset_id: Uuid, transform: &str, identity: Option<Uuid>) -> Stri
         &Keyring::single("k1", Secret::new("a-signing-key".to_owned())),
         &dam_core::signed_url::DeliveryClaim {
             purpose: dam_core::signed_url::Purpose::InternalPreview,
+            tenant_id: TENANT,
             asset_id,
             transform: transform.to_owned(),
             channel: "internal".to_owned(),
@@ -1327,6 +1384,7 @@ async fn a_preview_token_cannot_carry_a_share_link(f: &Fixture) {
         &Keyring::single("k1", Secret::new("a-signing-key".to_owned())),
         &dam_core::signed_url::DeliveryClaim {
             purpose: dam_core::signed_url::Purpose::InternalPreview,
+            tenant_id: f.tenant_id,
             asset_id,
             transform: "web-2048".to_owned(),
             channel: "internal".to_owned(),
@@ -1410,6 +1468,7 @@ async fn the_delivery_chokepoint_holds() {
     let f = fixture().await;
 
     a_signed_url_for_a_licensed_asset_redirects_to_the_object(&f).await;
+    a_token_for_another_tenant_is_refused_however_valid_it_is(&f).await;
     the_transform_selects_which_object_is_served(&f).await;
     an_unknown_transform_is_not_deliverable(&f).await;
     a_tenant_conversion_resolves_like_a_built_in(&f).await;

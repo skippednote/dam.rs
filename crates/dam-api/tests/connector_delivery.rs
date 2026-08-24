@@ -101,6 +101,13 @@ async fn fixture() -> Fixture {
 struct Site {
     id: Uuid,
     secret: String,
+    /// The tenant this site was connected to.
+    ///
+    /// Carried on the site rather than passed to every signing helper, because since G22 the tenant is
+    /// inside the signature: a token minted for the wrong tenant is not a token for the wrong library, it
+    /// is a token that does not verify at all. Keeping it beside the id and the secret is what makes the
+    /// three impossible to mismatch.
+    tenant_id: Uuid,
 }
 
 async fn connect(f: &Fixture, label: &str, options: Connect<'_>) -> Site {
@@ -185,7 +192,11 @@ async fn connect(f: &Fixture, label: &str, options: Connect<'_>) -> Site {
     .await
     .expect("register");
 
-    Site { id, secret }
+    Site {
+        id,
+        secret,
+        tenant_id: f.tenant_id,
+    }
 }
 
 #[derive(Default)]
@@ -221,6 +232,7 @@ fn signed_as(
         &Keyring::single(key_id.clone(), Secret::new(secret.to_owned())),
         &DeliveryClaim {
             purpose,
+            tenant_id: site.tenant_id,
             asset_id,
             transform: transform.to_owned(),
             channel: "web".to_owned(),
@@ -622,6 +634,7 @@ async fn a_rotation_does_not_break_the_site_and_the_window_eventually_closes() {
         ),
         &DeliveryClaim {
             purpose: Purpose::Distribution,
+            tenant_id: site.tenant_id,
             asset_id: id,
             transform: "web-2048".to_owned(),
             channel: "web".to_owned(),
@@ -674,6 +687,7 @@ async fn a_token_naming_a_connector_that_does_not_exist_is_the_same_flat_refusal
     let invented = Site {
         id: Uuid::new_v4(),
         secret: site.secret.clone(),
+        tenant_id: site.tenant_id,
     };
     assert_eq!(
         status(&f, &site_signs(&invented, id, "web-2048")).await,
@@ -684,6 +698,7 @@ async fn a_token_naming_a_connector_that_does_not_exist_is_the_same_flat_refusal
         &Keyring::single("connector:not-a-uuid", Secret::new("x".to_owned())),
         &DeliveryClaim {
             purpose: Purpose::Distribution,
+            tenant_id: site.tenant_id,
             asset_id: id,
             transform: "web-2048".to_owned(),
             channel: "web".to_owned(),
@@ -707,6 +722,7 @@ async fn a_token_naming_a_connector_that_does_not_exist_is_the_same_flat_refusal
         ),
         &DeliveryClaim {
             purpose: Purpose::InternalPreview,
+            tenant_id: site.tenant_id,
             asset_id: id,
             transform: "original".to_owned(),
             channel: "web".to_owned(),
