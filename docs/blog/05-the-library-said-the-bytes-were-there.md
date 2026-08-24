@@ -1,150 +1,228 @@
 # The library said the bytes were there and only the download disagreed
 
-We spent a week load-testing dam.rs with a few thousand assets across five tenants. It found three
-defects. They look unrelated — a storage integrity problem, a queue scheduling problem, and a security
-problem in signed URLs — and they have the same shape underneath, which is why they are in one post.
+We did not schedule a fault-injection exercise. The disk under a single-node object store filled during a multi-tenant load run, the container restarted, and the last few minutes of writes did not survive. Postgres did. The API continued to describe hundreds of assets as active, complete, and downloadable, which was a remarkably calm account of a library that had just lost its objects.
 
-In each case **the system was confidently reporting a state that was not true**, and nothing in it was
-positioned to notice.
+> [!TLDR]
+> Database rows, queue entries, and signed tokens are claims about external reality, not proof of it. Load testing dam.rs exposed missing objects that still looked healthy, background jobs that were queued but could never run, and valid delivery tokens that named no tenant. The fixes added independent verification at each boundary: storage scrubbing, bounded queue progress, and tenant-bound signed claims.
 
-## One: 608 objects gone, every one of them reported healthy
+Three defects surfaced during that work. They affected storage integrity, job scheduling, and delivery isolation, so their fixes are necessarily different. The reusable diagnostic is the same: identify what the system believes, then find a second signal capable of proving the belief false.
 
-Our load run filled the disk on the machine running our local object store. The container was killed and
-restarted. The writes from its last three minutes did not survive.
+```press-diagram
+{"type":"mapping","title":"Claims need witnesses","fromLabel":"system claim","toLabel":"independent witness","from":[{"label":"object present"},{"label":"job runnable"},{"label":"token local"}],"to":[{"label":"store probe"},{"label":"band progress"},{"label":"tenant claim"}],"links":[[0,0],[1,1],[2,2]],"footer":"A second copy of the same assumption is not verification."}
+```
 
-Postgres had flushed its rows and kept every one of them.
+## The database survived and the objects did not
 
-What that left: 608 assets whose objects no longer existed, and around 80 more that were listed at their
-recorded size and served nothing at all. The API reported all of them `active`, with their original
-filenames and byte counts. One claimed 669,598 bytes. Downloading it returned zero.
+The load run ingested a few thousand assets across five tenants. When storage filled, the database had already committed asset and placement rows for writes the object store later lost or could no longer serve.
 
-The database and the object store had diverged, and **nothing in the system was in a position to
-notice**, because nothing had ever asked. Every read path trusts the placement rows: delivery resolves a
-key from them, the tiering sweep moves what they name, metering bills the bytes they claim. All of it
-trusting a record nobody verifies.
+At one investigation checkpoint, 608 objects were missing outright. Roughly 80 more were still listed at their recorded sizes but returned no usable body. One asset claimed hundreds of kilobytes and downloaded as zero bytes. A later first scrub reported 609 missing placements. Those are observations from different checks, not a precision claim that the incident held perfectly still while we counted it.
 
-The part that stung: the schema had been ready for this since the first migration. `object_placements`
-carries a `state` column whose CHECK constraint permits `missing` and `corrupt`. It carries
-`remote_checksum` and `last_verified_at`. The enum in the code documents `Corrupt` as the state that
-"needs a scrub."
+Every affected asset looked ordinary through the metadata API. The placement table was treated as authority by delivery, tiering, and metering. If the row said the object existed and weighed 669,598 bytes, every higher layer repeated that claim.
 
-**Zero writers.** For any of it. `last_verified_at` did not appear in a single line of Rust. We had
-written down the vocabulary for describing this failure and never written the code that produces it,
-which is a specific and common way to be wrong: the design remembered, the implementation did not, and
-the schema looked complete enough that nobody noticed the gap.
+The irritating part was that the schema already had the right vocabulary:
 
-So we built the scrub. A HEAD per placement, comparing recorded size and — where the backend reports one
-— the server-side checksum, walking the library oldest-verified-first so consecutive passes cover
-everything rather than re-checking the same page. Deliberately not re-downloading and re-hashing: that
-is egress across the entire library on every pass, and a check that expensive is a check that gets
-turned off.
+```sql
+state text NOT NULL DEFAULT 'present'
+  CHECK (state IN (
+    'uploading', 'present', 'transitioning',
+    'missing', 'corrupt', 'deleting'
+  )),
+remote_checksum  text,
+last_verified_at timestamptz,
+verify_failures  int NOT NULL DEFAULT 0
+```
 
-Run against the database that produced the problem, it found 609 missing — independently matching what
-the failed derivative jobs had implied — and came back clean on the one tenant that had not been
-ingesting when the disk filled.
+`PlacementState::Corrupt` was documented as the state that needed a scrub. Nothing wrote it. `last_verified_at` appeared in the migration and nowhere in the Rust path that mattered. We had designed a language for reporting divergence and omitted the process that speaks it.
 
-**What it still cannot see, and why we wrote that down.** A store that cannot be reached is not a
-finding. Only a probe that *succeeds and returns nothing* counts as corruption, because that is the one
-answer no working backend can give. A probe that errors is weather — one failed read cannot be
-distinguished from a network blip, and recording it as data loss would fill the report with noise until
-nobody believed it.
+### The scrub asks the object store directly
 
-That rule has a cost, and we found it by measuring rather than assuming. Those ~80 truncated objects
-fail by *erroring* on our local store, so the scrub does not flag them. We added a first-byte probe
-specifically to catch them, watched it not work, and rewrote the module documentation to say so instead
-of keeping the more confident wording we had written first. Telling a damaged object from a flaky one
-needs the same probe failing across several passes — a column and a decision that slice does not have.
+The integrity pass takes a bounded window of placements, ordered by `last_verified_at ASC NULLS FIRST`. Never-checked objects go first; later passes revisit the oldest. This makes the window control cycle time rather than coverage.
 
-The honest claim is narrower than the one we wanted to make: missing objects are detected reliably,
-unreadable ones only when the backend answers rather than errors.
+For each placement it performs `HEAD` and compares:
 
-## Two: half a library invisible to search
+1. recorded size against remote size;
+2. previous server-side checksum against the current one, when both exist;
+3. a one-byte ranged read for non-empty objects whose metadata otherwise agrees.
 
-Same load run, different symptom. We searched for an asset by its filename and got nothing back. The
-asset was in the library. It was in the database. `SELECT` found it immediately.
+It deliberately does not download and re-hash every object. A whole-library read turns verification into a recurring egress job. Expensive checks are the first checks operators disable when the bill arrives.
 
-1,280 indexing jobs were sitting in the queue with `attempts = 0` and a scheduled time half an hour in
-the past. They had never been claimed. Not once.
+The main decision is visible in the probe:
 
-The queue orders strictly by priority. Derivative generation runs at priority 40 because somebody is
-usually waiting on a thumbnail; indexing runs at 50; similarity hashing at 70. Every upload fans out into
-derivative jobs, so on a busy tenant that band **is never empty**. Strict priority combined with a
-higher band that keeps refilling is not a queue. It is starvation with a schedule.
+```rust
+match store.head(&key).await {
+    Ok(state) => {
+        let (verdict, checksum) =
+            verify(store, &key, &placement, &state).await;
+        verdicts.push((placement.object_key, verdict, checksum));
+    }
+    Err(dam_store::Error::NotFound(_)) => {
+        verdicts.push((placement.object_key, Verdict::Missing, None));
+    }
+    Err(error) => {
+        tracing::debug!(%error, "store probe was unreachable");
+    }
+}
+```
 
-The queue already had fairness — between tenants. One tenant bulk-importing 100,000 assets cannot starve
-another tenant's thumbnails, and there is a test that proves it. We had thought carefully about one axis
-of starvation and not noticed that priority is another.
+`NotFound` is a storage finding. A timeout, connection refusal, or backend error is not. Marking every unreachable object as missing would turn a network incident into a false data-loss report. Operators would learn to ignore the report just before a real loss needed their attention.
 
-The fix reserves a quarter of every batch for the background band, pooled and ordered by age. Two things
-we got wrong on the way to it are worth more than the fix:
+### The one-byte probe found the boundary of the claim
 
-**A slot per band does not work at the batch size that exists.** The worker claims four jobs at a time.
-Reserving one slot per priority band would leave interactive work one slot in four *and* still starve
-the lowest bands, because three slots cannot cover seven of them. We wrote that version first.
+Metadata can agree while the body remains unreadable. For a non-empty object, the scrub requests byte zero. A successful response containing no bytes is impossible for a healthy object and becomes `corrupt`.
 
-**Aging the background band into the interactive one would have worked, by contradicting the
-documentation.** `JobSpec::priority` says to reserve below 50 for interactive work. Aging jobs across
-that boundary fixes the symptom by making the contract untrue, which is how a codebase's stated rules
-quietly stop describing it.
+On the local SeaweedFS failure shape, the roughly 80 unreadable objects errored instead of successfully returning an empty body. The scrub therefore does not flag them. This is a documented limitation, not a renamed success.
 
-The reserve is bounded rather than guaranteed: a job in a small band waits for the background work older
-than it and no longer. That is what a queue means. Before the fix, the wait was unbounded — zero
-background jobs completed in thirty-five minutes. After it, eight in eight minutes, on the same backlog.
+One failed read cannot distinguish corruption from transient weather. Catching that class reliably needs history, such as consecutive probe-failure count, failure spacing, and a threshold before state changes. The migration already has `verify_failures`, but the first integrity slice did not yet use it for that policy.
 
-## Three: a token that named no tenant
+The honest result is narrower: absent objects are detected reliably when the backend answers `NotFound`; unreadable objects are detected only when the backend returns a contradictory successful response or comparable evidence.
 
-Covered in [post three](03-the-green-badge-is-not-permission.md), so briefly: our signed delivery URLs
-carried asset, transform, channel, territory, identity, share link and expiry — and no tenant. The
-delivery process resolved which library to look in from its own configuration.
+### Repair must clear the finding
 
-Two deployments sharing a signing key — a staging environment restored from a production backup, a DR
-site — produce tokens that verify perfectly against each other and resolve against the wrong library.
+Integrity state is re-derived on every pass. If an operator restores or re-replicates a missing object, the next successful probe returns the placement to `present`. Latching a bad state forever would make the tool report only deterioration and hide successful recovery.
 
-The test asserts a 404. With the check removed it returns **302 and serves the file.**
+The standing report is calculated from placement state across the library, not from one pass's counters. A pass that checked 5,000 healthy objects does not erase 600 findings discovered yesterday.
 
-## What the three have in common
+## Strict priority made queued work permanently unrunnable
 
-Each was a place where the system held a belief nobody checked.
+The storage incident led us to search for a known filename. The asset existed in Postgres and was absent from search. The queue explained why: 1,280 index jobs and 1,280 similarity jobs had `attempts = 0` and `run_after` timestamps roughly half an hour in the past. They had never been claimed.
 
-The placement rows asserted objects existed. Nothing asked the store.
-The queue asserted every job would eventually run. Nothing measured whether any band was advancing.
-The delivery token asserted a request was legitimate. Nothing checked it was legitimate *here*.
+Upload finalisation fans out derivative work at priority 40. Indexing runs at 50 and similarity at 70. Lower numbers run first. During sustained ingest, the derivative band replenished faster than workers drained it. Strict priority therefore made background jobs eligible but unreachable.
 
-All three passed their tests, because the tests asserted the same beliefs. And all three were invisible
-until we ran the system at a scale and duration where the belief and the reality had time to come apart:
-thousands of assets, several tenants, a worker running for hours, and — critically — a disk that filled
-up while we were not looking.
+This was not a slow queue. Slow queues make progress. This queue had an unbounded wait for lower bands.
 
-That last one was an accident and it was the most valuable part of the week. **We did not plan a
-fault-injection exercise. We ran out of disk.** The resulting damage was more realistic than anything we
-would have designed, because it was uneven in ways a deliberate test is not: some objects gone, some
-truncated, one tenant untouched, and the database perfectly intact and perfectly wrong.
+### Tenant fairness did not imply priority fairness
 
-## The one we would not have found any other way
+The claim query already ranked jobs per tenant with `row_number() OVER (PARTITION BY tenant_id ...)`. That prevents one tenant importing 100,000 assets from placing all of its jobs ahead of another tenant's next thumbnail.
 
-There is a fourth thing, and it belongs here because it is the same failure applied to the tooling.
+The test proved fairness across tenants. It said nothing about progress across priority bands inside those tenants. We had covered one starvation axis and inferred the other.
 
-Our CI pipeline had never run. Not "ran and passed" — never executed, for 137 commits, because GitHub
-Actions was disabled at the repository level. The workflow file sat in the tree looking like a gate.
+### A slot for every band cannot fit the worker
 
-Turning it on found seven real problems in a row, none of them in the product: a lint job pinned to a
-floating toolchain that failed on a compiler released after the code was written; a package manager
-installing Rust with a minimal profile that has no `rustfmt`; unit tests that launch a browser installed
-by the *next* step; 150 test binaries that do not fit on a runner's disk; and two tests that could only
-ever pass on macOS — one comparing a nanosecond timestamp against a database column with microsecond
-precision, one assuming `ulimit -f` uses 1024-byte blocks when the Linux shell uses 512.
+The first tempting fix is to reserve one slot per priority band. The worker claims four jobs at a time and the system has seven bands. Giving one slot to each background band cannot fit; giving the three available slots away would leave only one for interactive work and still omit bands.
 
-Every one of those was invisible locally, which is the point. A laptop has the components already
-installed from some earlier session, the browser already cached, the clock granularity that happens to
-round the right way.
+Priority aging was another option. A background job could become numerically more urgent as it waited. That works mechanically, but it violates the documented contract that values below 50 are interactive. A priority whose meaning changes with wall time becomes difficult to reason about in incidents.
 
-We had also been running the AWS conformance suite as a nightly job that reported success for months
-while executing nothing.
+The implemented rule reserves one quarter of batches of at least two jobs for the pooled background band, ordered oldest first. At limit four, one slot advances background work. If no background work is eligible, urgent work uses the whole batch. At limit one, priority remains strict and predictable.
 
-A test suite's silence means nothing until you have confirmed it can speak.
+```rust
+let reserve = if opts.limit >= 2 {
+    (opts.limit / 4).clamp(1, opts.limit - 1)
+} else {
+    0
+};
+```
 
----
+The SQL chooses reserved rows first, then fills the remainder with the normal tenant-fair ordering:
 
-*Previous: [Your bucket, your keys, your bill](04-your-bucket-your-keys-your-bill.md)*
-*Next: [A grid that holds a hundred thousand assets](06-a-grid-that-holds-a-hundred-thousand-assets.md)
-— the Svelte implementation, and why accessibility was a gate from the first UI commit.*
+```sql
+starved AS (
+  SELECT id FROM fair
+  WHERE priority >= $6::smallint
+  ORDER BY run_after, id
+  LIMIT $5
+),
+urgent AS (
+  SELECT f.id FROM fair f
+  WHERE NOT EXISTS (
+    SELECT 1 FROM starved s WHERE s.id = f.id
+  )
+  ORDER BY f.rn, f.priority, f.run_after, f.id
+  LIMIT GREATEST($4 - (SELECT count(*) FROM starved), 0)
+)
+```
+
+The guarantee is bounded progress rather than equal service. A small background band waits for older background jobs ahead of it, but a continuously replenished interactive band can no longer block it forever. On the measured backlog, background completion moved from zero in 35 minutes to eight jobs in eight minutes.
+
+That metric is more meaningful than queue length. A growing queue may be normal during a bulk ingest. A band whose oldest job age increases while its completion counter stays flat is starvation.
+
+## A valid signature belonged to no tenant
+
+The third defect lived in signed delivery URLs. The token carried asset ID, transform, channel, territory, identity, share ID, purpose, expiry, and signing-key ID. It did not carry tenant ID. The delivery process chose a tenant from its own configuration.
+
+That is adequate only while one deployment and one tenant are inseparable. Two deployments can legitimately share key material after a backup restore, staging clone, or disaster-recovery cutover. A token issued by one verifies under the other's keyring.
+
+Without a signed tenant, the receiving process resolves the asset UUID in its configured library. Usually that returns a 404 for the wrong reason. If the same UUID exists in both libraries, it can serve the wrong asset with a valid MAC.
+
+The fix added `tenant_id` to the versioned, length-prefixed claim before the asset ID and checked it against the served tenant before any asset lookup. The token format version moved from 3 to 4. Version 3 tokens are refused rather than reinterpreted because their bytes have no tenant meaning.
+
+The regression test is mutation-verified. With the tenant comparison present, a token for another tenant receives the flat not-deliverable response. Remove the comparison and the same request returns 302 with an object-store URL. That result demonstrates why merely carrying the field would not be enough.
+
+This is a different kind of independent witness from the storage scrub. The token itself now names the namespace in which its remaining fields are meaningful, and the receiving deployment compares that claim with its own boundary.
+
+## The test gate had its own unwitnessed claims
+
+The repository also contained a workflow file that looked like a gate while GitHub Actions was disabled at repository level. It had not executed across 137 commits. Enabling it found a sequence of environment-dependent failures:
+
+- a floating Rust toolchain moved underneath lint;
+- a minimal Rust profile omitted `rustfmt`;
+- Vitest browser tests ran before Chromium was installed;
+- roughly 150 Rust test binaries exhausted runner disk;
+- timestamp precision differed between Rust nanoseconds and Postgres microseconds;
+- a file-size limit test assumed the macOS shell's block size on Linux.
+
+The AWS archive workflow had a quieter version of the same problem. It could exit successfully when credentials were absent, leaving a green scheduled run that had tested no restore. Missing credentials now fail and state what coverage is unavailable.
+
+CI configuration is executable production code for the development process. A workflow file in Git is a claim. A recorded run on the intended platform is the witness.
+
+## What we changed in the operating model
+
+The fixes added new checks, but the larger change was to monitor progress and agreement rather than only state.
+
+For storage:
+
+- track unverified placement count;
+- track standing missing and corrupt counts;
+- separate unreachable probes from findings;
+- alert when scrub coverage stops advancing.
+
+For queues:
+
+- expose queued and completed jobs by kind or priority band;
+- track oldest eligible age;
+- distinguish a deep queue from a stationary band;
+- exercise sustained arrival in tests, not only finite fixtures.
+
+For delivery:
+
+- log wrong-tenant claims without revealing details to the caller;
+- keep token versions explicit;
+- test the negative path by removing the check;
+- avoid sharing signing keys across environments unless rotation and recovery require it.
+
+For CI:
+
+- fail when mandatory credentials or prerequisites are absent;
+- pin the toolchains that define the gate;
+- run in clean environments where cached browsers and local defaults cannot mask ordering defects.
+
+None of those checks proves the whole system correct. Each is positioned where one store of truth can disagree with another.
+
+## The sharp edges remain
+
+A scrub is sampled and delayed. An object can disappear after verification and before delivery. A full cycle over a very large library may take days unless concurrency and request budgets are tuned.
+
+The one-byte probe adds a request per object and still cannot classify repeated transport errors without historical policy. Server-side checksums help only when the backend stores and returns them. Multipart ETags are not whole-object hashes and must not be treated as such.
+
+The queue reserve is a policy choice. Twenty-five percent may be too much under interactive load or too little during reindexing. It needs metrics and workload-specific tuning. The important invariant is that each admitted band advances within a bounded wait.
+
+Tenant-bound claims still operate inside a process currently pinned to one tenant schema for delivery. Carrying tenant identity closes cross-deployment acceptance and prepares multi-tenant resolution; it does not by itself implement a safe pool-per-tenant router.
+
+These limitations are useful because they say where the next independent witness is still missing.
+
+## FAQ
+
+### How can a database say an object exists when object storage lost it?
+
+They are separate systems with no shared transaction. The database can commit a placement while the object write is later lost, truncated, or rolled back by the storage backend. A periodic scrub must compare the row with the store.
+
+### Why is `HEAD` not enough for object integrity?
+
+`HEAD` can detect absence and size mismatch, and sometimes exposes a stored checksum. It cannot prove readable content on backends that report correct metadata for a damaged body, so a bounded ranged read or a stronger periodic verification tier is still needed.
+
+### How do you prevent low-priority job starvation?
+
+Reserve a bounded portion of each multi-job claim for pooled background work ordered by age, while letting urgent work reclaim unused reserve. Then monitor oldest-job age and completion by band so progress is observable.
+
+### What should be inside a multi-tenant signed delivery token?
+
+At minimum, the tenant, asset, purpose, transform, channel, territory, expiry, and relevant identity or share context must be covered by an unambiguous versioned signature. The receiving service must still compare those claims with live state. A database row, a queue state, or a valid MAC becomes trustworthy only after something independent is capable of disagreeing with it.

@@ -1,127 +1,166 @@
 # Your DAM bill grows with your library. Your library only grows.
 
-Every digital asset manager we have looked at meters the same four things: how many people can sign in,
-how many assets you hold, how many bytes those assets occupy, and how many bytes leave the building.
+The first cost model I wrote for dam.rs had an uncomfortable result: a healthy digital asset library and an expensive one looked identical. More people could find the work, more originals were retained, and more sites consumed approved renditions. Every sign that the system was succeeding also pushed one of the common commercial meters upward.
 
-Look at that list next to what a DAM is for and the problem is structural rather than commercial. A DAM
-exists so that an organisation stops losing its own work. Every successful year adds photographers,
-campaigns, product lines and territories — more people, more assets, more bytes, more downloads. The
-product is priced on exactly the axes it exists to grow.
+> [!TLDR]
+> DAM pricing often scales with seats, asset count, stored bytes, and delivery traffic, while a useful archive is expected to grow on all four axes. A durable cost model separates the organisation's real infrastructure consumption from the amount of work it has entrusted to the product. Storage ownership, searchable cold originals, and portable metadata do not make a DAM free, but they stop retention and exit from becoming the vendor's leverage.
 
-That is not a complaint about vendors being expensive. It is an observation that the meter and the
-mission point in opposite directions, and that the gap between them widens with tenure. The customer who
-has used the system longest, has the most in it, and is least able to leave, is the one paying most.
+This is not an argument that every hosted DAM is overpriced. For a small team, paying someone else to operate the database, media pipeline, security updates, and support desk is usually sensible. The problem appears later, when pricing is tied to commitment while the product's mission is to deepen that commitment.
 
-## The four meters, and what each one costs you in behaviour
+## The meter and the mission point in opposite directions
 
-**Seats.** Priced per named user, so access becomes a budget line. The predictable outcome is shared
-logins and a "marketing" account that six people use, which quietly destroys the audit trail — the thing
-you bought a governed system for. Or the reverse: freelancers and agencies never get accounts, so assets
-travel by file share and email, and the DAM stops being where the library actually lives.
+A DAM exists because files accumulate faster than people can remember where they put them. A successful year adds campaigns, product launches, territories, photographers, agencies, releases, and revisions. The archive grows because the organisation is working, not because somebody forgot to clean it.
 
-**Assets.** Priced per record, so the archive becomes a liability. Teams start deleting to stay under a
-tier, and what gets deleted is whatever nobody has opened recently. That is not the same set as whatever
-nobody will need. A model release from four years ago is dead weight until the day a licence is
-challenged, at which point it is the only document that matters.
+Four meters commonly appear in commercial plans. None is irrational by itself. Their combined behavioural effect is the issue.
 
-**Storage.** Priced per gigabyte, usually at a flat rate that does not distinguish a thumbnail from a
-6K master. This is the meter that punishes quality: shooting raw, keeping mezzanines, retaining the
-version history that provenance depends on.
+| Meter | What the invoice observes | What the organisation starts doing |
+|---|---|---|
+| Named seats | How many people can enter | Share logins, exclude agencies, or route work around the DAM |
+| Asset count | How many records remain | Delete old work before its future value is known |
+| Stored bytes | How much quality and history is retained | Drop RAW files, mezzanines, or previous versions |
+| Delivery traffic | How much the library is reused | Cache outside governance or send files through side channels |
 
-**Bandwidth.** Priced per byte delivered. A DAM that is doing its job is serving assets into web pages,
-product feeds, partner portals and CMS renders all day. Success here is indistinguishable from cost.
+The behaviour matters because it damages the properties that justified buying a governed system. Shared credentials weaken attribution. Files sent through email and generic file shares fall outside rights checks. Deleting an old model release can remove the evidence needed to explain why an image was used. A pricing limit becomes an architecture decision, made indirectly and usually without an architecture review.
 
-None of these is unreasonable in isolation. Together they describe a system where every measure of the
-product working is also a measure of the invoice.
+```press-diagram
+{"type":"mapping","title":"Two cost models","fromLabel":"commitment meter","toLabel":"operating cost","from":[{"label":"named seats"},{"label":"asset count"},{"label":"stored bytes"},{"label":"traffic"}],"to":[{"label":"identity ops"},{"label":"database work"},{"label":"storage class"},{"label":"network bytes"}],"links":[[0,0],[1,1],[2,2],[3,3]],"footer":"Commitment and consumption are related, but they are not the same unit."}
+```
 
-## Deletion is not the escape hatch it looks like
+The mapping on the right is not automatically cheaper. It is simply inspectable. A storage bill can be reconciled to object placements and classes. A database bill can be reconciled to queries, backups, and compute. A per-seat tier is harder to connect to marginal cost, especially when the next person needs read-only access for one week.
 
-The obvious answer to per-asset and per-gigabyte pricing is to hold less. In a governed library, you
-mostly cannot.
+## Deletion is not a complete cost-control policy
 
-Rights records have to outlive the asset they describe: proving you *had* a licence in 2024 is a
-different question from whether you have one now, and it is the question that gets asked. Provenance is
-a chain — remove a link and the derivatives downstream of it can no longer establish where they came
-from. A legal hold is an instruction from counsel that a specific set of assets does not move, does not
-change and does not get deleted until they say otherwise, and it does not care what pricing tier you are
-on.
+The obvious answer to asset-count and storage limits is to retain less. That works for disposable material. A governed library contains several categories that are not disposable on the same schedule as their original campaign.
 
-So the assets accumulate because they must. The pricing model treats that accumulation as growth in
-consumption. The organisation experiences it as growth in obligation. Those are not the same thing, and
-only one of them shows up on the invoice.
+### Rights evidence outlives current use
 
-## What it costs to leave
+The question in a dispute is often not whether an image may be used today. It is whether the organisation had the necessary licence and releases when it used the image two years ago. Deleting the evidence because the creative is no longer active turns a storage saving into an evidentiary gap.
 
-The cost question people model is the annual fee. The one that decides whether they ever change anything
-is the exit.
+dam.rs therefore models rights as data with its own lifecycle. Licences, scopes, releases, intended-use declarations, and consumption records do not collapse into one badge on the asset row. A legal hold can also block distribution and deletion independently of ordinary retention.
 
-**Egress.** Getting your library out means downloading every byte you have accumulated, and bandwidth is
-metered. The bill for leaving scales with how long you have stayed — which is an unusual property for a
-switching cost to have, and a very effective one.
+### Provenance is a graph, not a label
 
-**Renditions.** A DAM generates derivatives: web sizes, print profiles, video proxies, format
-conversions. These are usually reproducible in principle and expensive in practice, because reproducing
-them means knowing every transform that was ever configured and re-rendering the whole library through
-it. Most migrations end up pulling the renditions too, which multiplies the egress.
+A web rendition may descend from a retouched master, which descended from a camera original, with a detached credential and a sequence of transformations between them. Removing an intermediate record can leave the output bytes intact while making the explanation of those bytes incomplete.
 
-**Metadata semantics.** This is the one that actually traps people. Your metadata comes out — most
-systems will export it. What does not come out is what it *meant*. A controlled vocabulary whose terms
-map to a taxonomy defined inside the vendor's admin UI, a rights state that is a label rather than a
-rule, a category tree whose enforcement lived in a screen you no longer have access to. You receive
-strings. You had a system.
+### Historical versions answer future questions
 
-**Integrations.** Every connected site, feed and CMS referencing assets by the vendor's URL scheme.
-Migrating the DAM means either rewriting every reference or maintaining a redirect layer indefinitely.
+Version history looks redundant until someone asks which logo was approved for a market, which crop a partner received, or whether the image on a page predates a withdrawal. "Nobody opened it recently" is not the same predicate as "nobody will need to establish what happened."
 
-Add those together and switching cost is not a number you pay once. It is a number that grows every year
-you do not pay it.
+Deletion still belongs in the system. It needs policy, holds, review, and an audit record. Treating it as the main response to a pricing tier delegates those decisions to the invoice.
 
-## The asymmetry, stated plainly
+## Exit cost compounds with tenure
 
-A vendor's revenue from a customer grows with:
+Annual licence cost is visible. Exit cost tends to remain hypothetical until the organisation tries to leave, by which point the library is largest and the integrations are most numerous.
 
-- the number of people who depend on the system,
-- the number of assets in it,
-- the number of bytes they occupy,
-- the traffic they serve,
-- and the difficulty of taking any of it elsewhere.
+### Bytes have to cross a boundary
 
-Every one of those is also a measure of how thoroughly the customer has committed. There is no point on
-that curve where the customer's leverage improves. That is the whole shape of the problem, and no amount
-of negotiating a per-seat rate changes it, because the rate is not what is compounding.
+If the vendor stores the masters, migration begins with a full egress. Derivatives may be reproducible, but reproducing them requires the exact transform definitions, colour profiles, codecs, and versioned behaviour that created them. Pulling existing renditions may be operationally safer, and it multiplies the bytes that must leave.
 
-## What we think the alternative looks like
+### Metadata exports preserve values more easily than semantics
 
-Not "cheaper". Structurally different, in three specific ways.
+A CSV can contain `editorial`, `WORLD`, and `approved`. It may not contain the rules that made those values meaningful: whether exclusions override inclusions, which vocabulary terms are deprecated but still resolvable, or whether an approval applies to the asset, one version, one channel, or one portal.
 
-**Storage you already own.** The assets live in your S3-compatible bucket, in your account, under your
-keys. Storage costs what your cloud provider charges, at whatever rate you have negotiated, on whatever
-class you choose. The DAM is a program that reads and writes objects; it is not the landlord of your
-bytes. When you stop running it, the bytes do not move — they are already where they were.
+That distinction shaped dam.rs. The data model stores licence scopes, exclusions, validity windows, release status, declared use, and the resulting consumption ledger. The goal is not to make the schema elegant. It is to ensure an export can preserve decisions rather than only strings.
 
-**Cold tiering that does not cost you the library.** The economics of a media archive are dominated by
-the fact that most of it is rarely touched and none of it can be discarded. Archival storage classes are
-an order of magnitude cheaper than standard, and the reason most systems cannot use them properly is
-covered in the next post: they tier the object and lose the asset. Keeping cold originals fully
-searchable, with metadata and previews intact, is what makes the cheap class usable rather than
-theoretical.
+### URLs become part of other systems
 
-**No exit event.** If the objects are in your bucket and the metadata is in your Postgres, in a schema
-you can read, then "migrating away" is not a project. This is a property of the architecture, not a
-promise in a contract — the point is that there is no leverage to accumulate, because there is nothing
-you would have to buy back.
+CMS pages, partner portals, feeds, and design tools reference delivery URLs. A migration either rewrites those references or keeps a redirect and compatibility layer alive. The more useful the DAM becomes, the more callers depend on its identifiers.
 
-The honest version of this argument is not that a self-hosted system is free. You run Postgres. You pay
-for storage and for the requests against it. Somebody operates it, and that somebody costs more per hour
-than a SaaS seat. For a small library with a handful of users, a hosted product is very likely the right
-call and the arithmetic says so.
+Exit cost therefore grows with the same things that make the library valuable: history, structure, and reach. That is the lock-in mechanism worth modelling. A negotiated discount changes the slope of the current invoice. It does not remove the compounding migration surface.
 
-The argument is that the costs should scale with *what you actually consume*, not with how committed you
-have become. A library that doubles should roughly double its storage bill, not move you into a tier
-that reprices your seats.
+## Measure consumption as levels and flows
 
----
+The alternative is not "do not meter." An operator needs to know what a tenant consumes, and hard limits are appropriate for some variable-cost operations. The important part is to meter units that correspond to work the system or provider actually performs.
 
-*Next: [Cold storage you can't search is a filing cabinet in a
-warehouse](02-cold-storage-you-cant-search.md) — the archival limitation that makes the cheap storage
-class unusable, and the arithmetic nobody puts in a proposal.*
+dam.rs separates levels from flows:
+
+- A **level** is a current state, such as asset count or bytes stored by class.
+- A **flow** is an event during a period, such as downloads, restore bytes, or model tokens.
+
+That difference prevents a subtle accounting error. Today's storage level cannot be reconstructed accurately for an arbitrary day last March unless the system captured the level then. Download events can be counted historically because each event has a timestamp.
+
+The metering query reads the current placement table for storage and the event ledgers for daily activity:
+
+```sql
+SELECT storage_class,
+       coalesce(sum(size_bytes), 0)::bigint AS stored_bytes
+FROM object_placements
+WHERE state = 'present'
+GROUP BY storage_class;
+
+SELECT count(*) AS downloads
+FROM rights_usage
+WHERE source = 'download'
+  AND recorded_at::date = $1;
+```
+
+The resulting daily row is upserted on `(tenant_id, day)`. Re-running a metering job replaces the measurement instead of adding it again. A worker retry should correct a report, not create a second invoice.
+
+> [!IMPORTANT]
+> Metering must use the operator's full tenant view, not the requesting user's filtered view. A curator who may see 30 percent of a library still belongs to a tenant storing 100 percent of its bytes. Using an access-scoped count for billing would make the same tenant have several different bills.
+
+The quota schema allows each unit to choose soft or hard enforcement. Hard caps are reasonable for optional AI enrichment or restore spend. They are dangerous for ingest, where refusing an upload at the limit can strand active production work. One global "over quota" switch cannot express that distinction.
+
+## The ownership boundary changes the curve
+
+dam.rs puts originals and derivatives in an S3-compatible bucket selected by the operator. Metadata lives in Postgres. Search indexes can be rebuilt from that database. The application coordinates those systems, but it does not need to own the storage account.
+
+That changes three parts of the cost curve.
+
+### Storage classes become an operational choice
+
+Large originals can move to an archive class while searchable metadata, thumbnails, and proxies stay hot. The cost then follows the actual temperature of the bytes instead of treating a rarely opened master and a frequently rendered thumbnail as identical storage.
+
+### Delivery is a provider cost, not a product-success penalty
+
+The organisation still pays for requests and network transfer. The difference is that those charges are visible in the cloud account, can use existing commitments, and can be changed by architecture. A CDN, a different object-store provider, or a regional design can alter the bill without renegotiating the DAM licence.
+
+### There is no bulk export event for the objects
+
+Stopping the application does not copy the bucket somewhere else. The objects are already in the account chosen by the operator. Migration still has real work: preserve metadata semantics, replace integrations, and stand up another delivery layer. It does not begin by buying back every byte.
+
+## A cost model that survives contact with operations
+
+I would compare hosted and self-operated DAMs over at least three years and include five categories:
+
+| Category | Hosted model | Storage-owning model |
+|---|---|---|
+| Product fee | Subscription, tiers, overages | Software support or engineering |
+| Infrastructure | Often bundled and opaque | Database, object storage, compute, CDN |
+| Operations | Vendor-operated | Backups, upgrades, monitoring, incidents |
+| Governance | Configuration and process | Configuration, process, and code ownership |
+| Exit | Export, egress, remapping, URL migration | Metadata and integration migration |
+
+Use at least three library-growth scenarios. A single average hides the shape that matters. Model a conservative case, the expected case, and a retention-heavy case where originals and versions accumulate faster than delivery traffic.
+
+Do not count self-hosting labour as zero. Postgres needs tested restores. Object-store policy needs review. Signing keys and KMS keys need rotation. Media tooling needs security updates. Someone has to respond when a worker queue stops advancing at 02:00. A hosted service may be the cheaper choice once those costs are priced honestly.
+
+The useful decision boundary is control. If a small library has ordinary rights requirements and no dedicated operator, buying the service is rational. If storage class, retention, data residency, enforced rights, or exit cost are strategic constraints, owning the data plane can be worth the operational load.
+
+## What we rejected
+
+We rejected two neat answers because neither survives the actual workload.
+
+The first was "everything stays in Standard forever." It makes retrieval simple and makes archival economics irrelevant. It also charges the warm rate for a body of masters that becomes colder every month.
+
+The second was "archive old assets outside the DAM." That saves on the main system while creating a second library with weaker search, rights, and provenance. Users then keep local copies of anything they may need quickly, and the organisation pays for cold storage plus an ungoverned warm shadow.
+
+The workable middle is to keep the asset record and browsing substrate online while changing only the latency of the original bytes. That design is the subject of the next article, because getting the state model wrong turns a cheap object into a missing asset.
+
+## FAQ
+
+### Is a self-hosted DAM always cheaper than SaaS?
+
+No. Small libraries often benefit from a hosted service because specialist operations, upgrades, and support are bundled. Self-hosting becomes compelling when storage, retention, rights enforcement, residency, or exit control outweigh the cost of operating the stack.
+
+### Which DAM pricing metric creates the most lock-in?
+
+Stored bytes and asset count create visible growth, but metadata semantics and integration URLs usually make an exit hardest. Those dependencies grow quietly and cannot be solved by downloading the masters alone.
+
+### Should old digital assets be deleted to control cost?
+
+Only under an explicit retention policy that accounts for rights evidence, legal holds, provenance, and historical versions. Recent access is useful input, but it is not a sufficient deletion rule.
+
+### What should a DAM meter instead?
+
+Meter inspectable consumption: current bytes by storage class, database and compute load, network transfer, restores, and other variable-cost operations. When the bill follows work the system actually performs, library growth remains an operational fact instead of becoming a penalty for trusting the product.

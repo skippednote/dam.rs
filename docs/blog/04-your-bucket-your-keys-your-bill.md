@@ -1,136 +1,220 @@
 # Your bucket, your keys, your bill
 
-The three posts before this one were about what goes wrong. This one is about the specific architectural
-choice that addresses most of it, which is duller than it sounds: **the assets live in object storage
-you own, and the DAM is a program that reads and writes them.**
+The most consequential storage feature in dam.rs is the one the product does not provide. It does not rent a hidden pool of bytes to the customer. The operator selects the object store, owns the account and bucket, controls the encryption policy, and can inspect the provider's bill without asking the DAM vendor to explain an overage.
 
-That is not a feature. It is the absence of one — the vendor is not in the storage business on your
-behalf — and almost everything else follows from it.
+> [!TLDR]
+> A bring-your-own-bucket DAM changes the ownership boundary: application code manages assets, while the customer controls object storage, encryption policy, lifecycle, and raw cost. S3 compatibility helps only when drivers declare and test their real capabilities, because restore semantics, checksums, Object Lock, and KMS support vary. Content-addressed keys and customer-managed encryption reduce migration and integrity risk, but they do not remove the need to operate Postgres, policies, backups, and the media pipeline.
 
-## What "S3-compatible" actually buys
+"Your bucket" is easy to reduce to a procurement checkbox. The interesting consequences are technical. Object identity can be derived rather than assigned. Storage-class policy can be evaluated in the customer's cost context. Encryption can be enforced by the bucket rather than promised by an application setting. Stopping the application does not initiate a bulk transfer because the objects remain in the account where they were written.
 
-Not portability in the abstract. Four concrete properties.
+## Ownership changes the failure boundary
 
-**The bytes are already where they will stay.** If you stop running the software tomorrow, nothing moves.
-The objects sit in the bucket they have always sat in, under keys derived from their content hashes, in
-the account you already had. There is no export step, because there is nothing to export from.
+In a vendor-owned storage model, the DAM and the bytes are one service boundary. Export, network egress, lifecycle configuration, storage pricing, and encryption evidence all pass through that boundary.
 
-**You choose the storage class, and the rate.** Standard, infrequent access, Glacier, Deep Archive — and
-at whatever rate your organisation has negotiated with its cloud provider, which for anyone at scale is
-not list price. A DAM that resells you storage cannot pass that through. One that uses your bucket
-cannot help but.
+In dam.rs, Postgres and the object store remain distinct systems under the operator's control. The application stores metadata, jobs, rights, and placements in Postgres. The bucket stores originals, proxies, derivatives, and detached manifests. A private delivery path authorises short-lived access to object bytes.
 
-**Egress is between you and your provider.** Serving a million thumbnails is a line on a cloud bill you
-already understand and already have commitments against. It is not a metered feature of the DAM, which
-means the system doing its job is not a reason for the invoice to grow.
+```press-diagram
+{"type":"stack","title":"Storage ownership boundary","layers":[{"label":"clients","nodes":[{"label":"web app"},{"label":"connector"}]},{"label":"dam.rs","nodes":[{"label":"API"},{"label":"worker"},{"label":"Postgres"}]},{"label":"your account","nodes":[{"label":"object store"},{"label":"KMS"},{"label":"billing"}]}],"footer":"The application coordinates storage it does not own on the customer's behalf."}
+```
 
-**"S3-compatible" means more than AWS.** The same protocol is spoken by MinIO, Ceph, SeaweedFS, Backblaze
-B2, Cloudflare R2, Wasabi and every major cloud's object store. That covers on-premise for the
-organisations that require it, and it covers the ones whose egress economics are the entire reason they
-are shopping. We develop against SeaweedFS locally and test against real AWS, which keeps us honest about
-the difference between the protocol and any one implementation of it.
+This does not eliminate coupling. The schema contains object keys, checksums, classes, and restore state. A replacement application must understand or migrate that metadata. The difference is that no export API stands between the operator and the bytes.
 
-## Capabilities, declared rather than assumed
+## S3-compatible is a protocol claim, not a capability claim
 
-Writing against "S3-compatible" as though it were one thing is how you ship something that works on AWS
-and breaks on MinIO.
+The S3 API has become a common object-storage interface, but implementations do not behave identically. AWS S3, MinIO, Ceph RGW, SeaweedFS, Cloudflare R2, Backblaze B2, and Wasabi expose overlapping S3-shaped APIs. Their support for individual operations and headers differs, sometimes intentionally.
 
-The backends genuinely differ. Object Lock, versioning, storage classes, server-side checksums on HEAD,
-restore semantics — each is present in some implementations and absent in others. A driver that assumes
-them produces failures that look like corruption. A driver that assumes their absence gives up features
-that are available.
+Several features matter to a DAM:
 
-So each driver declares what it supports, and the layers above ask rather than guess. This shows up in
-small honest places: the integrity scrub compares server-side checksums *where the backend reports
-them*, and falls back to size where it does not, because SeaweedFS does not return a checksum on HEAD
-and pretending otherwise would mean either a false alarm on every object or a check that silently does
-nothing.
+- storage classes and lifecycle transitions;
+- `RestoreObject` and restore status headers;
+- bucket versioning;
+- Object Lock, legal hold, and retention;
+- presigned reads and writes;
+- ranged `GET`;
+- server-side checksums returned by `HEAD`;
+- provider-specific encryption integration.
 
-The same discipline applies to the archival tests. The local server can prove the wire protocol and
-object lock. It cannot prove a real `RestoreObject` against Deep Archive, and it says so by *skipping*
-those cases rather than passing them. Which is why the AWS conformance run asserts that the skip count
-is zero — against real S3, a skip would mean our capability detection had decided a backend could not do
-something it demonstrably can.
+Treating "S3-compatible" as one boolean would force two bad options. The driver could assume AWS behaviour and break against a gateway, or target the smallest common subset and leave useful features unused.
 
-## Bring your own key
+dam.rs makes capabilities data:
 
-Encryption at rest with a customer-managed key is usually where a hosted DAM's story gets vague. If the
-vendor holds the key, "encrypted at rest" describes their operational hygiene, not your control. The
-distinction becomes concrete during a subpoena, a breach notification, or an exit.
+```rust
+pub struct Capabilities {
+    pub storage_classes: bool,
+    pub restore: bool,
+    pub versioning: bool,
+    pub object_lock: bool,
+    pub presigned_urls: bool,
+    pub ranged_get: bool,
+    pub server_checksums: bool,
+}
+```
 
-Because the bucket is yours, SSE-KMS is a property of the objects rather than a feature the DAM has to
-grant. Every object-creating call carries the KMS key when one is configured — and "every" is doing real
-work in that sentence. We have seven distinct code paths that create objects: simple puts, multipart
-uploads, part uploads, completions, server-side copies for tiering, and the rest. Six out of seven is
-not encryption at rest. It is encryption at rest with a hole in it, and the hole is wherever the least
-common code path is.
+The shared conformance suite verifies each claim. Under-claiming produces explicit skips. Over-claiming fails. SeaweedFS, for example, can echo a storage-class header without changing retrieval behaviour. dam.rs does not count that as storage-class support. It also does not return a stored checksum on `HEAD`, so the driver declares `server_checksums: false` rather than manufacturing one.
 
-That one is enforced by a test that reads the driver's own source and asserts the count, which is an
-unusual thing to do and the right response to a mistake that is invisible in review.
+That honesty lets higher layers choose a safe fallback. The integrity scrub compares a server checksum only when one exists. The archive UI appears only when restore semantics are available. Object Lock cannot be asserted from a local fake that never asks a server to refuse deletion.
 
-## Content addressing, and what it removes
+> [!NOTE]
+> API compatibility is useful because it narrows the adapter surface. It is not evidence that operational semantics match. A conformance report belongs beside every driver name.
 
-Objects are stored under keys derived from the BLAKE3 hash of their content, under a per-tenant prefix.
+## Keys are derived from content and tenant
 
-This is a small decision with a long tail of consequences:
+Originals use a validated key built from the tenant UUID and the BLAKE3 digest of the bytes:
 
-**Deduplication is free.** The same file uploaded twice is one object. In a library with campaign assets
-that circulate between teams, this is not a marginal saving.
+```rust
+pub fn original(tenant: Uuid, blake3_hex: &str) -> Result<Self, Error> {
+    let hash = Self::validated_hash(blake3_hex)?;
+    Self::new(format!(
+        "{tenant}/o/{}/{}/{hash}",
+        &hash[0..2],
+        &hash[2..4]
+    ))
+}
+```
 
-**A delivery URL cannot name an object the hash does not account for.** The key is derived rather than
-stored, so there is no field to tamper with that would point at different bytes.
+A master therefore lands at a shape like:
 
-**Integrity checking has something to check against.** A scrub can ask whether the object under this key
-is the size and shape the database claims — which is the subject of the next post, and turned out to
-matter more than we expected.
+```text
+8f3d3d9e-0e53-4b38-8706-5191f8ef90cd/o/64/37/6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85
+```
 
-**Tenant isolation is structural.** Every key sits under its tenant's prefix, built by a function that
-takes a tenant id rather than a string. A caller passing a prefix would be one concatenation away from
-naming another tenant's object; a caller passing a tenant id cannot be. When we load-tested five tenants
-we verified all 2,558 object keys sat under the right prefix, and the reason that check was cheap to
-write is that there was only one place keys are built.
+The two digest-prefix directories keep listings manageable. The tenant prefix is the isolation boundary. Identical bytes uploaded twice inside one tenant resolve to one original object. Identical bytes in two tenants remain in two prefixes, which intentionally trades cross-tenant deduplication for isolation and simpler deletion accounting.
 
-## The part we had to prove rather than assert
+Content addressing has several useful consequences.
 
-An architecture argument is easy to write and easy to believe. The archival path in particular is where
-"S3-compatible" claims tend to outrun what has actually been tested, because testing it properly means
-waiting on real restores and paying for real storage.
+### A duplicate upload can skip the transfer
 
-So the conformance suite runs against real AWS: twenty cases, none skipped, and a Glacier restore that
-completed in **76.7 seconds** and returned the original bytes.
+Once the stream has been hashed, the application can `HEAD` the derived key. If an object exists at the expected size, the upload is already present. A repeated upload links to the existing bytes instead of creating another opaque key.
 
-Getting there involved discovering that the nightly job meant to be running this had been green for
-months while executing nothing — first because it named a Cargo feature that did not exist, and then,
-after that was fixed, because a missing-credentials check exited early and logged a warning instead of
-failing. Both times the job reported success. A warning in a scheduled job nobody opens is
-indistinguishable from coverage, and the fix is that absent credentials now fail the run rather than
-skip it.
+Presence alone is not enough. If the object at that digest-derived key has the wrong size, dam.rs treats it as corruption and rewrites it. Calling it a duplicate would make the corruption permanent because every later upload of the correct bytes would also skip the write.
 
-We mention it because it is the most transferable lesson in this series: **a test suite's silence is
-only meaningful if you have checked that it can speak.** Ours could not, twice, for months.
+### Object names do not come from callers
 
-## Where this is the wrong choice
+A client cannot select another tenant's prefix or smuggle `..` into a path. `Key` validates every constructed object name and rejects leading slashes, empty segments, dot segments, control characters, and lengths beyond the S3 limit.
 
-Self-hosting has real costs and the argument is weaker if we skip them.
+### Streaming keeps large masters bounded
 
-You run Postgres, and you are responsible for backing it up and for the restore drill actually working.
-You hold the KMS key, which means losing it is your problem and no support ticket recovers from it. You
-patch things. Somebody is on call, and that somebody is more expensive per hour than a seat.
+The digest is computed while bytes flow. A 200 GB video does not need a 200 GB memory buffer. Streamed uploads first land under a tenant-scoped staging key because the final digest is unknown, then move through server-side copy once hashing completes. Objects above S3's single-copy limit use a multipart copy plan.
 
-For a team of five with a few thousand assets and no archival pressure, a hosted product is very likely
-the correct decision and the arithmetic will say so plainly.
+Content addressing is not a backup. A valid key can still point to a missing object if the database and bucket diverge. It provides stable identity and a checkable expectation; the integrity scrub still has to ask the store whether reality agrees.
 
-The architecture starts paying when the library is large enough that storage class matters, when
-retention obligations mean assets accumulate faster than they can be deleted, when rights enforcement
-has to be real rather than displayed, or when the exit cost of the current system has become the reason
-nobody will discuss changing it.
+## Customer-managed encryption needs two layers
 
-That last one is the tell. If the honest reason for staying on a platform is what leaving would cost,
-the pricing model has finished doing its work.
+The deployment setting `DAMRS_STORAGE__SSE_KMS_KEY_ID` makes dam.rs attach a customer-managed AWS KMS key to object-creating requests. Both `damd` and `dam-worker` need the same setting because workers promote uploads, generate derivatives, and transition storage classes.
 
----
+There are seven object-creating call sites across ordinary `PUT`, copy, lifecycle copy, multipart creation, promotion, resumable upload, and presigned upload. Missing one does not necessarily cause an error. The object can land under the bucket default and look healthy until an encryption audit.
 
-*Previous: [The green badge is not permission](03-the-green-badge-is-not-permission.md)*
-*Next: [The library said the bytes were there and only the download
-disagreed](05-the-library-said-the-bytes-were-there.md) — three things a week of load testing found, and
-what they have in common.*
+The SDK integration centralises the two required headers across the three builder types that create objects:
+
+```rust
+Some(key) => self
+    .server_side_encryption(
+        aws_sdk_s3::types::ServerSideEncryption::AwsKms
+    )
+    .ssekms_key_id(key),
+None => self,
+```
+
+A structural test scans each object-creating builder chain for `.encrypted_with(...)` and asserts that exactly seven current call sites were examined. The count prevents a refactor that makes the scanner match nothing from passing vacuously.
+
+That application check still cannot enforce a browser's presigned upload. The browser executes the `PUT` and can omit signed encryption headers unless the signature requires them. Even then, bucket policy is the final enforcement boundary. A valid deployment policy refuses writes that do not name the expected key:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyWrongKmsKey",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::example-dam-bucket/*",
+      "Condition": {
+        "StringNotEquals": {
+          "s3:x-amz-server-side-encryption-aws-kms-key-id": "arn:aws:kms:eu-west-2:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+        }
+      }
+    }
+  ]
+}
+```
+
+The KMS key policy also needs `kms:GenerateDataKey*` for writes and `kms:Decrypt` for reads. A deployment that grants only decrypt can serve its existing library and fail every new upload, which is a particularly unhelpful form of read-only mode.
+
+## Bring your own key is narrower than per-tenant keying
+
+The current implementation applies one KMS key to one dam.rs deployment. It is useful for a customer-operated single-tenant deployment and for an organisation that wants its own revocation boundary.
+
+It is not yet a distinct key per tenant inside a shared process. The control plane has tenant-scoped encryption-key references, and storage pools belong to tenants, but `damd` currently constructs one store from deployment configuration. Per-pool store resolution must exist before a request can choose a tenant-specific KMS key safely.
+
+Naming that limitation matters. "BYOK" can describe several different controls:
+
+| Control | Current state |
+|---|---|
+| Customer selects deployment KMS key | Implemented |
+| Bucket policy enforces that key | Deployment responsibility |
+| Separate key per tenant in one process | Not implemented |
+| Customer can revoke key and make objects unreadable | Provided by KMS and policy |
+| Application-layer encryption independent of provider | Deliberately not built |
+
+We rejected application-layer encryption because it would require designing key envelopes, rotation, range-read behaviour, multipart semantics, and recovery on top of mature provider mechanisms. That would make dam.rs the cryptographic storage product it is trying not to become.
+
+## The bucket does not remove exit work
+
+Owning storage removes the largest physical export, but it does not make another DAM understand the library automatically.
+
+The replacement still needs:
+
+- Postgres data or a semantic export;
+- the relationship between asset IDs, versions, and content hashes;
+- transformation recipes for derivatives;
+- rights and provenance records;
+- integration URL migration;
+- a delivery service that honours private bucket policy;
+- a plan for cold objects that need restore before validation or transfer.
+
+The key advantage is leverage, not magic. The organisation can perform that work without first asking a vendor to release or transmit the masters.
+
+The same applies to cost. A customer-owned bucket exposes request, storage, retrieval, and network charges directly. It does not make them disappear. Bad lifecycle policy can be expensive. A public bucket can be catastrophic. A lost KMS key is not recoverable through a DAM support ticket.
+
+## Proving the abstraction at both ends
+
+Local development uses SeaweedFS because it is quick and exercises the S3 wire path, multipart upload, versioning, and Object Lock behaviour available in that driver. Pure state-machine tests use a fake store with a controllable clock.
+
+Archive completion needs real AWS. The manual conformance run creates an isolated bucket, exercises the supported operations, waits for a Glacier restore, verifies that the storage class remains `GLACIER`, and reads the original bytes back. One recorded run passed 20 cases with zero skips and completed the restore in about 76.7 seconds.
+
+Those layers prove different things:
+
+| Test layer | What it proves | What it cannot prove |
+|---|---|---|
+| Fake store | State transitions and time boundaries | Provider behaviour |
+| Local S3 gateway | SDK requests and supported gateway semantics | AWS archive retrieval |
+| Real AWS | Declared S3 capabilities and restore completion | Every compatible provider |
+
+No single green suite licenses the phrase "works everywhere." Each backend earns only the capabilities its own conformance run demonstrates.
+
+## Where this is the wrong architecture
+
+For a small team with a few thousand assets, ordinary rights needs, and nobody responsible for infrastructure, a hosted service is likely the better choice. Running this stack means operating Postgres backups and restore drills, object-store policy, KMS rotation, worker queues, media tools, observability, and upgrades.
+
+Customer ownership also moves incident responsibility. A bucket policy typo, expired cloud identity, region outage, or revoked key is now your outage. Support can explain the code path; it cannot override the account boundary you deliberately chose.
+
+The architecture starts earning its weight when storage class materially affects cost, data residency is contractual, rights must be enforced at delivery, the organisation already operates cloud infrastructure, or migration risk has become a strategic concern.
+
+## FAQ
+
+### Does S3-compatible mean every feature works on every object store?
+
+No. It means a backend implements some portion of the S3 API. Storage classes, restore, Object Lock, versioning, checksums, ranged reads, and encryption integrations must be declared and tested separately.
+
+### Does content addressing deduplicate assets across tenants?
+
+No. The tenant UUID is part of the object key, so deduplication occurs within a tenant. That preserves isolation and keeps one tenant's deletion or billing independent of another's identical bytes.
+
+### Is setting an SSE-KMS key enough to guarantee BYOK encryption?
+
+No. Application requests must carry the key, presigned clients must send the required headers, and bucket policy must deny writes under any other key. The policy is the enforcement boundary.
+
+### Can I leave dam.rs without exporting the bucket?
+
+Yes, because the objects already live in the operator's bucket. You still need a semantic metadata migration and integration cutover, but the masters do not need to be bought back or transferred out of a vendor-owned store. Ownership does not erase migration work; it removes the party that can prevent you from starting it.

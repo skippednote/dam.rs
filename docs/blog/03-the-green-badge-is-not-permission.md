@@ -1,157 +1,210 @@
 # The green badge is not permission
 
-Most DAM platforms will show you an asset's rights status. A green tick, a label, a licence expiry date
-in the sidebar. This is genuinely useful and it is not the same thing as enforcement, and the gap between
-those two is where organisations get sued.
+The rights screen was already green when I found the hole. The asset showed a valid licence, the intended territory matched, and the download control looked correct. Then I followed the URL instead of the interface and reached the more important question: what recomputes that answer when the licence changes after the URL has been issued?
 
-The question worth asking of any system that displays rights: **what happens if the person ignores it?**
+> [!TLDR]
+> Digital asset rights enforcement must happen at the delivery boundary, not only in the user interface or when a signed URL is minted. A signature proves that a request was issued intact; it does not prove the asset is still licensed for this channel, territory, identity, tenant, or share. Re-evaluating current rights before every short-lived object-store redirect makes expiry and revocation apply to URLs already in circulation.
 
-In a system where rights are metadata, the answer is that they download the file. The badge was advice.
-The download button did not consult it.
+A rights badge is valuable communication. It tells a person whether the system expects a use to be allowed and gives them a place to inspect the reason. It becomes dangerous only when the architecture treats the badge as the control.
 
-## Where the check has to happen
+The simplest test is blunt: if somebody ignores the badge and calls the download route directly, what stops the bytes?
 
-There is exactly one moment that matters, and it is not the moment the badge renders. It is the moment
-bytes leave the building.
+## Every upstream check can be bypassed
 
-Everything else is upstream of the decision and can be bypassed:
+Rights controls are often added where they are easiest to see. Those locations are useful, but none is sufficient on its own.
 
-- **A badge in the detail panel** is bypassed by not looking at it.
-- **A disabled download button** is bypassed by anyone who can construct the URL it would have called,
-  which in most systems is anyone who has seen one working download URL and can pattern-match.
-- **A permission check in the API handler** is closer, but only covers the paths that remembered to call
-  it. A DAM has many ways to get bytes out: direct download, a share link, a portal, a CMS render, an
-  export, a bulk zip, an integration pulling a rendition. Each of those is a path someone has to
-  remember to guard.
-- **A signed URL with no rights context** is the one that looks safest and is the most quietly broken.
-  It proves the URL was issued by the system. It says nothing about whether the licence was still valid
-  when somebody actually clicked it — and a signed URL with a 24-hour life is a 24-hour window in which
-  a rights withdrawal has not taken effect.
+### A badge is advice
 
-The design conclusion we reached is that there should be **one chokepoint** through which every byte
-leaves, and the rights verdict is computed *there*, at request time, rather than being carried in the
-request.
+A person can miss it, misunderstand it, or use another client. An API consumer may never render it. The colour cannot be the enforcement boundary because colour does not participate in delivery.
 
-## Carried versus computed
+### A disabled button protects one interface
 
-This is the distinction the whole design turns on, and it is subtle enough to be worth stating slowly.
+If the underlying route remains callable, disabling the button changes the page rather than the permission. A user who has seen one delivery URL may also understand enough of its shape to construct another.
 
-A **carried** verdict is one decided when the URL was minted and baked into the token. It is fast, it is
-cacheable, and it is wrong the moment anything changes. If a licence lapses at midnight, every URL
-issued before midnight continues to work until it expires on its own. "Revoke" means "revoke,
-eventually."
+### A handler-level check protects one route
 
-A **computed** verdict is one derived at the moment of delivery from the current state of the rights
-tables. It costs an indexed read per delivery. It has the property that a licence withdrawn at 11:59
-stops working at 11:59, for URLs already in circulation.
+A DAM has many ways to release bytes: a direct download, a share, a portal, a bulk package, a CMS rendition, a connector, or a transformed preview. If each route remembers to call a policy helper, the real policy is the set of routes whose authors remembered.
 
-Everything a governed library promises about rights — expiry, withdrawal, territory restrictions,
-channel restrictions, embargo — depends on the second reading. A rights system built on carried verdicts
-promises things it structurally cannot deliver, and the failure is silent: nothing errors, the asset
-just keeps being served after it should have stopped.
+### A signed URL can preserve the wrong decision
 
-## What the token can and cannot say
+A signed token proves that the signed bytes were not altered. If the token contains `allowed=true`, the signature preserves a verdict made in the past. A licence withdrawn one minute later remains effectively valid until that token expires.
 
-If the verdict is computed at delivery, what is the token even for? It establishes the *terms of the
-request*, and this turns out to be most of the security surface.
+The safer interpretation is narrower: a signed URL is permission to attempt delivery under specific terms. Entitlement is computed from live state when the attempt arrives.
 
-A signed delivery URL in our design carries: the asset, the tenant, what the URL is for, the transform,
-the distribution channel, the territory, the identity it was issued to, the share link it came through,
-and the expiry. All of it inside the signature.
+## One authorisation path, then a short redirect
 
-The reason each one is signed is a specific attack:
+dam.rs routes downloads and renders through one delivery handler. The object bucket is private. After the handler verifies the request and evaluates current policy, it returns a presigned object-store URL with a 30-second lifetime. The application does not proxy large media bodies, but it does control the only supported path to a bearer credential that can fetch them.
 
-**Transform.** If the transform is a query parameter outside the signature, a thumbnail URL becomes a
-request for the master by editing one string. This is the most obvious attack on a delivery URL and the
-cheapest to get wrong.
+```press-diagram
+{"type":"sequence","title":"Delivery decision","actors":["client","delivery","Postgres","object store"],"messages":[{"from":0,"to":1,"label":"signed claim"},{"from":1,"to":1,"label":"verify HMAC"},{"from":1,"to":2,"label":"load rights"},{"from":2,"to":1,"label":"current terms","reply":true},{"from":1,"to":3,"label":"presign GET"},{"from":3,"to":1,"label":"30s URL","reply":true},{"from":1,"to":0,"label":"302 redirect","reply":true},{"from":0,"to":3,"label":"GET bytes"}]}
+```
 
-**Channel and territory.** These select *which licence terms apply*. A licence may permit editorial use
-and forbid advertising, or permit the UK and not the US. If those are editable, the caller picks the
-terms they are judged under, which makes the rights engine decorative.
+The order is deliberate:
 
-**Purpose.** We distinguish an internal preview from a distribution. Both go through the same
-chokepoint, but only one is a distribution and only one runs the full rights check — an internal preview
-of a proxy, to a named signed-in identity, is not a publication. If purpose were a query parameter,
-anyone could downgrade a distribution URL to a preview and skip the rights check entirely.
+1. Verify the signature and token format.
+2. Refuse a token for another tenant.
+3. Re-check any share or connector state.
+4. Re-check identity access.
+5. Evaluate current rights for the signed channel and territory.
+6. Resolve the exact signed transform.
+7. Issue the short object-store redirect.
 
-**Share link.** Carried and re-checked, which is what makes revoking a share take effect on URLs it has
-already issued. Without it, revocation waits for every outstanding token to expire.
+Checking rights before resolving the rendition also avoids an existence oracle. A caller with no entitlement should not learn whether a particular derivative exists by observing a different error.
 
-**Tenant.** This one we got wrong initially and it is instructive, so it gets the next section.
+The 30-second redirect is a concession, not a proof of perfect revocation. Once issued, that object-store URL is a bearer credential the application cannot call back. The window is sized for a browser to follow a redirect rather than for a person to reuse it later. Immediate revocation is therefore bounded by those seconds, while the longer-lived dam.rs token is re-evaluated on every use.
 
-## The tenant we forgot to sign
+## Carried terms, computed verdict
 
-Our delivery claim carried asset, transform, channel, territory, identity, share link and expiry — and
-no tenant. The delivery process resolved which tenant's library to look in from its own configuration.
+The distinction between carried and computed data is the core of the design.
 
-For a single-tenant deployment that is fine and it is what we shipped. The bug is what it permits when
-two deployments share a signing key, which is not exotic at all: a staging environment restored from a
-production backup, a disaster-recovery site, a second region.
+The token carries facts about the request:
 
-In that situation a token minted by one deployment verifies perfectly against the other's keyring —
-same key, valid signature, unexpired. And because the token named no tenant, the receiving process
-resolved the asset id against *its own* library. Either you get a 404 for entirely the wrong reason, or,
-if the two libraries happen to share an asset id, you serve the wrong tenant's asset with a valid
-signature and a clean audit trail.
+- tenant and asset identity;
+- distribution or internal-preview purpose;
+- requested transform;
+- channel and territory;
+- user identity, when present;
+- share-link identity, when present;
+- expiry and signing-key identity.
 
-We added the tenant to the claim and a check that it matches. The test we wrote for it asserts a 404;
-with the check removed it returns **302 and serves the file**, which is how we know the test is worth
-having.
+The token does not carry the effective rights verdict. That verdict depends on mutable records: licences, scopes, releases, legal holds, usage caps, membership, share revocation, and time.
 
-Two details worth keeping from that change:
+The hardened claim type makes the boundary visible:
 
-The tenant goes **first in the signed payload**, before the asset id, because every field after it is
-meaningless until you know which library you are in. Two tenants can hold assets with the same
-identifier.
+```rust
+pub struct DeliveryClaim {
+    pub tenant_id: Uuid,
+    pub asset_id: Uuid,
+    pub purpose: Purpose,
+    pub transform: String,
+    pub channel: String,
+    pub territory: String,
+    pub identity_id: Option<Uuid>,
+    pub expires_at: DateTime<Utc>,
+    pub share_link_id: Option<Uuid>,
+    pub key_id: String,
+}
+```
 
-And the token format version had to be bumped, with old tokens **refused rather than reinterpreted**.
-The payload is length-prefixed, so a token from the previous format read under the new rules would land
-its asset id where the tenant is expected and shift every field after it — producing a plausible tenant
-it was never issued for, with a signature that covers the bytes rather than their meaning. A signature
-proves nobody edited the bytes. It does not prove you are reading them the way the signer wrote them.
-That is what the version byte is for.
+Each signed field closes a concrete edit.
 
-## Refusing well
+### Transform prevents thumbnail escalation
 
-Once rights are enforced rather than displayed, the interesting design question becomes what a refusal
-looks like.
+If `transform` sits outside the signature, a caller can change `thumb-256` to `original`. The signature still verifies because it never covered the part that selects the bytes.
 
-The instinct is a flat 404 for everything, on the grounds that any detail is a hint. We do that for
-forgery — a bad signature, an expired token, a revoked share and a token for the wrong tenant all
-produce the same flat refusal, because distinguishing them tells an attacker which part of their attempt
-to fix.
+### Channel and territory select the contract terms
 
-But a rights refusal is different, and treating it like forgery is a failure of a different kind. The
-person being refused is usually an employee who is allowed to see the asset, is looking at it right now,
-and wants to use it. Telling them "not found" for an asset visibly on their screen is not security. It
-is a support ticket, and an accurate one.
+A licence can allow editorial use and refuse advertising, or allow one market and exclude another. Leaving those fields editable lets the caller select the rule under which the request will be judged.
 
-So a rights denial says what was denied and why — no licence, expired licence, wrong channel, wrong
-territory, embargo not yet lifted — with the specific reason codes. The distinction we settled on: the
-system collapses answers about *existence* into one refusal, because the gap between "you may not see
-it" and "it does not exist" is an existence oracle. It does not collapse answers about *terms*, because
-the caller has already been shown the asset and what is being withheld is a verdict they can act on.
+### Purpose prevents a policy downgrade
 
-## What this costs
+dam.rs distinguishes distribution from an internal preview. A signed-in tenant member may need a small proxy in the asset grid before a licence has been attached. That is internal cataloguing, not publication.
 
-An indexed read per delivery, on a request that is already doing object-store I/O. In practice it does
-not register.
+The exception is narrow: internal preview requires a named identity, refuses share links, and permits only known proxy-class transforms. It can never request the original. Purpose is signed so a distribution request cannot be edited into `InternalPreview` to skip the rights verdict.
 
-What it costs in design terms is more interesting: every path that serves bytes has to go through the
-one chokepoint, with no exceptions for the convenient case. Every time somebody adds a feature that
-needs to hand a file to a person — an export, a zip, a new portal type, a connector — the honest
-implementation is to route it through the same door rather than reach past it. That is a discipline, and
-the only thing that keeps it is having exactly one place where bytes leave, so that reaching past it is
-visible in review.
+### Share identity makes revocation reach issued URLs
 
-The payoff is being able to answer the question that started this post. What happens if someone ignores
-the badge?
+Revoking a share page is not enough if that page has already minted delivery tokens. Carrying the share ID lets the delivery handler look up its current state. Revocation then affects outstanding tokens instead of waiting for their own expiry.
 
-They get a 403 with the reason.
+### Tenant identity fixes the namespace
 
----
+Asset UUIDs are meaningful only inside a tenant. A token without a tenant relies on deployment configuration to decide which schema and object prefix to use. Two deployments sharing a signing key, such as a staging environment restored from production or a disaster-recovery site, can then accept each other's valid tokens.
 
-*Previous: [Cold storage you can't search is a filing cabinet in a
-warehouse](02-cold-storage-you-cant-search.md)*
-*Next: [Your bucket, your keys, your bill](04-your-bucket-your-keys-your-bill.md) — what changes when
-the DAM is a program rather than a landlord.*
+If the same asset UUID exists in both libraries, the signature remains valid while the receiving deployment resolves the wrong tenant's bytes. The clean audit trail is part of the problem: nothing looks forged.
+
+The tenant now appears in the canonical signed payload before the asset ID and is compared with the tenant served by the delivery process. A mutation test removes that comparison; the expected 404 becomes a 302 and the file is served. That is the kind of test worth keeping because it demonstrates the exploit, not only the intended branch.
+
+## The signature format has to preserve meaning
+
+Signing the right fields is insufficient if two different claims can serialize to the same byte sequence.
+
+A delimiter format can be ambiguous. If fields are simply joined with `|`, a value containing the delimiter or a shifted boundary can make distinct claims render identically. The dam.rs token uses a version byte and length-prefixed fields. Distinct field sequences therefore produce distinct canonical payloads.
+
+Token versions are refused rather than guessed. Adding tenant identity changed the meaning and layout of every field after it. Reading an old token under the new layout could interpret asset bytes as a tenant UUID and shift the remainder into plausible but false values. The signature would still match the byte string. It cannot tell the parser what those bytes meant when signed.
+
+That is why a format version is a security field. When the layout changes, old tokens fail as `WrongVersion`. The maximum token lifetime is 24 hours, so the compatibility cost is bounded and smaller than supporting a layout that lacks a new security property.
+
+HMAC comparison is constant-time through the `subtle` crate. The claimed key ID is used only to select candidate verification keys; it confers no authority before the MAC matches. A keyring retains retired keys long enough to verify outstanding tokens, while new tokens use the first active key.
+
+## Rights are an intersection, not a friendly merge
+
+An asset may have several licences and releases. Combining them with a union would let one permissive record erase restrictions from another. dam.rs takes the intersection: the most restrictive applicable term wins.
+
+The evaluator handles several rules that are easy to state incorrectly:
+
+- Unknown rights deny distribution.
+- An excluded territory beats a `WORLD` inclusion.
+- A licence with no scopes grants nothing.
+- A scope with an empty channel list means all channels.
+- Legal hold blocks distribution as well as deletion.
+- An expiring licence is a distinct verdict so renewal can happen before denial.
+- Download and impression caps are evaluated against recorded use.
+
+The exclusion order appears directly in code:
+
+```rust
+fn covers_territory(&self, territory: &str) -> bool {
+    if self.excluded_territories
+        .iter()
+        .any(|t| t.eq_ignore_ascii_case(territory))
+    {
+        return false;
+    }
+    if territory.eq_ignore_ascii_case(WORLD)
+        && !self.excluded_territories.is_empty()
+    {
+        return false;
+    }
+    self.territories.iter().any(|t| {
+        t.eq_ignore_ascii_case(WORLD)
+            || t.eq_ignore_ascii_case(territory)
+    })
+}
+```
+
+The second condition matters. A caller asking for `WORLD` cannot be satisfied by "worldwide except China." Checking only whether the inclusion list contains `WORLD` would turn an explicit exclusion into permission.
+
+## Refuse forgery and policy differently
+
+A flat 404 is useful for malformed, expired, bad-signature, wrong-tenant, and revoked-share tokens. Telling an unauthenticated caller which component failed helps them refine the next attempt and may reveal whether an asset or share exists.
+
+A rights denial is different. The caller is often an authenticated employee who can see the asset and needs to understand why distribution is blocked. Returning "not found" for an asset visible in the adjacent panel does not protect anything. It produces a support request.
+
+dam.rs therefore returns a 403 with machine-readable rights state and reason codes such as `no_license`, `legal_hold`, expired licence, excluded territory, or disallowed channel. The UI can explain what needs correction without parsing prose.
+
+The rule is:
+
+- Collapse distinctions about existence until the caller is established.
+- Explain distinctions about terms to a caller already entitled to inspect the asset.
+
+That division also helps monitoring. A rise in signature refusals suggests scanning, clock skew, or key rotation trouble. A rise in rights denials suggests expired contracts, missing releases, or a client asking for the wrong intended use. Combining them into one status would hide both diagnoses.
+
+## What this design costs
+
+Every delivery performs indexed reads and policy evaluation before object-store I/O. Rights caches can reduce the work, but invalidation must fire on every input that changes the verdict. A stale cache is simply a carried verdict under another name.
+
+The single delivery boundary also demands discipline. A future bulk exporter cannot read object keys directly because doing so is convenient. Connectors cannot mint unrestricted S3 URLs. The code review question for any feature that releases media is "where is its delivery claim?"
+
+The internal-preview exception needs continued pressure. New transforms must not automatically become preview-safe. Anonymous access must remain distribution. A tenant-defined conversion may be perfectly small and still encode sensitive or full-resolution material, so only built-in profiles are accepted.
+
+Finally, this is rights enforcement software, not legal interpretation. The system can apply terms it has been given. It cannot determine whether a contract was entered correctly, whether a jurisdiction recognises it, or whether the requested channel vocabulary matches counsel's intent. The data model makes those decisions enforceable; it does not make them for the organisation.
+
+## FAQ
+
+### Is a signed URL proof that an asset may be downloaded?
+
+No. It proves that the signed request was issued and not altered. Current licence, release, access, share, tenant, and hold state still need evaluation when the URL is used.
+
+### Where should DAM rights enforcement happen?
+
+At the point that authorises bytes to leave private storage. UI badges and issue-time checks should provide early feedback, but the delivery boundary must recompute the verdict.
+
+### How can rights revocation affect an existing URL?
+
+The long-lived token carries request terms rather than an `allowed` verdict. Each use loads current rights and share state, so a lapse, withdrawal, or legal hold changes the response without changing the token.
+
+### Why allow previews of an unlicensed asset?
+
+A freshly uploaded or migrated asset may need internal cataloguing before rights data is complete. A small, identity-bound, non-shareable proxy can support that work without permitting distribution of the original. The exception stays safe only because its purpose and transform are signed and narrowly constrained.
+
+If ignoring the green badge still reaches the master, the product has a rights interface. It does not yet have rights enforcement.
