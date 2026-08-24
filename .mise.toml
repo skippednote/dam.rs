@@ -1,5 +1,11 @@
 [tools]
-rust = "1.94.0"          # edition 2024 needs >= 1.85; pinned to what's installed
+# `components` is not decoration: mise installs the toolchain with rustup's minimal
+# profile, which has no `cargo-fmt` and no `cargo-clippy`. A laptop that already had
+# rustup does not notice — the components are there from some earlier install — and a
+# fresh CI runner fails with "'cargo-fmt' is not installed for the toolchain", which is
+# exactly how the lint job failed the first time it ran against this pin. Naming them
+# here fixes it in the one place the version already lives.
+rust = { version = "1.94.0", components = "rustfmt,clippy" }
 node = "24"              # for the Svelte app in web/
 pnpm = "10"
 # Media tools, via mise's conda backend rather than Homebrew.

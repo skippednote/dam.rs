@@ -27,6 +27,12 @@ jobs:
         with:
           install: true
           cache: true
+      # mise installs the toolchain with rustup's minimal profile, which carries neither
+      # `cargo-fmt` nor `cargo-clippy`. `.mise.toml` names them, and this makes the job
+      # independent of whether the runner's mise version honours that key — the version
+      # comes from the pin rather than being repeated here, and the command is a no-op
+      # once they are present.
+      - run: rustup component add --toolchain "$(mise current rust)" rustfmt clippy
       - uses: Swatinem/rust-cache@v2
       - run: mise exec -- cargo fmt --all --check
       - run: mise exec -- cargo clippy --workspace --all-targets --all-features -- -D warnings

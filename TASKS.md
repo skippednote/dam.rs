@@ -1459,6 +1459,19 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   synthetic `plate-*` assets, ten legal holds each, and a soft `asset_count` quota on `globex` left from the
   enforcement check. Say the word and it goes.
 
+- [ ] **The browser suite is flaky, and CI now says so rather than going red at random.** Three full
+  runs, no test failing in more than one: an unchanged `main` at two workers lost 4 of 410
+  (`archival`, `browse` twice, `people`); a branch touching no frontend code lost 3 (`browse`,
+  `collections`, `upload-profiles`); the same branch at `--workers=1` lost 1 (`browse`). Every failure
+  a `toBeVisible` or `toContainText` timeout in an unrelated spec, so it is timing and not a broken
+  assertion — and serialising helps without curing it, which rules out worker contention as the whole
+  explanation. `browse.e2e.ts` is in all three lists and is where to start.
+
+  `playwright.config.ts` now retries twice under CI, which converts a random red into a run labelled
+  **flaky**. That is instrumentation, not a fix: the debt is a suite whose failures cannot be told from
+  regressions on sight, and it wants one session spent on `browse.e2e.ts`'s waits rather than a
+  retry count.
+
 - [ ] **G22 Put the tenant in the delivery claim.** Delivery resolves its tenant from configuration, so one
   `damd` serves delivery for one tenant and a second tenant's URLs 404. Found by A.6; the design decision is
   in DECISIONS.md and always expected this. The claim is length-prefixed and versioned, so adding a field is a
