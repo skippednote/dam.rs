@@ -21,6 +21,7 @@ pub mod bulk_exec;
 pub mod derive;
 pub mod enrich;
 pub mod finalise;
+pub mod integrity;
 pub mod metering;
 pub mod similarity;
 pub mod tiering;
