@@ -1731,8 +1731,34 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   somebody's afternoon.
 
 - [ ] **G10·3 BYOK.** §19's own note says SSE-KMS with a per-tenant key, and that "building anything here
-  would be worse". That makes this a deployment and configuration slice rather than a code one, and it should
-  be written as such rather than grown into an encryption layer.
+  would be worse" — meaning an encryption layer of our own, not the wiring. Scoped by reading the code, so the
+  next session starts from this rather than rediscovering it.
+
+  **The per-tenant half is blocked, and not on effort.** `storage_pools` carries `tenant_id`, endpoint, bucket,
+  class and credentials — but `damd` builds one store from `cfg.storage`, never from a pool row
+  (`bins/damd/src/main.rs:130`). There is no per-pool store resolution, so there is nowhere to hang a
+  per-tenant key. A deployment-level CMK is achievable now and is worth having; a per-tenant one is a
+  consequence of pool resolution and should be scoped with it rather than faked alongside it.
+
+  **Seven paths create objects, and missing one is silent.** `put_object` (`s3.rs`), `copy_object` for the
+  small promote, `create_multipart_upload` for the large promote, the self-copy that performs a storage-class
+  transition, a second `create_multipart_upload`, the one in `multipart.rs` that real uploads go through, and
+  `presign_put`. An object written without the key is not an error — it is an object encrypted with the
+  provider's default key, indistinguishable from success until somebody audits the bucket. That makes
+  "remember to add it in seven places" the wrong design: it wants one applicator the write paths share, and a
+  test that asserts each path sets it. The AWS SDK's interceptors can capture a built request, which is how
+  that becomes testable without a KMS-capable backend — SeaweedFS and MinIO have none, so a conformance test
+  cannot verify it end to end.
+
+  **And the presigned path cannot be enforced by our code at all.** A presigned PUT is executed by the
+  browser; if it does not send the headers that were signed, the object lands under the default key. The only
+  thing that makes BYOK a guarantee rather than an intention there is a bucket policy denying
+  `s3:PutObject` without the expected `x-amz-server-side-encryption-aws-kms-key-id`. That belongs in
+  `docker/DEPLOY.md` as a required step, stated as required — a deployment guide that lists it as optional is
+  a deployment that believes it has BYOK and does not.
+
+  Not started rather than half-started: a security-relevant change across seven call sites is the wrong thing
+  to rush, and the honest scoping above is most of the value of an hour spent on it.
 
 ### M3d — the Drupal connector
 
