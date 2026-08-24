@@ -7,7 +7,7 @@
 //! chokepoint, exactly as the single-asset share and the order pickup do. That is the whole reason a portal is
 //! cheap to trust — there is no second answer to "may this person have these bytes".
 //!
-//! Acquia's four types (Standard, Brand, Video, Channel) are presentation. `kind` chooses a layout and, for
+//! The comparator's four portal types (Standard, Brand, Video, Channel) are presentation. `kind` chooses a layout and, for
 //! video and channel, a media-class filter over the same set. None of them changes who may see or take what, and
 //! the naming invites the opposite assumption strongly enough to be worth repeating here.
 //!

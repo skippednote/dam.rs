@@ -8,7 +8,7 @@
 --
 -- Why that matters: a tenant with one flat field set makes every field apply to every asset, so a video
 -- carries the print-resolution fields, an archive carries alt text, and "required" is unusable — a field
--- required for photographs cannot be required at all if a ZIP has to satisfy it too. Acquia's answer is a
+-- required for photographs cannot be required at all if a ZIP has to satisfy it too. The comparator's answer is a
 -- type per kind of asset (Image, Video, Document, Archives, plus custom ones), and an asset names its type.
 --
 -- Deliberately created empty. A tenant with no types behaves exactly as it did before this migration: every

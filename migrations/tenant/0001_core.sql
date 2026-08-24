@@ -34,10 +34,10 @@ CREATE TABLE field_defs (
     taxonomy_id     uuid,                    -- required when kind = taxonomy_ref
     multivalued     boolean NOT NULL DEFAULT false,
     required        boolean NOT NULL DEFAULT false,
-    read_only       boolean NOT NULL DEFAULT false,   -- Widen "read-only data"
+    read_only       boolean NOT NULL DEFAULT false,   -- the comparator's "read-only data"
     searchable      boolean NOT NULL DEFAULT true,    -- include in Tantivy text
     facetable       boolean NOT NULL DEFAULT false,   -- emit a Tantivy fast field
-    -- Widen search shorthand alias, e.g. `bra:` for brand. Deliberately optional:
+    -- The comparator's search shorthand alias, e.g. `bra:` for brand. Deliberately optional:
     -- aliases break when a display name changes, so metadata search prefers keys.
     search_alias    text,
     validation      jsonb NOT NULL DEFAULT '{}'::jsonb,  -- min/max/pattern/enum
@@ -237,7 +237,7 @@ CREATE TABLE roles (
     -- and "all access" cases cannot be confused.
     asset_group_ids     uuid[] NOT NULL DEFAULT '{}',
     all_asset_groups    boolean NOT NULL DEFAULT false,
-    -- Widen "time-based access".
+    -- The comparator's "time-based access".
     valid_from          timestamptz,
     valid_until         timestamptz,
     requires_eula       boolean NOT NULL DEFAULT false,

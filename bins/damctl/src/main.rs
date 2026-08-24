@@ -38,7 +38,7 @@ enum Command {
     ///
     /// Records arrive as **JSON lines on stdin** — one object of source fields per line — rather than through a
     /// built-in reader per vendor. That is §G7's architecture read the other way round: the mapping is the hard
-    /// part and it is source-agnostic, so anything that can emit JSON lines is a source. `jq` over a Widen API
+    /// part and it is source-agnostic, so anything that can emit JSON lines is a source. `jq` over an incumbent DAM's API
     /// response, a spreadsheet exported and converted, a script walking a file share.
     ///
     /// Vendor connectors and a CSV reader are a later slice; a CSV reader in particular wants a dependency
@@ -238,7 +238,7 @@ enum ImportAction {
         #[arg(long)]
         job: uuid::Uuid,
         /// Which field of each record identifies it at the source. Retained permanently — 0008 keeps
-        /// `source_id` because "two years later, 'which Widen asset did this come from' is a question that
+        /// `source_id` because "two years later, 'which source asset did this come from' is a question that
         /// gets asked".
         #[arg(long, default_value = "id")]
         id_field: String,

@@ -62,7 +62,7 @@ CREATE UNIQUE INDEX connectors_site_idx ON connectors (kind, site_url);
 -- ─── remote entity references ───────────────────────────────────────────────
 -- The usage index. "Which Drupal sites, and which nodes, use this asset?" — a
 -- question that is unanswerable if the CMS copies files, and which drives three
--- things: Widen-style asset usage reporting, impact analysis before an expiry or
+-- things: the comparator's style of asset usage reporting, impact analysis before an expiry or
 -- takedown, and a strong pin-hot signal for the lifecycle engine (an asset live
 -- on a production site is a terrible tiering candidate).
 --

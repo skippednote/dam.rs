@@ -301,7 +301,7 @@ fn a_rule_pointing_at_nothing_or_at_a_system_field_says_so() {
 
 #[test]
 fn a_constant_fills_a_field_the_source_never_had() {
-    // For a field the migration decides rather than the source: "imported from Widen", a default rights state.
+    // For a field the migration decides rather than the source: "imported from the old DAM", a default rights state.
     let crosswalk = Crosswalk {
         rules: vec![rule(
             "",

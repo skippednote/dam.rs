@@ -20,7 +20,7 @@
 -- One rating per person per asset, so the aggregate is an average of opinions rather than of clicks.
 --
 -- `smallint` with a CHECK rather than an enum: the range is arithmetic (it is averaged, filtered as `>= 4`, and
--- Acquia writes it into XMP as a number), and an enum would need casting at every one of those.
+-- the comparator writes it into XMP as a number), and an enum would need casting at every one of those.
 CREATE TABLE asset_ratings (
     asset_id    uuid        NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
     identity_id uuid        NOT NULL,       -- dam_global.identities.id, no FK

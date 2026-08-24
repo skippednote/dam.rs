@@ -88,7 +88,7 @@ pub enum Transform {
         on_miss: OnMiss,
     },
     /// Ignore the source and write a fixed value. For a field the source did not have and the migration
-    /// decides — "imported from Widen", a default rights state.
+    /// decides — "imported from the old DAM", a default rights state.
     Constant { value: Value },
 }
 

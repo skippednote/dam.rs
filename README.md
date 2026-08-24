@@ -102,7 +102,6 @@ Read [docker/DEPLOY.md](docker/DEPLOY.md) before treating an image as a deployme
 - [Architecture](ARCHITECTURE.md) — boundaries, invariants, data model, and intended system.
 - [Decisions](DECISIONS.md) — implementation choices and evidence.
 - [Implementation queue](TASKS.md) — completed and remaining work.
-- [Acquia parity](ACQUIA-PARITY.md) — comparator coverage.
 - [Contributing](CONTRIBUTING.md) — how to build, what the gates are, and what a good change looks like.
 - [Security](SECURITY.md) — what is in scope and how to report it privately.
 - [Deployment](docker/DEPLOY.md) — image, configuration, rollout order, probes, and operations.

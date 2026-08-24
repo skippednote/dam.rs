@@ -1,6 +1,6 @@
 -- Auto-import mappings: embedded metadata into the tenant's own fields (Q.4).
 --
--- A camera writes `exif.artist`; this tenant calls it `photographer`. Acquia has a screen for exactly that
+-- A camera writes `exif.artist`; this tenant calls it `photographer`. The comparator has a screen for exactly that
 -- translation, and it is configuration rather than code because the left-hand side is fixed by the file formats
 -- while the right-hand side is whatever the tenant decided their schema is.
 --

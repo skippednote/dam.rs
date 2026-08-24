@@ -94,7 +94,7 @@ so "we only use it for internal marketing assets" is not an exemption. Penalties
 reach €15M or 3% of worldwide annual turnover, whichever is higher.
 
 damrs as designed generates AI descriptions, AI alt text, AI product copy, and —
-per the Acquia feature parity target — AI video with generated voice and
+per the commercial-DAM parity target — AI video with generated voice and
 subtitles. None of it is marked. The Commission published draft implementation
 guidelines on 8 May 2026 and the AI Office is finalising a Code of Practice on
 marking and labelling; adherence to an adequate Code is a route to demonstrating
@@ -204,12 +204,12 @@ becomes a compliance feature the customer is themselves obligated to get right.
 
 ### G7. No migration path in, and nobody buys a DAM greenfield
 
-Every real deal is a migration from Widen, Bynder, Brandfolder, or a file share.
+Every real deal is a migration from an incumbent DAM or a file share.
 The research is consistent that **underestimating metadata cleanup is the single
 most common cause of failed DAM migrations**, and that vendor API extraction is
 the right path for cross-DAM moves.
 
-Missing: source connectors (Widen API v2 is well-documented and the obvious
+Missing: source connectors (the comparator's public API is well-documented and the obvious
 first), a metadata crosswalk tool with documented transformation rules and edge
 cases, taxonomy reconciliation, dry-run with a diff report, phased/incremental
 transfer rather than single cutover, QA checkpoints, and rollback. `damctl
@@ -231,7 +231,7 @@ plus a `damctl eval` command), expensive to retrofit after ranking has drifted.
 
 ### G9. No notification engine
 
-Acquia's "Paths" is a rule-based notification builder: trigger on asset added to
+The comparator's "Paths" feature is a rule-based notification builder: trigger on asset added to
 a group, asset about to expire, or product created; refine by asset group,
 controlled vocabulary, or category; template the email with variables pulling in
 asset counts and share links.
