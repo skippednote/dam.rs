@@ -617,6 +617,73 @@ async fn a_promotion_that_lost_its_asset_row_resumes(f: &Fixture) {
     assert_eq!(resumed.bytes, bytes.len() as i64);
 }
 
+async fn a_promotion_whose_store_is_unreachable_retries_rather_than_dies(f: &Fixture) {
+    // The sibling of the case above, and the one that actually cost an upload. There the object was
+    // genuinely absent, and permanent was the right answer. Here the object is exactly where it should be
+    // and the *backend* is unreachable for a moment — and the resume path used to read every `head`
+    // failure as "the object is gone", retiring a finished upload over a network blip.
+    //
+    // Observed under load against SeaweedFS: one `IncompleteMessage` on one HEAD, job dead, bytes fine.
+    let bytes = jpeg(120, 90);
+    stage(f, "resume002", "blip.jpg", &bytes).await;
+
+    let finalised = dam_pipeline::finalise::upload(
+        &f.global,
+        f.store.as_ref(),
+        &f.slug,
+        f.tenant_id,
+        "resume002",
+        None,
+    )
+    .await
+    .expect("finalise");
+
+    // The same wind-back as above: the digest is recorded, the asset is forgotten.
+    sqlx::query("UPDATE upload_sessions SET asset_id = NULL WHERE upload_id = 'resume002'")
+        .execute(&f.tenant)
+        .await
+        .expect("forget the asset");
+    sqlx::query("DELETE FROM assets WHERE id = $1")
+        .bind(finalised.asset_id)
+        .execute(&f.tenant)
+        .await
+        .expect("delete the asset");
+
+    // Nothing listens on port 1, so the first store call the resume path makes — the `head` on the promoted
+    // key — fails to dispatch. The same shape as a backend that dropped the connection mid-request.
+    let unreachable = dam_store::S3Store::seaweedfs("http://127.0.0.1:1", f._s3.bucket(), "k", "s");
+    let error = dam_pipeline::finalise::upload(
+        &f.global,
+        &unreachable,
+        &f.slug,
+        f.tenant_id,
+        "resume002",
+        None,
+    )
+    .await
+    .expect_err("an unreachable store is not a finished finalisation");
+    assert!(
+        error.is_transient(),
+        "an unreachable backend is a reason to retry, not a verdict on the upload: {error}"
+    );
+
+    // And the retry that classification buys does succeed, which is the entire point: the bytes were never
+    // in doubt.
+    let resumed = dam_pipeline::finalise::upload(
+        &f.global,
+        f.store.as_ref(),
+        &f.slug,
+        f.tenant_id,
+        "resume002",
+        None,
+    )
+    .await
+    .expect("the retry finds the object where the first attempt promoted it");
+    assert!(resumed.created, "the asset row it never got to write");
+    assert_eq!(resumed.content_hash, finalised.content_hash);
+    assert_eq!(resumed.bytes, bytes.len() as i64);
+}
+
 // ─── derivation ─────────────────────────────────────────────────────────────
 
 /// A tiny clip, for the measurement cases. ffmpeg is pinned in `.mise.toml`.
@@ -1294,6 +1361,7 @@ async fn finalisation_holds() {
     an_incomplete_upload_is_a_permanent_refusal_not_a_retry(&f).await;
     an_upload_with_no_session_is_permanent(&f).await;
     a_promotion_that_lost_its_asset_row_resumes(&f).await;
+    a_promotion_whose_store_is_unreachable_retries_rather_than_dies(&f).await;
 }
 
 #[tokio::test]
