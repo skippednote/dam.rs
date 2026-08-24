@@ -522,6 +522,21 @@ test('an empty query lists and a typed query searches', async ({ page }) => {
 	// other is a bounded ranking.
 	await expect(page.getByText(/ranked by relevance/)).toBeVisible();
 	expect(recorder.urls.some((url) => url.includes('/search?q=harbour'))).toBe(true);
+	await expect(page).toHaveURL(/\/assets\?q=harbour$/);
+});
+
+test('a new search clears selections that are no longer visible', async ({ page }) => {
+	await connect(page);
+	await page.goto('/assets');
+
+	await page.getByRole('gridcell').first().click();
+	await expect(page.getByRole('button', { name: 'Delete…' })).toBeVisible();
+
+	await page.getByLabel('Search assets').fill('harbour');
+	await page.getByRole('button', { name: 'Search' }).click();
+
+	await expect(page.getByRole('button', { name: 'Delete…' })).toBeHidden();
+	await expect(page.getByText('Select an asset to inspect it')).toBeVisible();
 });
 
 test('a facet click writes the query and re-requests', async ({ page }) => {
@@ -654,6 +669,7 @@ test('the type-ahead completes a word with the keyboard alone', async ({ page })
 	// The whole token is replaced rather than appended: `acm` plus `brand:acme` would be two clauses.
 	await expect(box).toHaveValue('brand:acme');
 	await expect(list).toBeHidden();
+	await expect(page).toHaveURL(/\/assets\?q=brand%3Aacme$/);
 });
 
 test('a suggestion with a space arrives already quoted', async ({ page }) => {
@@ -664,6 +680,7 @@ test('a suggestion with a space arrives already quoted', async ({ page }) => {
 	await page.getByLabel('Search assets').fill('Acme');
 	await page.getByRole('option', { name: /Acme Corp/ }).click();
 	await expect(page.getByLabel('Search assets')).toHaveValue('brand:"Acme Corp"');
+	await expect(page).toHaveURL(/q=brand%3A%22Acme\+Corp%22/);
 });
 
 test('one character offers nothing', async ({ page }) => {
@@ -990,10 +1007,12 @@ test('an asset with a thumbnail renders it, and one without says it is processin
 	// Index 2 is `archive` in the fixture, and the placeholder says so rather than "processing": an archived
 	// asset is not being worked on, it is in cold storage, and telling a user "processing" about something that
 	// will never finish is worse than saying nothing.
-	await expect(cells.nth(2).getByTestId('thumbnail-placeholder')).toHaveText('archived');
+	await expect(cells.nth(2).getByTestId('thumbnail-placeholder')).toHaveText(
+		'Original archived · preview pending'
+	);
 	await expect(cells.nth(2).locator('img')).toHaveCount(0);
 	// Index 3 is `restoring`, which is neither hot nor archived — it falls through to "processing".
-	await expect(cells.nth(3).getByTestId('thumbnail-placeholder')).toHaveText('processing');
+	await expect(cells.nth(3).getByTestId('thumbnail-placeholder')).toHaveText('Preview processing');
 
 	expect(recorder.urls.some((url) => url.includes('/d/absolute-token'))).toBe(true);
 });

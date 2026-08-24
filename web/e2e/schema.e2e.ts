@@ -432,13 +432,17 @@ test('a type is created and its fields chosen from the vocabulary above', async 
 	// Adding a field sends the *whole* list, which is the endpoint's contract: a delta computed against a
 	// stale copy would drop whatever the client had not seen.
 	await page.getByRole('button', { name: '+ Brand' }).click();
-	expect(recorder.typeEdits.at(-1)?.body).toEqual({ field_keys: ['brand'] });
+	await expect.poll(() => recorder.typeEdits.at(-1)?.body).toEqual({ field_keys: ['brand'] });
 	await page.getByRole('button', { name: '+ Campaign' }).click();
-	expect(recorder.typeEdits.at(-1)?.body).toEqual({ field_keys: ['brand', 'campaign'] });
+	await expect
+		.poll(() => recorder.typeEdits.at(-1)?.body)
+		.toEqual({ field_keys: ['brand', 'campaign'] });
 
 	// And reordering sends the whole list too, reordered.
 	await page.getByRole('button', { name: 'Move campaign up in Video' }).click();
-	expect(recorder.typeEdits.at(-1)?.body).toEqual({ field_keys: ['campaign', 'brand'] });
+	await expect
+		.poll(() => recorder.typeEdits.at(-1)?.body)
+		.toEqual({ field_keys: ['campaign', 'brand'] });
 });
 
 test('the fallback moves rather than being held by two types at once', async ({ page }) => {

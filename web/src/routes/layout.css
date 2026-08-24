@@ -136,6 +136,10 @@
 }
 
 @layer base {
+	html {
+		background: var(--color-bg);
+	}
+
 	body {
 		background-color: var(--color-bg);
 		color: var(--color-fg);
@@ -143,6 +147,13 @@
 		   same weight on light, and the whole interface reads as bolder than intended. */
 		-webkit-font-smoothing: antialiased;
 		-moz-osx-font-smoothing: grayscale;
+	}
+
+	button,
+	input,
+	select,
+	textarea {
+		font: inherit;
 	}
 
 	/*
@@ -236,5 +247,92 @@
 			transition-duration: 0.01ms !important;
 			scroll-behavior: auto !important;
 		}
+	}
+}
+
+/*
+	The shell is a fixed instrument rail rather than page content. Keeping it outside the main landmark lets
+	the skip link land directly in the working surface, and the margin mirrors the rail's explicit width.
+	`:has` keeps the collapsed state local to the rail instead of introducing a global layout store.
+*/
+.app-main {
+	min-height: 100vh;
+	margin-left: 13rem;
+	transition: margin-left 160ms ease;
+}
+
+.app-rail {
+	transition: width 160ms ease;
+}
+
+.app-rail[data-collapsed='true'] {
+	width: 4rem;
+}
+
+.app-rail[data-collapsed='true'] .brand-copy,
+.app-rail[data-collapsed='true'] .rail-group {
+	display: none;
+}
+
+/*
+	Hidden from the eye, not from the accessibility tree.
+
+	`display: none` removes the label entirely, which contradicts the rail's own claim that "labels remain
+	available to assistive technology". A `title` does become the accessible name of an otherwise-empty link,
+	so the destination was still announced — but by the weakest mechanism available, one that never appears on
+	touch and is inconsistently surfaced. Clipping keeps the real text where a screen reader can read it.
+*/
+.app-rail[data-collapsed='true'] .rail-label {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: -1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
+
+.app-rail[data-collapsed='true'] .brand-lockup,
+.app-rail[data-collapsed='true'] .rail-link,
+.app-rail[data-collapsed='true'] .connection,
+.app-rail[data-collapsed='true'] button {
+	justify-content: center;
+}
+
+body:has(.app-rail[data-collapsed='true']) .app-main {
+	margin-left: 4rem;
+}
+
+@media (max-width: 70rem) {
+	.app-main {
+		margin-left: 4rem;
+	}
+
+	.app-rail {
+		width: 4rem;
+	}
+
+	.app-rail .brand-copy,
+	.app-rail .rail-group {
+		display: none;
+	}
+
+	.app-rail .rail-label {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip-path: inset(50%);
+		white-space: nowrap;
+	}
+
+	.app-rail .brand-lockup,
+	.app-rail .rail-link,
+	.app-rail .connection,
+	.app-rail button {
+		justify-content: center;
 	}
 }

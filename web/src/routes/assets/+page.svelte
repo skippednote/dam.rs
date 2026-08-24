@@ -50,6 +50,13 @@
 		readEnrichmentSettings
 	} from '$lib/api/client';
 	import { session } from '$lib/api/session.svelte';
+	import {
+		DownloadSimple,
+		MagnifyingGlass,
+		SlidersHorizontal,
+		Sparkle,
+		UploadSimple
+	} from 'phosphor-svelte';
 
 	/** Rows per request. The grid draws a window; this is comfortably more than one screen. */
 	const PAGE = 60;
@@ -94,6 +101,8 @@
 
 	/** Discards a stale response, so a fast second search cannot be overwritten by a slow first one. */
 	let generation = 0;
+	/** The same protection for the inspector: a slow asset read must not reopen a cleared selection. */
+	let detailGeneration = 0;
 
 	async function load() {
 		if (!session.connected) {
@@ -175,10 +184,14 @@
 	}
 
 	async function open(id: string) {
+		const mine = ++detailGeneration;
 		try {
-			selected = await getAsset(id);
+			const asset = await getAsset(id);
+			if (mine === detailGeneration) selected = asset;
 		} catch (caught) {
-			error = caught instanceof Error ? caught.message : 'Could not open that asset.';
+			if (mine === detailGeneration) {
+				error = caught instanceof Error ? caught.message : 'Could not open that asset.';
+			}
 		}
 	}
 
@@ -250,12 +263,27 @@
 
 	function submit(event: SubmitEvent) {
 		event.preventDefault();
-		show(query);
-		void load();
+		runQuery(query);
 	}
 
 	function railChanged(next: string) {
+		runQuery(next);
+	}
+
+	/**
+	 * Changes the result identity as one operation.
+	 *
+	 * A selection belongs to the result set that made it visible. Carrying those ids into a new search leaves
+	 * destructive bulk controls armed for assets the operator can no longer see. The URL changes here too, so
+	 * every accepted search path remains shareable rather than only the form-submit path.
+	 */
+	function runQuery(next: string) {
 		query = next;
+		grid?.clearSelection();
+		selection = [];
+		detailGeneration += 1;
+		selected = null;
+		lightbox = false;
 		show(next);
 		void load();
 	}
@@ -298,9 +326,7 @@
 				problem: asked.problem?.message ?? null
 			};
 			if (asked.parses) {
-				query = asked.shorthand;
-				show(query);
-				await load();
+				runQuery(asked.shorthand);
 			}
 			// If it does not parse the question stays in the box, with the problem shown. Searching the question
 			// as text is one keystroke away and costs nothing, which is a better default than a query nobody can
@@ -332,26 +358,46 @@
 	});
 </script>
 
-<div class="flex h-[calc(100vh-3rem)] flex-col">
-	<div class="flex flex-wrap items-center gap-3 border-b border-line px-4 py-3">
-		<!--
+<div class="flex h-screen flex-col overflow-hidden">
+	<div class="space-y-4 border-b border-line px-5 py-4">
+		<div class="flex items-end justify-between gap-4">
+			<!--
 			A real `h1`, not a visually hidden one. A screen-reader user navigating by heading needs to land
 			somewhere on this page, and an app screen with no `h1` is one that cannot be entered by heading at
 			all — the affordance most such users reach for first.
 		-->
-		<h1 class="text-sm font-semibold tracking-tight">Assets</h1>
-		<form class="flex flex-1 items-center gap-2" onsubmit={submit} role="search">
+			<div>
+				<h1 class="text-2xl font-semibold tracking-[-0.025em]">Assets</h1>
+				<p class="mt-1 text-xs text-muted">Find media you can prove is safe to use.</p>
+			</div>
+			<button
+				type="button"
+				class="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-sm font-medium text-accent-fg"
+				aria-expanded={showUpload}
+				onclick={() => (showUpload = !showUpload)}
+			>
+				<UploadSimple size={17} weight="bold" aria-hidden="true" />
+				Upload
+			</button>
+		</div>
+
+		<form class="flex items-center gap-2" onsubmit={submit} role="search">
 			<label class="sr-only" for="q">Search assets</label>
 			<!--
 				`relative`, because the suggestion list is positioned against this box rather than against the
 				toolbar: a list that hangs off the toolbar drifts away from the box the moment the toolbar wraps.
 			-->
 			<div class="relative min-w-0 flex-1">
+				<MagnifyingGlass
+					size={18}
+					aria-hidden="true"
+					class="pointer-events-none absolute top-1/2 left-3 z-10 -translate-y-1/2 text-muted"
+				/>
 				<input
 					id="q"
-					class="w-full rounded-md border border-line bg-bg px-3 py-1.5 text-sm"
+					class="h-10 w-full rounded-md border border-line bg-bg pr-3 pl-10 text-sm shadow-inner shadow-black/10"
 					bind:value={query}
-					placeholder="brand:acme &quot;spring campaign&quot; year:>2024"
+					placeholder="Search by subject, campaign, rights or source"
 					role="combobox"
 					aria-expanded={typeAhead?.isOpen() ?? false}
 					aria-controls="search-suggestions"
@@ -370,14 +416,13 @@
 					bind:this={typeAhead}
 					{query}
 					onquery={(next) => {
-						query = next;
-						load();
+						runQuery(next);
 					}}
 				/>
 			</div>
 			<button
 				type="submit"
-				class="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg"
+				class="h-10 rounded-md bg-accent px-4 text-sm font-medium text-accent-fg"
 				disabled={loading}
 			>
 				{loading ? 'Searching…' : 'Search'}
@@ -388,11 +433,12 @@
 			-->
 			<button
 				type="button"
-				class="rounded-md border border-line px-3 py-1.5 text-sm disabled:opacity-50"
+				class="inline-flex h-10 items-center gap-2 rounded-md border border-line px-3 text-sm text-muted hover:bg-surface hover:text-fg disabled:opacity-50"
 				disabled={exporting}
 				onclick={exportCsv}
 			>
-				{exporting ? 'Exporting…' : 'Export CSV'}
+				<DownloadSimple size={17} aria-hidden="true" />
+				<span class="hidden xl:inline">{exporting ? 'Exporting…' : 'Export CSV'}</span>
 			</button>
 
 			<!--
@@ -401,11 +447,12 @@
 			-->
 			<button
 				type="button"
-				class="rounded-md border border-line px-3 py-1.5 text-sm"
+				class="inline-flex h-10 items-center gap-2 rounded-md border border-line px-3 text-sm text-muted hover:bg-surface hover:text-fg"
 				aria-expanded={showAdvanced}
 				onclick={() => (showAdvanced = !showAdvanced)}
 			>
-				Advanced
+				<SlidersHorizontal size={17} aria-hidden="true" />
+				<span class="hidden xl:inline">Advanced</span>
 			</button>
 			{#if canAsk}
 				<!--
@@ -415,13 +462,29 @@
 				-->
 				<button
 					type="button"
-					class="rounded-md border border-line px-3 py-1.5 text-sm disabled:opacity-50"
+					class="inline-flex h-10 items-center gap-2 rounded-md border border-line px-3 text-sm text-muted hover:bg-surface hover:text-fg disabled:opacity-50"
 					disabled={asking || query.trim() === ''}
 					onclick={ask}
 					title="Turn a question into a query"
 				>
-					{asking ? 'Asking…' : 'Ask'}
+					<Sparkle size={17} aria-hidden="true" />
+					<span class="hidden xl:inline">{asking ? 'Asking…' : 'Ask'}</span>
 				</button>
+			{/if}
+			{#if !ranked}
+				<label class="sr-only" for="order">Sort order</label>
+				<select
+					id="order"
+					class="h-10 rounded-md border border-line bg-bg px-3 text-sm text-muted"
+					bind:value={order}
+					onchange={() => runQuery(query)}
+				>
+					<option value="newest">Newest first</option>
+					<option value="oldest">Oldest first</option>
+					<option value="filename_asc">Filename A–Z</option>
+					<option value="filename_desc">Filename Z–A</option>
+					<option value="largest_first">Largest first</option>
+				</select>
 			{/if}
 		</form>
 
@@ -439,31 +502,6 @@
 				{/if}
 			</p>
 		{/if}
-
-		{#if !ranked}
-			<label class="sr-only" for="order">Sort order</label>
-			<select
-				id="order"
-				class="rounded-md border border-line bg-bg px-2 py-1.5 text-sm"
-				bind:value={order}
-				onchange={load}
-			>
-				<option value="newest">Newest first</option>
-				<option value="oldest">Oldest first</option>
-				<option value="filename_asc">Filename A–Z</option>
-				<option value="filename_desc">Filename Z–A</option>
-				<option value="largest_first">Largest first</option>
-			</select>
-		{/if}
-
-		<button
-			type="button"
-			class="rounded-md border border-line px-3 py-1.5 text-sm"
-			aria-expanded={showUpload}
-			onclick={() => (showUpload = !showUpload)}
-		>
-			Upload
-		</button>
 	</div>
 
 	{#if showAdvanced}
@@ -471,8 +509,7 @@
 			{fields}
 			{query}
 			onquery={(next) => {
-				query = next;
-				load();
+				runQuery(next);
 			}}
 			onclose={() => (showAdvanced = false)}
 		/>
@@ -482,8 +519,8 @@
 		<div class="border-b border-line px-4 py-3">
 			<UploadQueue onfinished={load} />
 			<p class="mt-2 text-xs text-muted">
-				An upload lands in staging and is finalised into an asset by the worker. Until the worker
-				runs it will not appear in the grid.
+				Uploads are checked and prepared before they appear in the library. You can keep working
+				while processing finishes.
 			</p>
 		</div>
 	{/if}
@@ -508,9 +545,9 @@
 					type="button"
 					class="ml-1 underline"
 					onclick={() => {
-						query = correctAt(query, fix.at, fix.suggestion);
+						const corrected = correctAt(query, fix.at, fix.suggestion);
 						correction = null;
-						load();
+						runQuery(corrected);
 					}}
 				>
 					Did you mean <code class="font-mono">{correction.suggestion}</code>?
@@ -526,7 +563,7 @@
 		-->
 		<aside
 			aria-label="Filters"
-			class="hidden w-56 shrink-0 overflow-y-auto border-r border-line p-4 lg:block"
+			class="hidden w-52 shrink-0 overflow-y-auto border-r border-line bg-bg p-4 lg:block"
 		>
 			<!-- The tree first: where an asset *lives* is the coarser question, and the facets narrow within
 			     whatever it selects. Both write the same query string. -->
@@ -536,7 +573,7 @@
 			</div>
 		</aside>
 
-		<div class="min-w-0 flex-1 overflow-hidden p-4">
+		<div class="min-w-0 flex-1 overflow-hidden px-4 py-3">
 			{#if result}
 				<!--
 					The star's own announcement, separate from the result count above: they change for unrelated
@@ -544,37 +581,46 @@
 					favourited something.
 				-->
 				<p role="status" aria-live="polite" class="sr-only">{engagementNotice}</p>
-				<p class="mb-2 text-xs text-muted" aria-live="polite">
-					{result.total}
-					{result.total === 1 ? 'asset' : 'assets'}
-					{#if ranked && result.total > 0}
-						<!--
+				<div
+					class="mb-2 flex items-center justify-between gap-4 text-xs text-muted"
+					aria-live="polite"
+				>
+					<p>
+						{result.total}
+						{result.total === 1 ? 'asset' : 'assets'}
+						{#if ranked && result.total > 0}
+							<!--
 							Only when something was found. "0 assets · ranked by relevance, capped at the first
 							1,000" describes the ordering of nothing, and next to a did-you-mean it is a sentence
 							of noise between the count and the one thing worth clicking. Seen on the dev stack.
 						-->
-						· ranked by relevance, capped at the first 1,000
-					{/if}
-					{#if result?.did_you_mean}
-						{@const nearer = result.did_you_mean}
-						<!--
+							· ranked by relevance, capped at the first 1,000
+						{/if}
+						{#if result?.did_you_mean}
+							{@const nearer = result.did_you_mean}
+							<!--
 							Only ever on an empty page, and only for a value that really exists in this library —
 							so it is an offer to run something that will work rather than a guess. "No results"
 							with nothing beside it is an honest answer; this appears when there is a better one.
 						-->
-						·
-						<button
-							type="button"
-							class="underline"
-							onclick={() => {
-								query = nearer;
-								load();
-							}}
-						>
-							Did you mean <code class="font-mono">{nearer}</code>?
-						</button>
-					{/if}
-				</p>
+							·
+							<button
+								type="button"
+								class="underline"
+								onclick={() => {
+									runQuery(nearer);
+								}}
+							>
+								Did you mean <code class="font-mono">{nearer}</code>?
+							</button>
+						{/if}
+					</p>
+					<p>
+						{selection.length > 0
+							? `${selection.length} selected`
+							: 'Select an asset to inspect it'}
+					</p>
+				</div>
 				<!--
 					The row height is mostly thumbnail. `thumb-256` is a 256px square (Cover fit), so a cell is
 					sized to show one near its natural size rather than squeezing it into a strip — the first
@@ -586,13 +632,14 @@
 					total={result.total}
 					offset={result.offset}
 					columns={4}
-					height={640}
-					rowHeight={224}
+					height={720}
+					rowHeight={230}
 					bind:this={grid}
 					thumbnail={deliveryUrl}
 					onselect={(asset, ids) => {
 						selection = ids;
-						void open(asset.id);
+						if (ids.length > 0) void open(asset.id);
+						else selected = null;
 					}}
 					onactivate={(asset) => {
 						void open(asset.id).then(() => (lightbox = true));
@@ -625,7 +672,7 @@
 		{/if}
 
 		{#if selected}
-			<aside aria-label="Selected asset" class="w-80 shrink-0 border-l border-line">
+			<aside aria-label="Selected asset" class="w-96 shrink-0 border-l border-line bg-bg">
 				<DetailPanel
 					asset={selected}
 					{fields}

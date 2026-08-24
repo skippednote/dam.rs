@@ -33,6 +33,7 @@
 	import MetadataEditor from './MetadataEditor.svelte';
 	import SharePanel from './SharePanel.svelte';
 	import { deliveryUrl } from '$lib/api/client';
+	import { X } from 'phosphor-svelte';
 
 	let {
 		asset,
@@ -142,10 +143,15 @@
 	and two nested landmarks naming the same thing is announced twice — the panel's own heading is the
 	filename, which is the useful name.
 -->
-<div class="flex h-full flex-col gap-4 overflow-y-auto p-4">
+<div class="flex h-full flex-col gap-5 overflow-y-auto p-5">
 	<header class="space-y-2">
 		<div class="flex items-start justify-between gap-2">
-			<h2 class="text-sm font-semibold break-all" title={asset.filename}>{asset.filename}</h2>
+			<div class="min-w-0">
+				<p class="mb-1 text-[10px] font-semibold tracking-[0.14em] text-muted uppercase">
+					Selected asset
+				</p>
+				<h2 class="truncate text-base font-semibold" title={asset.filename}>{asset.filename}</h2>
+			</div>
 			{#if onclose}
 				<button
 					type="button"
@@ -153,7 +159,7 @@
 					onclick={onclose}
 					aria-label="Close detail panel"
 				>
-					✕
+					<X size={18} aria-hidden="true" />
 				</button>
 			{/if}
 		</div>
@@ -182,11 +188,11 @@
 			src={deliveryUrl(asset.thumbnail_url)}
 			alt=""
 			aria-hidden="true"
-			class="image-well w-full rounded-md object-contain"
+			class="image-well max-h-64 w-full rounded-md object-contain"
 		/>
 	{/if}
 
-	<div class="rounded-md bg-surface p-3">
+	<div class="rounded-md border border-line bg-surface p-3">
 		{#if originalAvailable}
 			<p class="text-xs text-muted">
 				The original is available. Downloads pass the rights check at the point of delivery, so this
@@ -223,7 +229,7 @@
 	     deciding to take a copy. The panel hides itself for a caller who may look and not download. -->
 	<DownloadPanel assetId={asset.id} />
 
-	<dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+	<dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 border-y border-line py-4 text-xs">
 		<dt class="text-muted">Type</dt>
 		<dd class="font-mono">{asset.mime}</dd>
 		<dt class="text-muted">Size</dt>

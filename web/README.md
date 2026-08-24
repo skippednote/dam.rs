@@ -1,42 +1,46 @@
-# sv
+# dam.rs frontend
 
-Everything you need to build a Svelte project, powered by [`sv`](https://github.com/sveltejs/cli).
+The operator interface for dam.rs: a Svelte 5 and SvelteKit application generated against the repository's
+OpenAPI document.
 
-## Creating a project
+## Development
 
-If you're seeing this, you've probably already done this step. Congrats!
-
-```sh
-# create a new project
-npx sv create my-app
-```
-
-To recreate this project with the same configuration:
+From the repository root, start the local dependencies, provision the development tenant, and run the API
+and worker as described in the [root README](../README.md). Then:
 
 ```sh
-# recreate this project
-pnpm dlx sv@0.17.0 create --template minimal --types ts --add prettier eslint vitest="usages:unit,component" playwright tailwindcss="plugins:forms,typography" sveltekit-adapter="adapter:node" --no-download-check --install pnpm web
+pnpm install --frozen-lockfile
+pnpm run dev
 ```
 
-## Developing
+Visit Settings and paste the API key printed by `mise run dev:seed`. The browser stores this development
+key locally; this is not the intended production authentication model.
 
-Once you've created a project and installed dependencies with `npm install` (or `pnpm install` or `yarn`), start a development server:
+## Checks
 
 ```sh
-npm run dev
-
-# or start the server and open the app in a new browser tab
-npm run dev -- --open
+pnpm run check
+pnpm run lint
+pnpm exec vitest run
+pnpm exec playwright test
+pnpm run build
 ```
 
-## Building
-
-To create a production version of your app:
+The browser tests mock the HTTP boundary while Rust integration tests exercise the same routes against
+PostgreSQL. Wire types are generated from `../openapi.json`:
 
 ```sh
-npm run build
+pnpm run gen:api
 ```
 
-You can preview the production build with `npm run preview`.
+## Interface conventions
 
-> To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
+- Svelte runes are used for component state.
+- The asset browser is a virtualized WAI-ARIA grid with one roving tab stop.
+- Every state uses a label and a non-colour cue; rights alone own semantic colour.
+- Both dark and light palettes define the complete token set in `src/routes/layout.css`.
+- Dark is the default image-review surface. Light remains supported for embedded contexts.
+- Internal links use SvelteKit's resolved paths so configured base paths remain valid.
+- The API key is never rendered in full; only the audit-safe prefix appears in the shell.
+
+The approved identity and UI direction is documented in [the brand guide](../docs/brand/README.md).

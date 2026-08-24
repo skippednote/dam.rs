@@ -5,6 +5,7 @@
 -->
 <script lang="ts">
 	import { rightsMeta, type RightsState } from './vocabulary';
+	import { CheckCircle, ClockCountdown, Prohibit, Question } from 'phosphor-svelte';
 
 	let { state }: { state: RightsState } = $props();
 	const meta = $derived(rightsMeta(state));
@@ -26,6 +27,14 @@
 	title={meta.detail}
 	class="inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-xs font-medium {TONE[state]}"
 >
-	<span aria-hidden="true">{meta.icon}</span>
+	{#if state === 'allowed'}
+		<CheckCircle size={14} weight="fill" aria-hidden="true" />
+	{:else if state === 'expiring'}
+		<ClockCountdown size={14} weight="fill" aria-hidden="true" />
+	{:else if state === 'denied'}
+		<Prohibit size={14} weight="fill" aria-hidden="true" />
+	{:else}
+		<Question size={14} weight="bold" aria-hidden="true" />
+	{/if}
 	<span>{meta.label}</span>
 </span>

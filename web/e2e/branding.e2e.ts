@@ -142,7 +142,14 @@ test('the header never shows the vendors name while branding loads', async ({ pa
 	// outright left it with no accessible name at all, which axe reported as `link-name (serious)` on every
 	// screen in the application. A visual fix that breaks a screen reader is a worse bug than the one it fixed.
 	await expect(home).not.toContainText('damrs');
-	await expect(home.locator('span:not(.sr-only)')).toHaveCount(1);
+	await expect(home).not.toContainText('dam.rs');
+	// The copy slot holds the screen-reader name and nothing else — so neither our wordmark nor our tagline
+	// can appear over a customer's library while theirs is still loading.
+	//
+	// This replaced a count of non-`sr-only` spans, which the grouped rail broke by adding a wrapper element
+	// without changing what is on screen. Counting elements was a proxy for the property; asserting the
+	// rendered text is the property.
+	await expect(home.locator('.brand-copy')).toHaveText('Home');
 	// The link is still there to click, because the decorative mark holds it open — and it is still named, for
 	// anybody not looking at it.
 	await expect(home).toBeVisible();
