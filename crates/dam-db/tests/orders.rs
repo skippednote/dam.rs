@@ -16,7 +16,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-use chrono::{Duration, Utc};
+use chrono::{Duration, SubsecRound as _, Utc};
 use dam_core::policy::{self, Action, Grant, Grants};
 use dam_db::orders::{self, NewOrder, OrderRefusal};
 use dam_db::{migrate, testing::PostgresHarness};
@@ -441,7 +441,13 @@ async fn expiry_is_derived_from_the_decision(pool: &PgPool) {
         .await
         .expect("place");
 
-    let decided_at = Utc::now() + Duration::days(21);
+    // Truncated to microseconds, because that is `timestamptz`'s resolution and this value makes a
+    // round trip. `expires_at` is computed in SQL as `decided_at + make_interval(days => 7)` against
+    // the *stored* value, so comparing the result against a Rust timestamp carrying nanoseconds is
+    // short of seven days by the sub-microsecond remainder — and `num_days` truncates, so the
+    // assertion reads 6. macOS never sees it: its `Utc::now()` is microsecond-granular in practice,
+    // so the remainder is zero and the test passes there while failing on a Linux runner.
+    let decided_at = (Utc::now() + Duration::days(21)).trunc_subsecs(6);
     let approved = orders::approve(
         c!(pool),
         order.id,
