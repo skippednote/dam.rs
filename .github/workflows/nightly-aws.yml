@@ -4,9 +4,24 @@ name: Nightly AWS conformance
 # SeaweedFS gives the wire protocol and object lock; FakeS3Store gives the tiering
 # state machine with a controllable clock; neither can prove an actual RestoreObject
 # against Deep Archive.
+# `workflow_dispatch` only, until the secrets exist.
+#
+# The schedule is commented rather than deleted because the job is correct and wanted — what it lacks is
+# credentials, and a scheduled run cannot borrow an SSO session. It needs static IAM keys plus a bucket,
+# and creating an IAM user is a decision rather than a step.
+#
+# Leaving the schedule on would mean a red run every night in a public repository, for a reason no reader
+# could distinguish from "the archival tests fail". The job fails loudly on missing credentials by design
+# — see the comment on the run step, which is there because two earlier versions of this workflow passed
+# while running nothing — and that design is right for a run somebody asked for and wrong for one that
+# fires unattended before it can succeed.
+#
+# Restore the two lines below once `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `DAMRS_TEST_BUCKET`
+# are set. Until then the same coverage is one command away locally: `mise run check:aws`, which passed
+# 20 cases with a 77-second Glacier restore on 2026-08-24.
 on:
-  schedule:
-    - cron: "0 3 * * *"
+  # schedule:
+  #   - cron: "0 3 * * *"
   workflow_dispatch:
 
 jobs:

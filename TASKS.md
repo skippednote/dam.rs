@@ -3598,12 +3598,21 @@ been indexing for a poll query that did not exist.
       a coverage gap, and the distinction matters because the first framing invites building something to
       close a gap that is not there.
 
-      **Still not closed, and needs a decision rather than code:** the tests exist and cannot run here. The
-      AWS session at `~/.damrs-aws-session` is expired, refreshing it is an interactive SSO login, and
-      handling credentials is not mine to do. So the state is: the coverage is written and reviewed, the
-      nightly will now fail loudly until it is configured, and the first real run is one `gh secret set` and
-      one schedule away. The skip messages in `conformance.rs` and the comment in `s3.rs` no longer claim the
-      nightly covers anything, because for the moment it does not.
+      **Closed on 2026-08-24: the suite ran against real S3.** `ap-south-1`, against a bucket created for
+      the run and deleted after it — **20 cases passed, 0 skipped**, and
+      `a_glacier_restore_completes_and_serves_the_original_bytes` completed a real `RestoreObject` in
+      **76.7 seconds**, returning the original bytes. Zero skips is the assertion that matters as much as
+      the passes: a skip here would mean the store reported itself incapable against a backend that is
+      demonstrably capable, which is a capability-detection bug rather than a fact about AWS.
+
+      So the archival claim is now backed by the storage a reader would actually use, rather than by
+      SeaweedFS's wire protocol and a fake's controllable clock. `mise run check:aws` reproduces it.
+
+      **What remains is the nightly, and it is credentials rather than code.** A scheduled run needs static
+      IAM keys — an SSO session cannot be handed to CI — plus `DAMRS_TEST_BUCKET`, and creating an IAM user
+      is not something to do in passing. Until those exist the workflow fails loudly by design, which on a
+      public repository means a visible red run every night: either configure the three secrets or drop the
+      `schedule:` trigger and keep `workflow_dispatch`.
 
 **Not built, and deliberately.** A cross-pool move: S3 transitions are a self-copy, so a policy naming a
 different target pool asks for a copy between buckets and halts as unsupported rather than tiering in place —
