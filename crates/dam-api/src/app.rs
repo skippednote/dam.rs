@@ -256,6 +256,11 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
         .merge(crate::members::router(crate::members::MemberState {
             global: deps.global.clone(),
         }))
+        // SCIM authenticates on its own path — see the module note on why that exception is structural rather
+        // than convenient — so it is merged like any other router and gates itself.
+        .merge(crate::scim::router(crate::scim::ScimState {
+            global: deps.global.clone(),
+        }))
         .merge(crate::governance::router(
             crate::governance::GovernanceState {
                 global: deps.global.clone(),

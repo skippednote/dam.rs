@@ -17,6 +17,18 @@
 //! `POST /bulk/preview` filters the ids exactly as `POST /bulk` will, so the number in the confirmation
 //! dialog is the number that will be touched. Two implementations of "which of these may I act on" would
 //! drift, and the drift is a dialog that says 40 and an operation that does 38.
+//!
+//! **That claim was false for delete, in precisely the way it describes.** Scope was the only filter either
+//! side applied, and the delete executor also refuses an asset under legal hold — `AND NOT legal_hold`,
+//! reporting the reason per row. So a selection with four held assets previewed as 42 and completed as 38
+//! done, 4 skipped: the operation was safe throughout, and the dialog was wrong.
+//!
+//! So a preview now also reports what the *operation* will refuse, distinctly from what scope excluded. The
+//! two are different facts and a caller can act on each: an out-of-scope id is somebody else's asset, and a
+//! held one is theirs and frozen. `target_count` stays the attempt count, matching the job's own
+//! `target_count` so `done + failed = target` still holds; the dialog does the subtraction and says both
+//! numbers. Collapsing them into one "will happen" figure would leave preview and the job reporting
+//! different totals for the same operation.
 
 use crate::caller;
 use axum::extract::{Path, State};
@@ -92,6 +104,15 @@ pub struct BulkPreview {
     /// How many of the submitted ids fell out of scope. Reported as a count and nothing more: which ones,
     /// and whether they exist at all, is exactly what §7 says a caller must not learn.
     pub out_of_scope: i64,
+    /// How many of the targets this operation will refuse, having already passed scope.
+    ///
+    /// Distinct from `out_of_scope`, because the two are different facts and the caller can act on each: an
+    /// out-of-scope id belongs to somebody else, and a refused one is theirs and frozen. Named as a count for
+    /// the same §7 reason — though the asymmetry is deliberate rather than reflexive here, since the caller can
+    /// already see these assets and their held state is on every grid row.
+    pub blocked: i64,
+    /// Why, in one sentence, when anything is blocked. `None` when nothing is.
+    pub blocked_reason: Option<String>,
 }
 
 /// One failed row, for the report.
@@ -145,12 +166,45 @@ pub async fn preview(
 
     let submitted = deduplicated(&request.asset_ids);
     let dry = bulk::dry_run(&request.kind, &visible);
+    let (blocked, blocked_reason) = refusals(&state, &caller, &request.kind, &visible).await?;
     Ok(Json(BulkPreview {
         kind: dry.kind,
         target_count: dry.target_count,
         sample: dry.sample,
         out_of_scope: submitted - dry.target_count,
+        blocked,
+        blocked_reason,
     }))
+}
+
+/// What the operation itself will refuse among targets that already passed scope.
+///
+/// Per kind, because the refusals are the executor's and not a general rule: delete is the one that consults
+/// `legal_hold`, and inventing a shared "blocked" predicate would put a check in front of operations whose
+/// executors do not make it.
+async fn refusals(
+    state: &Arc<BulkState>,
+    caller: &caller::Caller,
+    kind: &str,
+    targets: &[Uuid],
+) -> Result<(i64, Option<String>), Failure> {
+    if kind != "delete" || targets.is_empty() {
+        return Ok((0, None));
+    }
+    let mut conn = TenantConn::begin(&state.global, &caller.tenant_slug).await?;
+    let held = assets::held_among(conn.executor(), targets).await?;
+    conn.commit().await?;
+    if held == 0 {
+        return Ok((0, None));
+    }
+    Ok((
+        held,
+        Some(if held == 1 {
+            "1 is under legal hold and cannot be deleted".to_owned()
+        } else {
+            format!("{held} are under legal hold and cannot be deleted")
+        }),
+    ))
 }
 
 /// Creates a bulk operation and queues its execution.
@@ -183,6 +237,17 @@ pub async fn create(
         return Err(Failure::Unprocessable(
             "nothing in the selection is yours to manage".to_owned(),
         ));
+    }
+
+    // And the same argument one step further in: an operation whose every target the executor will refuse
+    // would record as `partial` with nothing done, which reads in the history as something that half worked.
+    // A mixed selection still runs — the executor skips what it must and reports each one — because deleting
+    // the deletable half is what somebody asked for.
+    let (blocked, reason) = refusals(&state, &caller, &request.kind, &visible).await?;
+    if blocked >= i64::try_from(visible.len()).unwrap_or(i64::MAX) {
+        return Err(Failure::Unprocessable(reason.unwrap_or_else(|| {
+            "nothing in the selection can be changed".to_owned()
+        })));
     }
 
     let operation = bulk::create_on(

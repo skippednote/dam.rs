@@ -350,6 +350,110 @@ async fn the_bulk_contract_holds() {
     creation_queues_the_job_and_status_reports_progress(&f).await;
     an_unknown_operation_is_404(&f).await;
     publication_is_a_bulk_kind_so_it_has_an_actor_and_a_trail(&f).await;
+    a_preview_counts_what_the_operation_will_refuse(&f).await;
+    a_selection_the_operation_can_do_nothing_with_is_refused(&f).await;
+}
+
+/// The dialog's number has to be the operation's number, and for delete it was not.
+///
+/// Scope was the only filter either side applied. The delete executor also refuses an asset under legal hold
+/// — `AND NOT legal_hold`, with the reason reported per row — so a selection holding four frozen assets
+/// previewed as 42 and finished as 38 done, 4 skipped. The operation was safe the whole time; the
+/// confirmation was wrong, in exactly the way this module's own note says it is not.
+async fn a_preview_counts_what_the_operation_will_refuse(f: &Fixture) {
+    let free = asset(&f.acme, "refusal-free.jpg").await;
+    let held = asset(&f.acme, "refusal-held.jpg").await;
+    sqlx::query("UPDATE assets SET legal_hold = true WHERE id = $1")
+        .bind(held)
+        .execute(&f.acme)
+        .await
+        .expect("place a hold");
+
+    let preview = json(
+        send(
+            &f.app,
+            post(
+                "/bulk/preview",
+                &f.key,
+                json!({"kind": "delete", "asset_ids": [free, held]}),
+            ),
+        )
+        .await,
+    )
+    .await;
+    // The attempt count, unchanged, so it still matches the job's own `target_count` and its progress
+    // arithmetic. The refusal is reported beside it rather than folded into it.
+    assert_eq!(preview["target_count"], 2, "{preview}");
+    assert_eq!(preview["out_of_scope"], 0);
+    assert_eq!(preview["blocked"], 1, "{preview}");
+    assert_eq!(
+        preview["blocked_reason"], "1 is under legal hold and cannot be deleted",
+        "{preview}"
+    );
+
+    // A mixed selection still runs: deleting the deletable half is what somebody asked for, and the executor
+    // reports each refusal itself.
+    let accepted = json(
+        send(
+            &f.app,
+            post(
+                "/bulk",
+                &f.key,
+                json!({"kind": "delete", "asset_ids": [free, held]}),
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(accepted["target_count"], 2, "{accepted}");
+
+    // And a kind whose executor consults nothing of the sort reports no refusals, rather than inheriting a
+    // check its own code does not make.
+    let publishing = json(
+        send(
+            &f.app,
+            post(
+                "/bulk/preview",
+                &f.key,
+                json!({"kind": "publish", "asset_ids": [free, held]}),
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(publishing["blocked"], 0, "{publishing}");
+    assert_eq!(publishing["blocked_reason"], Value::Null);
+}
+
+/// An operation that could only ever do nothing is refused, with the reason.
+///
+/// The same argument the empty-selection 422 already makes: recorded instead, it would sit in the history as
+/// `partial` with nothing done, which reads as something that half worked.
+async fn a_selection_the_operation_can_do_nothing_with_is_refused(f: &Fixture) {
+    let held = asset(&f.acme, "all-held.jpg").await;
+    sqlx::query("UPDATE assets SET legal_hold = true WHERE id = $1")
+        .bind(held)
+        .execute(&f.acme)
+        .await
+        .expect("place a hold");
+
+    let response = send(
+        &f.app,
+        post(
+            "/bulk",
+            &f.key,
+            json!({"kind": "delete", "asset_ids": [held]}),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = json(response).await;
+    assert!(
+        serde_json::to_string(&body)
+            .unwrap_or_default()
+            .contains("legal hold"),
+        "the refusal has to say which rule stopped it: {body}"
+    );
 }
 
 /// Publishing is queued through the bulk machinery, not applied by a synchronous endpoint (Q.14).

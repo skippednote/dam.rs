@@ -153,7 +153,7 @@ pub struct Member {
 pub async fn list(conn: &mut PgConnection, tenant_id: Uuid) -> Result<Vec<Member>, Error> {
     let rows = sqlx::query(
         "SELECT i.id, i.email, i.display_name, m.role_names, m.is_tenant_admin, i.status, \
-                i.scim_managed, i.last_login_at, m.created_at, \
+                m.scim_managed, i.last_login_at, m.created_at, \
                 (SELECT count(*) FROM dam_global.api_keys k \
                  WHERE k.identity_id = i.id AND k.tenant_id = m.tenant_id \
                    AND k.revoked_at IS NULL \
@@ -252,7 +252,7 @@ pub struct Added {
     pub identity_existed: bool,
 }
 
-/// Adds somebody to a tenant, creating their identity if this deployment has never seen them.
+/// Adds somebody to a tenant and issues them a credential.
 ///
 /// Roles are *not* validated here — [`known_roles`] and [`unknown_roles`] do that, against a tenant
 /// connection this function does not hold. Splitting it that way keeps the check where the data is rather than
@@ -262,6 +262,61 @@ pub async fn add(
     tenant_id: Uuid,
     new: &NewMember,
 ) -> Result<Added, MemberRefusal> {
+    let mut tx = conn.begin().await?;
+    let attached = attach(&mut tx, tenant_id, new, Reactivate::UnlessProviderOwned).await?;
+
+    let api_key = ApiKey::generate();
+    sqlx::query(
+        "INSERT INTO dam_global.api_keys \
+         (id, tenant_id, identity_id, name, key_prefix, key_hash, scopes) \
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, '{}')",
+    )
+    .bind(tenant_id)
+    .bind(attached.identity_id)
+    .bind(format!("issued with access for {}", new.email.trim()))
+    .bind(api_key.prefix())
+    .bind(api_key.hash())
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(Added {
+        identity_id: attached.identity_id,
+        api_key: api_key.into_plaintext(),
+        identity_existed: attached.identity_existed,
+    })
+}
+
+/// Whether a disabled identity is brought back, and on whose authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reactivate {
+    /// A person adding somebody by hand. An account the identity provider owns is left alone: the provider may
+    /// have deprovisioned them for a reason, and the next sync would undo the change anyway.
+    UnlessProviderOwned,
+    /// The identity provider itself, which *is* the authority for an account it owns.
+    Always,
+}
+
+/// A membership, without a credential.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Attached {
+    pub identity_id: Uuid,
+    pub identity_existed: bool,
+}
+
+/// Attach somebody to a tenant, creating their identity if this deployment has never seen them.
+///
+/// **No credential.** [`add`] wraps this and mints one, because there is no login flow and a membership with
+/// nothing to authenticate with is inert. SCIM provisioning deliberately does *not*: the identity provider
+/// signs its people in, and putting an API key in a SCIM response would hand the provider a bearer token for a
+/// person, into its own logs, for an account it does not authenticate with. See `crate::scim`, which also
+/// documents what that leaves not working until SSO exists.
+pub async fn attach(
+    conn: &mut PgConnection,
+    tenant_id: Uuid,
+    new: &NewMember,
+    reactivate: Reactivate,
+) -> Result<Attached, MemberRefusal> {
     let email = new.email.trim();
     // Deliberately shallow. A full grammar rejects addresses that work, and the authoritative check is
     // whether mail arrives — which nothing here can do. This catches the typo that would otherwise become a
@@ -326,37 +381,36 @@ pub async fn add(
     // Somebody re-added after being removed still has their old identity row, and it may be disabled — which,
     // since `auth` allowlists `active`, would mean a membership whose keys do not work.
     //
-    // `NOT scim_managed` because an account the IdP owns is not this tenant's to re-enable: the IdP may have
-    // deprovisioned them for a reason, and the next sync would undo it anyway. The consequence is a membership
-    // whose keys do not work with nothing on screen explaining why, which is a gap G10·2b has to close — it
-    // is unreachable today because nothing sets the column.
-    sqlx::query(
-        "UPDATE dam_global.identities \
-         SET status = 'active', deprovisioned_at = NULL, updated_at = now() \
-         WHERE id = $1 AND NOT scim_managed",
-    )
-    .bind(identity_id)
-    .execute(&mut *tx)
-    .await?;
-
-    let api_key = ApiKey::generate();
-    sqlx::query(
-        "INSERT INTO dam_global.api_keys \
-         (id, tenant_id, identity_id, name, key_prefix, key_hash, scopes) \
-         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, '{}')",
+    // Whose authority applies is the caller's to state. A person adding somebody by hand does not get to
+    // re-enable an account the identity provider owns: the provider may have deprovisioned them for a reason,
+    // and the next sync would undo the change anyway. The provider itself does, because for an account it owns
+    // it *is* the authority. `Reactivate` makes that a decision rather than a default.
+    //
+    // The check is on *this tenant's* membership, not on the identity: since `0006` the link is per-tenant,
+    // because a person provisioned by one customer's provider is an ordinary colleague in another's, where an
+    // administrator is the only authority there is.
+    let provider_owned: bool = sqlx::query_scalar(
+        "SELECT coalesce(bool_or(scim_managed), false) FROM dam_global.tenant_members \
+         WHERE tenant_id = $1 AND identity_id = $2",
     )
     .bind(tenant_id)
     .bind(identity_id)
-    .bind(format!("issued with access for {email}"))
-    .bind(api_key.prefix())
-    .bind(api_key.hash())
-    .execute(&mut *tx)
+    .fetch_one(&mut *tx)
     .await?;
+    if reactivate == Reactivate::Always || !provider_owned {
+        sqlx::query(
+            "UPDATE dam_global.identities \
+         SET status = 'active', deprovisioned_at = NULL, updated_at = now() \
+         WHERE id = $1",
+        )
+        .bind(identity_id)
+        .execute(&mut *tx)
+        .await?;
+    }
 
     tx.commit().await?;
-    Ok(Added {
+    Ok(Attached {
         identity_id,
-        api_key: api_key.into_plaintext(),
         identity_existed,
     })
 }
@@ -388,9 +442,8 @@ pub async fn set_roles(
     lock_memberships(&mut tx, tenant_id).await?;
 
     let row = sqlx::query(
-        "SELECT m.role_names, m.is_tenant_admin, i.scim_managed \
+        "SELECT m.role_names, m.is_tenant_admin, m.scim_managed \
          FROM dam_global.tenant_members m \
-         JOIN dam_global.identities i ON i.id = m.identity_id \
          WHERE m.tenant_id = $1 AND m.identity_id = $2",
     )
     .bind(tenant_id)

@@ -547,7 +547,22 @@
 			</div>
 		{:else if flow.step === 'confirm'}
 			<span>
-				{describe(flow.kind, flow.preview.target_count)}?
+				<!--
+					Both numbers, and the button carries the one that will actually happen.
+
+					`target_count` is what the operation will attempt, matching the job's own figure so its
+					progress still reads `done + failed = target`. `blocked` is what the executor will refuse
+					among those — legal hold, for a delete — and it is a different fact from `out_of_scope`: an
+					out-of-scope id is somebody else's asset, and a blocked one is yours and frozen. Saying
+					"Delete 42" over a selection where four are held is the mismatch the preview exists to
+					prevent, and it was doing it.
+				-->
+				{describe(flow.kind, flow.preview.target_count - flow.preview.blocked)}?
+				{#if flow.preview.blocked > 0}
+					<span class="text-muted">
+						({flow.preview.blocked_reason} — {flow.preview.blocked === 1 ? 'it' : 'they'} will be skipped.)
+					</span>
+				{/if}
 				{#if flow.preview.out_of_scope > 0}
 					<span class="text-muted">
 						({flow.preview.out_of_scope} of the selection {flow.preview.out_of_scope === 1
@@ -561,7 +576,7 @@
 				class="rounded-md bg-accent px-2.5 py-1 font-medium text-accent-fg"
 				onclick={confirm}
 			>
-				{describe(flow.kind, flow.preview.target_count)}
+				{describe(flow.kind, flow.preview.target_count - flow.preview.blocked)}
 			</button>
 			<button type="button" class="text-xs underline" onclick={dismiss}>Cancel</button>
 		{:else if flow.step === 'running'}

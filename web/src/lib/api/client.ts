@@ -1836,3 +1836,39 @@ export async function updateMember(
 export async function removeMember(identityId: string): Promise<MemberRemoved> {
 	return request<MemberRemoved>(`/members/${identityId}`, { method: 'DELETE' });
 }
+
+// ─── SCIM provisioning (G10·2b) ─────────────────────────────────────────────
+
+export type ScimClient = components['schemas']['ClientView'];
+export type ScimRegistered = components['schemas']['RegisteredClient'];
+
+/**
+ * The identity providers wired up to this tenant.
+ *
+ * `last_sync_status` is what makes a stalled integration visible: a provider that has stopped calling looks
+ * exactly like one that never started unless something records the contact. `null` means it has never called.
+ */
+export async function listScimClients(): Promise<ScimClient[]> {
+	return request<ScimClient[]>('/scim/clients');
+}
+
+/**
+ * Registers a provider and returns its token once.
+ *
+ * Stored as a hash, so it cannot be read back. Deliberately not reachable with a provisioning token: one that
+ * could mint another would be a credential that cannot be revoked.
+ */
+export async function registerScimClient(body: {
+	label: string;
+	scopes: string[];
+}): Promise<ScimRegistered> {
+	return request<ScimRegistered>('/scim/clients', {
+		method: 'POST',
+		body: JSON.stringify(body)
+	});
+}
+
+/** Revokes a provider. Terminal — a leaked provisioning token can create and remove accounts. */
+export async function revokeScimClient(id: string): Promise<void> {
+	await request<unknown>(`/scim/clients/${id}/revoke`, { method: 'POST' });
+}

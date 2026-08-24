@@ -51,7 +51,17 @@ function member(overrides: Partial<Member> = {}): Member {
 	};
 }
 
+type Provider = {
+	id: string;
+	label: string;
+	scopes: string[];
+	last_sync_at: string | null;
+	last_sync_status: string | null;
+	revoked_at: string | null;
+};
+
 type Options = {
+	providers?: Provider[];
 	members?: Member[];
 	roles?: string[];
 	listStatus?: number;
@@ -100,6 +110,32 @@ async function connect(page: Page, options: Options = {}) {
 			return route.fulfill({
 				json: options.removed ?? { keys_revoked: 2, identity_disabled: true }
 			});
+		}
+		if (url.pathname === '/scim/clients' && method === 'GET') {
+			if (options.listStatus) {
+				return route.fulfill({ status: options.listStatus, json: { reason: 'no' } });
+			}
+			return route.fulfill({ json: options.providers ?? [] });
+		}
+		if (url.pathname === '/scim/clients' && method === 'POST') {
+			return route.fulfill({
+				status: 201,
+				json: {
+					client: {
+						id: 'ffffffff-0000-4000-8000-00000000000f',
+						label: 'Okta',
+						scopes: ['Users'],
+						last_sync_at: null,
+						last_sync_status: null,
+						revoked_at: null
+					},
+					token: 'damrs_scim_0123456789abcdef',
+					warning: 'This token is shown only here.'
+				}
+			});
+		}
+		if (url.pathname.endsWith('/revoke')) {
+			return route.fulfill({ status: 200, json: {} });
 		}
 		if (url.pathname === '/me') {
 			return route.fulfill({ json: { id: 'p-ada', name: 'Ada', email: 'a@x' } });
@@ -235,6 +271,102 @@ test('a caller without the gate is told, not shown an error', async ({ page }) =
 	await expect(page.getByRole('status')).toContainText('needs administrator access');
 	await expect(page.getByRole('alert')).toHaveCount(0);
 	await expect(page.getByRole('button', { name: 'Add someone' })).toHaveCount(0);
+});
+
+test('with no provider connected the page says the manual path is the whole story', async ({
+	page
+}) => {
+	await connect(page);
+	await page.goto('/people');
+	await expect(page.getByText('None connected')).toContainText('added by hand below');
+});
+
+test('a provisioning token is shown once and stays until dismissed', async ({ page }) => {
+	// Stored as a hash, so it cannot be read back. A toast here is a provider that can never be configured.
+	await connect(page);
+	await page.goto('/people');
+	await page.getByRole('button', { name: 'Connect a provider' }).click();
+	await page.getByLabel('Name it').fill('Okta');
+	await page.getByRole('button', { name: 'Connect and issue a token' }).click();
+
+	const panel = page.getByTestId('provider-token');
+	await expect(panel.getByLabel('Provisioning token')).toHaveValue('damrs_scim_0123456789abcdef');
+	await expect(panel).toContainText('shown only here');
+	await panel.getByRole('button', { name: 'I have saved it' }).click();
+	await expect(panel).toHaveCount(0);
+});
+
+test('a provider that has never called says so, rather than looking healthy', async ({ page }) => {
+	// A stalled integration and one that was never finished are the same thing on screen unless the contact
+	// is recorded — which is why the server writes `last_sync_at` on reads as well as writes.
+	await connect(page, {
+		providers: [
+			{
+				id: 'a',
+				label: 'Never called',
+				scopes: ['Users'],
+				last_sync_at: null,
+				last_sync_status: null,
+				revoked_at: null
+			},
+			{
+				id: 'b',
+				label: 'Working',
+				scopes: ['Users'],
+				last_sync_at: '2026-08-24T09:00:00Z',
+				last_sync_status: 'list',
+				revoked_at: null
+			}
+		]
+	});
+	await page.goto('/people');
+	await expect(page.getByTestId('provider-Never called')).toContainText('Has never called');
+	await expect(page.getByTestId('provider-Working')).toContainText('Last called');
+	await expect(page.getByTestId('provider-Working')).toContainText('list');
+});
+
+test('revoking a provider says what it does not do', async ({ page }) => {
+	// The alarming and wrong claim would be that the accounts go too. Revoking stops the sync; the people it
+	// provisioned keep their access, and somebody has to decide about them separately.
+	await connect(page, {
+		providers: [
+			{
+				id: 'a',
+				label: 'Okta',
+				scopes: ['Users'],
+				last_sync_at: '2026-08-24T09:00:00Z',
+				last_sync_status: 'list',
+				revoked_at: null
+			}
+		]
+	});
+	await page.goto('/people');
+	const row = page.getByTestId('provider-Okta');
+	await row.getByRole('button', { name: 'Revoke' }).click();
+	await expect(row).toContainText('cannot be brought back');
+	await expect(row).toContainText('accounts it created keep their access');
+	await row.getByRole('button', { name: 'Revoke it' }).click();
+	await expect(page.getByRole('status')).toContainText('accounts it created are untouched');
+});
+
+test('a revoked provider is still listed, marked', async ({ page }) => {
+	await connect(page, {
+		providers: [
+			{
+				id: 'a',
+				label: 'Old Okta',
+				scopes: ['Users'],
+				last_sync_at: '2026-01-01T09:00:00Z',
+				last_sync_status: 'list',
+				revoked_at: '2026-02-01T09:00:00Z'
+			}
+		]
+	});
+	await page.goto('/people');
+	const row = page.getByTestId('provider-Old Okta');
+	await expect(row).toContainText('Revoked');
+	// Nothing to press: revocation is terminal, and a button that could only fail is worse than no button.
+	await expect(row.getByRole('button')).toHaveCount(0);
 });
 
 test('the people screen has no accessibility violations', async ({ page }) => {

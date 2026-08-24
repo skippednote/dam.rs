@@ -1861,6 +1861,96 @@ export interface paths {
         patch: operations["amend_type"];
         trace?: never;
     };
+    "/scim/clients": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Lists the provisioning clients a tenant has. */
+        get: operations["clients"];
+        put?: never;
+        /** Registers a provisioning client and shows its token once. */
+        post: operations["register"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/scim/clients/{id}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Revokes a provisioning client. Terminal. */
+        post: operations["revoke"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/scim/v2/ServiceProviderConfig": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** What this implementation supports, which providers fetch before anything else. */
+        get: operations["config"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/scim/v2/Users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Lists or searches users. */
+        get: operations["list"];
+        put?: never;
+        /** Creates a user. */
+        post: operations["create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/scim/v2/Users/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Reads one user. */
+        get: operations["read"];
+        /** Replaces a user, which is how Okta pushes an update. */
+        put: operations["replace"];
+        post?: never;
+        /** Removes a user, which is how Okta deprovisions. */
+        delete: operations["remove"];
+        options?: never;
+        head?: never;
+        /** Patches a user — the path Entra uses to deprovision. */
+        patch: operations["patch"];
+        trace?: never;
+    };
     "/search": {
         parameters: {
             query?: never;
@@ -2721,6 +2811,15 @@ export interface components {
              *     detail endpoint, because no grid cell shows them.
              */
             is_favourite: boolean;
+            /**
+             * @description Whether the asset is frozen: it cannot be deleted, and tiering will leave it where it is.
+             *
+             *     On a grid row because the bulk bar is where a selection gets deleted. The detail panel has drawn a
+             *     badge for this since the first release, with the reasoning that "a user who cannot delete an asset
+             *     deserves to know why rather than to meet a failing button" — and the bar beside it offered Delete
+             *     regardless, because `legal_hold` was only on the detail payload and the grid could not know.
+             */
+            legal_hold: boolean;
             /** @description Sniffed on ingest, never taken from the client (`assets.mime`). */
             mime: string;
             provenance_state: components["schemas"]["ProvenanceState"];
@@ -2947,6 +3046,18 @@ export interface components {
         };
         /** @description What a preview reports. */
         BulkPreview: {
+            /**
+             * Format: int64
+             * @description How many of the targets this operation will refuse, having already passed scope.
+             *
+             *     Distinct from `out_of_scope`, because the two are different facts and the caller can act on each: an
+             *     out-of-scope id belongs to somebody else, and a refused one is theirs and frozen. Named as a count for
+             *     the same §7 reason — though the asymmetry is deliberate rather than reflexive here, since the caller can
+             *     already see these assets and their held state is on every grid row.
+             */
+            blocked: number;
+            /** @description Why, in one sentence, when anything is blocked. `None` when nothing is. */
+            blocked_reason?: string | null;
             kind: string;
             /**
              * Format: int64
@@ -3020,6 +3131,18 @@ export interface components {
             bytes: number;
             /** @description `image`, `video`, `audio`, `document` or `other`. */
             class: string;
+        };
+        ClientView: {
+            /** Format: uuid */
+            id: string;
+            label: string;
+            /** Format: date-time */
+            last_sync_at?: string | null;
+            /** @description What the provider last did, so a stalled integration is visible. `None` means it has never called. */
+            last_sync_status?: string | null;
+            /** Format: date-time */
+            revoked_at?: string | null;
+            scopes: string[];
         };
         /** @description One collection. */
         CollectionView: {
@@ -3480,6 +3603,10 @@ export interface components {
             format?: string;
             territory?: string | null;
         };
+        Email: {
+            primary: boolean;
+            value: string;
+        };
         /**
          * @description An asset's engagement, as the caller may see it.
          *
@@ -3746,6 +3873,20 @@ export interface components {
              */
             total: number;
         };
+        ListResponse: {
+            /**
+             * @description Capitalised, per RFC 7644 §3.4.2. A lowercase `resources` is a provider that reads zero users and
+             *     concludes the directory is empty — then creates everybody again.
+             */
+            Resources: components["schemas"]["ScimUser"][];
+            /** Format: int64 */
+            itemsPerPage: number;
+            schemas: string[];
+            /** Format: int64 */
+            startIndex: number;
+            /** Format: int64 */
+            totalResults: number;
+        };
         /** @description A machine-written value, as the disclosure surface shows it (G2). */
         MachineFieldView: {
             /** Format: double */
@@ -3838,6 +3979,13 @@ export interface components {
             /** Format: uuid */
             into: string;
         };
+        Meta: {
+            created: string;
+            lastModified: string;
+            /** @description Where to re-read this user. A provider follows it rather than reconstructing the path. */
+            location: string;
+            resourceType: string;
+        };
         /** @description The outcome of a metadata edit. */
         MetadataAccepted: {
             /**
@@ -3877,6 +4025,9 @@ export interface components {
             is_default: boolean;
             key: string;
             label: string;
+        };
+        Name: {
+            formatted?: string | null;
         };
         /** @description What a new collection needs. */
         NewCollectionBody: {
@@ -4098,6 +4249,17 @@ export interface components {
              * @description Pass back as `before_seq` for the next page. `None` at the end of the log.
              */
             next_before_seq?: number | null;
+        };
+        PatchBody: {
+            /** @description Capitalised, per RFC 7644 §3.5.2. */
+            Operations?: components["schemas"]["PatchOperation"][];
+            schemas?: string[];
+        };
+        /** @description One PATCH operation. */
+        PatchOperation: {
+            op: string;
+            path?: string | null;
+            value?: unknown;
         };
         /** @description A person, as a thread names them. */
         PersonView: {
@@ -4562,6 +4724,17 @@ export interface components {
              */
             site_url: string;
         };
+        RegisterClientBody: {
+            label: string;
+            /** @description `Users`, `Groups`. Defaults to `Users` alone, because that is what this implementation serves. */
+            scopes?: string[];
+        };
+        RegisteredClient: {
+            client: components["schemas"]["ClientView"];
+            /** @description The token, in readable form, once. */
+            token: string;
+            warning: string;
+        };
         /** @description What a registration returns, once. */
         RegisteredView: {
             /** @description The API key the remote authenticates with. Stored as a hash, so this is the only time it exists. */
@@ -4793,6 +4966,34 @@ export interface components {
             searchable: boolean;
             /** Format: uuid */
             taxonomy_id?: string | null;
+        };
+        /** @description A SCIM error, in the shape a provider parses. */
+        ScimError: {
+            detail: string;
+            schemas: string[];
+            scimType?: string | null;
+            /**
+             * @description A string, per RFC 7644 §3.12. A number here is rejected by strict providers, and the rejection looks
+             *     like a network problem from their side.
+             */
+            status: string;
+        };
+        ScimUser: {
+            active: boolean;
+            displayName?: string | null;
+            emails: components["schemas"]["Email"][];
+            externalId?: string | null;
+            /** @description Ours, and stable. A provider stores it and uses it for every later call. */
+            id: string;
+            meta: components["schemas"]["Meta"];
+            name?: null | components["schemas"]["Name"];
+            /**
+             * @description The tenant roles this person holds. Not a SCIM core attribute; carried so a provider that maps groups
+             *     can see what it produced.
+             */
+            roles: string[];
+            schemas: string[];
+            userName: string;
         };
         /** @description What to set an asset's type to. `null` clears it, which is different from omitting the member. */
         SetAssetTypeRequest: {
@@ -5053,6 +5254,15 @@ export interface components {
             /** Format: date-time */
             recorded_at: string;
             territory?: string | null;
+        };
+        /** @description What a provider sends to create or replace a user. */
+        UserBody: {
+            /** @description Absent means active: a provider creating somebody without saying is creating an enabled account. */
+            active?: unknown;
+            displayName?: string | null;
+            externalId?: string | null;
+            roles?: string[];
+            userName?: string | null;
         };
         /** @description Why an edit was refused, field by field. */
         ValidationProblem: {
@@ -9767,6 +9977,215 @@ export interface operations {
             };
             /** @description A named field does not exist */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    clients: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClientView"][];
+                };
+            };
+        };
+    };
+    register: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegisterClientBody"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegisteredClient"];
+                };
+            };
+        };
+    };
+    revoke: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The client */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revoked */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    config: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Capabilities */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A ListResponse */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserBody"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    read: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The user */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    replace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserBody"];
+            };
+        };
+        responses: {
+            /** @description Replaced */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    remove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PatchBody"];
+            };
+        };
+        responses: {
+            /** @description Patched */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -634,11 +634,17 @@ async fn a_scim_managed_member_is_refused_locally() {
     )
     .await
     .expect("add");
-    sqlx::query("UPDATE dam_global.identities SET scim_managed = true WHERE id = $1")
-        .bind(managed.identity_id)
-        .execute(&f.global)
-        .await
-        .expect("mark managed");
+    // On the membership, not the identity: since `0006_scim_link_is_per_tenant.sql` the link is per-tenant,
+    // because a person one customer's provider manages is an ordinary colleague in another's.
+    sqlx::query(
+        "UPDATE dam_global.tenant_members SET scim_managed = true \
+         WHERE tenant_id = $1 AND identity_id = $2",
+    )
+    .bind(f.tenant_id)
+    .bind(managed.identity_id)
+    .execute(&f.global)
+    .await
+    .expect("mark managed");
 
     let attempt = members::set_roles(
         &mut conn,

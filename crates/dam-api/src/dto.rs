@@ -67,6 +67,13 @@ pub struct AssetSummary {
     /// they act on a selection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub published_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Whether the asset is frozen: it cannot be deleted, and tiering will leave it where it is.
+    ///
+    /// On a grid row because the bulk bar is where a selection gets deleted. The detail panel has drawn a
+    /// badge for this since the first release, with the reasoning that "a user who cannot delete an asset
+    /// deserves to know why rather than to meet a failing button" — and the bar beside it offered Delete
+    /// regardless, because `legal_hold` was only on the detail payload and the grid could not know.
+    pub legal_hold: bool,
 }
 
 /// One page of results.

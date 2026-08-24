@@ -33,9 +33,9 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, colour | dedup and colour **done** (M4a); the rest needs model files — see M4 below |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | **done** — two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query, the MCP server |
 | **M6** Workflow/proofing, annotations, analytics | **done** — annotations (M6a), proofing (M6b), analytics (M6c) |
-| **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | G19 **done**; G7 crosswalk and dry-run **done**, transfer needs a source connector; G10 audit chain and user administration **done**, SCIM and BYOK open |
+| **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | G19 **done**; G7 crosswalk and dry-run **done**, transfer needs a source connector; G10 audit chain, user administration and SCIM **done**; BYOK open |
 
-**Next up, in order:** Pre-GA G10·2b SCIM → G7·2 source connectors (which wants a decision on the `csv` crate). M3d·5 (the Drupal module) is deferred until there is a Drupal environment to verify against — see its entry. M4b (local ONNX models) stays parked on the model-distribution question.
+**Next up, in order:** Pre-GA G10·3 BYOK (a configuration slice) → G7·2 source connectors. M3d·5 (the Drupal module) is deferred until there is a Drupal environment to verify against — see its entry. M4b (local ONNX models) stays parked on the model-distribution question.
 M4b (local models) is parked on a distribution decision — see the M4 section.
 
 **`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
@@ -1528,10 +1528,41 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   two screens. Driving the real browser against the real server is what caught the accent-button contrast
   failure and three colour tokens I had invented.
 
-  *Found and not fixed here:* the bulk action bar offers **Delete** for a selection under legal hold. The
-  detail panel's own comment says a user who cannot delete deserves to know why "rather than to meet a failing
-  button", and the bar does not honour it — `assets.legal_hold` is on `Detail` and not on `Summary`, so the
-  grid cannot currently know. That is a listing-query change and belongs in its own slice.
+  *Found here, fixed in G10·1b below:* the bulk action bar offers **Delete** for a selection under legal hold.
+
+- [x] **G10·1b The confirmation that promised a number the operation would not deliver.** Started as the
+  cosmetic item G10·1 left open — the bulk bar offering **Delete** over held assets — and the interesting part
+  was one layer down.
+
+  **The data was never at risk.** `apply_delete` is `AND NOT legal_hold` and reports the reason per row, so a
+  held asset was always skipped rather than deleted. Checking that first was worth more than the button.
+
+  **`bulk::preview` was the actual defect, and it contradicted its own documentation.** `dam_api::bulk`'s
+  module note says "`POST /bulk/preview` filters the ids exactly as `POST /bulk` will, so the number in the
+  confirmation dialog is the number that will be touched… the drift is a dialog that says 40 and an operation
+  that does 38." Scope was the only filter either side applied. So a selection holding four frozen assets
+  previewed as 42 and finished as 38 done, 4 skipped — precisely the drift, in the code that claims not to
+  have it. The evidence was already in the browser suite, which asserts `partial: 1 applied, 1 failed` with
+  "legal hold blocks deletion": the dialog's promise being broken one screen later, tested and passing.
+
+  A preview now reports `blocked` and `blocked_reason` — what the *operation* will refuse among targets that
+  already passed scope. Kept separate from `out_of_scope` because they are different facts a caller can act on
+  differently: an out-of-scope id belongs to somebody else, a blocked one is theirs and frozen. `target_count`
+  stays the attempt count so it still matches the job's own and `done + failed = target` holds; the dialog does
+  the subtraction and says both numbers. Per kind rather than as a shared predicate, because the refusal is the
+  delete executor's and putting it in front of operations whose executors do not make it would be inventing a
+  rule.
+
+  **An operation whose every target is refused is now a 422**, by the same argument the empty-selection case
+  already makes: recorded instead, it sits in the history as `partial` with nothing done, which reads as
+  something that half worked. A *mixed* selection still runs, because deleting the deletable half is what was
+  asked for.
+
+  **And `legal_hold` moved from `Detail` to `Summary`**, which is what let the grid draw a `Held` badge — the
+  fact belongs where the selection is assembled, not in its result. It was on `Detail` *and* would have been on
+  `Summary`: two sources for one truth, so the `Detail` field went.
+
+  1 db case, 2 API cases, 2 browser cases.
 
 - [x] **G10·2a·0 Disabling a person did nothing.** Found while scoping the removal half of user
   administration. `auth::authenticate` joined `tenants` and checked its status — a fix with its own write-up —
@@ -1617,33 +1648,87 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   duplicate schema name silently with the last one winning — which showed up as the collections screen's own
   type changing shape.
 
-- [ ] **G10·2b SCIM 2.0**, on top of that. Notes from reading the schema:
+- [x] **G10·2b SCIM 2.0.** `scim_clients` had existed since migration 0002 with nothing reading it, alongside
+  `identities.scim_external_id`, `scim_managed` and `deprovisioned_at` in the same state.
 
-  **`identities` is global and `identities_scim_idx` is a global unique index on `scim_external_id`.** Two
-  customers whose IdPs number their users independently — and Okta's default `externalId` is an opaque per-org
-  id — will collide, and the failure is one customer's provisioning breaking because of another's. The fix is
-  a column saying *whose* external id it is: `scim_client_id` on `identities` with the unique index moved to
-  `(scim_client_id, scim_external_id)`. One column, one index swap, and the client already carries the tenant.
+  **Provisioning creates an account nobody can sign into, and that is the honest answer.** There is no login
+  flow here — a person authenticates with an API key, which is why `members::add` mints one. SCIM must not: the
+  identity provider is the thing that signs its people in, and putting a key in a SCIM response would hand the
+  provider a long-lived bearer token for a person, into its own logs, for an account it does not authenticate
+  with, with nobody to give it to. So provisioning creates the identity, the membership and the roles, and no
+  credential. Until SSO exists a provisioned person has access and no way to exercise it, and an administrator
+  issuing them a key from the People screen is the interim answer. The *deprovisioning* half — the half 0002
+  says a security questionnaire asks about — is complete and unaffected. `members::add` was split into
+  `attach` plus the key issuance so both paths share the one that matters.
 
-  **`scim_managed` has to make the human path refuse.** 0002 says so directly: "SCIM-managed identities must
-  not be editable in the damrs UI, or the IdP will overwrite local edits on next sync and the customer will
-  report it as data loss." That is a constraint on G10·2a, which is another reason it lands first.
+  **The schema had the SCIM state on the wrong table, and it took two migrations to see it.** 0002 put
+  `scim_external_id` and `scim_managed` on `identities` — one row per person across the deployment — and indexed
+  the id uniquely across the whole table. `0005_scim_client_scope.sql` fixed the obvious half: customers'
+  providers number users independently and Okta's default `externalId` is an opaque per-org id, so the second
+  tenant to provision a colliding id got a constraint violation in a sync they do not control.
 
-  **A gap left open by G10·2a:** adding somebody does not re-enable an identity the IdP owns, because the IdP
-  may have deprovisioned them for a reason and the next sync would undo it. The result is a membership whose
-  keys do not work with nothing on screen saying why — unreachable today, since nothing sets `scim_managed`,
-  and this slice's problem to close.
+  Reviewing my own code before running the suite found what was underneath. The columns were still
+  single-valued on a shared row, so **two tenants' providers provisioning the same person overwrote each
+  other's link** — the second silently took ownership and the first tenant's sync then failed its own ownership
+  check, its provisioning broken because a different customer provisioned the same consultant. And
+  **`scim_managed` made somebody uneditable everywhere**: provisioned by one customer's provider, they could no
+  longer have their roles changed by an administrator in another tenant, where no provider manages them at all.
 
-  **PATCH is not optional.** Entra deprovisions with `PATCH` and `active: false` rather than `DELETE`, so a
-  `DELETE`-only implementation fails against the second-largest IdP in the market. Filtering can stay minimal
-  — `userName eq` and `externalId eq` are what IdPs actually send — but the envelope cannot: `ListResponse`,
-  `meta.resourceType`, and `urn:ietf:params:scim:api:messages:2.0:Error` are what make the difference between
-  working and being rejected at setup.
+  `0006_scim_link_is_per_tenant.sql` moves the three columns to `tenant_members`, keyed exactly right.
+  `status` and `deprovisioned_at` stay on `identities`, which is not an inconsistency: whether an account works
+  is global, and who provisions it is not. Two migrations rather than an edited one, because 0005 was already
+  applied to a database and rewriting an applied migration is a checksum failure and a reset somebody has to
+  do by hand.
 
-  **`scim_clients` is another table with no reader.** Its token is not an `api_keys` row and should not become
-  one: a SCIM client is not a tenant member, holds no ABAC predicate, and manages identities rather than
-  reading assets. That is a second authenticator in a codebase that deliberately has one, so it needs saying
-  out loud rather than arriving as a convenience.
+  **Two more refusals rather than silent drops.** A role the tenant does not define is a named 400 listing what
+  it *does* define — the same trap the human path documents, since `auth` ignores an unresolvable role name and
+  the provisioned person would simply see nothing. And a `userName` change is refused with what to do instead:
+  it is the email, `identities` is unique on it globally, and a provider told its rename applied never sends it
+  again.
+
+  **Both deprovisioning paths, because there are two.** Okta sends `DELETE`, Entra sends
+  `PATCH active: false`. Implementing one leaves the other silently unable to offboard anybody. Both revoke
+  credentials; `DELETE` also drops the membership, which is the difference, and the audit payload says which
+  happened.
+
+  **Entra sends the string `"False"`.** Not the boolean. A strict parse rejects it, the sync fails, and the
+  symptom is an employee who has left and still has access — the exact failure SCIM is bought to prevent. Read
+  from either shape, case-insensitively, and `op` matched the same way because the specification says
+  lowercase and Entra capitalises.
+
+  **The envelope is the integration.** `status` is a *string* in an error; `Resources` is capitalised in a
+  `ListResponse`; `startIndex` is 1-based, and treating it as an offset drops the first user of every sync;
+  `application/scim+json` on the way out. A provider that cannot parse a response fails silently from our side.
+
+  **An unsupported filter or op is refused by name rather than ignored.** A filter we drop is a provider
+  receiving the whole directory and concluding every user already matches; a PATCH we accept and drop is a
+  provider that will never send it again. Only `userName eq` and `externalId eq` are supported, which is what
+  providers actually send — the specification's filter grammar is large and implementing it would be a parser
+  nothing exercises.
+
+  **A provider may only touch what it provisioned**, or one tenant's misconfigured provider disables somebody
+  an administrator added and the audit trail shows the provider's token doing it. Attributed to `system` with
+  the provider named, never to a person: an audit row naming somebody who was asleep is worse than one naming a
+  machine.
+
+  **`last_sync_at` and `last_sync_status`** — two more columns 0002 declared and nothing filled — are written
+  on reads as well as writes, because the most common provider request is a `GET` and a healthy integration
+  that only ever lists would otherwise look dead.
+
+  **A provisioning token cannot mint another.** Registration takes the ordinary `Manage` gate; a credential
+  that could issue its own successor is one that cannot be revoked. And SCIM is a *second* authenticator in a
+  codebase that deliberately has one — justified because a client holds no ABAC predicate and has no
+  membership, so there is nothing for `caller::authorize` to compile, and giving it one would make the
+  provisioning system a user of the library it provisions.
+
+  8 db cases, 16 API sub-cases, 6 browser cases. Driven live against the dev tenant as a provider would:
+  ServiceProviderConfig, provision, `userName eq` filter, the Entra `"False"` PATCH, reactivate, `DELETE`, and
+  the whole lifecycle in the hash chain — 17 entries, verified intact afterwards.
+
+  *Not built:* Groups. `scim_clients.scopes` advertises it and a `Users`-only token is refused for it by name,
+  so a provider learns rather than guesses. Mapping an IdP group onto a tenant role is a real feature and its
+  own slice; claiming support and silently ignoring group pushes would be the version of this that wastes
+  somebody's afternoon.
 
 - [ ] **G10·3 BYOK.** §19's own note says SSE-KMS with a per-tenant key, and that "building anything here
   would be worse". That makes this a deployment and configuration slice rather than a code one, and it should

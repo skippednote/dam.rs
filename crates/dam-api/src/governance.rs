@@ -134,7 +134,7 @@ pub async fn set_legal_hold(
         .await?
         .ok_or(Failure::NotFound)?;
 
-    if existing.legal_hold == body.held {
+    if existing.summary.legal_hold == body.held {
         conn.commit().await?;
         return Ok(Json(LegalHoldView {
             asset_id,

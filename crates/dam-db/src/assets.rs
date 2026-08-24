@@ -38,6 +38,13 @@ pub struct Summary {
     /// difference between "in the library" and "on a public page" is the one a person needs to see before
     /// they act.
     pub published_at: Option<DateTime<Utc>>,
+    /// Blocks deletion and tiering.
+    ///
+    /// On a summary, not only on the detail, because the bulk bar is where a selection gets deleted and it had
+    /// no way to know. The detail panel had shown a badge for this since the first release — "so a user who
+    /// cannot delete an asset deserves to know why rather than to meet a failing button" — and the bar next to
+    /// it offered Delete regardless, which is exactly the failing button that comment is about.
+    pub legal_hold: bool,
 }
 
 /// One page, with the total the same predicate produced.
@@ -152,6 +159,7 @@ where
     let mut builder: QueryBuilder<Postgres> = QueryBuilder::new(
         "SELECT assets.id, assets.filename, assets.mime, assets.bytes, assets.width, assets.height, \
                 assets.rights_state, assets.provenance_state, assets.published_at, \
+                assets.legal_hold, \
                 placement.storage_class, placement.restore_state, \
                 count(*) OVER () AS total \
          FROM assets ",
@@ -200,6 +208,7 @@ where
                 // the kind of cost that only shows up at a hundred thousand assets. Populated by 4.x.
                 tag_confidence: None,
                 published_at: row.get("published_at"),
+                legal_hold: row.get("legal_hold"),
             })
         })
         .collect::<Result<Vec<Summary>, Error>>()?;
@@ -237,6 +246,7 @@ where
     let mut builder: QueryBuilder<Postgres> = QueryBuilder::new(
         "SELECT assets.id, assets.filename, assets.mime, assets.bytes, assets.width, assets.height, \
                 assets.rights_state, assets.provenance_state, assets.published_at, \
+                assets.legal_hold, \
                 placement.storage_class, placement.restore_state, \
                 count(*) OVER () AS total \
          FROM assets \
@@ -284,6 +294,7 @@ where
                 // the kind of cost that only shows up at a hundred thousand assets. Populated by 4.x.
                 tag_confidence: None,
                 published_at: row.get("published_at"),
+                legal_hold: row.get("legal_hold"),
             })
         })
         .collect::<Result<Vec<Summary>, Error>>()?;
@@ -366,7 +377,6 @@ pub struct Detail {
     pub content_hash: String,
     pub status: String,
     pub enrichment_state: String,
-    pub legal_hold: bool,
     pub release_at: Option<chrono::DateTime<chrono::Utc>>,
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
     pub version_no: i32,
@@ -430,6 +440,7 @@ where
             provenance_state: parse_provenance(&row.get::<String, _>("provenance_state"))?,
             tag_confidence: None,
             published_at: row.get("published_at"),
+            legal_hold: row.get("legal_hold"),
         },
         values: row.get("values"),
         technical: row.get("technical"),
@@ -440,7 +451,6 @@ where
         content_hash: row.get("content_hash"),
         status: row.get("status"),
         enrichment_state: row.get("enrichment_state"),
-        legal_hold: row.get("legal_hold"),
         release_at: row.get("release_at"),
         expires_at: row.get("expires_at"),
         version_no: row.get("version_no"),
@@ -456,6 +466,32 @@ where
 ///
 /// A stale index is permissive (see `dam_search::document`), so an id the index returned may name an asset
 /// the caller cannot see. This is what makes that harmless.
+/// How many of `candidates` are under legal hold.
+///
+/// Separate from [`visible_among`] rather than folded into it, because the two answer different questions and
+/// only one of them is a disclosure: scope decides what a caller may know about, and a hold is a fact about an
+/// asset they can already see. Callers pass the already-scoped set.
+///
+/// Exists because `bulk::preview` promised a number the delete executor would not deliver. The executor
+/// refuses a held asset — `AND NOT legal_hold` — and reports the reason per row, so the operation was always
+/// safe; what was wrong was the confirmation dialog, which counted the whole selection and then watched four
+/// of them skip. That is the exact mismatch `dam_api::bulk`'s own module note claims not to have.
+pub async fn held_among<'e, E>(executor: E, candidates: &[Uuid]) -> Result<i64, Error>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    if candidates.is_empty() {
+        return Ok(0);
+    }
+    Ok(sqlx::query_scalar(
+        "SELECT count(*) FROM assets \
+         WHERE id = ANY($1) AND legal_hold AND deleted_at IS NULL",
+    )
+    .bind(candidates.to_vec())
+    .fetch_one(executor)
+    .await?)
+}
+
 pub async fn visible_among<'e, E>(
     executor: E,
     predicate: &AccessPredicate,

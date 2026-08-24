@@ -19,7 +19,7 @@
 	import TierBadge from '$lib/components/state/TierBadge.svelte';
 	import RightsBadge from '$lib/components/state/RightsBadge.svelte';
 	import type { AssetSummary } from './types';
-	import { Archive, Broadcast, ImageBroken, Star } from 'phosphor-svelte';
+	import { Archive, Broadcast, ImageBroken, Lock, Star } from 'phosphor-svelte';
 
 	let {
 		items,
@@ -391,6 +391,25 @@
 											>
 												<Broadcast size={12} aria-hidden="true" />
 												Public
+											</span>
+										{/if}
+										{#if asset.legal_hold}
+											<!--
+											Legal hold: this asset cannot be deleted and tiering will leave it alone.
+
+											Here as well as on the detail panel because the bulk bar is two rows below,
+											and somebody assembling a selection to delete should see which of it is
+											frozen while they are choosing — not in the operation's result. Form rather
+											than colour, like the published badge, since the colour channel belongs to
+											rights.
+										-->
+											<span
+												data-testid="hold-badge"
+												title="Under legal hold — cannot be deleted"
+												class="inline-flex items-center gap-1 rounded-md border border-state-neutral bg-surface px-2 py-0.5 text-xs text-fg"
+											>
+												<Lock size={12} aria-hidden="true" />
+												Held
 											</span>
 										{/if}
 										{#if asset.average_stars !== null && asset.average_stars !== undefined}

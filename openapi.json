@@ -5409,6 +5409,245 @@
         }
       }
     },
+    "/scim/clients": {
+      "get": {
+        "tags": [
+          "scim"
+        ],
+        "summary": "Lists the provisioning clients a tenant has.",
+        "operationId": "clients",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ClientView"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "scim"
+        ],
+        "summary": "Registers a provisioning client and shows its token once.",
+        "operationId": "register",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterClientBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegisteredClient"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/scim/clients/{id}/revoke": {
+      "post": {
+        "tags": [
+          "scim"
+        ],
+        "summary": "Revokes a provisioning client. Terminal.",
+        "operationId": "revoke",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The client",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Revoked"
+          }
+        }
+      }
+    },
+    "/scim/v2/ServiceProviderConfig": {
+      "get": {
+        "tags": [
+          "scim"
+        ],
+        "summary": "What this implementation supports, which providers fetch before anything else.",
+        "operationId": "config",
+        "responses": {
+          "200": {
+            "description": "Capabilities"
+          }
+        }
+      }
+    },
+    "/scim/v2/Users": {
+      "get": {
+        "tags": [
+          "scim"
+        ],
+        "summary": "Lists or searches users.",
+        "operationId": "list",
+        "responses": {
+          "200": {
+            "description": "A ListResponse"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "scim"
+        ],
+        "summary": "Creates a user.",
+        "operationId": "create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created"
+          }
+        }
+      }
+    },
+    "/scim/v2/Users/{id}": {
+      "get": {
+        "tags": [
+          "scim"
+        ],
+        "summary": "Reads one user.",
+        "operationId": "read",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The user"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "scim"
+        ],
+        "summary": "Replaces a user, which is how Okta pushes an update.",
+        "operationId": "replace",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Replaced"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "scim"
+        ],
+        "summary": "Removes a user, which is how Okta deprovisions.",
+        "operationId": "remove",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "scim"
+        ],
+        "summary": "Patches a user — the path Entra uses to deprovision.",
+        "operationId": "patch",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Patched"
+          }
+        }
+      }
+    },
     "/search": {
       "get": {
         "tags": [
@@ -7507,7 +7746,8 @@
           "rights_state",
           "provenance_state",
           "is_favourite",
-          "has_attachment"
+          "has_attachment",
+          "legal_hold"
         ],
         "properties": {
           "average_stars": {
@@ -7544,6 +7784,10 @@
           "is_favourite": {
             "type": "boolean",
             "description": "Whether *this caller* has favourited it, so a cell can draw a filled star (Q.5b·3).\n\nOnly the two engagement facts a cell actually draws are here — see the note on this struct about every\nfield being multiplied by the page size. The counts, the caller's own stars and the watch state are on the\ndetail endpoint, because no grid cell shows them."
+          },
+          "legal_hold": {
+            "type": "boolean",
+            "description": "Whether the asset is frozen: it cannot be deleted, and tiering will leave it where it is.\n\nOn a grid row because the bulk bar is where a selection gets deleted. The detail panel has drawn a\nbadge for this since the first release, with the reasoning that \"a user who cannot delete an asset\ndeserves to know why rather than to meet a failing button\" — and the bar beside it offered Delete\nregardless, because `legal_hold` was only on the detail payload and the grid could not know."
           },
           "mime": {
             "type": "string",
@@ -7975,9 +8219,22 @@
           "kind",
           "target_count",
           "sample",
-          "out_of_scope"
+          "out_of_scope",
+          "blocked"
         ],
         "properties": {
+          "blocked": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many of the targets this operation will refuse, having already passed scope.\n\nDistinct from `out_of_scope`, because the two are different facts and the caller can act on each: an\nout-of-scope id belongs to somebody else, and a refused one is theirs and frozen. Named as a count for\nthe same §7 reason — though the asymmetry is deliberate rather than reflexive here, since the caller can\nalready see these assets and their held state is on every grid row."
+          },
+          "blocked_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why, in one sentence, when anything is blocked. `None` when nothing is."
+          },
           "kind": {
             "type": "string"
           },
@@ -8140,6 +8397,50 @@
           "class": {
             "type": "string",
             "description": "`image`, `video`, `audio`, `document` or `other`."
+          }
+        }
+      },
+      "ClientView": {
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "scopes"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "label": {
+            "type": "string"
+          },
+          "last_sync_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "last_sync_status": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What the provider last did, so a stalled integration is visible. `None` means it has never called."
+          },
+          "revoked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
@@ -9143,6 +9444,21 @@
           }
         }
       },
+      "Email": {
+        "type": "object",
+        "required": [
+          "value",
+          "primary"
+        ],
+        "properties": {
+          "primary": {
+            "type": "boolean"
+          },
+          "value": {
+            "type": "string"
+          }
+        }
+      },
       "EngagementView": {
         "type": "object",
         "description": "An asset's engagement, as the caller may see it.\n\n`Deserialize` as well as `Serialize` because `AssetDetail` embeds it and that type round-trips in the tests\nand in the generated client; `PartialEq` for the same reason.",
@@ -9689,6 +10005,43 @@
           }
         }
       },
+      "ListResponse": {
+        "type": "object",
+        "required": [
+          "schemas",
+          "totalResults",
+          "startIndex",
+          "itemsPerPage",
+          "Resources"
+        ],
+        "properties": {
+          "Resources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ScimUser"
+            },
+            "description": "Capitalised, per RFC 7644 §3.4.2. A lowercase `resources` is a provider that reads zero users and\nconcludes the directory is empty — then creates everybody again."
+          },
+          "itemsPerPage": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "schemas": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "startIndex": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "totalResults": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "MachineFieldView": {
         "type": "object",
         "description": "A machine-written value, as the disclosure surface shows it (G2).",
@@ -9919,6 +10272,30 @@
           }
         }
       },
+      "Meta": {
+        "type": "object",
+        "required": [
+          "resourceType",
+          "created",
+          "lastModified",
+          "location"
+        ],
+        "properties": {
+          "created": {
+            "type": "string"
+          },
+          "lastModified": {
+            "type": "string"
+          },
+          "location": {
+            "type": "string",
+            "description": "Where to re-read this user. A provider follows it rather than reconstructing the path."
+          },
+          "resourceType": {
+            "type": "string"
+          }
+        }
+      },
       "MetadataAccepted": {
         "type": "object",
         "description": "The outcome of a metadata edit.",
@@ -9992,6 +10369,17 @@
           },
           "label": {
             "type": "string"
+          }
+        }
+      },
+      "Name": {
+        "type": "object",
+        "properties": {
+          "formatted": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -10578,6 +10966,43 @@
             "format": "int64",
             "description": "Pass back as `before_seq` for the next page. `None` at the end of the log."
           }
+        }
+      },
+      "PatchBody": {
+        "type": "object",
+        "properties": {
+          "Operations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PatchOperation"
+            },
+            "description": "Capitalised, per RFC 7644 §3.5.2."
+          },
+          "schemas": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "PatchOperation": {
+        "type": "object",
+        "description": "One PATCH operation.",
+        "required": [
+          "op"
+        ],
+        "properties": {
+          "op": {
+            "type": "string"
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "value": {}
         }
       },
       "PersonView": {
@@ -11568,6 +11993,44 @@
           }
         }
       },
+      "RegisterClientBody": {
+        "type": "object",
+        "required": [
+          "label"
+        ],
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`Users`, `Groups`. Defaults to `Users` alone, because that is what this implementation serves."
+          }
+        }
+      },
+      "RegisteredClient": {
+        "type": "object",
+        "required": [
+          "client",
+          "token",
+          "warning"
+        ],
+        "properties": {
+          "client": {
+            "$ref": "#/components/schemas/ClientView"
+          },
+          "token": {
+            "type": "string",
+            "description": "The token, in readable form, once."
+          },
+          "warning": {
+            "type": "string"
+          }
+        }
+      },
       "RegisteredView": {
         "type": "object",
         "description": "What a registration returns, once.",
@@ -12042,6 +12505,104 @@
               "null"
             ],
             "format": "uuid"
+          }
+        }
+      },
+      "ScimError": {
+        "type": "object",
+        "description": "A SCIM error, in the shape a provider parses.",
+        "required": [
+          "schemas",
+          "status",
+          "detail"
+        ],
+        "properties": {
+          "detail": {
+            "type": "string"
+          },
+          "schemas": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "scimType": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "description": "A string, per RFC 7644 §3.12. A number here is rejected by strict providers, and the rejection looks\nlike a network problem from their side."
+          }
+        }
+      },
+      "ScimUser": {
+        "type": "object",
+        "required": [
+          "schemas",
+          "id",
+          "userName",
+          "emails",
+          "active",
+          "roles",
+          "meta"
+        ],
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "displayName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "emails": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Email"
+            }
+          },
+          "externalId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "description": "Ours, and stable. A provider stores it and uses it for every later call."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          },
+          "name": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Name"
+              }
+            ]
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The tenant roles this person holds. Not a SCIM core attribute; carried so a provider that maps groups\ncan see what it produced."
+          },
+          "schemas": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "userName": {
+            "type": "string"
           }
         }
       },
@@ -12665,6 +13226,39 @@
             "format": "date-time"
           },
           "territory": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "UserBody": {
+        "type": "object",
+        "description": "What a provider sends to create or replace a user.",
+        "properties": {
+          "active": {
+            "description": "Absent means active: a provider creating somebody without saying is creating an enabled account."
+          },
+          "displayName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "externalId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "userName": {
             "type": [
               "string",
               "null"

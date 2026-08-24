@@ -42,6 +42,7 @@ pub mod proofing;
 pub mod quotas;
 pub mod references;
 pub mod schema;
+pub mod scim;
 pub mod search;
 pub mod shares;
 pub mod throttle;

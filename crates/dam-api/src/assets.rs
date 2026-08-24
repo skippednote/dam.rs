@@ -380,7 +380,7 @@ pub async fn detail(
         content_hash: found.content_hash,
         status: found.status,
         enrichment_state: found.enrichment_state,
-        legal_hold: found.legal_hold,
+        legal_hold: found.summary.legal_hold,
         release_at: found.release_at,
         expires_at: found.expires_at,
         version_no: found.version_no,
@@ -792,5 +792,6 @@ pub fn summary_of(row: &assets::Summary) -> AssetSummary {
         // Same: filled from one attachment read per page.
         has_attachment: false,
         published_at: row.published_at,
+        legal_hold: row.legal_hold,
     }
 }

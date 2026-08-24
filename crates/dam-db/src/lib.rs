@@ -47,6 +47,7 @@ pub mod rail;
 pub mod restores;
 pub mod rights;
 pub mod saved_searches;
+pub mod scim;
 pub mod shares;
 pub mod similarity;
 pub mod suggest;

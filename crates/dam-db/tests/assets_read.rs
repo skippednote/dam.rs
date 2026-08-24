@@ -722,6 +722,34 @@ async fn hydration_keeps_the_ranking_and_drops_what_the_caller_may_not_see() {
             .is_empty(),
         "an empty candidate list is an empty result, not an unfiltered query"
     );
+
+    // The other half of what a bulk preview needs. Scope decides what a caller may know about; a hold is a
+    // fact about an asset they can already see, and the delete executor refuses one. `bulk::preview` counted
+    // only the first and promised a number the second would not deliver.
+    assert_eq!(
+        assets::held_among(&pool, &ranked).await.expect("held"),
+        0,
+        "nothing is held to begin with"
+    );
+    sqlx::query("UPDATE assets SET legal_hold = true WHERE id = $1")
+        .bind(first)
+        .execute(&pool)
+        .await
+        .expect("place a hold");
+    assert_eq!(assets::held_among(&pool, &ranked).await.expect("held"), 1);
+    // `third` was soft-deleted above, so a hold on it does not count: it is already gone, and reporting it as
+    // a reason the delete will be refused would explain a skip that has a different cause.
+    sqlx::query("UPDATE assets SET legal_hold = true WHERE id = $1")
+        .bind(third)
+        .execute(&pool)
+        .await
+        .expect("hold a deleted asset");
+    assert_eq!(
+        assets::held_among(&pool, &ranked).await.expect("held"),
+        1,
+        "an already-deleted asset is not a pending refusal"
+    );
+    assert_eq!(assets::held_among(&pool, &[]).await.expect("held"), 0);
 }
 
 #[tokio::test]

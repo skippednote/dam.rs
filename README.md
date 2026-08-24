@@ -14,8 +14,13 @@ and S3-compatible object storage, and operated through a Svelte interface design
 libraries.
 
 > **Project status:** active development. The core library, ingest, metadata, search, rights, delivery,
-> sharing, archival, hosted enrichment, and operator interface are implemented. Human login/SSO and
-> other pre-GA work are still open; see [TASKS.md](TASKS.md) for the current implementation ledger.
+> sharing, archival, hosted enrichment, governance, and operator interface are implemented, including a
+> hash-chained audit record, user administration, and SCIM 2.0 provisioning.
+>
+> **There is no human login yet**, and that shapes the rest: everybody — person, connected site, or
+> SCIM-provisioned account — authenticates with an API key. SCIM therefore creates accounts and access and
+> deliberately mints no credential, so a provisioned person needs a key from an administrator until SSO lands.
+> Deprovisioning is unaffected and complete. See [TASKS.md](TASKS.md) for the implementation ledger.
 
 ## Why dam.rs
 

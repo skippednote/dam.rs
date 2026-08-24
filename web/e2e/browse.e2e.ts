@@ -50,7 +50,10 @@ function summary(index: number) {
 		has_attachment: false,
 		// Published, on every third asset (Q.14): the chip has to be visibly a per-asset fact rather than a
 		// property of the page.
-		published_at: index % 3 === 0 ? '2026-08-01T09:00:00Z' : null
+		published_at: index % 3 === 0 ? '2026-08-01T09:00:00Z' : null,
+		// Held, on every fifth asset: like publication, this has to read as a per-asset fact rather than a
+		// property of the page — and a person assembling a selection to delete needs it while they choose.
+		legal_hold: index % 5 === 0
 	};
 }
 
@@ -215,7 +218,7 @@ type Recorder = {
 };
 let bulkPolls = 0;
 
-async function connect(page: Page): Promise<Recorder> {
+async function connect(page: Page, options: { blocked?: number } = {}): Promise<Recorder> {
 	const recorder: Recorder = { urls: [], patches: [], bulk: [], ordered: [], added: [] };
 	bulkPolls = 0;
 
@@ -436,12 +439,18 @@ async function connect(page: Page): Promise<Recorder> {
 			recorder.bulk.push({ url: url, body });
 			// One id is "out of scope", so the dialog's honesty about the difference is testable.
 			const inScope = Math.max(body.asset_ids.length - 1, 1);
+			// `blocked` is what the *operation* will refuse among the in-scope targets, which is a different
+			// fact from scope and reported separately. Zero unless a case asks for it.
+			const blocked = options.blocked ?? 0;
 			return route.fulfill({
 				json: {
 					kind: body.kind,
 					target_count: inScope,
 					sample: body.asset_ids.slice(0, inScope),
-					out_of_scope: body.asset_ids.length - inScope
+					out_of_scope: body.asset_ids.length - inScope,
+					blocked,
+					blocked_reason:
+						blocked > 0 ? `${blocked} is under legal hold and cannot be deleted` : null
 				}
 			});
 		}
@@ -1193,6 +1202,61 @@ test('the bulk bar appears with a selection and runs a delete to its honest end 
 	// Dismissing clears the selection, so the next operation starts from nothing.
 	await bar.getByRole('button', { name: 'Dismiss' }).click();
 	await expect(page.getByRole('toolbar', { name: 'Bulk operations' })).toHaveCount(0);
+});
+
+test('a held asset says so on its own row', async ({ page }) => {
+	// The detail panel has drawn this since the first release, "so a user who cannot delete an asset deserves
+	// to know why rather than to meet a failing button". The bulk bar is two rows below the grid, so the row
+	// is where the fact is needed — while a selection is being assembled, not in its result.
+	await connect(page);
+	await page.goto('/assets');
+	await expect(page.getByRole('gridcell').first()).toBeVisible();
+
+	const cells = page.getByRole('gridcell');
+	// Index 0 is held in the fixture, index 1 is not.
+	await expect(cells.nth(0).getByTestId('hold-badge')).toHaveText('Held');
+	await expect(cells.nth(0).getByTestId('hold-badge')).toHaveAttribute(
+		'title',
+		'Under legal hold — cannot be deleted'
+	);
+	await expect(cells.nth(1).getByTestId('hold-badge')).toHaveCount(0);
+});
+
+test('the delete confirmation counts what the operation will refuse, before it is pressed', async ({
+	page
+}) => {
+	// The mismatch the preview exists to prevent, and was causing. Scope was the only filter either side
+	// applied; the delete executor also refuses an asset under legal hold, so a selection holding frozen
+	// assets previewed as one number and finished as another. The evidence was already in this file — the
+	// case above asserts `partial: 1 applied, 1 failed` with "legal hold blocks deletion", which is the
+	// dialog's promise being broken one screen later.
+	const recorder = await connect(page, { blocked: 1 });
+	await page.goto('/assets');
+	await expect(page.getByRole('gridcell').first()).toBeVisible();
+	await page.getByRole('gridcell').nth(0).click();
+	await page
+		.getByRole('gridcell')
+		.nth(1)
+		.click({ modifiers: ['ControlOrMeta'] });
+	await page
+		.getByRole('gridcell')
+		.nth(2)
+		.click({ modifiers: ['ControlOrMeta'] });
+
+	const bar = page.getByRole('toolbar', { name: 'Bulk operations' });
+	await bar.getByRole('button', { name: 'Delete…' }).click();
+
+	// Two in scope, one of them held: the question and the button both say one, and the reason is stated
+	// rather than left for the operator to discover in the result.
+	await expect(bar).toContainText('Delete 1 asset?');
+	await expect(bar).toContainText('under legal hold and cannot be deleted');
+	await expect(bar).toContainText('will be skipped');
+	await expect(bar.getByRole('button', { name: 'Delete 1 asset' })).toBeVisible();
+
+	// And scope is still reported separately, because the two are different facts: an out-of-scope id is
+	// somebody else's asset and a held one is yours and frozen.
+	await expect(bar).toContainText('outside your scope');
+	expect(recorder.bulk.some((c) => c.url.includes('/bulk/preview'))).toBe(true);
 });
 
 test('ordering a selection reports the server’s count', async ({ page }) => {

@@ -27,6 +27,7 @@ function asset(index: number): AssetSummary {
 		tier: index % 5 === 0 ? 'archive' : 'hot',
 		rights_state: index % 7 === 0 ? 'denied' : 'allowed',
 		provenance_state: 'valid',
+		legal_hold: false,
 		thumbnail_url: null,
 		tag_confidence: 0.8,
 		// Engagement, as the API now sends it on every summary (Q.5b·3). Every third asset is a favourite and

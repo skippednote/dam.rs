@@ -39,10 +39,15 @@
 		addMember,
 		listMembers,
 		listRoles,
+		listScimClients,
+		registerScimClient,
 		removeMember,
+		revokeScimClient,
 		updateMember,
 		type Member,
-		type MemberAdded
+		type MemberAdded,
+		type ScimClient,
+		type ScimRegistered
 	} from '$lib/api/client';
 
 	let members = $state<Member[]>([]);
@@ -70,13 +75,24 @@
 	/** Which row has been asked to be removed, so removal takes two deliberate actions. */
 	let confirming = $state<string | null>(null);
 
+	/** The identity providers wired up here, and the one-time token panel for a new one. */
+	let providers = $state<ScimClient[]>([]);
+	let providerToken = $state<{ registered: ScimRegistered } | null>(null);
+	let providerForm = $state(false);
+	let providerLabel = $state('');
+	let revoking = $state<string | null>(null);
+
 	const admins = $derived(members.filter((member) => member.is_tenant_admin).length);
 
 	async function load() {
 		loading = true;
 		error = '';
 		try {
-			[members, roles] = await Promise.all([listMembers(), listRoles()]);
+			[members, roles, providers] = await Promise.all([
+				listMembers(),
+				listRoles(),
+				listScimClients()
+			]);
 		} catch (cause) {
 			if (cause instanceof ApiError && cause.status === 403) forbidden = true;
 			else error = cause instanceof Error ? cause.message : 'Could not read the member list.';
@@ -141,6 +157,50 @@
 		} finally {
 			busy = '';
 		}
+	}
+
+	async function addProvider(event: SubmitEvent) {
+		event.preventDefault();
+		busy = 'provider';
+		error = '';
+		notice = '';
+		try {
+			providerToken = {
+				registered: await registerScimClient({ label: providerLabel, scopes: ['Users'] })
+			};
+			providerForm = false;
+			providerLabel = '';
+			await load();
+		} catch (cause) {
+			error = cause instanceof Error ? cause.message : 'Could not add that provider.';
+		} finally {
+			busy = '';
+		}
+	}
+
+	async function dropProvider(provider: ScimClient) {
+		busy = provider.id;
+		error = '';
+		notice = '';
+		try {
+			await revokeScimClient(provider.id);
+			revoking = null;
+			// Deliberately not "and their accounts are gone": revoking stops the sync and leaves the people it
+			// provisioned exactly where they are. Saying otherwise would be the more alarming and wrong claim.
+			notice = `${provider.label} can no longer provision. The accounts it created are untouched.`;
+			await load();
+		} catch (cause) {
+			error = cause instanceof Error ? cause.message : 'Could not revoke that provider.';
+		} finally {
+			busy = '';
+		}
+	}
+
+	function contact(provider: ScimClient): string {
+		if (!provider.last_sync_at) return 'Has never called';
+		return `Last called ${new Date(provider.last_sync_at).toLocaleString()}${
+			provider.last_sync_status ? ` · ${provider.last_sync_status}` : ''
+		}`;
 	}
 
 	async function drop(member: Member) {
@@ -289,6 +349,132 @@
 		{#if error}
 			<p class="mt-3 text-sm text-state-rights-denied-fg" role="alert">{error}</p>
 		{/if}
+
+		<!--
+			Provisioning sits above the list because it explains it: a row marked "From your identity provider"
+			only makes sense once you know a provider is wired up. The two are one screen for that reason —
+			splitting them would put the cause and the effect in different places.
+		-->
+		<section class="mt-5 rounded-md bg-surface p-3" aria-labelledby="providers-heading">
+			<div class="flex items-center justify-between gap-3">
+				<h2 id="providers-heading" class="text-sm font-semibold">Identity providers</h2>
+				<button
+					type="button"
+					onclick={() => (providerForm = !providerForm)}
+					class="rounded border border-line px-2.5 py-1 text-xs"
+				>
+					{providerForm ? 'Cancel' : 'Connect a provider'}
+				</button>
+			</div>
+			<p class="mt-1 text-xs text-muted">
+				SCIM 2.0. A provider creates and removes accounts here as people join and leave — the
+				removal is the half that matters, and it revokes their credentials rather than only marking
+				them gone.
+			</p>
+
+			{#if providerToken}
+				<div class="mt-3 rounded-md border border-line p-2" data-testid="provider-token">
+					<p class="text-xs font-medium">
+						{providerToken.registered.client.label} — paste this into the provider
+					</p>
+					<input
+						readonly
+						value={providerToken.registered.token}
+						aria-label="Provisioning token"
+						class="mt-1 w-full rounded border border-line bg-surface px-2 py-1 font-mono text-xs"
+					/>
+					<p class="mt-1 text-xs text-muted">{providerToken.registered.warning}</p>
+					<button
+						type="button"
+						onclick={() => (providerToken = null)}
+						class="mt-2 rounded border border-line px-2.5 py-1 text-xs"
+					>
+						I have saved it
+					</button>
+				</div>
+			{/if}
+
+			{#if providerForm}
+				<form onsubmit={addProvider} class="mt-3 flex flex-wrap items-end gap-2">
+					<label class="text-xs font-medium">
+						Name it
+						<input
+							type="text"
+							bind:value={providerLabel}
+							required
+							placeholder="Okta, Entra, …"
+							class="mt-1 block w-56 rounded border border-line bg-bg px-2 py-1 text-sm"
+						/>
+					</label>
+					<button
+						type="submit"
+						disabled={busy === 'provider' || providerLabel.trim() === ''}
+						class="rounded-md bg-accent px-2.5 py-1 text-sm font-medium text-accent-fg disabled:opacity-50"
+					>
+						{busy === 'provider' ? 'Connecting…' : 'Connect and issue a token'}
+					</button>
+					<p class="w-full text-xs text-muted">
+						A name, because a stalled provider has to be identifiable. The token is shown once.
+					</p>
+				</form>
+			{/if}
+
+			{#if providers.length === 0}
+				<p class="mt-2 text-xs text-muted">
+					None connected. People are added by hand below, which is the whole story until a provider
+					is wired up.
+				</p>
+			{:else}
+				<ul class="mt-2 space-y-1.5">
+					{#each providers as provider (provider.id)}
+						<li class="text-xs" data-testid="provider-{provider.label}">
+							<div class="flex flex-wrap items-baseline justify-between gap-2">
+								<span class="font-medium">
+									{provider.label}
+									{#if provider.revoked_at}
+										<span class="ml-1 rounded bg-raised px-1.5 py-0.5 font-medium">Revoked</span>
+									{/if}
+								</span>
+								<span class="text-muted">{contact(provider)}</span>
+							</div>
+							{#if !provider.revoked_at}
+								{#if revoking === provider.id}
+									<p class="mt-1 text-muted">
+										Revoke {provider.label}? It stops provisioning immediately and cannot be brought
+										back. The accounts it created keep their access.
+									</p>
+									<div class="mt-1 flex gap-2">
+										<button
+											type="button"
+											onclick={() => dropProvider(provider)}
+											disabled={busy === provider.id}
+											class="rounded-md bg-accent px-2.5 py-1 font-medium text-accent-fg disabled:opacity-50"
+										>
+											Revoke it
+										</button>
+										<button
+											type="button"
+											onclick={() => (revoking = null)}
+											class="rounded border border-line px-2.5 py-1"
+										>
+											Keep it
+										</button>
+									</div>
+								{:else}
+									<button
+										type="button"
+										onclick={() => (revoking = provider.id)}
+										class="mt-1 rounded border border-line px-2.5 py-1"
+									>
+										Revoke
+									</button>
+								{/if}
+							{/if}
+						</li>
+					{/each}
+				</ul>
+			{/if}
+		</section>
 
 		{#if loading && members.length === 0}
 			<p class="mt-4 text-sm text-muted">Loading…</p>
