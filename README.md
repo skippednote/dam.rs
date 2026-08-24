@@ -21,6 +21,16 @@ libraries.
 > SCIM-provisioned account — authenticates with an API key. SCIM therefore creates accounts and access and
 > deliberately mints no credential, so a provisioned person needs a key from an administrator until SSO lands.
 > Deprovisioning is unaffected and complete. See [TASKS.md](TASKS.md) for the implementation ledger.
+>
+> **Two limitations worth knowing before you evaluate it.** _Delivery serves one tenant per process_: the
+> signed URL claim carries the asset, transform, channel, territory, identity, share link and expiry, but
+> not the tenant, so a second tenant's delivery URLs 404 until it does. The refusal is deliberate — the
+> alternative is minting URLs against another tenant's objects — but a multi-tenant deployment needing
+> delivery for more than one tenant currently runs one `damd` per tenant. And _the archival path has not
+> been exercised against real AWS_: restore completion, Deep Archive transitions and the retrieval-cost
+> path are asserted against SeaweedFS and against a fake store with a controllable clock, which give the
+> wire protocol and the state machine but cannot prove an actual `RestoreObject` against Glacier. The
+> nightly workflow that would is configured and has never had credentials.
 
 ## Why dam.rs
 
