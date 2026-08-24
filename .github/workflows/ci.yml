@@ -109,10 +109,16 @@ jobs:
         run: git diff --exit-code -- src/lib/api/schema.d.ts
       - run: pnpm run check
       - run: pnpm run lint
-      - run: pnpm exec vitest run
+      # Before vitest, not after it. Three of the seven unit files run in Vitest's browser mode
+      # and launch Playwright's chromium, so with the install below them the step died on
+      # "Executable doesn't exist at .../chromium_headless_shell", having silently run four
+      # files out of seven. A laptop never notices: the browser is already in
+      # ~/.cache/ms-playwright from some earlier run.
+      #
       # Only chromium: the a11y assertions are about the accessibility tree and the DOM, which
       # do not vary by engine. Cross-browser rendering is a separate concern and a separate cost.
       - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm exec vitest run
       - run: pnpm exec playwright test
       - uses: actions/upload-artifact@v4
         if: failure()

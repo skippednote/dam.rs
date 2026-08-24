@@ -116,6 +116,8 @@ run = """
 pnpm install --frozen-lockfile
 pnpm run check
 pnpm run lint
+# Before vitest: three of the unit files run in browser mode and launch this chromium.
+pnpm exec playwright install chromium
 pnpm exec vitest run
 pnpm exec playwright test
 """
