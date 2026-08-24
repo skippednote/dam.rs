@@ -51,7 +51,14 @@ use uuid::Uuid;
 /// defaulting to `Distribution` breaks every preview URL, and defaulting to `InternalPreview` would let a
 /// token issued before this existed skip the rights check. Refusing v2 outright is the only reading that
 /// cannot be exploited.
-pub const VERSION: u8 = 3;
+///
+/// Bumped to 4 by G22, which added `tenant_id` — and this is the one bump where accepting the old layout
+/// would be a cross-tenant bug rather than a misparse. A v3 token names an asset and no tenant, so a
+/// process serving two tenants would have to guess which one it meant; the guess it used to make came from
+/// configuration, which is why delivery could only ever serve one tenant per process. With the tenant in
+/// the signature there is nothing to guess, and a v3 token has to stop verifying rather than fall back to
+/// the guess this field exists to remove.
+pub const VERSION: u8 = 4;
 
 /// What a signed URL is *for*.
 ///
@@ -123,6 +130,14 @@ impl Purpose {
 /// What a signed URL asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeliveryClaim {
+    /// Which tenant's library this asset lives in.
+    ///
+    /// Signed, and first in the payload, because everything after it is only meaningful once the tenant is
+    /// known: two tenants can hold assets with the same id, and a delivery path that resolved the tenant
+    /// from configuration could serve only one of them (G22). Carrying it here is what lets one process
+    /// deliver for every tenant it hosts — and what stops a token issued for one tenant from naming an
+    /// asset in another, since the tenant is inside the signature rather than beside it.
+    pub tenant_id: Uuid,
     pub asset_id: Uuid,
     /// What the URL is for. See [`Purpose`].
     ///
@@ -336,6 +351,8 @@ fn canonical(claim: &DeliveryClaim) -> Vec<u8> {
     // Immediately after the version and inside the same length-prefixed scheme. A fixed-width byte would be
     // fine here too, but going through `push_field` keeps one rule for the whole payload rather than two.
     push_field(&mut out, &[claim.purpose.as_byte()]);
+    // Before the asset, because an asset id means nothing until the tenant is fixed.
+    push_field(&mut out, claim.tenant_id.as_bytes());
     push_field(&mut out, claim.asset_id.as_bytes());
     push_field(&mut out, claim.transform.as_bytes());
     push_field(&mut out, claim.channel.as_bytes());
@@ -375,6 +392,7 @@ fn parse(payload: &[u8]) -> Result<DeliveryClaim, VerifyError> {
         [byte] => Purpose::from_byte(*byte).ok_or(VerifyError::Malformed)?,
         _ => return Err(VerifyError::Malformed),
     };
+    let tenant_id = take_uuid(&mut cursor)?;
     let asset_id = take_uuid(&mut cursor)?;
     let transform = take_string(&mut cursor)?;
     let channel = take_string(&mut cursor)?;
@@ -395,6 +413,7 @@ fn parse(payload: &[u8]) -> Result<DeliveryClaim, VerifyError> {
 
     Ok(DeliveryClaim {
         purpose,
+        tenant_id,
         asset_id,
         transform,
         channel,

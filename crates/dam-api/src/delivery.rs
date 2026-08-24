@@ -221,6 +221,7 @@ impl DeliveryState {
         let ttl = ttl.min(MAX_TOKEN_TTL).max(ChronoDuration::seconds(1));
         let claim = DeliveryClaim {
             purpose: Purpose::InternalPreview,
+            tenant_id: self.tenant_id,
             asset_id,
             transform: transform.to_owned(),
             // Never evaluated for this purpose; `internal` is the honest label for what it names.
@@ -525,6 +526,7 @@ async fn issue_with_purpose(
     let ttl = ttl.min(MAX_TOKEN_TTL).max(ChronoDuration::seconds(1));
     let claim = DeliveryClaim {
         purpose,
+        tenant_id: state.tenant_id,
         asset_id,
         transform: transform.to_owned(),
         channel: usage.channel.clone(),
@@ -678,6 +680,28 @@ async fn deliver(
         Some(connected) => bound_by_connector(&state, connected, claim, now).await?,
         None => claim,
     };
+
+    // Step 1b. The token names a tenant, and this process serves one. They have to be the same one.
+    //
+    // Every read below resolves through a pool pinned to `state.tenant_id`'s schema, so a claim naming a
+    // different tenant would be answered out of *this* tenant's library — the asset id would either miss
+    // (a 404 for the wrong reason) or, if the two libraries happen to share an id, hit the wrong asset. The
+    // signature makes that unforgeable rather than merely unlikely: since G22 the tenant is inside the
+    // payload, so a token cannot be edited from one tenant to another without breaking the signature, and
+    // the only way to hold a valid token for another tenant is to have been issued one.
+    //
+    // Which is possible across deployments that share a signing key — a restored backup, a staging
+    // environment cloned from production — and is exactly the case this refuses. Cheap, and it is the check
+    // that lets the resolution half of G22 land later without a window where the claim is carried but not
+    // honoured.
+    if claim.tenant_id != state.tenant_id {
+        tracing::warn!(
+            claimed = %claim.tenant_id,
+            served = %state.tenant_id,
+            "a delivery token named a tenant this process does not serve",
+        );
+        return Err(Refusal::NotDeliverable);
+    }
 
     // Re-checked before anything else about the asset. A revoked share must stop working immediately, and it
     // must stop working *for the same reason* whether the URL was minted a second or a day ago.
