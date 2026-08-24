@@ -74,6 +74,13 @@ pub const IDLE_SLEEP: Duration = Duration::from_millis(500);
 /// crashed worker's job stays stuck.
 pub const LEASE: Duration = Duration::from_secs(120);
 
+/// How often to look for tenants with no metering chain.
+///
+/// Five minutes, which bounds how long a newly provisioned tenant goes unmetered. Not shorter: the query is
+/// cheap but a bill is not urgent, and `ROLL_EVERY` is a day. Not longer: "unbilled for an hour" is a
+/// conversation nobody should have to have.
+pub const METERING_SWEEP: Duration = Duration::from_secs(5 * 60);
+
 /// Everything a handler needs.
 pub struct Context {
     pub global: sqlx::PgPool,
@@ -126,27 +133,36 @@ pub async fn run(context: &Context, shutdown: impl std::future::Future<Output = 
     let shutdown = std::pin::pin!(shutdown);
     let mut shutdown = shutdown;
 
-    // Metering chains, once at boot (M6c).
+    // Metering chains (M6c), at boot and then on a cadence — see the sweep inside the loop for why once was
+    // not enough.
     //
-    // Here rather than at provision, and deliberately: a tenant created before this feature existed has to
+    // At boot rather than at provision, and deliberately: a tenant created before this feature existed has to
     // start being metered too, and a billing series with a hole in it is indistinguishable from a worker that
-    // was down. `enqueue_usage_rollup` is deduped per tenant, so two workers starting together, or one
-    // restarting ten times, still leave one chain each.
-    //
-    // A failure is logged and dropped. Metering is the least urgent thing this process does, and refusing to
-    // start a worker because one tenant's row could not be queued would stop every thumbnail in the fleet.
-    match active_tenants(&context.global).await {
-        Ok(tenants) => {
-            for tenant_id in tenants {
-                if let Err(error) = enqueue_usage_rollup(&context.global, tenant_id).await {
-                    tracing::warn!(%error, %tenant_id, "starting the metering chain");
-                }
-            }
-        }
-        Err(error) => tracing::warn!(%error, "listing tenants to meter"),
-    }
+    // was down. The enqueue is deduped per tenant, so two workers starting together, or one restarting ten
+    // times, still leave one chain each.
+    start_missing_metering_chains(&context.global).await;
+    let mut metering_swept = std::time::Instant::now();
 
     loop {
+        // Again, on a cadence, and *not* only at startup — which is the bug this replaced.
+        //
+        // A tenant provisioned while a worker was already running never got a chain. Nothing enqueues one at
+        // provision time, so the tenant was simply never metered: no `usage_rollup` job, no
+        // `tenant_usage_daily` rows, and since that table is what an operator bills from, an unbilled
+        // customer. It stayed that way until somebody happened to restart the worker.
+        //
+        // Found by provisioning three tenants against a running stack, uploading 360 assets, and finding
+        // `damctl usage` reporting nothing for any of them.
+        //
+        // Doing it here rather than at provision is the choice that cannot be forgotten: an API endpoint or a
+        // migration script that creates a tenant tomorrow gets metering without knowing it has to ask. It also
+        // repairs a chain that broke — a requeue that failed once used to end the series permanently, which is
+        // exactly the "gap indistinguishable from a worker being down" the metering module warns about.
+        if metering_swept.elapsed() >= METERING_SWEEP {
+            start_missing_metering_chains(&context.global).await;
+            metering_swept = std::time::Instant::now();
+        }
+
         // Before claiming, so a crashed worker's jobs re-enter the queue rather than waiting for whichever
         // worker happens to call this next.
         match jobs::reclaim_expired(&context.global).await {
@@ -804,19 +820,59 @@ fn sweep_spec(tenant_id: Uuid, after: chrono::Duration) -> jobs::JobSpec {
 ///
 /// `active` only: a suspended tenant is not accruing a bill anybody will send, and a deprovisioned one may have
 /// no schema left to read. The list is small — tenants, not assets — and read once per worker start.
-async fn active_tenants(global: &sqlx::PgPool) -> Result<Vec<Uuid>> {
-    Ok(
-        sqlx::query_scalar("SELECT id FROM dam_global.tenants WHERE status = 'active'")
-            .fetch_all(global)
-            .await
-            .map_err(dam_db::Error::from)?,
+/// Active tenants with no live metering chain.
+///
+/// One query rather than "enumerate every tenant and try to enqueue for each": the dedupe index makes a
+/// redundant enqueue harmless, but at a thousand tenants it is a thousand insert attempts every sweep to
+/// discover that nothing needed doing. This normally returns no rows.
+///
+/// "Live" means a `usage_rollup` job that is `queued` or `running`, which is the same condition the dedupe
+/// index is partial on — so a tenant mid-chain, whose next pass is queued with a future `run_after`, is
+/// correctly seen as covered.
+async fn tenants_without_metering(global: &sqlx::PgPool) -> Result<Vec<Uuid>> {
+    Ok(sqlx::query_scalar(
+        "SELECT t.id FROM dam_global.tenants t \
+         WHERE t.status = 'active' \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM dam_global.jobs j \
+               WHERE j.tenant_id = t.id AND j.kind = $1 \
+                 AND j.state IN ('queued', 'running'))",
     )
+    .bind(kind::USAGE_ROLLUP)
+    .fetch_all(global)
+    .await
+    .map_err(dam_db::Error::from)?)
+}
+
+/// Starts a metering chain for every active tenant that has none.
+///
+/// A failure is logged and dropped. Metering is the least urgent thing this process does, and refusing to run
+/// a worker because one tenant's row could not be queued would stop every thumbnail in the fleet.
+pub async fn start_missing_metering_chains(global: &sqlx::PgPool) {
+    match tenants_without_metering(global).await {
+        Ok(tenants) => {
+            for tenant_id in tenants {
+                match enqueue_usage_rollup(global, tenant_id).await {
+                    // Logged at info, not debug: a tenant acquiring a metering chain minutes after it was
+                    // created is the normal case, and a silent one would make this fix unobservable.
+                    Ok(_) => tracing::info!(%tenant_id, "started the metering chain"),
+                    Err(error) => tracing::warn!(%error, %tenant_id, "starting the metering chain"),
+                }
+            }
+        }
+        Err(error) => tracing::warn!(%error, "listing tenants to meter"),
+    }
 }
 
 /// Starts a tenant's metering chain.
 ///
-/// Deduped per tenant, and started at provision rather than on first activity: a tenant with no assets still
-/// has a row of zeroes, and a gap in a billing series is indistinguishable from a gap in the worker.
+/// Deduped per tenant. Started because the tenant *exists* rather than on first activity: a tenant with no
+/// assets still has a row of zeroes, and a gap in a billing series is indistinguishable from a gap in the
+/// worker.
+///
+/// This doc used to say "at provision", which was never true — nothing calls it at provision, and that is
+/// precisely how a tenant provisioned against a running worker went unmetered. `start_missing_metering_chains`
+/// is what actually calls it, at boot and every `METERING_SWEEP`.
 pub async fn enqueue_usage_rollup(global: &sqlx::PgPool, tenant_id: Uuid) -> Result<Uuid> {
     Ok(jobs::enqueue(
         global,

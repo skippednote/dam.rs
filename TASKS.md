@@ -1415,6 +1415,57 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   the id column was appearing in every report as a column that arrives nowhere; it is consumed as the source
   identifier, so it is not a loss.
 
+- [x] **A.6 A multi-tenant load pass, and the two things it found.** Five tenants, 481 synthetic assets
+  uploaded through the real TUS path across four of them in 107s with no failures, all processed by the worker
+  to three derivatives each. Images generated with vips rather than reusing the dev tenant's real photographs,
+  and each one distinct — content addressing would have deduplicated identical files into a single asset and
+  the load would have been imaginary.
+
+  **Metering never saw a tenant provisioned against a running worker, which means it never billed one.** The
+  chain was started only in the boot path: nothing enqueues one at provision, and `enqueue_usage_rollup`'s own
+  doc-comment claimed it was "started at provision" — describing an intent no caller implemented. Provisioning
+  three tenants against a running stack and uploading 360 assets between them produced no `usage_rollup` job,
+  no `tenant_usage_daily` rows, and `damctl usage` reporting nothing for any of them. Since that table is what
+  an operator bills from, they were unbilled, and would have stayed so until somebody happened to restart a
+  worker.
+
+  Fixed as a sweep on a cadence rather than an enqueue at provision, and the reason is that the fix should not
+  be forgettable: an API endpoint or a migration script that creates a tenant tomorrow gets metering without
+  knowing to ask. It also repairs a chain that broke, which the metering module already worried about — "a gap
+  in a billing series is indistinguishable from a worker that was down". One query finds active tenants with no
+  `queued`-or-`running` rollup, which is the same condition the dedupe index is partial on, so a tenant
+  mid-chain with a future `run_after` reads as covered and normally the query returns nothing. Verified live:
+  three chains started within seconds of the restart, and every tenant now reports its own asset count and
+  stored bytes.
+
+  **Delivery serves exactly one tenant per process, and nothing was queued to change that.** `globex`'s
+  thumbnail URL 404s while `acme`'s 302s, because the delivery path resolves its tenant from
+  `server.delivery_tenant` rather than from the signed claim — the claim carries asset, transform, channel,
+  territory, identity, share link, expiry and key id, and no tenant. DECISIONS.md records the choice and says
+  it "becomes unnecessary once 3.x puts the tenant in the claim", and the 404 is the deliberate behaviour: the
+  design refuses rather than inferring and minting URLs against another tenant's objects. But no open item
+  carried it, so a multi-tenant deployment needing delivery for more than one tenant currently needs one
+  `damd` per tenant, and the work to fix it was not on any list. It is now — see G22 below.
+
+  **What held.** Every isolation surface, checked rather than assumed: cross-tenant detail reads all 404 in
+  both directions; search returns only a tenant's own filenames and zero hits for another's corpus; every one
+  of 480 object keys sits under its own tenant prefix; each tenant's audit chain is its own and verifies, with
+  40 concurrent governance writes across four tenants leaving four intact chains and no forks; quota
+  enforcement refuses an over-cap tenant with 507 while an uncapped one uploads normally in the same second.
+  A two-asset gap between `acme`'s database count and its API total turned out to be exactly right — one
+  superseded version and one model release, both excluded by `LIBRARY_ROWS`, which says so.
+
+  *Residue in the dev database:* four tenants (`globex`, `initech`, `umbrella`, `harbour`) each holding 120
+  synthetic `plate-*` assets, ten legal holds each, and a soft `asset_count` quota on `globex` left from the
+  enforcement check. Say the word and it goes.
+
+- [ ] **G22 Put the tenant in the delivery claim.** Delivery resolves its tenant from configuration, so one
+  `damd` serves delivery for one tenant and a second tenant's URLs 404. Found by A.6; the design decision is
+  in DECISIONS.md and always expected this. The claim is length-prefixed and versioned, so adding a field is a
+  version bump and the refusal-on-old-version behaviour already exists — `signed_url.rs` documents why a v1
+  token must stop verifying rather than be reinterpreted. The work is the field, the bump, the mint sites, and
+  removing `server.delivery_tenant` along with the ambiguity refusal it exists to soften.
+
 - [ ] **G7·2 Source connectors and transfer.** A transfer needs *bytes*, and bytes come from a source
   connector. Scoped by reading the code, so the next session starts here rather than rediscovering it.
 

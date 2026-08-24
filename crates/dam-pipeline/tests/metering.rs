@@ -28,6 +28,8 @@ use uuid::Uuid;
 
 struct Fixture {
     _pg: PostgresHarness,
+    /// Kept so a case can migrate a *second* tenant schema mid-test, which is what provisioning does.
+    url: String,
     global: PgPool,
     tenant: PgPool,
     store: FakeS3Store,
@@ -54,6 +56,7 @@ async fn fixture() -> Fixture {
     .expect("tenant row");
 
     Fixture {
+        url,
         _pg: pg,
         global,
         tenant,
@@ -246,4 +249,85 @@ async fn an_empty_tenant_still_gets_rows() {
             .all(|row| row.totals == dam_db::metering::DayTotals::default())
     );
     assert_eq!(f.slug.as_str(), "acme");
+}
+
+#[tokio::test]
+async fn a_tenant_created_after_the_worker_started_still_gets_metered() {
+    // The bug this closes, found by provisioning three tenants against a running stack, uploading 360 assets
+    // between them, and finding `damctl usage` reporting nothing for any of them.
+    //
+    // The metering chain was started *only* at worker boot. Nothing enqueues one at provision — the function's
+    // own doc-comment claimed otherwise and was wrong — so a tenant created while a worker was already running
+    // was never metered: no `usage_rollup` job, no `tenant_usage_daily` rows, and since that table is what an
+    // operator bills from, an unbilled customer until somebody happened to restart the worker.
+    let f = fixture().await;
+
+    // The boot-time pass, as `run` performs it. `acme` gets its chain.
+    dam_pipeline::worker::start_missing_metering_chains(&f.global).await;
+    assert_eq!(
+        live_rollups(&f.global, f.tenant_id).await,
+        1,
+        "the tenant that existed at boot has a chain"
+    );
+
+    // Now a tenant appears, exactly as `damctl provision-tenant` makes one — after the worker is up, and
+    // without telling anybody.
+    migrate::tenant(&f.url, "t_globex").await.expect("schema");
+    let late: Uuid = sqlx::query_scalar(
+        "INSERT INTO dam_global.tenants \
+         (id, slug, schema_name, display_name, storage_prefix, status) \
+         VALUES (gen_random_uuid(), 'globex', 't_globex', 'Globex', 'globex/', 'active') RETURNING id",
+    )
+    .fetch_one(&f.global)
+    .await
+    .expect("tenant row");
+    assert_eq!(
+        live_rollups(&f.global, late).await,
+        0,
+        "the premise: provisioning enqueues nothing, which is what made this silent"
+    );
+
+    // The sweep the loop now runs. Before the fix there was no second pass at all.
+    dam_pipeline::worker::start_missing_metering_chains(&f.global).await;
+    assert_eq!(
+        live_rollups(&f.global, late).await,
+        1,
+        "a tenant provisioned after boot has to acquire a metering chain without anybody asking"
+    );
+
+    // And the sweep is idempotent: the tenant that already had one does not acquire a second, or the series
+    // would be written twice a day by two chains racing each other.
+    dam_pipeline::worker::start_missing_metering_chains(&f.global).await;
+    assert_eq!(live_rollups(&f.global, f.tenant_id).await, 1);
+    assert_eq!(live_rollups(&f.global, late).await, 1);
+
+    // A suspended tenant is not metered. Suspension stops the bill as well as the access.
+    sqlx::query("UPDATE dam_global.tenants SET status = 'suspended' WHERE id = $1")
+        .bind(late)
+        .execute(&f.global)
+        .await
+        .expect("suspend");
+    sqlx::query("DELETE FROM dam_global.jobs WHERE tenant_id = $1")
+        .bind(late)
+        .execute(&f.global)
+        .await
+        .expect("clear its chain");
+    dam_pipeline::worker::start_missing_metering_chains(&f.global).await;
+    assert_eq!(
+        live_rollups(&f.global, late).await,
+        0,
+        "a suspended tenant must not be handed a fresh chain by the sweep"
+    );
+}
+
+/// Queued-or-running `usage_rollup` jobs for one tenant — the same condition the dedupe index is partial on.
+async fn live_rollups(global: &PgPool, tenant_id: Uuid) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM dam_global.jobs \
+         WHERE tenant_id = $1 AND kind = 'usage_rollup' AND state IN ('queued', 'running')",
+    )
+    .bind(tenant_id)
+    .fetch_one(global)
+    .await
+    .expect("count")
 }
