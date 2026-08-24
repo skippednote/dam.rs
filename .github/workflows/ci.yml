@@ -38,41 +38,62 @@ jobs:
       - run: mise exec -- cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   test:
-    name: test
+    # Sharded by crate, because the workspace does not fit on a runner in one piece.
+    #
+    # 150 integration binaries — 57 in `dam-db`, 38 in `dam-api` — and each one statically
+    # links the whole graph: sqlx, the aws sdk, tantivy, image. Reclaiming the preinstalled
+    # toolchains takes a runner from ~14GB free to 34GB and `cargo test --workspace` still
+    # died with `rustc-LLVM ERROR: IO failure on output stream: No space left on device`
+    # while linking the last of them, twice. Debuginfo settings alone were not going to
+    # close a gap that size.
+    #
+    # Splitting bounds the disk per shard rather than trimming the suite to fit, and it cuts
+    # the wall clock as a side effect. The two big crates get a shard each and everything
+    # else shares the third. `fail-fast: false` because one shard's failure must not hide
+    # another's — the whole point of running them separately.
+    name: test (${{ matrix.shard.name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - name: dam-db
+            args: -p dam-db
+          - name: dam-api
+            args: -p dam-api
+          - name: rest
+            args: --workspace --exclude dam-db --exclude dam-api
     steps:
       - uses: actions/checkout@v4
-      # Reclaim the preinstalled toolchains this workspace does not use. Roughly 25GB,
-      # against a runner that starts with ~14GB free — and `cargo test --workspace
-      # --all-features` needs more than that to link one test binary per integration
-      # suite. Cheaper and more honest than trimming the suite to fit the runner.
+      # Roughly 25GB of preinstalled toolchains this workspace never uses.
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
           df -h /
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      # mise supplies libvips and ffmpeg, pinned in .mise.toml. Without it the media
+      # mise supplies the pinned rust, and libvips and ffmpeg with it. Without it the media
       # suites fail here while passing locally, because vips lives under
-      # ~/.local/share/mise and a bare `cargo test` cannot see it. Installing the
-      # same pinned versions CI and laptop alike is the point — an apt libvips would
-      # be a different build with a different loader set, which is exactly what
+      # ~/.local/share/mise and a bare `cargo test` cannot see it. Installing the same
+      # pinned versions CI and laptop alike is the point — an apt libvips would be a
+      # different build with a different loader set, which is exactly what
       # `the_loaders_this_build_provides_are_asserted_not_assumed` refuses to guess at.
+      #
+      # No `dtolnay/rust-toolchain` beside it: every cargo call here goes through
+      # `mise exec`, so a second toolchain would be a gigabyte of disk and an ambiguity
+      # about which compiler ran.
       - uses: jdx/mise-action@v2
         with:
           install: true
           cache: true
+      - uses: Swatinem/rust-cache@v2
       # No `services:` block. Every database and object-store test starts its own
       # container through testcontainers (D17), so the suites stay parallel and no
       # test depends on a shared fixture's state. Docker is present on the runner
       # by default, which is all testcontainers needs.
-      # A runner has ~14GB free and this workspace does not fit in it: the first run
-      # of this job died with `rustc-LLVM ERROR: IO failure on output stream: No
-      # space left on device` while linking the last of the test binaries. Full
-      # debuginfo for every target in a workspace this size is the bulk of it, and
-      # line tables are all a backtrace from a failing test needs.
-      - run: mise exec -- cargo test --workspace --all-features
+      - run: mise exec -- cargo test ${{ matrix.shard.args }} --all-features
         env:
+          # Line tables rather than full debuginfo: enough for a backtrace from a failing
+          # test to name a file and a line, without carrying type information for every
+          # crate into 150 binaries.
           CARGO_PROFILE_TEST_DEBUG: line-tables-only
           CARGO_PROFILE_DEV_DEBUG: line-tables-only
           # testcontainers is quiet by default; this surfaces image pulls and wait
