@@ -361,6 +361,144 @@ async fn a_scheduled_job_is_not_claimable_before_its_time() {
 }
 
 #[tokio::test]
+async fn interactive_work_that_keeps_arriving_does_not_starve_the_background() {
+    // The bug a load run found, reduced, and at the batch size the worker actually claims. Every
+    // upload fans out into `derive` jobs at priority 40, so on a busy tenant that band is never
+    // empty; the `index` jobs behind it at priority 50 were claimed *zero* times in thirty-five
+    // minutes, leaving half the library — 1,280 assets sitting in `assets` the whole time —
+    // invisible to text search.
+    let (_pg, pool, t) = queue_db(&["acme"]).await;
+    for i in 0..100 {
+        jobs::enqueue(
+            &pool,
+            spec(t[0], "derive")
+                .dedupe_key(format!("d{i}"))
+                .priority(40),
+        )
+        .await
+        .expect("derive");
+    }
+    for i in 0..100 {
+        jobs::enqueue(
+            &pool,
+            spec(t[0], "index").dedupe_key(format!("i{i}")).priority(50),
+        )
+        .await
+        .expect("index");
+    }
+
+    // The urgent band is refilled after every batch, so it never empties — the condition the
+    // load run held continuously for thirty-five minutes.
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for round in 0..10 {
+        let batch = jobs::claim(
+            &pool,
+            "w",
+            ClaimOptions {
+                limit: 4,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("claim");
+        assert_eq!(
+            batch.len(),
+            4,
+            "the reserve must not cost throughput — the batch still fills"
+        );
+        for j in &batch {
+            *seen.entry(j.kind.clone()).or_default() += 1;
+        }
+        for i in 0..4 {
+            jobs::enqueue(
+                &pool,
+                spec(t[0], "derive")
+                    .dedupe_key(format!("r{round}-{i}"))
+                    .priority(40),
+            )
+            .await
+            .expect("refill");
+        }
+    }
+
+    let derive = seen.get("derive").copied().unwrap_or(0);
+    let index = seen.get("index").copied().unwrap_or(0);
+    assert_eq!(
+        index, 10,
+        "one slot in four is reserved, so the background band advances in every batch \
+         instead of never: {index} of 40"
+    );
+    assert_eq!(
+        derive, 30,
+        "and interactive work keeps the other three: {derive} of 40"
+    );
+}
+
+#[tokio::test]
+async fn the_reserved_slot_goes_to_the_oldest_background_work_whatever_its_band() {
+    // The reserve is pooled and ordered by age rather than split per band, which is what bounds
+    // how long any one background job waits: a band's head advances every time it is picked, so
+    // a job in a small band waits for the background work older than it and no longer. Split
+    // per band instead and the worker's four-job batch could not cover seven bands, so the
+    // lowest ones would starve exactly as before.
+    let (_pg, pool, t) = queue_db(&["acme"]).await;
+    let past = chrono::Utc::now() - chrono::Duration::hours(1);
+
+    // A crowd of newer background work in the band directly above interactive.
+    for i in 0..50 {
+        jobs::enqueue(
+            &pool,
+            spec(t[0], "index").dedupe_key(format!("i{i}")).priority(50),
+        )
+        .await
+        .expect("index");
+    }
+    // One job from the lowest band of all, eligible an hour before any of them.
+    jobs::enqueue(
+        &pool,
+        spec(t[0], "usage_rollup")
+            .dedupe_key("u0")
+            .priority(95)
+            .run_after(past),
+    )
+    .await
+    .expect("rollup");
+    // And interactive work, so the reserve is the only way anything else is claimed.
+    for i in 0..50 {
+        jobs::enqueue(
+            &pool,
+            spec(t[0], "derive")
+                .dedupe_key(format!("d{i}"))
+                .priority(40),
+        )
+        .await
+        .expect("derive");
+    }
+
+    let batch = jobs::claim(
+        &pool,
+        "w",
+        ClaimOptions {
+            limit: 4,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("claim");
+
+    assert!(
+        batch.iter().any(|j| j.kind == "usage_rollup"),
+        "the oldest background job takes the reserved slot even from the bottom band — \
+         priority orders the batch, age decides the reserve"
+    );
+    assert_eq!(
+        batch.iter().filter(|j| j.kind == "derive").count(),
+        3,
+        "and it costs interactive work exactly the one reserved slot"
+    );
+}
+
+#[tokio::test]
 async fn priority_orders_within_a_tenant() {
     let (_pg, pool, t) = queue_db(&["acme"]).await;
     jobs::enqueue(&pool, spec(t[0], "low").dedupe_key("l").priority(200))
