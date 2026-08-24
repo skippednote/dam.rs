@@ -33,8 +33,9 @@ small sizes without becoming a literal camera, folder, shield, database, Rust cr
 
 | Asset                                                                          | Use                            |
 | ------------------------------------------------------------------------------ | ------------------------------ |
-| [`web/static/brand/damrs-mark.png`](../../web/static/brand/damrs-mark.png)     | Public mark and documentation  |
-| [`web/src/lib/assets/damrs-mark.png`](../../web/src/lib/assets/damrs-mark.png) | Bundled app mark and favicon   |
+| [`damrs-mark.svg`](damrs-mark.svg)                                             | Public mark and documentation  |
+| [`web/src/lib/assets/damrs-mark.svg`](../../web/src/lib/assets/damrs-mark.svg) | Bundled app mark               |
+| [`web/src/lib/assets/favicon.svg`](../../web/src/lib/assets/favicon.svg)       | Tab icon, square framing       |
 | [`signal-ledger-reference.jpg`](signal-ledger-reference.jpg)                   | Approved application direction |
 
 Give the mark clear space equal to the width of its vertical stem. Do not recolour it with semantic rights
@@ -91,7 +92,11 @@ Write as the system already behaves:
 because a favicon is rendered into a square and letterboxing a portrait mark leaves it smaller than the space
 allows.
 
-Both are **traced from the 793×1069 PNG they replace**, which spent 161KB of raster on four flat
+`docs/brand/damrs-mark.svg` is the same file again, and the duplication is deliberate this time: the README and
+this guide are read on the forge, where a path into `web/src` reads as reaching into the application to borrow
+an asset. It is 358 bytes. The one that mattered was the 161KB PNG that existed twice.
+
+Both app copies are **traced from the 793×1069 PNG they replace**, which spent 161KB of raster on four flat
 single-colour shapes and was drawn at 32×28. Every number came off that file's own pixel runs rather than
 from eyeballing it: stroke 60 for the brackets and the pin, 51 for the ring, and each cap and corner position
 derived from where the ink starts and stops. Verified by overlaying the rendered SVG on the original in

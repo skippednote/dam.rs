@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="web/static/brand/damrs-mark.png" width="72" alt="" />
+  <img src="docs/brand/damrs-mark.svg" width="64" alt="" />
 </p>
 
 # dam.rs
@@ -75,9 +75,10 @@ remain in staging until it verifies, promotes, derives, and indexes them.
 ## Verification
 
 ```sh
-mise run check       # Rust formatting, clippy, tests, advisories, licences, sources
+mise run check       # Rust formatting, clippy, tests
+mise run check:deny  # advisories, licences, bans, sources — the same four CI runs
 mise run check:web   # Svelte checks, lint, unit tests, browser and accessibility suites
-mise run check:all   # both gates
+mise run check:all   # all three
 ```
 
 The browser suite includes axe checks in both themes, keyboard navigation, virtual-grid semantics, and
@@ -97,6 +98,8 @@ Read [docker/DEPLOY.md](docker/DEPLOY.md) before treating an image as a deployme
 - [Decisions](DECISIONS.md) — implementation choices and evidence.
 - [Implementation queue](TASKS.md) — completed and remaining work.
 - [Acquia parity](ACQUIA-PARITY.md) — comparator coverage.
+- [Contributing](CONTRIBUTING.md) — how to build, what the gates are, and what a good change looks like.
+- [Security](SECURITY.md) — what is in scope and how to report it privately.
 - [Deployment](docker/DEPLOY.md) — image, configuration, rollout order, probes, and operations.
 - [Brand guide](docs/brand/README.md) — identity, logo, colour, typography, and voice.
 - [Frontend](web/README.md) — Svelte development and accessibility conventions.

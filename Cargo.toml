@@ -23,7 +23,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"   # raised from 1.85 by c2pa 0.90; see DECISIONS.md
 license = "Apache-2.0"
-repository = "https://github.com/skippednote/damrs"
+repository = "https://github.com/skippednote/dam.rs"
 # Internal crates. Marking them unpublishable prevents an accidental `cargo publish`
 # and is what makes cargo-deny's `allow-wildcard-paths` apply to our path deps.
 publish = false

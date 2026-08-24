@@ -15,6 +15,12 @@ pnpm = "10"
 "conda:libvips" = "8.18.5"
 # ffmpeg for M3 (video, HLS, loudness normalisation).
 "conda:ffmpeg" = "9.0.1"
+# Dependency policy: advisories, licences, bans and sources, against `deny.toml`.
+#
+# Pinned and installed here rather than left to CI, because the README told a contributor that
+# `mise run check` covers licences and it did not — cargo-deny ran only in the CI job. A local gate that
+# claims more than it checks sends somebody to a CI failure they were promised would not happen.
+"cargo:cargo-deny" = "0.20.2"
 # `pg_dump` and `pg_restore` for backups and restore drills (§17, G11). Client tools only — the server is a
 # container.
 #
@@ -108,9 +114,15 @@ pnpm exec playwright test
 # Deliberately not folded into `check`: the Rust gate runs on every edit and adding a
 # browser install plus a Vite build to it would make the inner loop minutes long. CI runs
 # both, and `check:all` is here for a pre-push sweep.
+[tasks."check:deny"]
+description = "Dependency policy: advisories, licences, bans, sources"
+# The same four checks, in the same order, as the `cargo-deny` job in CI. Two lists that must agree, so
+# whichever one somebody edits the other is one line away.
+run = "cargo deny check advisories bans licenses sources"
+
 [tasks."check:all"]
 description = "Everything CI runs"
-depends = ["check", "check:web"]
+depends = ["check", "check:deny", "check:web"]
 
 [tasks.up]
 description = "Start local Postgres + SeaweedFS"

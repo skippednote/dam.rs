@@ -14,6 +14,38 @@ ignore = [
     # the metrics and symphonia trees, neither of which we control.
     # Reviewed 2026-08-17. Re-check if a maintained fork becomes the ecosystem default.
     { id = "RUSTSEC-2024-0436", reason = "proc-macro only; no runtime surface" },
+
+    # RUSTSEC-2024-0370: `proc-macro-error` is unmaintained — unreachable maintainer, no
+    # release in four years. The same shape as `paste` above: a proc-macro that runs at
+    # compile time and ships no runtime code. Reached at
+    # proc-macro-error <- static-regular-grammar <- iref-core <- c2pa, so it is c2pa's
+    # tree rather than a dependency we chose.
+    # Reviewed 2026-08-24. Drops out when c2pa's iref chain moves off syn 1.x.
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro only; no runtime surface" },
+
+    # RUSTSEC-2023-0071: the Marvin Attack against `rsa` 0.9 — key recovery through a
+    # timing sidechannel in a non-constant-time implementation. **There is no safe
+    # upgrade**; the advisory says so, and the RustCrypto rewrite is unfinished.
+    #
+    # Accepted, with the reasoning written down rather than assumed, because it is a real
+    # vulnerability in a real code path:
+    #
+    #   * It arrives only through `c2pa` (rsa <- c2pa <- dam-media), which uses it to
+    #     verify and produce content-credential signatures. We do not use `rsa` directly
+    #     and no other dependency pulls it.
+    #   * Verification uses public keys. A timing sidechannel against a public key
+    #     recovers nothing.
+    #   * Signing uses a private key, and D13's re-signing runs in the worker — off the
+    #     request path, on assets already accepted, with no attacker-controlled timing
+    #     loop to measure. The attack needs many observations of operations the attacker
+    #     can trigger and time; a derivative pipeline is neither.
+    #   * A deployment that does not configure C2PA signing never reaches the signing
+    #     path at all, which is the default.
+    #
+    # The honest limit: if signing ever moves onto a synchronous, caller-triggered
+    # endpoint, this exception stops being defensible and has to be revisited before that
+    # ships. Reviewed 2026-08-24.
+    { id = "RUSTSEC-2023-0071", reason = "rsa via c2pa; verification is public-key and signing is off the request path" },
 ]
 
 [licenses]

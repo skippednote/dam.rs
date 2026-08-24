@@ -1,0 +1,29 @@
+dam.rs
+Copyright 2026 Bassam Ismail
+
+This product includes software developed as part of the dam.rs project
+(https://github.com/skippednote/dam.rs), licensed under the Apache License,
+Version 2.0.
+
+── Trademarks ──────────────────────────────────────────────────────────────
+
+The Apache License covers the source code. It does not grant permission to use
+the "dam.rs" name, the word mark, or the crop-mark-and-pin logo in
+`docs/brand/`, beyond the fair descriptive use the licence's own trademark
+clause (section 6) already reserves.
+
+In practice: fork it, run it, sell a service built on it, say it is built on
+dam.rs. Do not name the result dam.rs or ship it under this logo, because then
+a user cannot tell whose software they are running — which is the only thing
+this reservation is for.
+
+── Third-party components ──────────────────────────────────────────────────
+
+This project depends on third-party Rust crates and npm packages, each under
+its own licence. `deny.toml` pins the set of licences the build accepts and CI
+fails on anything outside it, so the dependency licensing is checked rather
+than assumed:
+
+    mise run check:deny    # cargo deny check advisories bans licenses sources
+
+`Cargo.lock` and `web/pnpm-lock.yaml` record the exact versions in use.
