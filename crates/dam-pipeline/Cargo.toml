@@ -40,6 +40,9 @@ dam-store = { path = "../dam-store", features = ["testing"] }
 dam-ai = { path = "../dam-ai", features = ["testing"] }
 image = { workspace = true }
 blake3 = { workspace = true }
+# For the one test store that has to answer `head` truthfully and serve nothing — the shape a killed
+# writer leaves, which no real backend can be talked into producing.
+async-trait = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"

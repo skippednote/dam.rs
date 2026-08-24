@@ -29,6 +29,7 @@ pub mod facets;
 pub mod fields;
 pub mod imports;
 pub mod insights;
+pub mod integrity;
 pub mod jobs;
 pub mod judgements;
 pub mod members;

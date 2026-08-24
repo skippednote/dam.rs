@@ -59,6 +59,8 @@ pub mod kind {
     pub const SIMILARITY: &str = "similarity";
     /// One tenant's usage is measured and written to the control plane's daily rollup (M6c).
     pub const USAGE_ROLLUP: &str = "usage_rollup";
+    /// One window of a tenant's placements is checked against the store it names (§6.4).
+    pub const INTEGRITY_SCRUB: &str = "integrity_scrub";
 }
 
 /// How long to wait when the queue is empty.
@@ -141,6 +143,7 @@ pub async fn run(context: &Context, shutdown: impl std::future::Future<Output = 
     // was down. The enqueue is deduped per tenant, so two workers starting together, or one restarting ten
     // times, still leave one chain each.
     start_missing_metering_chains(&context.global).await;
+    start_missing_scrub_chains(&context.global).await;
     let mut metering_swept = std::time::Instant::now();
 
     loop {
@@ -160,6 +163,7 @@ pub async fn run(context: &Context, shutdown: impl std::future::Future<Output = 
         // exactly the "gap indistinguishable from a worker being down" the metering module warns about.
         if metering_swept.elapsed() >= METERING_SWEEP {
             start_missing_metering_chains(&context.global).await;
+            start_missing_scrub_chains(&context.global).await;
             metering_swept = std::time::Instant::now();
         }
 
@@ -448,6 +452,43 @@ pub async fn handle(context: &Context, job: &Job) -> Result<()> {
             // `requeue_backfill_collect` documents at length: this job is still `running`, so a shared key
             // would resolve to itself and the chain would end here.
             requeue_tier_sweep(&context.global, job.tenant_id, crate::tiering::SWEEP_EVERY).await?;
+            Ok(())
+        }
+
+        kind::INTEGRITY_SCRUB => {
+            let scrubbed = crate::integrity::scrub(
+                &context.global,
+                context.store.as_ref() as &dyn BlobStore,
+                &slug,
+                chrono::Utc::now(),
+            )
+            .await?;
+            // At `warn` when there is anything to say and `info` otherwise, because a scrub that finds
+            // nothing is the expected outcome and a scrub that finds something is the only reason the
+            // job exists. A count in a log line an operator greps for beats a clean run they have to
+            // remember to check.
+            if scrubbed.findings() > 0 {
+                tracing::warn!(
+                    verified = scrubbed.verified,
+                    missing = scrubbed.missing,
+                    corrupt = scrubbed.corrupt,
+                    unreachable = scrubbed.unreachable,
+                    "integrity scrub found placements the store disagrees with",
+                );
+            } else {
+                tracing::info!(
+                    verified = scrubbed.verified,
+                    unreachable = scrubbed.unreachable,
+                    "integrity scrub",
+                );
+            }
+            // Tomorrow's pass, from inside today's — the chain `requeue_tier_sweep` documents.
+            requeue_integrity_scrub(
+                &context.global,
+                job.tenant_id,
+                crate::integrity::SCRUB_EVERY,
+            )
+            .await?;
             Ok(())
         }
 
@@ -809,6 +850,36 @@ fn dispatch_spec(tenant_id: Uuid, after: chrono::Duration) -> jobs::JobSpec {
         .run_after(chrono::Utc::now() + after)
 }
 
+/// Starts a tenant's integrity scrub chain.
+///
+/// Deduped per tenant, for the same reason the lifecycle sweep is: a second chain doubles the `HEAD`
+/// bill to discover the same answer.
+pub async fn enqueue_integrity_scrub(global: &sqlx::PgPool, tenant_id: Uuid) -> Result<Uuid> {
+    Ok(jobs::enqueue(
+        global,
+        scrub_spec(tenant_id, chrono::Duration::zero())
+            .dedupe_key(format!("integrity_scrub:{tenant_id}")),
+    )
+    .await?)
+}
+
+/// Queues tomorrow's scrub, from inside today's. Not deduped — see [`requeue_backfill_collect`].
+pub async fn requeue_integrity_scrub(
+    global: &sqlx::PgPool,
+    tenant_id: Uuid,
+    after: chrono::Duration,
+) -> Result<Uuid> {
+    Ok(jobs::enqueue(global, scrub_spec(tenant_id, after)).await?)
+}
+
+fn scrub_spec(tenant_id: Uuid, after: chrono::Duration) -> jobs::JobSpec {
+    jobs::JobSpec::new(tenant_id, kind::INTEGRITY_SCRUB)
+        // Beside the lifecycle sweep: both are housekeeping that reads the whole placement table, and
+        // neither has anybody waiting on it.
+        .priority(90)
+        .run_after(chrono::Utc::now() + after)
+}
+
 fn sweep_spec(tenant_id: Uuid, after: chrono::Duration) -> jobs::JobSpec {
     jobs::JobSpec::new(tenant_id, kind::TIER_SWEEP)
         // Below every interactive kind. A sweep is housekeeping and a thumbnail is somebody waiting.
@@ -829,7 +900,7 @@ fn sweep_spec(tenant_id: Uuid, after: chrono::Duration) -> jobs::JobSpec {
 /// "Live" means a `usage_rollup` job that is `queued` or `running`, which is the same condition the dedupe
 /// index is partial on — so a tenant mid-chain, whose next pass is queued with a future `run_after`, is
 /// correctly seen as covered.
-async fn tenants_without_metering(global: &sqlx::PgPool) -> Result<Vec<Uuid>> {
+async fn tenants_without_chain(global: &sqlx::PgPool, kind: &str) -> Result<Vec<Uuid>> {
     Ok(sqlx::query_scalar(
         "SELECT t.id FROM dam_global.tenants t \
          WHERE t.status = 'active' \
@@ -838,7 +909,7 @@ async fn tenants_without_metering(global: &sqlx::PgPool) -> Result<Vec<Uuid>> {
                WHERE j.tenant_id = t.id AND j.kind = $1 \
                  AND j.state IN ('queued', 'running'))",
     )
-    .bind(kind::USAGE_ROLLUP)
+    .bind(kind)
     .fetch_all(global)
     .await
     .map_err(dam_db::Error::from)?)
@@ -849,7 +920,7 @@ async fn tenants_without_metering(global: &sqlx::PgPool) -> Result<Vec<Uuid>> {
 /// A failure is logged and dropped. Metering is the least urgent thing this process does, and refusing to run
 /// a worker because one tenant's row could not be queued would stop every thumbnail in the fleet.
 pub async fn start_missing_metering_chains(global: &sqlx::PgPool) {
-    match tenants_without_metering(global).await {
+    match tenants_without_chain(global, kind::USAGE_ROLLUP).await {
         Ok(tenants) => {
             for tenant_id in tenants {
                 match enqueue_usage_rollup(global, tenant_id).await {
@@ -861,6 +932,28 @@ pub async fn start_missing_metering_chains(global: &sqlx::PgPool) {
             }
         }
         Err(error) => tracing::warn!(%error, "listing tenants to meter"),
+    }
+}
+
+/// Starts an integrity scrub chain for every active tenant that has none.
+///
+/// The same repair `start_missing_metering_chains` performs, for the same reason and with the same
+/// tolerance for failure. It matters slightly more here: a tenant with no scrub chain is a tenant whose
+/// library is not being checked, and unlike a missing billing row there is nothing later that would
+/// reveal the gap — the report would simply be silent, which is indistinguishable from good news.
+pub async fn start_missing_scrub_chains(global: &sqlx::PgPool) {
+    match tenants_without_chain(global, kind::INTEGRITY_SCRUB).await {
+        Ok(tenants) => {
+            for tenant_id in tenants {
+                match enqueue_integrity_scrub(global, tenant_id).await {
+                    Ok(_) => tracing::info!(%tenant_id, "started the integrity scrub chain"),
+                    Err(error) => {
+                        tracing::warn!(%error, %tenant_id, "starting the integrity scrub chain");
+                    }
+                }
+            }
+        }
+        Err(error) => tracing::warn!(%error, "listing tenants to scrub"),
     }
 }
 
