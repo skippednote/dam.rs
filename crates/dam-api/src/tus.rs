@@ -643,6 +643,20 @@ enum Refusal {
     /// integration retrying with progressively smaller files forever.
     OverQuota,
     UnsupportedMediaType,
+    /// The deployment is briefly out of capacity — a connection pool with nothing free.
+    ///
+    /// **503 with `Retry-After`, not 500**, and for a TUS client the difference decides whether a file
+    /// arrives. A 500 says the request is broken and must not be repeated, so an uploader drops it; this
+    /// clears itself as connections return, so the useful answer is "try again shortly".
+    ///
+    /// Found by uploading 2056 files across four tenants at once against a sixteen-connection pool: thirty
+    /// came back 500, every one of them "pool timed out while waiting for an open connection".
+    ///
+    /// The classifying lives in `dam_db::Error::is_capacity` rather than here, because this is not the only
+    /// surface that can be refused for it — every `From<dam_db::Error>` in this crate currently answers a
+    /// saturated pool with 500, and the upload path is only the one that was measured saturating. Moving the
+    /// rest over is a question of which of them a client can usefully retry, not of how to tell.
+    Unavailable,
     Internal,
 }
 
@@ -656,16 +670,30 @@ impl IntoResponse for Refusal {
             Self::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::OverQuota => StatusCode::INSUFFICIENT_STORAGE,
             Self::UnsupportedMediaType => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            Self::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         };
         // No body. A TUS client reads status and headers, and an error body here could only ever leak
         // detail about the tenant's state to a caller who has already been refused.
+        //
+        // `Retry-After` is the exception, because it is not detail — it is the instruction that makes the
+        // refusal recoverable. A second, not a minute: the pool frees as in-flight requests finish, and a
+        // client that waits a minute has turned a blip into a stalled upload.
+        if matches!(self, Self::Unavailable) {
+            return (status, [(axum::http::header::RETRY_AFTER, "1")]).into_response();
+        }
         status.into_response()
     }
 }
 
 impl From<dam_db::Error> for Refusal {
     fn from(error: dam_db::Error) -> Self {
+        if error.is_capacity() {
+            // Warn, not error. An error-level line per refused request turns a brief saturation into pages of
+            // alarm, and what an operator needs is the count rather than each instance.
+            tracing::warn!(%error, "upload refused: out of capacity, retryable");
+            return Self::Unavailable;
+        }
         tracing::error!(%error, "upload database error");
         Self::Internal
     }
@@ -698,6 +726,43 @@ mod tests {
 
     fn encode(value: &str) -> String {
         base64::engine::general_purpose::STANDARD.encode(value)
+    }
+
+    #[test]
+    fn a_pool_timeout_is_a_retryable_503_rather_than_a_500() {
+        // A TUS client reads the status to decide whether the file is still uploadable: 500 says the
+        // upload is broken, so a well-behaved client stops trying and the file is lost. 503 with
+        // `Retry-After` says come back. Under a load run against a saturated database an entire
+        // 32-wide burst refused here, so which of the two it is decides whether those uploads were
+        // delayed by a second or dropped.
+        let refusal = Refusal::from(dam_db::Error::Sqlx(sqlx::Error::PoolTimedOut));
+        assert!(
+            matches!(refusal, Refusal::Unavailable),
+            "running out of connections is capacity, not a bad request or a bug"
+        );
+
+        let response = refusal.into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok()),
+            Some("1"),
+            "a client that is not told when to come back comes back immediately"
+        );
+    }
+
+    #[test]
+    fn a_database_fault_that_is_not_capacity_is_still_a_500() {
+        // The other half of the classification: only pool exhaustion is retryable. A broken query is
+        // a bug, and telling the client to retry it would hide the bug behind an infinite loop.
+        let refusal = Refusal::from(dam_db::Error::Sqlx(sqlx::Error::RowNotFound));
+        assert!(matches!(refusal, Refusal::Internal));
+        assert_eq!(
+            refusal.into_response().status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
     }
 
     #[test]

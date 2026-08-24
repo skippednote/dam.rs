@@ -111,6 +111,18 @@ pub enum Error {
     Core(#[from] dam_core::Error),
 }
 
+impl Error {
+    /// Whether this is the deployment running out of a resource rather than anything wrong with the request.
+    ///
+    /// Today that means exactly one thing: the connection pool had nothing free within its timeout. Classified
+    /// here rather than at each HTTP surface because there are two of those — the asset endpoints' `Failure`
+    /// and the TUS handler's own `Refusal` — and they had diverged.
+    #[must_use]
+    pub fn is_capacity(&self) -> bool {
+        matches!(self, Self::Sqlx(sqlx::Error::PoolTimedOut))
+    }
+}
+
 pub use tenant_conn::TenantConn;
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
