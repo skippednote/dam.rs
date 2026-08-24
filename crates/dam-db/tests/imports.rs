@@ -15,7 +15,7 @@
 //! leaves a migrated one alone.
 //!
 //! **Records are never deleted, not even by a rollback.** 0008 retains `source_id` permanently because "two
-//! years later, 'which Widen asset did this come from' is a question that gets asked" — and a second attempt
+//! years later, 'which source asset did this come from' is a question that gets asked" — and a second attempt
 //! needs to know what the first one did.
 //!
 //! **A rollback takes only what the job created.** A record whose asset was deleted since is excluded, so an
@@ -77,7 +77,7 @@ async fn a_run_cannot_skip_its_own_review() {
     // §G7's failure mode: a library moved under a crosswalk nobody looked at.
     let (_pg, pool) = db().await;
     let mut conn = pool.acquire().await.expect("conn");
-    let id = job(&pool, "Widen, phase one").await;
+    let id = job(&pool, "Legacy DAM, phase one").await;
 
     match imports::advance(&mut conn, id, Phase::Transfer).await {
         Err(ImportRefusal::NotForward { from, to }) => {
@@ -107,7 +107,7 @@ async fn a_run_cannot_skip_its_own_review() {
     }
 
     // Nor may a *smaller* jump skip a step: dry-run straight to verify would move nothing and call it verified.
-    let second = job(&pool, "Widen, phase two").await;
+    let second = job(&pool, "Legacy DAM, phase two").await;
     imports::advance(&mut conn, second, Phase::CrosswalkReview)
         .await
         .expect("review");
@@ -178,7 +178,7 @@ async fn a_failed_run_is_fixable_and_a_complete_one_is_not() {
     // by changing the mapping, so `failed` has to be a state you can leave.
     let (_pg, pool) = db().await;
     let mut conn = pool.acquire().await.expect("conn");
-    let id = job(&pool, "Bynder").await;
+    let id = job(&pool, "Incumbent DAM").await;
 
     imports::advance(&mut conn, id, Phase::CrosswalkReview)
         .await
@@ -231,7 +231,7 @@ async fn a_resumed_run_updates_a_pending_record_and_leaves_a_migrated_one() {
     // re-run without duplicating, and a second dry run must never un-migrate what a transfer already did.
     let (_pg, pool) = db().await;
     let mut conn = pool.acquire().await.expect("conn");
-    let id = job(&pool, "Brandfolder").await;
+    let id = job(&pool, "Legacy file share").await;
     let one = asset(&pool, "arrived").await;
 
     imports::note(&mut conn, id, "src-1", Some("aaa"), &json!([]), None)
@@ -414,7 +414,7 @@ async fn the_report_is_stored_so_the_signed_off_artifact_survives_the_run() {
     // terminal window could not be pointed at afterwards.
     let (_pg, pool) = db().await;
     let mut conn = pool.acquire().await.expect("conn");
-    let id = job(&pool, "Widen").await;
+    let id = job(&pool, "Legacy DAM").await;
 
     let report = json!({
         "records": 40_000,

@@ -82,7 +82,7 @@ aws-smithy-http-client = { version = "1", default-features = false, features = [
 
 # ── search ────────────────────────────────────────────────────────────────────
 tantivy = "0.26"
-winnow = "1.0"          # Widen-compatible shorthand query parser -> query IR
+winnow = "1.0"          # comparator-compatible shorthand query parser -> query IR
 
 # ── media ─────────────────────────────────────────────────────────────────────
 # libvips is the primary image path; `image` + fast_image_resize is the fallback

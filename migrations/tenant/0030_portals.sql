@@ -1,6 +1,6 @@
 -- Portals: a named, branded, long-lived share of a set (Q.14).
 --
--- Acquia has four — Standard, Brand, Video and Channel — and reads as though they were four products. They are
+-- The comparator has four — Standard, Brand, Video and Channel — and reads as though they were four products. They are
 -- not: they are four *presentations* of the same thing, which is "here is a set of assets, under our name, for
 -- people who do not have accounts". So this is one table with a `kind` that chooses a layout and a default
 -- filter, and **no kind changes who may see or take what**. That is worth stating in the schema because the

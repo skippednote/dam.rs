@@ -319,7 +319,7 @@ async fn unfiling_removes_only_that_placement(pool: &PgPool, tree: Uuid) {
 }
 
 async fn the_uncategorised_worklist_finds_what_nobody_filed(pool: &PgPool, tree: Uuid) {
-    // Acquia's admin dashboard tracks this as a number with a link, and it is the query that makes
+    // The comparator's admin dashboard tracks this as a number with a link, and it is the query that makes
     // categories enforceable rather than decorative: a library where filing is optional and unmeasured is a
     // library where it stops happening.
     let orphan = asset(pool, "nobody-filed-me").await;

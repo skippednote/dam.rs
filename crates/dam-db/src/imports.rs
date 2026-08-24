@@ -16,7 +16,7 @@
 //! It is the **idempotency key** for a resumed run — `(job, source_id)` is the primary key, so a batch that
 //! half-finished re-runs without duplicating. It is the **rollback manifest**, because it names every asset the
 //! job created. And it is the **provenance**: 0008 says `source_id` is retained permanently, because "two years
-//! later, 'which Widen asset did this come from' is a question that gets asked."
+//! later, 'which source asset did this come from' is a question that gets asked."
 //!
 //! Which means records are never deleted, not even on rollback. A rolled-back record becomes `rolled_back` and
 //! keeps its `source_id`, so a second attempt knows what the first one did.
@@ -506,7 +506,7 @@ pub async fn created_assets(conn: &mut sqlx::PgConnection, job: Uuid) -> Result<
 /// Marks the job's records rolled back.
 ///
 /// The records themselves are kept — never deleted, not even here. 0008 retains `source_id` permanently so
-/// "which Widen asset did this come from" stays answerable, and a second attempt needs to know what the first
+/// "which source asset did this come from" stays answerable, and a second attempt needs to know what the first
 /// one did. `asset_id` is cleared because the asset is gone; the source id is the thing worth keeping.
 pub async fn mark_rolled_back(conn: &mut sqlx::PgConnection, job: Uuid) -> Result<u64, Error> {
     Ok(sqlx::query(

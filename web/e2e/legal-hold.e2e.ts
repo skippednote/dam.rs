@@ -179,14 +179,6 @@ async function connect(page: Page, options: HoldOptions = {}) {
 	});
 }
 
-/** Opens the first asset's detail panel. */
-async function open(page: Page) {
-	await page.goto('/assets');
-	await expect(page.getByRole('gridcell').first()).toBeVisible();
-	await page.getByRole('gridcell').first().click();
-	await expect(page.getByRole('complementary', { name: 'Selected asset' })).toBeVisible();
-}
-
 /** Opens the first asset's detail panel and returns the legal-hold section. */
 async function openHold(page: Page) {
 	await page.goto('/assets');

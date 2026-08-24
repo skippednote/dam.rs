@@ -1,6 +1,6 @@
 -- Upload profiles: what an upload arrives already knowing (Q.3).
 --
--- Acquia ties three things to the profile an upload was made under: metadata defaults, whether the uploader
+-- The comparator ties three things to the profile an upload was made under: metadata defaults, whether the uploader
 -- forces required fields to be filled before proceeding, and whether AI tagging applies (its tag backfill
 -- explicitly skips assets "that have AI Tags turned off on the associated Upload Profile"). One profile per
 -- kind of intake — a photographer's drop, a partner's bulk delivery, a marketing upload — so the answer to

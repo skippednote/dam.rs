@@ -720,12 +720,19 @@ impl Promoted {
     ) -> Result<Self> {
         let key = Key::original(tenant_id, content_hash)?;
         let state = store.head(&key).await.map_err(|error| {
-            // The session says the bytes were promoted and they are not there. Permanent: retrying cannot
-            // conjure them, and saying so beats looping.
-            Error::Permanent(format!(
-                "upload was promoted to {} and the object is gone: {error}",
-                key.as_str()
-            ))
+            if matches!(error, dam_store::Error::NotFound(_)) {
+                // The session says the bytes were promoted and the store agrees they are not there.
+                // Permanent: retrying cannot conjure them, and saying so beats looping.
+                return Error::Permanent(format!(
+                    "upload was promoted to {} and the object is gone: {error}",
+                    key.as_str()
+                ));
+            }
+            // Any other failure is the store being unreachable, not the object being absent — a reset
+            // connection, a timeout, a 500. Reading those as "gone" is the exact mistake
+            // `Error::is_transient` warns about, and it is not hypothetical: a load run lost a finished
+            // upload to one `IncompleteMessage` while the bytes sat at the key the whole time.
+            error.into()
         })?;
 
         let end = PROBE_PREFIX.min(state.size).saturating_sub(1);

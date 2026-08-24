@@ -1,8 +1,13 @@
 # dam.rs architecture
 
-Rights-aware digital asset infrastructure, built in Rust. The system is functionally modelled on Acquia DAM
-(Widen), with S3-compatible object storage and aggressive cold tiering that does not compromise
-searchability.
+Rights-aware digital asset infrastructure, built in Rust. The system is functionally modelled on the
+established commercial DAM platforms, with S3-compatible object storage and aggressive cold tiering that
+does not compromise searchability.
+
+One of those platforms was surveyed feature by feature to set the parity target, and this document refers
+to it throughout as **the comparator** rather than by name. The survey was taken against a named
+customer's live tenant, so the name and the inventory are somebody else's account rather than anything
+about this system.
 
 **Status:** active development. The architecture records the intended system and its invariants; see
 [`TASKS.md`](TASKS.md) for current implementation status and [`DECISIONS.md`](DECISIONS.md) for evidence from
@@ -31,7 +36,7 @@ the running implementation.
 | D5 | **Originals tier; the search substrate does not** | See §2. This is the load-bearing decision of the whole system. |
 | D6 | Job queue lives in the **global** schema, not per tenant | One worker polls one table. Polling N schemas does not scale. |
 | D7 | Enrichment is a **deterministic DAG with a human review gate**, not an autonomous agent | Governed libraries cannot accept unreviewed AI writes. |
-| D8 | **Drupal 11+ is the first integration**, and it *references* assets rather than copying them | Widest overlap with Acquia DAM's actual install base. Referencing is what makes expiry and rights withdrawal take effect downstream, and it turns the CMS into a usage index (§11). |
+| D8 | **Drupal 11+ is the first integration**, and it *references* assets rather than copying them | Widest overlap with the install base these platforms actually serve. Referencing is what makes expiry and rights withdrawal take effect downstream, and it turns the CMS into a usage index (§11). |
 | D9 | **UI is Svelte 5 + TypeScript + Tailwind + shadcn-svelte**, not Rust/WASM | Owner's call. Accessibility conformance (D10) is won in the component layer, and shadcn-svelte sits on bits-ui / melt-ui, which are built to WAI-ARIA patterns — so the primitive-layer argument holds. Svelte's compiled output also suits a 100k-row virtualised grid. §14.1. |
 | D10 | **EN 301 549 / WCAG 2.1 AA is a release gate**, from the first UI commit | European Accessibility Act, applicable since 28 June 2025, covers B2B SaaS. Cheap as a day-one target, expensive as a retrofit. §14.2. |
 | D11 | **ICC profiles preserved end to end; CMYK converted at delivery, never at ingest** | Converting a print master at ingest is lossy and irreversible — the customer's press-ready file would be gone. §18.1. |
@@ -530,7 +535,7 @@ the identical predicate is applied in SQL. Post-filtering an ACL is the classic
 DAM data-leak bug — pagination counts alone disclose the existence of assets
 the caller cannot see.
 
-The Widen-compatible shorthand syntax (`cat:sales fn:event col2:blue`,
+The comparator-compatible shorthand syntax (`cat:sales fn:event col2:blue`,
 `bra:…`) parses with `winnow` into the same query IR the structured API builds,
 so there is exactly one execution path.
 
@@ -664,7 +669,7 @@ not optional hardening.
 
 ## 10. API
 
-REST + OpenAPI (`utoipa`), shaped close enough to Widen API v2 that existing
+REST + OpenAPI (`utoipa`), shaped close enough to the comparator's public API that existing
 integrations port with minimal work:
 
 ```
@@ -690,8 +695,9 @@ derivative cache in the `hot` pool keyed by op-hash.
 
 ## 11. Integrations — Drupal first (D8)
 
-Acquia DAM's leverage comes from its ~80 prebuilt integrations, and the one that
-matters most for its actual install base is Drupal. It is also the integration
+The commercial platforms' leverage comes from their scores of prebuilt
+integrations, and the one that matters most for the install base they serve is
+Drupal. It is also the integration
 that most exercises the rest of this design: rights enforcement, on-the-fly
 transforms, AI alt text, and cold tiering all become visible in a CMS in a way
 they never do through the API alone.
@@ -766,9 +772,9 @@ and the connector compose precisely because of the §2 invariant.
 ### 11.4 What flows back
 
 `connector_asset_refs` turns every connected site into a usage index: "this asset
-appears on 12 pages of site X." That gives three things Acquia charges for —
-asset usage reporting, takedown/expiry impact analysis before you pull an asset,
-and a strong pin-hot signal for the lifecycle engine, since an asset live on a
+appears on 12 pages of site X." That gives three things the commercial
+platforms charge for — asset usage reporting, takedown/expiry impact analysis
+before you pull an asset, and a strong pin-hot signal for the lifecycle engine, since an asset live on a
 production site is a poor tiering candidate regardless of when it was last
 downloaded from the DAM.
 
@@ -918,7 +924,7 @@ underestimated cost** — not byte transfer, which is the easy part.
 Five phases, each a gate rather than a step (`import_jobs.phase` in
 `0008_activation.sql`):
 
-1. **Discover** — enumerate the source via its API. Widen API v2 first: it is
+1. **Discover** — enumerate the source via its API. The comparator's public API first: it is
    well documented, `/assets/search` paginates, and `expand=` yields metadata,
    embeds, and file properties in one pass. Produces an inventory plus the source's
    *actual* field usage, which is usually not what the customer believes it is.
@@ -1259,5 +1265,5 @@ scheduled in §13 or decided in D9–D16.
 - **Tantivy at 1k tenants** (§19) — index size, merge policy, and cold-open
   latency are unmeasured and sit on both the RTO and p99 search latency. This is
   the largest unquantified technical risk in the plan.
-- **Whether Portals ships at all.** Widen has them; whether a Drupal-first
+- **Whether Portals ships at all.** The comparator has them; whether a Drupal-first
   customer base wants a second CMS inside the DAM is a real product question.

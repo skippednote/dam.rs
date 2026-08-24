@@ -26,7 +26,7 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M0–M3c** Foundation, ingest, metadata/search/rights, delivery/sharing/restore | complete |
 | **F** The UI: browse, detail, upload, filter rail, lightbox, bulk bar, design pass | complete |
 | **F.11b** Share/portal UI, schema administration, metadata types | complete, restore UX included |
-| **Q** Acquia parity, 20 slices | **complete** — Q.1–Q.20, including Q.14b collections and Q.20a–d |
+| **Q** Commercial-DAM parity, 20 slices | **complete** — Q.1–Q.20, including Q.14b collections and Q.20a–d |
 | **Go-live Tier 1** Deployment image, backups, metrics, rate limiting, virus scan, C2PA | **done** — all six, each verified against the running stack |
 | **Archival** Tiering engine, restores, the storage screen | **done** — the sweep and poll jobs, the plan/quote/request/approve API, delivery's 202, bulk archive and restore, the restore panel |
 | **M3d** Drupal 11 connector | M3d·1–·4 done; only the Drupal module (M3d·5) open |
@@ -1392,14 +1392,14 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   mapping, which is what 0008 means by "editable between phases".
 
   **Records are never deleted, not even by a rollback.** 0008 retains `source_id` permanently because "two
-  years later, 'which Widen asset did this come from' is a question that gets asked", and a second attempt needs
+  years later, 'which source asset did this come from' is a question that gets asked", and a second attempt needs
   to know what the first one did. A rollback takes only what the job created *and nothing has touched since*, so
   an escape hatch cannot become a second incident — and a legal hold still refuses, which the command says out
   loud rather than swallowing.
 
   **Records arrive as JSON lines on stdin**, not through a reader per vendor. That is §G7's architecture read
   the other way round: the mapping is the hard part and it is source-agnostic, so anything that can emit JSON
-  lines is a source — `jq` over a Widen response, a spreadsheet converted, a script walking a file share. It
+  lines is a source — `jq` over an incumbent DAM's response, a spreadsheet converted, a script walking a file share. It
   also avoided a dependency decision that is not mine to make: a correct CSV reader wants the `csv` crate rather
   than a hand-rolled quoting parser.
 
@@ -1459,6 +1459,19 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   synthetic `plate-*` assets, ten legal holds each, and a soft `asset_count` quota on `globex` left from the
   enforcement check. Say the word and it goes.
 
+- [ ] **The browser suite is flaky, and CI now says so rather than going red at random.** Three full
+  runs, no test failing in more than one: an unchanged `main` at two workers lost 4 of 410
+  (`archival`, `browse` twice, `people`); a branch touching no frontend code lost 3 (`browse`,
+  `collections`, `upload-profiles`); the same branch at `--workers=1` lost 1 (`browse`). Every failure
+  a `toBeVisible` or `toContainText` timeout in an unrelated spec, so it is timing and not a broken
+  assertion — and serialising helps without curing it, which rules out worker contention as the whole
+  explanation. `browse.e2e.ts` is in all three lists and is where to start.
+
+  `playwright.config.ts` now retries twice under CI, which converts a random red into a run labelled
+  **flaky**. That is instrumentation, not a fix: the debt is a suite whose failures cannot be told from
+  regressions on sight, and it wants one session spent on `browse.e2e.ts`'s waits rather than a
+  retry count.
+
 - [ ] **G22 Put the tenant in the delivery claim.** Delivery resolves its tenant from configuration, so one
   `damd` serves delivery for one tenant and a second tenant's URLs 404. Found by A.6; the design decision is
   in DECISIONS.md and always expected this. The claim is length-prefixed and versioned, so adding a field is a
@@ -1475,7 +1488,7 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   `jq` or a spreadsheet export. The *filesystem* reader needs `std::fs` and no dependency at all. So a CSV
   reader is a convenience, not a prerequisite, and should not gate the slice.
 
-  **The first connector should be the filesystem, not Widen.** §G7 names Widen API v2 as the obvious first
+  **The first connector should be the filesystem, not a vendor API.** §G7 names the comparator's public API as the obvious first
   one, and it is the wrong first one here: it cannot be reached from this machine, so it would be verified
   only against its own fakes. A filesystem source covers the shape most DAM exports actually take — a metadata
   file plus a folder of assets — needs no vendor credentials, and can be driven end to end against real files.
@@ -2257,10 +2270,11 @@ this is ~110 engineer-weeks of work in total and no amount of autonomy compresse
 that. Stop at a green `mise run check` and a clean commit rather than leaving a
 half-built layer.
 
-## Q — Acquia DAM parity
+## Q — Commercial-DAM parity
 
-Surveyed against a live Acquia DAM tenant on 2026-08-19; the full inventory, the gap against damrs and the
-reasoning behind this order are in `ACQUIA-PARITY.md`. Read that first — the short version is that Acquia's
+Surveyed on 2026-08-19 against a live tenant of the commercial DAM this work is benchmarked against. The
+survey itself is not in the repository: it was taken against a named customer's tenant, so publishing it
+would disclose someone else's account rather than anything about this system. The short version is that the
 catalogue turns out to be mostly a concretisation of M4–M6 and Pre-GA plus about a dozen features
 ARCHITECTURE never named, and that the product is *six applications* rather than one.
 
@@ -2670,7 +2684,7 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
       500 the moment the API was restarted: a reminder that `mise run migrate` belongs in the same breath as a
       migration, not the next session.
 
-      **Not done here:** the alternate preview upload that shared this Acquia slice. It is an ingest concern rather
+      **Not done here:** the alternate preview upload that shared this parity slice. It is an ingest concern rather
       than a history one — a second rendition for an asset whose own bytes preview badly — and folding it in would
       have made this slice two features.
 
@@ -3112,7 +3126,7 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
 
 - [x] **Q.19b Dependent metadata fields.** A field whose relevance depends on another field's value: shown when
       the parent matches, and required only when shown. (Shipped in `0461f0f`; the box was never ticked.)
-- [x] **Q.20 Acquia parity, the last four slices.** Worklists (Q.20a), tag vocabulary (Q.20b), webhook
+- [x] **Q.20 Parity, the last four slices.** Worklists (Q.20a), tag vocabulary (Q.20b), webhook
   delivery (Q.20c), site branding (Q.20d).
 - [x] **Q.20a The admin worklists.** Ten lists, each one SQL over data damrs already holds: no table, no queue,
   no state to fall out of date, so an asset leaves a list the moment somebody fixes the thing. `Read`, not

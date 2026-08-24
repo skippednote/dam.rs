@@ -3,7 +3,7 @@
 
 
 -- ─── paths: rule-based notifications (G9) ───────────────────────────────────
--- Modelled on Acquia's "Paths": trigger on an asset reaching a state, refine by
+-- Modelled on the comparator's "Paths": trigger on an asset reaching a state, refine by
 -- asset group / vocabulary / category, template an email with variables that pull
 -- in asset counts and share links.
 --
@@ -216,8 +216,8 @@ CREATE INDEX bulk_operation_items_failed_idx ON bulk_operation_items (operation_
 
 
 -- ─── migration import (G7) ──────────────────────────────────────────────────
--- Nobody buys a DAM greenfield; every real deal is a migration from Widen,
--- Bynder, Brandfolder, or a file share. The consistent finding across migration
+-- Nobody buys a DAM greenfield; every real deal is a migration from an incumbent
+-- product or a file share. The consistent finding across migration
 -- postmortems is that METADATA CLEANUP is the most underestimated cost, and that
 -- vendor API extraction is the right path for cross-DAM moves.
 --
@@ -272,7 +272,7 @@ CREATE UNIQUE INDEX import_jobs_rollback_idx ON import_jobs (rollback_token);
 
 -- Per-asset mapping. Doubles as the idempotency key for a resumed run and the
 -- rollback manifest. `source_id` is retained permanently: two years later,
--- "which Widen asset did this come from" is a question that gets asked.
+-- "which source asset did this come from" is a question that gets asked.
 CREATE TABLE import_records (
     import_job_id       uuid NOT NULL REFERENCES import_jobs (id) ON DELETE CASCADE,
     source_id           text NOT NULL,

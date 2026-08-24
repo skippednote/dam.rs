@@ -454,7 +454,7 @@ pub async fn assets_in(
 
 /// How many visible assets are in no category of this tree, and a sample of them.
 ///
-/// The query that makes categories enforceable rather than decorative: Acquia surfaces it on the admin
+/// The query that makes categories enforceable rather than decorative: the comparator surfaces it on its admin
 /// dashboard as a number with a link, and a library where filing is optional *and unmeasured* is one where
 /// filing quietly stops happening. Scoped through the caller's plan for the same reason the counts are —
 /// telling somebody "61 uncategorised" when they can see nine of them is a disclosure, not a worklist.

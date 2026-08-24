@@ -121,6 +121,13 @@ impl JobSpec {
     }
 }
 
+/// The priority at and above which work is background: nothing is waiting on it.
+///
+/// The boundary [`JobSpec::priority`] documents, named here because [`claim`] reserves a
+/// slice of every batch for this band and a magic 50 in the SQL would not survive anyone
+/// moving the boundary.
+const BACKGROUND_BAND: i16 = 50;
+
 /// Tuning for one claim call.
 #[derive(Debug, Clone, Copy)]
 pub struct ClaimOptions {
@@ -210,29 +217,72 @@ pub async fn claim(pool: &PgPool, worker: &str, opts: ClaimOptions) -> Result<Ve
 
     let lease_secs = opts.lease.as_secs_f64();
 
+    // Background work gets a reserved slice of every batch, because strict priority plus an
+    // urgent band that keeps refilling is indefinite starvation rather than a queue.
+    //
+    // Measured, not theorised. A load run ingested 2,637 assets across five tenants, and the
+    // `derive` jobs those uploads fan out to (priority 40) stayed permanently non-empty. Behind
+    // them, 1,280 `index` jobs and 1,280 `similarity` jobs sat at `attempts = 0` with
+    // `run_after` half an hour in the past — never claimed once — so half the library answered
+    // a text search with nothing while sitting in `assets` the whole time.
+    //
+    // **A quarter of the batch, pooled and oldest-first — not a slot per band.** The worker
+    // claims four at a time, so there is no batch size at which every band gets its own slot:
+    // reserving per band would leave interactive work one slot in four *and* still starve the
+    // lowest bands, because three slots cannot cover seven bands. Pooling them and ordering by
+    // age instead bounds the wait rather than guaranteeing a slot: a band's head advances every
+    // time it is picked, so a job in a small band waits for the background work older than it
+    // and no longer. Bounded by the backlog ahead of it, which is what a queue means.
+    //
+    // Aging the background band into the interactive one would also have worked, by
+    // contradicting the boundary `JobSpec::priority` documents. This keeps that contract:
+    // interactive work still takes every slot the reserve does not, and the reserve is empty
+    // whenever the background bands are.
+    //
+    // Never the last slot: at `limit = 1` there is no reserve at all, so a single-job claim is
+    // decided by priority alone and stays predictable.
+    let reserve = if opts.limit >= 2 {
+        (opts.limit / 4).clamp(1, opts.limit - 1)
+    } else {
+        0
+    };
+
     // See the module docs for why there is no SKIP LOCKED here: window functions and
     // FOR UPDATE are mutually exclusive in Postgres, and the UPDATE's own
     // `state = 'queued'` predicate provides the same guarantee under READ COMMITTED.
     let rows: Vec<(Uuid, Uuid, String, Json, i32, i32)> = sqlx::query_as(
-        "UPDATE dam_global.jobs j \
+        "WITH eligible AS ( \
+             SELECT id, priority, run_after, \
+                    row_number() OVER ( \
+                        PARTITION BY tenant_id ORDER BY priority, run_after, id \
+                    ) AS rn \
+             FROM dam_global.jobs \
+             WHERE state = 'queued' AND run_after <= now() \
+         ), \
+         fair AS ( \
+             SELECT id, priority, run_after, rn FROM eligible \
+             WHERE $3::bigint IS NULL OR rn <= $3 \
+         ), \
+         starved AS ( \
+             SELECT id FROM fair \
+             WHERE priority >= $6::smallint \
+             ORDER BY run_after, id \
+             LIMIT $5 \
+         ), \
+         urgent AS ( \
+             SELECT f.id FROM fair f \
+             WHERE NOT EXISTS (SELECT 1 FROM starved s WHERE s.id = f.id) \
+             ORDER BY f.rn, f.priority, f.run_after, f.id \
+             LIMIT GREATEST($4 - (SELECT count(*) FROM starved), 0) \
+         ), \
+         picked AS (SELECT id FROM starved UNION ALL SELECT id FROM urgent) \
+         UPDATE dam_global.jobs j \
          SET state = 'running', \
              locked_by = $1, \
              lease_expires_at = now() + make_interval(secs => $2), \
              attempts = j.attempts + 1, \
              updated_at = now() \
-         FROM ( \
-             SELECT id FROM ( \
-                 SELECT id, priority, run_after, \
-                        row_number() OVER ( \
-                            PARTITION BY tenant_id ORDER BY priority, run_after, id \
-                        ) AS rn \
-                 FROM dam_global.jobs \
-                 WHERE state = 'queued' AND run_after <= now() \
-             ) ranked \
-             WHERE $3::bigint IS NULL OR rn <= $3 \
-             ORDER BY rn, priority, run_after, id \
-             LIMIT $4 \
-         ) picked \
+         FROM picked \
          WHERE j.id = picked.id AND j.state = 'queued' \
          RETURNING j.id, j.tenant_id, j.kind, j.payload, j.attempts, j.max_attempts",
     )
@@ -240,6 +290,8 @@ pub async fn claim(pool: &PgPool, worker: &str, opts: ClaimOptions) -> Result<Ve
     .bind(lease_secs)
     .bind(opts.per_tenant)
     .bind(opts.limit)
+    .bind(reserve)
+    .bind(BACKGROUND_BAND)
     .fetch_all(pool)
     .await?;
 

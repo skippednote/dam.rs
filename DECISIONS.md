@@ -19,7 +19,7 @@ Format: date · decision · why · reversible?
 | Toolchain | mise |
 | Local S3 | Garage (Deuxfleurs) |
 | Testing | Docker + testcontainers, TDD (D17) |
-| Repo / licence | `skippednote/damrs`, Apache-2.0 |
+| Repo / licence | `skippednote/dam.rs`, Apache-2.0 |
 | `.sqlx/` offline data | Committed |
 | Branch | `m0-foundation`, no pushes |
 | Errors | `thiserror` per crate, `anyhow` in binaries only |

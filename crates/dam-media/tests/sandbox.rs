@@ -118,12 +118,23 @@ async fn a_runaway_write_is_stopped_by_the_file_size_limit() {
         "and nowhere near the 10 MB the command asked for, got {written}"
     );
 
-    // The authoritative check: whatever the shell's block size, an overshooting file is detected
-    // so the derivative can be discarded rather than stored.
+    // The invariant is that a runaway write is *bounded and accounted for*, by whichever of the two
+    // mechanisms applies — not that the scan always has something to report.
+    //
+    // Which one fires is decided by the shell's block size. `ulimit -f` is set to
+    // `65536 / 512 = 128` blocks: on a 512-byte shell that is exactly the cap, so the file stops at
+    // 65536 and there is genuinely nothing over the limit for `oversized` to find. On bash's
+    // 1024-byte blocks the same 128 means 131072, so the file overshoots and the scan is what
+    // catches it. Asserting the scan is non-empty encodes the second platform's slack as a
+    // universal rule, and it failed on the first Linux CI run for exactly that reason while passing
+    // on macOS.
     let over = sandbox.oversized();
-    assert!(
+    let written_over_cap = written > 64 * 1024;
+    assert_eq!(
+        written_over_cap,
         over.iter().any(|(p, _)| p.ends_with("runaway")),
-        "the post-run scan must catch a file past the limit: {over:?}"
+        "a file past the cap must be caught by the scan, and a file within it must not be \
+         reported: {written} bytes written, scan says {over:?}"
     );
 }
 
