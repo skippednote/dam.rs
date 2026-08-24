@@ -52,6 +52,9 @@ DAMRS_STORAGE__BUCKET = "damrs-dev"
 DAMRS_STORAGE__FORCE_PATH_STYLE = "true"
 DAMRS_STORAGE__ACCESS_KEY_ID = "damrsdev"
 DAMRS_STORAGE__SECRET_ACCESS_KEY = "damrsdevsecret"
+# BYOK is deliberately unset for development: SeaweedFS has no KMS, so a key here would fail every write.
+# `docker/DEPLOY.md` has the production shape, including the bucket policy that is what actually enforces it.
+# DAMRS_STORAGE__SSE_KMS_KEY_ID = "arn:aws:kms:…"
 # `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are deliberately NOT set here.
 #
 # They used to be, "for the aws CLI against the dev endpoint" — and the cost of that convenience is much

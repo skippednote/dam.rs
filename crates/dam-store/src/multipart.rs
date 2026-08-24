@@ -16,6 +16,7 @@
 //!   not the digest of the bytes. Reporting it as a checksum would make the integrity
 //!   scrub compare two things that were never meant to match.
 
+use crate::s3::Encrypted;
 use crate::{BlobStore, Error, Key, Placement, Result, S3Store};
 use aws_sdk_s3::{
     primitives::ByteStream,
@@ -60,7 +61,8 @@ impl S3Store {
             .client()
             .create_multipart_upload()
             .bucket(self.bucket_name())
-            .key(key.as_str());
+            .key(key.as_str())
+            .encrypted_with(self.sse_kms_key_id());
         if self.capabilities().storage_classes {
             req = req.storage_class(aws_sdk_s3::types::StorageClass::from(class.as_s3()));
         }

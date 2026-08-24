@@ -33,9 +33,9 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, colour | dedup and colour **done** (M4a); the rest needs model files — see M4 below |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | **done** — two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query, the MCP server |
 | **M6** Workflow/proofing, annotations, analytics | **done** — annotations (M6a), proofing (M6b), analytics (M6c) |
-| **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | G19 **done**; G7 crosswalk and dry-run **done**, transfer needs a source connector; G10 audit chain, user administration and SCIM **done**; BYOK open |
+| **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | G19 **done**; G7 crosswalk and dry-run **done**, transfer needs a source connector; G10 **done** (audit chain, user administration, SCIM, BYOK) |
 
-**Next up, in order:** Pre-GA G10·3 BYOK (a configuration slice) → G7·2 source connectors. M3d·5 (the Drupal module) is deferred until there is a Drupal environment to verify against — see its entry. M4b (local ONNX models) stays parked on the model-distribution question.
+**Next up, in order:** Pre-GA G7·2 source connectors. G10 is complete. M3d·5 (the Drupal module) is deferred until there is a Drupal environment to verify against — see its entry. M4b (local ONNX models) stays parked on the model-distribution question.
 M4b (local models) is parked on a distribution decision — see the M4 section.
 
 **`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
@@ -1415,14 +1415,46 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   the id column was appearing in every report as a column that arrives nowhere; it is consumed as the source
   identifier, so it is not a loss.
 
-- [ ] **G7·2 Source connectors and transfer.** Blocked on the same thing, and in the honest direction: a
-  transfer needs *bytes*, and bytes come from a source connector. The JSON-lines records carry metadata. So
-  `damctl import transfer` is not a command yet — shipping one that could only ever move nothing would be worse
-  than its absence. Widen API v2 is the obvious first connector (§G7 says so), and a CSV/filesystem reader wants
-  the `csv` crate.
+- [ ] **G7·2 Source connectors and transfer.** A transfer needs *bytes*, and bytes come from a source
+  connector. Scoped by reading the code, so the next session starts here rather than rediscovering it.
+
+  **The `csv` crate is not the blocker it was recorded as.** That note conflated two things. The *metadata*
+  reader is already JSON lines on stdin, deliberately — "the mapping is the hard part and it is
+  source-agnostic, so anything that can emit JSON lines is a source", which routes around CSV entirely via
+  `jq` or a spreadsheet export. The *filesystem* reader needs `std::fs` and no dependency at all. So a CSV
+  reader is a convenience, not a prerequisite, and should not gate the slice.
+
+  **The first connector should be the filesystem, not Widen.** §G7 names Widen API v2 as the obvious first
+  one, and it is the wrong first one here: it cannot be reached from this machine, so it would be verified
+  only against its own fakes. A filesystem source covers the shape most DAM exports actually take — a metadata
+  file plus a folder of assets — needs no vendor credentials, and can be driven end to end against real files.
+
+  **Transfer must not have its own ingest, and this is the load-bearing decision.** A browser upload becomes
+  an asset through `uploads::create` → `resumable::patch` → `finalise::upload`, which is where content
+  addressing, deduplication, virus scanning, derivation and indexing happen. A transfer that wrote assets
+  directly would be a second ingest path, and the two would drift in exactly the ways that matter — a
+  migrated asset with no derivatives, or one that skipped the scanner. So transfer creates a session and
+  streams the file into it, and the existing path does the rest. `damctl` already has everything it needs: a
+  single-tenant pool and a store.
+
+  **Records do not carry their source payload, and should not start.** `import_records` has `source_id` and
+  `source_checksum` and no source document, so transfer re-reads the JSON lines — which matches the design and
+  keeps a 400k-asset migration from storing 400k source documents twice. `source_id` is the idempotency key,
+  so a resumed transfer skips what is already `migrated`.
+
+  **A refactor the slice needs first.** The metadata write is inline in `assets::update_metadata` — an upsert
+  into `asset_metadata`, an `updated_at` bump on the asset, and an outbox row — and the bulk executor has its
+  own copy. Transfer would be the third. That wants extracting into `dam_db` and having all three use it
+  *before* the third arrives, or the divergence this codebase keeps finding gets one more instance: an event
+  that fires for one route and not another is a consumer's cache that goes stale depending on how the edit was
+  made.
 
   The rollback machinery is already built and tested against real records, so the transfer slice does not have
-  to build its own escape hatch under pressure.
+  to build its own escape hatch under pressure. `imports::pending`, `migrated`, `failed`, `created_assets` and
+  `mark_rolled_back` are all in place; what is missing is only the loop and the source.
+
+  Not started rather than half-started: this writes somebody's library, and a bug here is a migration that has
+  to be unwound rather than a screen that looks wrong.
 
 - [ ] **G10 SCIM, BYOK, audit export.** Three unrelated things behind one heading; the audit chain is first
   because it is the one nothing else depends on and the one an RFP treats as pass/fail.
@@ -1730,35 +1762,49 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   own slice; claiming support and silently ignoring group pushes would be the version of this that wastes
   somebody's afternoon.
 
-- [ ] **G10·3 BYOK.** §19's own note says SSE-KMS with a per-tenant key, and that "building anything here
-  would be worse" — meaning an encryption layer of our own, not the wiring. Scoped by reading the code, so the
-  next session starts from this rather than rediscovering it.
+- [x] **G10·3 BYOK.** `DAMRS_STORAGE__SSE_KMS_KEY_ID` encrypts every object under a customer-managed KMS key.
+  §19's "building anything here would be worse" was about an encryption layer of our own, not the wiring.
 
-  **The per-tenant half is blocked, and not on effort.** `storage_pools` carries `tenant_id`, endpoint, bucket,
-  class and credentials — but `damd` builds one store from `cfg.storage`, never from a pool row
-  (`bins/damd/src/main.rs:130`). There is no per-pool store resolution, so there is nowhere to hang a
-  per-tenant key. A deployment-level CMK is achievable now and is worth having; a per-tenant one is a
-  consequence of pool resolution and should be scoped with it rather than faked alongside it.
+  **The risk is not that it does not work; it is that one write path forgets.** Seven calls create an object —
+  `put`, the small promote copy, the large promote's multipart create, the self-copy that performs a
+  storage-class transition, the resumable multipart create, the one real uploads go through in `multipart.rs`,
+  and the presigned PUT. A write that misses the key does not fail. It lands under the bucket's default,
+  indistinguishable from success until somebody audits the bucket.
 
-  **Seven paths create objects, and missing one is silent.** `put_object` (`s3.rs`), `copy_object` for the
-  small promote, `create_multipart_upload` for the large promote, the self-copy that performs a storage-class
-  transition, a second `create_multipart_upload`, the one in `multipart.rs` that real uploads go through, and
-  `presign_put`. An object written without the key is not an error — it is an object encrypted with the
-  provider's default key, indistinguishable from success until somebody audits the bucket. That makes
-  "remember to add it in seven places" the wrong design: it wants one applicator the write paths share, and a
-  test that asserts each path sets it. The AWS SDK's interceptors can capture a built request, which is how
-  that becomes testable without a KMS-capable backend — SeaweedFS and MinIO have none, so a conformance test
-  cannot verify it end to end.
+  So the applicator is one trait over the three builder types, applied at all seven — and the load-bearing test
+  reads the source and asserts that *every* call which creates an object carries it, with the count asserted
+  so a refactor that removes a path, or breaks the test's own parsing, fails rather than passes vacuously.
+  Deliberately a test about the code, like `the_embedded_migration_counts_match_the_files_on_disk`: the failure
+  it prevents is a future path added without the line, and no behavioural test of today's paths can catch that.
+  Verified by deleting one application and watching it name the file and line.
 
-  **And the presigned path cannot be enforced by our code at all.** A presigned PUT is executed by the
-  browser; if it does not send the headers that were signed, the object lands under the default key. The only
-  thing that makes BYOK a guarantee rather than an intention there is a bucket policy denying
-  `s3:PutObject` without the expected `x-amz-server-side-encryption-aws-kms-key-id`. That belongs in
-  `docker/DEPLOY.md` as a required step, stated as required — a deployment guide that lists it as optional is
-  a deployment that believes it has BYOK and does not.
+  Its first version failed on correct code: the scan stopped at the first line ending in `;`, and one of the
+  chains carries a comment reading "…carries metadata across;". Comments are skipped now.
 
-  Not started rather than half-started: a security-relevant change across seven call sites is the wrong thing
-  to rush, and the honest scoping above is most of the value of an hour spent on it.
+  **The transition copy needed it re-stated.** `MetadataDirective::Copy` carries metadata across a
+  storage-class transition and does not carry the encryption choice, so a tiering pass without it would
+  rewrite objects under the bucket default — silently converting an encrypted library to an unencrypted one,
+  one lifecycle run at a time.
+
+  **Setting it is not enforcing it, and the deployment guide says so as a requirement.** A presigned PUT is
+  executed by the browser, which can decline to send the headers that were signed; a client that omits them
+  receives a 200. Only a bucket policy denying `s3:PutObject` without the expected key id closes that, so
+  `docker/DEPLOY.md` carries the policy and states it as required rather than advisable.
+
+  **A finding from running it.** Pointed at the dev SeaweedFS, the unencrypted write succeeded and the
+  encrypted one failed with `InternalError` and no mention of encryption — which is what a deployment gets for
+  setting BYOK against a gateway with no KMS. Not refused, because Ceph RGW with Vault and MinIO with KES do
+  implement it; surfaced instead as a startup advisory. `Config::advisories` returns them as data rather than
+  logging from `dam-core`, which has no `tracing` dependency and should not gain one for a warning — and an
+  advisory that is a `String` can be asserted.
+
+  **Per-tenant keys are not this, and are blocked on something else.** `storage_pools` carries `tenant_id` and
+  everything a pool needs, but `damd` builds one store from `storage.*` and never from a pool row, so there is
+  nowhere to hang a per-tenant key until per-pool store resolution exists. A deployment CMK is worth having on
+  its own; the per-tenant version should be scoped with pool resolution rather than faked alongside it.
+
+  3 store cases, 2 config cases. Real KMS is not testable locally — neither SeaweedFS nor MinIO implements it
+  — so end-to-end confirmation belongs to `tests/aws_conformance.rs` and the nightly AWS workflow.
 
 ### M3d — the Drupal connector
 
@@ -3449,6 +3495,50 @@ been indexing for a poll query that did not exist.
       One number worth keeping: our `expires_at` for a restored copy is seven days from availability, while
       AWS reported `expiry-date` a day later — it rounds to a day boundary. Ours is the conservative side, so
       delivery stops before the bytes do, which is the direction to be wrong in.
+
+- [x] **A.5 What A.4 did not prove, and the second way the nightly lied.** Asked directly whether archival is
+      "tested thoroughly on AWS", the answer was no, and the reasons were specific enough to fix.
+
+      **The nightly has never run.** Not "ran and skipped" — `gh run list --workflow=nightly-aws.yml` returns
+      an empty list, and `gh secret list` returns nothing, so there are no credentials for it either. A.4 fixed
+      the *first* way this workflow lied (a feature flag that did not exist). It kept lying a second way: the
+      credential check exited **0** with a `::warning::`, so the job would have reported success having run
+      nothing, and a warning in a nightly nobody opens is indistinguishable from coverage. Missing credentials
+      now **fail** the job, with an error naming the three secrets to configure and what is uncovered until
+      they are. Forks never reach it — the job's `if` already excludes them, which is the case the warning was
+      protecting. Also given `timeout-minutes: 40`, because the new case waits.
+
+      **Nothing asserted a restore completing.** The shared suite stops at the ticket by design — Standard is
+      three to five hours — so completion was covered only by `FakeS3Store`'s controllable clock, which is a
+      fake agreeing with our own state machine. Whether *AWS* reports what we expect at the moment the copy
+      appears had been observed once by hand and never asserted; the `expiry-date` note above is the trace of
+      that observation.
+
+      `a_glacier_restore_completes_and_serves_the_original_bytes` closes it, and the tier is what makes it
+      possible: **Expedited against Glacier is one to five minutes**, where Standard is hours and Deep Archive
+      has no Expedited tier at all. So the one restore this project can watch finish is a Glacier Expedited
+      one. It polls to `Available` within a fifteen-minute budget, asserts the class is still `GLACIER` on
+      *every* poll rather than once at the end — a class that changed would be a permanent move reported as a
+      restore, available forever and then a 403 the day the copy expired — requires the expiry §6.5 makes a
+      database constraint, and asserts the bytes come back unchanged. Cleanup is a `Drop` that blocks rather
+      than spawning, because a task spawned from `Drop` is never awaited and the runtime shuts down with the
+      test: cleanup that runs "usually" is cleanup that bills a 90-day Glacier minimum.
+
+      Deep Archive completion stays unprovable in a test by construction — twelve hours minimum — and is now
+      said so explicitly rather than implied by proximity to the cases that do run.
+
+      **One gap I overstated when asked.** I said the min-duration billing traps were unverified. The
+      arithmetic is unit-tested in `storage.rs` and the enforcement in `lifecycle.rs` and the fake; what no
+      test anywhere can confirm is that AWS *bills* the way the table says. That is a documentation fact, not
+      a coverage gap, and the distinction matters because the first framing invites building something to
+      close a gap that is not there.
+
+      **Still not closed, and needs a decision rather than code:** the tests exist and cannot run here. The
+      AWS session at `~/.damrs-aws-session` is expired, refreshing it is an interactive SSO login, and
+      handling credentials is not mine to do. So the state is: the coverage is written and reviewed, the
+      nightly will now fail loudly until it is configured, and the first real run is one `gh secret set` and
+      one schedule away. The skip messages in `conformance.rs` and the comment in `s3.rs` no longer claim the
+      nightly covers anything, because for the moment it does not.
 
 **Not built, and deliberately.** A cross-pool move: S3 transitions are a self-copy, so a policy naming a
 different target pool asks for a copy between buckets and halts as unsupported rather than tiering in place —

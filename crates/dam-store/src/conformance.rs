@@ -452,7 +452,9 @@ async fn restore_lifecycle<S: BlobStore>(store: &S, caps: Capabilities, r: &mut 
     if !caps.restore {
         r.skip(
             "restore lifecycle",
-            "driver has no RestoreObject — covered by FakeS3Store and the AWS nightly",
+            "driver has no RestoreObject — the ticket, the no-bytes-in-flight rule and the unchanged class \
+             are covered by FakeS3Store and by `aws_conformance`; *completion* is covered only by \
+             `a_glacier_restore_completes_and_serves_the_original_bytes`, which needs a real bucket",
         );
         return;
     }

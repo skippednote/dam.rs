@@ -116,3 +116,76 @@ fn production_environment_rejects_the_dev_placeholder_signing_key() {
         Ok(())
     });
 }
+
+#[test]
+fn a_customer_managed_key_is_normalised_the_way_an_endpoint_is() {
+    // The same escape hatch, for the same reason: precedence only ever *adds*, so an empty value has to be
+    // able to unset one a file already set. Trimmed as well, because a key id with surrounding whitespace
+    // reaches S3 and is rejected on every write with an error that names the key rather than the space.
+    Jail::expect_with(|jail| {
+        jail.set_env("DAMRS_TELEMETRY__LOG_FORMAT", "json");
+        jail.set_env(
+            "DAMRS_STORAGE__SSE_KMS_KEY_ID",
+            "  arn:aws:kms:eu-west-2:1:key/abc  ",
+        );
+        let cfg = Config::load(None::<&str>).expect("load");
+        assert_eq!(
+            cfg.storage.sse_kms_key_id.as_deref(),
+            Some("arn:aws:kms:eu-west-2:1:key/abc")
+        );
+        Ok(())
+    });
+
+    Jail::expect_with(|jail| {
+        jail.set_env("DAMRS_TELEMETRY__LOG_FORMAT", "json");
+        jail.set_env("DAMRS_STORAGE__SSE_KMS_KEY_ID", "");
+        let cfg = Config::load(None::<&str>).expect("load");
+        assert_eq!(
+            cfg.storage.sse_kms_key_id, None,
+            "an explicitly-empty key means no key, so a variable can unset what a file set"
+        );
+        Ok(())
+    });
+}
+
+#[test]
+fn byok_advises_rather_than_refuses_and_says_what_it_cannot_promise() {
+    // Two things a deployment cannot see once it is running. The first was found by pointing a configured
+    // store at the dev SeaweedFS: the unencrypted write succeeded and the encrypted one failed with
+    // `InternalError` and no mention of encryption. The second is structural — a presigned PUT is executed by
+    // the browser, so only a bucket policy makes the key a guarantee.
+    Jail::expect_with(|jail| {
+        jail.set_env("DAMRS_TELEMETRY__LOG_FORMAT", "json");
+        jail.set_env(
+            "DAMRS_STORAGE__SSE_KMS_KEY_ID",
+            "arn:aws:kms:eu-west-2:1:key/abc",
+        );
+        jail.set_env("DAMRS_STORAGE__ENDPOINT", "http://localhost:8333");
+        jail.set_env("DAMRS_STORAGE__ACCESS_KEY_ID", "k");
+        jail.set_env("DAMRS_STORAGE__SECRET_ACCESS_KEY", "s");
+        let cfg =
+            Config::load(None::<&str>).expect("a gateway with a key is permitted, not refused");
+
+        let advisories = cfg.advisories();
+        assert_eq!(advisories.len(), 2, "{advisories:?}");
+        assert!(
+            advisories.iter().any(|a| a.contains("non-AWS endpoint")),
+            "the opaque-write failure has to be named before the first upload: {advisories:?}"
+        );
+        assert!(
+            advisories
+                .iter()
+                .any(|a| a.contains("bucket needs a policy")),
+            "the presigned gap has to be named too: {advisories:?}"
+        );
+        Ok(())
+    });
+
+    // And nothing at all when BYOK is off, so the advisories stay worth reading.
+    Jail::expect_with(|jail| {
+        jail.set_env("DAMRS_TELEMETRY__LOG_FORMAT", "json");
+        let cfg = Config::load(None::<&str>).expect("load");
+        assert!(cfg.advisories().is_empty(), "{:?}", cfg.advisories());
+        Ok(())
+    });
+}

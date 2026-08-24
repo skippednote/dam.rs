@@ -124,7 +124,50 @@ pub struct S3Store {
     driver: &'static str,
     /// Whether this store's client can do TLS at all. See [`is_plain_http`].
     tls: bool,
+    /// The customer-managed KMS key every object this store writes is encrypted under (G10·3).
+    ///
+    /// `None` means the bucket's own default applies — SSE-S3, or whatever the operator set on the bucket.
+    /// That is the default here because a key id we invented would fail every write, and because most
+    /// deployments do not want BYOK.
+    sse_kms_key_id: Option<String>,
 }
+
+/// Applies the store's encryption choice to a request that creates an object.
+///
+/// A trait over the three builder types rather than the same two lines at each call site, because there are
+/// **seven** paths that create an object — `put`, the small promote copy, the large promote's multipart
+/// create, the self-copy that performs a storage-class transition, a second multipart create, the one real
+/// uploads go through in `multipart.rs`, and the presigned PUT — and a write that misses it does not fail. It
+/// silently lands under the bucket's default key, which looks exactly like success until somebody audits the
+/// bucket. One applicator, applied everywhere, is greppable in a way that seven remembered pairs of lines is
+/// not.
+pub(crate) trait Encrypted {
+    fn encrypted_with(self, key_id: Option<&str>) -> Self;
+}
+
+macro_rules! encrypted_builder {
+    ($($ty:path),+ $(,)?) => {
+        $(impl Encrypted for $ty {
+            fn encrypted_with(self, key_id: Option<&str>) -> Self {
+                match key_id {
+                    // Both headers, and both are needed: `ssekms_key_id` alone is ignored without the
+                    // algorithm, so a request carrying only the key id encrypts under the default and reports
+                    // success.
+                    Some(key) => self
+                        .server_side_encryption(aws_sdk_s3::types::ServerSideEncryption::AwsKms)
+                        .ssekms_key_id(key),
+                    None => self,
+                }
+            }
+        })+
+    };
+}
+
+encrypted_builder!(
+    aws_sdk_s3::operation::put_object::builders::PutObjectFluentBuilder,
+    aws_sdk_s3::operation::copy_object::builders::CopyObjectFluentBuilder,
+    aws_sdk_s3::operation::create_multipart_upload::builders::CreateMultipartUploadFluentBuilder,
+);
 
 impl S3Store {
     /// A store against real AWS S3, using the ambient credential chain.
@@ -152,7 +195,42 @@ impl S3Store {
             driver: "s3",
             // Real AWS is always HTTPS, so the root store is both needed and used.
             tls: true,
+            sse_kms_key_id: None,
         }
+    }
+
+    /// Encrypt every object this store writes under a customer-managed KMS key (G10·3).
+    ///
+    /// A builder method rather than a constructor parameter, and that is not laziness: `aws` and
+    /// `seaweedfs` are called from several dozen test fixtures, and threading an `Option<String>` through
+    /// all of them would be a large diff that hides the seven lines that matter.
+    ///
+    /// **What this cannot do.** It sets the headers on every write *this process* makes. A presigned PUT is
+    /// executed by the browser, and if it does not send the headers that were signed the object lands under
+    /// the bucket's default key. The only thing that makes BYOK a guarantee rather than an intention is a
+    /// bucket policy denying `s3:PutObject` without the expected key id — `docker/DEPLOY.md` states that as
+    /// required, because a deployment that treats it as optional believes it has BYOK and does not.
+    #[must_use]
+    pub fn with_sse_kms(mut self, key_id: impl Into<String>) -> Self {
+        // Blank means no key, matching what `StorageConfig` does with an empty variable. Without this the two
+        // disagree: the config path would produce `None` and a direct call would produce `Some("")`, which
+        // sends an empty key id and fails every write with an error naming the key rather than its absence.
+        let key_id = key_id.into();
+        let trimmed = key_id.trim();
+        self.sse_kms_key_id = if trimmed.is_empty() {
+            None
+        } else if trimmed.len() == key_id.len() {
+            Some(key_id)
+        } else {
+            Some(trimmed.to_owned())
+        };
+        self
+    }
+
+    /// The key every write is encrypted under, if any. Exposed so it is assertable rather than inferred.
+    #[must_use]
+    pub fn sse_kms_key_id(&self) -> Option<&str> {
+        self.sse_kms_key_id.as_deref()
     }
 
     /// Whether this store's HTTP client has TLS support.
@@ -212,6 +290,7 @@ impl S3Store {
             latency_class: LatencyClass::Instant,
             driver,
             tls: !plain_http,
+            sse_kms_key_id: None,
         }
     }
 
@@ -222,7 +301,9 @@ impl S3Store {
     /// because the point of object lock is that the *server* says no.
     ///
     /// Storage classes and restore are **not** claimed: the header round-trips but
-    /// behaviour is unchanged, so those cases run against the fake and the AWS nightly.
+    /// behaviour is unchanged, so those cases run against the fake and, when a bucket is configured, against
+    /// `aws_conformance`. That workflow has never actually executed — no runs, no secrets — so treat the
+    /// AWS-side coverage as one recorded manual pass rather than as continuous.
     pub fn seaweedfs(endpoint: &str, bucket: &str, access_key: &str, secret_key: &str) -> Self {
         Self::compatible(
             endpoint,
@@ -306,7 +387,8 @@ impl S3Store {
             // so nothing here needs escaping — but a key that did would silently copy the
             // wrong object, which is why keys are ours and validated (see `Key`).
             .copy_source(format!("{}/{}", self.bucket, from.as_str()))
-            .key(to.as_str());
+            .key(to.as_str())
+            .encrypted_with(self.sse_kms_key_id());
         if self.capabilities.storage_classes {
             req = req.storage_class(Self::to_sdk_class(class));
         }
@@ -337,7 +419,8 @@ impl S3Store {
             .client
             .create_multipart_upload()
             .bucket(&self.bucket)
-            .key(to.as_str());
+            .key(to.as_str())
+            .encrypted_with(self.sse_kms_key_id());
         if self.capabilities.storage_classes {
             create = create.storage_class(Self::to_sdk_class(class));
         }
@@ -528,7 +611,8 @@ impl BlobStore for S3Store {
             .put_object()
             .bucket(&self.bucket)
             .key(key.as_str())
-            .body(ByteStream::from(body));
+            .body(ByteStream::from(body))
+            .encrypted_with(self.sse_kms_key_id());
 
         // Only send the header when the backend honours it. Sending it to a backend that
         // merely echoes it back would make `head` report a class the object is not
@@ -672,6 +756,10 @@ impl BlobStore for S3Store {
             .key(key.as_str())
             .copy_source(format!("{}/{}", self.bucket, key.as_str()))
             .storage_class(Self::to_sdk_class(to))
+            // Re-stated on a transition, not inherited. `MetadataDirective::Copy` carries metadata across;
+            // it does not carry the encryption choice, so a transition without this rewrites the object
+            // under the bucket default and silently drops the customer's key.
+            .encrypted_with(self.sse_kms_key_id())
             .metadata_directive(aws_sdk_s3::types::MetadataDirective::Copy)
             .send()
             .await
@@ -787,6 +875,10 @@ impl BlobStore for S3Store {
             .put_object()
             .bucket(&self.bucket)
             .key(key.as_str())
+            // Signed into the URL, so the client *may* satisfy it — and the client is what executes this
+            // request, so it can also decline to. See `with_sse_kms`: the bucket policy is the enforcement,
+            // this is the cooperation.
+            .encrypted_with(self.sse_kms_key_id())
             .presigned(cfg)
             .await
             .map_err(|e| Error::Backend(format!("presign put: {e:?}")))?;
@@ -801,7 +893,8 @@ impl crate::ResumableStore for S3Store {
             .client
             .create_multipart_upload()
             .bucket(&self.bucket)
-            .key(key.as_str());
+            .key(key.as_str())
+            .encrypted_with(self.sse_kms_key_id());
         if self.capabilities.storage_classes {
             req = req.storage_class(Self::to_sdk_class(class));
         }

@@ -103,6 +103,12 @@ async fn main() -> anyhow::Result<()> {
         worker: worker.clone(),
     };
 
+    // Permitted configurations that are probably wrong. Said once at startup, because every one of them is
+    // invisible afterwards — the failure they describe arrives later and does not mention its cause.
+    for advisory in cfg.advisories() {
+        tracing::warn!("{advisory}");
+    }
+
     tracing::info!(
         environment = ?cfg.environment,
         worker = %worker,
@@ -115,8 +121,19 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The blob store, from configuration. Same resolution as `damd`.
+/// The blob store, from configuration. Same resolution as `damd`, including the customer-managed key —
+/// which matters more here than there: the worker is what promotes, derives and tiers, so a store built
+/// without the key would write most of a library under the bucket default while the API's writes were
+/// correctly encrypted.
 async fn build_store(cfg: &Config) -> anyhow::Result<dam_store::S3Store> {
+    let store = build_store_inner(cfg).await?;
+    Ok(match cfg.storage.sse_kms_key_id.as_deref() {
+        Some(key) => store.with_sse_kms(key),
+        None => store,
+    })
+}
+
+async fn build_store_inner(cfg: &Config) -> anyhow::Result<dam_store::S3Store> {
     match cfg.storage.endpoint.as_deref() {
         None => Ok(dam_store::S3Store::aws(&cfg.storage.bucket, &cfg.storage.region).await),
         Some(endpoint) => {

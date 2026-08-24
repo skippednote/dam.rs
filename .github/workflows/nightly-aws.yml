@@ -13,6 +13,10 @@ jobs:
   s3-conformance:
     name: S3 conformance against AWS
     runs-on: ubuntu-latest
+    # Well under GitHub's six-hour default. The suite's slowest case waits up to fifteen minutes for an
+    # Expedited Glacier restore; anything past forty means a poll that will not terminate, and a runner held
+    # for six hours is a runner nobody notices is held.
+    timeout-minutes: 40
     # Skips silently rather than failing on a fork or before credentials exist —
     # a red nightly that nobody can fix trains people to ignore the nightly.
     if: ${{ github.repository_owner == 'skippednote' }}
@@ -30,10 +34,23 @@ jobs:
           # A skip needs BOTH halves stated, because this job spent months exiting here for the wrong
           # reason: `--features aws-conformance` named a feature that did not exist, and the credential
           # check returned 0 before cargo could say so. Green, every night, having run nothing.
+          #
+          # And then it did it again, differently: the feature exists now, the exit was a `::warning::`, and
+          # the job stayed green — so the workflow reported success for months while the secrets were never
+          # configured and the schedule never fired. A warning in a nightly nobody opens is indistinguishable
+          # from coverage.
+          #
+          # So: absent credentials now **fail** this job. Not because failing is better than skipping in
+          # general, but because this is the owner's repository and the only reason to run this workflow is
+          # the coverage it provides. A red nightly that says exactly what to configure is actionable; a green
+          # one that ran nothing is a lie that took two attempts to notice. Forks never reach here — the job's
+          # `if` already excludes them, which is the case the original warning was protecting.
           if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$DAMRS_TEST_BUCKET" ]; then
-            echo "::warning::AWS credentials or DAMRS_TEST_BUCKET not configured — the only coverage of \
-              real Glacier semantics did NOT run"
-            exit 0
+            echo "::error::The only coverage of real Glacier semantics did NOT run. Configure the repository \
+              secrets AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and DAMRS_TEST_BUCKET (and optionally the \
+              AWS_REGION variable). Until then, restore completion, Deep Archive transitions and the \
+              retrieval-cost path are asserted only against FakeS3Store's controllable clock."
+            exit 1
           fi
           # Named target, not `-- --ignored` across the package: that form also builds and filters every
           # other suite in the crate, which is how a missing feature hid behind nine "0 tests" lines.

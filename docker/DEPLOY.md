@@ -40,6 +40,65 @@ The three that have no safe default:
 role, IRSA, or environment. Set it only for MinIO, Ceph, SeaweedFS or another gateway, in which case
 `storage.access_key_id` and `storage.secret_access_key` become required.
 
+## Bring your own key (G10·3)
+
+`DAMRS_STORAGE__SSE_KMS_KEY_ID` encrypts every object under a customer-managed KMS key instead of the
+provider's. Unset by default, which is the right default: a key id we invented would fail every write, and
+most deployments do not want BYOK.
+
+```sh
+DAMRS_STORAGE__SSE_KMS_KEY_ID=arn:aws:kms:eu-west-2:111122223333:key/1234abcd-…
+```
+
+Set it on **both** `damd` and `dam-worker`. The worker is what promotes, derives and tiers, so a worker
+started without it would write most of a library under the bucket default while the API's own writes were
+correctly encrypted — and nothing would report a problem.
+
+The key policy needs to allow the deployment's principal `kms:GenerateDataKey*` and `kms:Decrypt`. `Decrypt`
+alone is not enough: every write needs a data key, so a policy that only permits reads produces a store that
+can serve what it already has and cannot accept anything new.
+
+### The bucket policy is required, not advisable
+
+Setting the variable makes every write **this software performs** carry the key. It cannot make the same
+promise for a presigned upload, because the browser performs that request and can decline to send the headers
+that were signed. Without a bucket policy, a client that omits them writes an object under the bucket default
+and receives a `200`.
+
+So the guarantee is the policy, and the variable is the cooperation:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyUnencryptedWrites",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::YOUR-BUCKET/*",
+      "Condition": {
+        "StringNotEquals": {
+          "s3:x-amz-server-side-encryption-aws-kms-key-id":
+            "arn:aws:kms:eu-west-2:111122223333:key/1234abcd-…"
+        }
+      }
+    }
+  ]
+}
+```
+
+A deployment that sets the variable and skips the policy believes it has BYOK and does not. The failure is
+silent and only visible by auditing the bucket, which is why this is written as a required step rather than a
+recommendation.
+
+### Per-tenant keys are not this
+
+§19 asks for a key per tenant, and that is not what this is. `storage_pools` carries `tenant_id` and
+everything else a pool needs, but `damd` builds one store from `storage.*` and never from a pool row — so
+there is nowhere to hang a per-tenant key until per-pool store resolution exists. This is one key for the
+deployment, which is worth having on its own and is not the same promise.
+
 ## Two things that will bite, both found by doing this
 
 **The signing endpoint is the client's endpoint.** A delivery URL is a `302` to a presigned S3 URL, and the

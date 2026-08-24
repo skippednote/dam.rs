@@ -172,6 +172,21 @@ pub struct StorageConfig {
     pub secret_access_key: Option<Secret<String>>,
     /// Cap on a single multipart part, in MiB. Tuned for G21 file sizes.
     pub multipart_part_mib: u64,
+    /// A customer-managed KMS key every object is encrypted under (G10·3, BYOK).
+    ///
+    /// `None`, and an empty string also means `None` for the same reason `endpoint` does: a
+    /// higher-precedence variable has to be able to unset one a file already set, and figment cannot write a
+    /// null through an environment variable.
+    ///
+    /// **Deployment-level, not per tenant.** §19 asks for a per-tenant key, and that is not expressible yet:
+    /// `storage_pools` carries `tenant_id` and everything else a pool needs, but `damd` builds one store from
+    /// this config and never from a pool row, so there is nowhere to hang a per-tenant key until per-pool
+    /// store resolution exists. A deployment CMK is worth having on its own and is what this is.
+    ///
+    /// **Setting it is not the same as enforcing it.** Every write this process makes will carry the key. A
+    /// presigned PUT is executed by the browser, so the bucket needs a policy denying `s3:PutObject` without
+    /// the expected key id — `docker/DEPLOY.md` states that as required rather than advisable.
+    pub sse_kms_key_id: Option<String>,
 }
 
 /// Scanning uploads before they become assets (M1).
@@ -381,6 +396,8 @@ impl Default for StorageConfig {
             access_key_id: None,
             secret_access_key: None,
             multipart_part_mib: 16,
+            // No key. A default here would fail every write, and BYOK is opt-in.
+            sse_kms_key_id: None,
         }
     }
 }
@@ -476,6 +493,16 @@ impl Config {
         if cfg.storage.endpoint.as_deref().is_some_and(str::is_empty) {
             cfg.storage.endpoint = None;
         }
+        // The same escape hatch, for the same reason. Trimmed as well as emptied: a key id with surrounding
+        // whitespace would be sent to S3 and rejected on every write, and the error names the key rather than
+        // the whitespace.
+        cfg.storage.sse_kms_key_id = cfg
+            .storage
+            .sse_kms_key_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned);
 
         cfg.validate()?;
         Ok(cfg)
@@ -486,6 +513,51 @@ impl Config {
     /// Production checks fail startup rather than warn. A dev placeholder signing
     /// key in production means every signed URL is forgeable by anyone who has read
     /// the source, which is not a warning-level problem.
+    /// Configurations that are permitted and probably wrong, as sentences for a caller to log.
+    ///
+    /// Returned as data rather than logged from here, because `dam-core` has no `tracing` dependency and
+    /// giving the foundational crate one for a warning is the wrong trade — and because an advisory that is
+    /// a `String` can be asserted, where a `tracing::warn!` needs a subscriber to observe.
+    ///
+    /// Distinct from [`Self::validate`], which refuses. Everything here is something a real deployment might
+    /// legitimately want, so refusing would block it to prevent a mistake.
+    #[must_use]
+    pub fn advisories(&self) -> Vec<String> {
+        let mut out = Vec::new();
+
+        // A KMS key against a gateway with no SSE-KMS produces a 500 on *every* write, and the error reads
+        // "InternalError" with no mention of encryption. Found by pointing a configured store at the dev
+        // SeaweedFS: the unencrypted write succeeded, the encrypted one failed with nothing to go on.
+        //
+        // Not a refusal, because some gateways do implement it — Ceph RGW with Vault, MinIO with KES. What
+        // was missing was not permission; it was a sentence naming the cause before the first upload does it
+        // opaquely.
+        if let (Some(_), Some(endpoint)) = (
+            self.storage.sse_kms_key_id.as_deref(),
+            self.storage.endpoint.as_deref(),
+        ) {
+            out.push(format!(
+                "storage.sse_kms_key_id is set against a non-AWS endpoint ({endpoint}). If that gateway \
+                 does not implement SSE-KMS, every write will fail with an opaque `InternalError` that does \
+                 not mention encryption. See docker/DEPLOY.md."
+            ));
+        }
+
+        // Setting the key is cooperation, not enforcement: a presigned PUT is executed by the browser, which
+        // can decline to send the headers that were signed. Said at startup because the gap is invisible
+        // afterwards — a client that omits them receives a 200.
+        if self.storage.sse_kms_key_id.is_some() {
+            out.push(
+                "storage.sse_kms_key_id makes every write from this process carry the key. It cannot make \
+                 the same promise for a presigned upload; the bucket needs a policy denying s3:PutObject \
+                 without the expected key id. docker/DEPLOY.md has the policy."
+                    .to_owned(),
+            );
+        }
+
+        out
+    }
+
     pub fn validate(&self) -> Result<(), Error> {
         if self.database.min_connections > self.database.max_connections {
             return Err(Error::Config(format!(
