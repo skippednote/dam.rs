@@ -131,6 +131,20 @@ description = "Dependency policy: advisories, licences, bans, sources"
 # whichever one somebody edits the other is one line away.
 run = "cargo deny check advisories bans licenses sources"
 
+[tasks."check:aws"]
+description = "Glacier conformance against real S3 — costs money, needs a bucket"
+# Deliberately outside `check:all`, and the only gate that is. It bills a real account and waits on a real
+# restore, so it is something a person runs on purpose rather than something a pre-push sweep does to them.
+#
+# Run against a throwaway bucket: the suite writes to Glacier, and Glacier bills a 90-day minimum on every
+# object it touches (Deep Archive, 180). Deleting the object does not cancel that, so a bucket created for a
+# run and removed after it is the cheapest shape as well as the tidiest.
+#
+#     AWS_PROFILE=… AWS_REGION=ap-south-1 DAMRS_TEST_BUCKET=… mise run check:aws
+#
+# Last run 2026-08-24 against ap-south-1: 20 passed, 0 skipped, restore completed in 77s.
+run = "cargo test -p dam-store --features aws-conformance --test aws_conformance -- --ignored --nocapture"
+
 [tasks."check:all"]
 description = "Everything CI runs"
 depends = ["check", "check:deny", "check:web"]

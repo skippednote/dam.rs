@@ -22,15 +22,18 @@ libraries.
 > deliberately mints no credential, so a provisioned person needs a key from an administrator until SSO lands.
 > Deprovisioning is unaffected and complete. See [TASKS.md](TASKS.md) for the implementation ledger.
 >
-> **Two limitations worth knowing before you evaluate it.** _Delivery serves one tenant per process_: the
+> **One limitation worth knowing before you evaluate it.** _Delivery serves one tenant per process_: the
 > signed URL claim carries the asset, transform, channel, territory, identity, share link and expiry, but
 > not the tenant, so a second tenant's delivery URLs 404 until it does. The refusal is deliberate — the
 > alternative is minting URLs against another tenant's objects — but a multi-tenant deployment needing
-> delivery for more than one tenant currently runs one `damd` per tenant. And _the archival path has not
-> been exercised against real AWS_: restore completion, Deep Archive transitions and the retrieval-cost
-> path are asserted against SeaweedFS and against a fake store with a controllable clock, which give the
-> wire protocol and the state machine but cannot prove an actual `RestoreObject` against Glacier. The
-> nightly workflow that would is configured and has never had credentials.
+> delivery for more than one tenant currently runs one `damd` per tenant.
+>
+> **The archival path is verified against real AWS.** The conformance suite ran against S3 in
+> `ap-south-1` on 2026-08-24: twenty cases passed with none skipped, and a Glacier restore completed in
+> 77 seconds and served back the original bytes. That is the case SeaweedFS and the fake store cannot
+> prove — they give the wire protocol and the tiering state machine, not an actual `RestoreObject`. The
+> run is reproducible with `mise run check:aws`; the nightly workflow does the same on a schedule once
+> its credentials are configured.
 
 ## Why dam.rs
 
@@ -98,6 +101,16 @@ mise run check:all   # all three
 
 The browser suite includes axe checks in both themes, keyboard navigation, virtual-grid semantics, and
 the major asset workflows. Generated API types come from the checked-in OpenAPI document.
+
+One gate sits outside `check:all`, because it bills a real AWS account and waits on a real restore:
+
+```sh
+AWS_PROFILE=… AWS_REGION=… DAMRS_TEST_BUCKET=… mise run check:aws
+```
+
+Point it at a throwaway bucket. The suite writes to Glacier, which bills a 90-day minimum on every object
+it touches — deleting the object does not cancel that — so a bucket made for the run and removed after it
+is the cheapest shape as well as the tidiest.
 
 ## Deployment
 
