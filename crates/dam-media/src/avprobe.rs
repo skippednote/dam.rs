@@ -251,23 +251,21 @@ fn parse(json: &str) -> Result<AvProbe> {
             .and_then(|v| v.as_str())
             .map(str::to_owned);
         match kind {
-            Some("video") => {
-                // First video stream wins. A file with several is a mezzanine or a mistake, and taking the
-                // first matches what a player shows.
-                if probe.video_codec.is_none() {
-                    probe.video_codec = codec;
-                    probe.width = stream.get("width").and_then(number).map(|v| v as u32);
-                    probe.height = stream.get("height").and_then(number).map(|v| v as u32);
-                    probe.frame_rate = stream.get("r_frame_rate").and_then(rational);
-                }
+            // First stream of each kind wins, and the guard rather than an inner `if` is what
+            // `clippy::collapsible_match` asks for: a later stream of a kind already recorded falls
+            // through to `_` and is ignored, which is the same answer the nested form gave. A file with
+            // several video streams is a mezzanine or a mistake, and taking the first matches what a
+            // player shows.
+            Some("video") if probe.video_codec.is_none() => {
+                probe.video_codec = codec;
+                probe.width = stream.get("width").and_then(number).map(|v| v as u32);
+                probe.height = stream.get("height").and_then(number).map(|v| v as u32);
+                probe.frame_rate = stream.get("r_frame_rate").and_then(rational);
             }
-            Some("audio") => {
-                if probe.audio_codec.is_none() {
-                    probe.audio_codec = codec;
-                    probe.channels = stream.get("channels").and_then(number).map(|v| v as u32);
-                    probe.sample_rate =
-                        stream.get("sample_rate").and_then(number).map(|v| v as u32);
-                }
+            Some("audio") if probe.audio_codec.is_none() => {
+                probe.audio_codec = codec;
+                probe.channels = stream.get("channels").and_then(number).map(|v| v as u32);
+                probe.sample_rate = stream.get("sample_rate").and_then(number).map(|v| v as u32);
             }
             _ => {}
         }
