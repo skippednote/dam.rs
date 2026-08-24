@@ -1770,3 +1770,69 @@ export async function verifyAudit(): Promise<AuditVerification> {
 export async function exportAudit(fromSeq = 0): Promise<AuditExtract> {
 	return request<AuditExtract>(`/audit/export?from_seq=${fromSeq}`, { method: 'POST' });
 }
+
+// ─── members (G10·2a) ───────────────────────────────────────────────────────
+
+export type Member = components['schemas']['MemberView'];
+export type MemberAdded = components['schemas']['MemberInvitedView'];
+export type MemberRemoved = components['schemas']['MemberRemovedView'];
+
+/**
+ * Everyone with access to this tenant.
+ *
+ * Not the same list as `people()`, which answers "who can I mention" and is readable by anybody writing a
+ * comment. This one carries roles and status and takes the administration gate.
+ */
+export async function listMembers(): Promise<Member[]> {
+	return request<Member[]>('/members');
+}
+
+/** The role keys this tenant defines, so a form can offer them rather than ask for a string. */
+export async function listRoles(): Promise<string[]> {
+	return request<string[]>('/roles');
+}
+
+/**
+ * Gives somebody access, and returns their credential once.
+ *
+ * There is no login flow — the application authenticates with an API key — so the key *is* the invitation and
+ * cannot be read back afterwards. A screen that discards it has locked somebody out before they arrived.
+ *
+ * A 409 means they are already a member of *this* tenant. It deliberately says nothing about whether the
+ * address exists elsewhere in the deployment.
+ */
+export async function addMember(body: {
+	email: string;
+	display_name?: string | null;
+	role_names: string[];
+	is_tenant_admin: boolean;
+}): Promise<MemberAdded> {
+	return request<MemberAdded>('/members', { method: 'POST', body: JSON.stringify(body) });
+}
+
+/**
+ * Replaces somebody's roles and administrator flag.
+ *
+ * The complete set, not a patch: it is what the screen shows, and a partial update of an array is two round
+ * trips racing each other. A 409 is either the tenant's only administrator or an account the identity provider
+ * owns; the message says which.
+ */
+export async function updateMember(
+	identityId: string,
+	body: { role_names: string[]; is_tenant_admin: boolean }
+): Promise<Member> {
+	return request<Member>(`/members/${identityId}`, {
+		method: 'PATCH',
+		body: JSON.stringify(body)
+	});
+}
+
+/**
+ * Takes away somebody's access, and their credentials with it.
+ *
+ * `keys_revoked` is the number worth showing: an account marked removed that keeps working is a flag rather
+ * than a removal, and the count is how a person can see the difference.
+ */
+export async function removeMember(identityId: string): Promise<MemberRemoved> {
+	return request<MemberRemoved>(`/members/${identityId}`, { method: 'DELETE' });
+}

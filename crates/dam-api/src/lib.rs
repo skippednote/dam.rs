@@ -32,6 +32,7 @@ pub mod engagement;
 pub mod governance;
 pub mod history;
 pub mod insights;
+pub mod members;
 pub mod observability;
 pub mod oembed;
 pub mod openapi;

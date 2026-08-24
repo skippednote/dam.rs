@@ -3919,6 +3919,177 @@
         }
       }
     },
+    "/members": {
+      "get": {
+        "tags": [
+          "members"
+        ],
+        "summary": "Everyone with access to this tenant.",
+        "operationId": "list",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MemberView"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential"
+          },
+          "403": {
+            "description": "Authenticated, and holds no manage scope"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "members"
+        ],
+        "summary": "Gives somebody access to this tenant.",
+        "operationId": "add",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemberAddBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemberInvitedView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential"
+          },
+          "403": {
+            "description": "Authenticated, and holds no manage scope"
+          },
+          "409": {
+            "description": "Already a member of this tenant"
+          },
+          "422": {
+            "description": "Not an address, or a role this tenant does not define"
+          }
+        }
+      }
+    },
+    "/members/{identity_id}": {
+      "delete": {
+        "tags": [
+          "members"
+        ],
+        "operationId": "remove",
+        "parameters": [
+          {
+            "name": "identity_id",
+            "in": "path",
+            "description": "The member",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemberRemovedView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential"
+          },
+          "403": {
+            "description": "Authenticated, and holds no manage scope"
+          },
+          "404": {
+            "description": "Not a member of this tenant"
+          },
+          "409": {
+            "description": "The tenant's only administrator"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "members"
+        ],
+        "summary": "Replaces somebody's roles.",
+        "operationId": "update",
+        "parameters": [
+          {
+            "name": "identity_id",
+            "in": "path",
+            "description": "The member",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemberUpdateBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemberView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential"
+          },
+          "403": {
+            "description": "Authenticated, and holds no manage scope"
+          },
+          "404": {
+            "description": "Not a member of this tenant"
+          },
+          "409": {
+            "description": "The tenant's only administrator, or an account the IdP owns"
+          },
+          "422": {
+            "description": "A role this tenant does not define"
+          }
+        }
+      }
+    },
     "/oembed": {
       "get": {
         "tags": [
@@ -4832,6 +5003,36 @@
           },
           "404": {
             "description": "No such request, or it was not awaiting approval"
+          }
+        }
+      }
+    },
+    "/roles": {
+      "get": {
+        "tags": [
+          "members"
+        ],
+        "summary": "The role keys this tenant defines, so a form can offer them rather than ask for a string.",
+        "operationId": "roles",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No usable credential"
+          },
+          "403": {
+            "description": "Authenticated, and holds no manage scope"
           }
         }
       }
@@ -9552,6 +9753,156 @@
           "source": {
             "type": "string",
             "description": "The embedded name, as the extractor reports it — `exif.artist`, `xmp.creator`."
+          }
+        }
+      },
+      "MemberAddBody": {
+        "type": "object",
+        "required": [
+          "email"
+        ],
+        "properties": {
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email": {
+            "type": "string"
+          },
+          "is_tenant_admin": {
+            "type": "boolean",
+            "description": "Whether they may administer the tenant — which includes adding and removing everybody else."
+          },
+          "role_names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Role keys from `GET /roles`. An unknown one is a 422 naming it."
+          }
+        }
+      },
+      "MemberInvitedView": {
+        "type": "object",
+        "required": [
+          "identity_id",
+          "api_key",
+          "warning"
+        ],
+        "properties": {
+          "api_key": {
+            "type": "string",
+            "description": "Their credential, in readable form, once."
+          },
+          "identity_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "warning": {
+            "type": "string"
+          }
+        }
+      },
+      "MemberRemovedView": {
+        "type": "object",
+        "description": "Takes away somebody's access, and their credentials with it.",
+        "required": [
+          "keys_revoked",
+          "identity_disabled"
+        ],
+        "properties": {
+          "identity_disabled": {
+            "type": "boolean",
+            "description": "Whether the account itself was disabled, which happens only when this was their last tenant."
+          },
+          "keys_revoked": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Credentials revoked. The number that makes \"removed\" mean something.",
+            "minimum": 0
+          }
+        }
+      },
+      "MemberUpdateBody": {
+        "type": "object",
+        "required": [
+          "role_names",
+          "is_tenant_admin"
+        ],
+        "properties": {
+          "is_tenant_admin": {
+            "type": "boolean"
+          },
+          "role_names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The complete set, not a patch: it is what the screen shows, and a partial update of an array is two\nround trips racing each other."
+          }
+        }
+      },
+      "MemberView": {
+        "type": "object",
+        "description": "One person's access, as an administrator sees it.",
+        "required": [
+          "identity_id",
+          "email",
+          "role_names",
+          "is_tenant_admin",
+          "status",
+          "scim_managed",
+          "live_keys",
+          "joined_at"
+        ],
+        "properties": {
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email": {
+            "type": "string"
+          },
+          "identity_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "is_tenant_admin": {
+            "type": "boolean"
+          },
+          "joined_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_login_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "live_keys": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Credentials for this tenant that still work.\n\nShown because it is the difference between an account that has been removed and one that has been\nmarked removed: somebody with live keys and no roles still authenticates."
+          },
+          "role_names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "scim_managed": {
+            "type": "boolean",
+            "description": "Managed by an identity provider, so roles must be changed there rather than here."
+          },
+          "status": {
+            "type": "string",
+            "description": "`active`, `disabled` or `invited`. Since authentication allowlists `active`, anything else here means\nthis person's credentials do not work — which is a different fact from having no roles."
           }
         }
       },

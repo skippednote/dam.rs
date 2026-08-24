@@ -1331,6 +1331,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Everyone with access to this tenant. */
+        get: operations["list"];
+        put?: never;
+        /** Gives somebody access to this tenant. */
+        post: operations["add"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/members/{identity_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["remove"];
+        options?: never;
+        head?: never;
+        /** Replaces somebody's roles. */
+        patch: operations["update"];
+        trace?: never;
+    };
     "/oembed": {
         parameters: {
             query?: never;
@@ -1690,6 +1725,23 @@ export interface paths {
         put?: never;
         /** Releases a restore that was held for approval. */
         post: operations["approve"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/roles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The role keys this tenant defines, so a form can offer them rather than ask for a string. */
+        get: operations["roles"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -3719,6 +3771,67 @@ export interface components {
             priority: number;
             /** @description The embedded name, as the extractor reports it — `exif.artist`, `xmp.creator`. */
             source: string;
+        };
+        MemberAddBody: {
+            display_name?: string | null;
+            email: string;
+            /** @description Whether they may administer the tenant — which includes adding and removing everybody else. */
+            is_tenant_admin?: boolean;
+            /** @description Role keys from `GET /roles`. An unknown one is a 422 naming it. */
+            role_names?: string[];
+        };
+        MemberInvitedView: {
+            /** @description Their credential, in readable form, once. */
+            api_key: string;
+            /** Format: uuid */
+            identity_id: string;
+            warning: string;
+        };
+        /** @description Takes away somebody's access, and their credentials with it. */
+        MemberRemovedView: {
+            /** @description Whether the account itself was disabled, which happens only when this was their last tenant. */
+            identity_disabled: boolean;
+            /**
+             * Format: int64
+             * @description Credentials revoked. The number that makes "removed" mean something.
+             */
+            keys_revoked: number;
+        };
+        MemberUpdateBody: {
+            is_tenant_admin: boolean;
+            /**
+             * @description The complete set, not a patch: it is what the screen shows, and a partial update of an array is two
+             *     round trips racing each other.
+             */
+            role_names: string[];
+        };
+        /** @description One person's access, as an administrator sees it. */
+        MemberView: {
+            display_name?: string | null;
+            email: string;
+            /** Format: uuid */
+            identity_id: string;
+            is_tenant_admin: boolean;
+            /** Format: date-time */
+            joined_at: string;
+            /** Format: date-time */
+            last_login_at?: string | null;
+            /**
+             * Format: int64
+             * @description Credentials for this tenant that still work.
+             *
+             *     Shown because it is the difference between an account that has been removed and one that has been
+             *     marked removed: somebody with live keys and no roles still authenticates.
+             */
+            live_keys: number;
+            role_names: string[];
+            /** @description Managed by an identity provider, so roles must be changed there rather than here. */
+            scim_managed: boolean;
+            /**
+             * @description `active`, `disabled` or `invited`. Since authentication allowlists `active`, anything else here means
+             *     this person's credentials do not work — which is a different fact from having no roles.
+             */
+            status: string;
         };
         /** @description Where a merge sends the meaning. */
         MergeBody: {
@@ -8303,6 +8416,201 @@ export interface operations {
             };
         };
     };
+    list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemberView"][];
+                };
+            };
+            /** @description No usable credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authenticated, and holds no manage scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    add: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemberAddBody"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemberInvitedView"];
+                };
+            };
+            /** @description No usable credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authenticated, and holds no manage scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Already a member of this tenant */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not an address, or a role this tenant does not define */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    remove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The member */
+                identity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemberRemovedView"];
+                };
+            };
+            /** @description No usable credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authenticated, and holds no manage scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not a member of this tenant */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The tenant's only administrator */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The member */
+                identity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemberUpdateBody"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemberView"];
+                };
+            };
+            /** @description No usable credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authenticated, and holds no manage scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not a member of this tenant */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The tenant's only administrator, or an account the IdP owns */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A role this tenant does not define */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     oembed: {
         parameters: {
             query: {
@@ -9047,6 +9355,39 @@ export interface operations {
             };
             /** @description No such request, or it was not awaiting approval */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    roles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": string[];
+                };
+            };
+            /** @description No usable credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authenticated, and holds no manage scope */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

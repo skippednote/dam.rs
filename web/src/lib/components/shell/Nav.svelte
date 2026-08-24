@@ -55,6 +55,9 @@
 		// Between Sites and Settings: it is administration rather than content, and it is the screen an auditor
 		// is pointed at — which is a different visit from a curator's, so it does not belong among the queues.
 		{ href: resolve('/governance'), label: 'Governance' },
+		// Beside Governance because they are two halves of the same job: who has access, and the record of who
+		// gave it to them. Every change here appears there.
+		{ href: resolve('/people'), label: 'People' },
 		{ href: resolve('/style'), label: 'Style' },
 		// Beside Settings, because it is configuration rather than content — and it is the one screen where a
 		// tenant makes the application look like theirs.

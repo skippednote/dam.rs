@@ -33,9 +33,9 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, colour | dedup and colour **done** (M4a); the rest needs model files — see M4 below |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | **done** — two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query, the MCP server |
 | **M6** Workflow/proofing, annotations, analytics | **done** — annotations (M6a), proofing (M6b), analytics (M6c) |
-| **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | G19 **done**; G7 crosswalk and dry-run **done**, transfer needs a source connector; G10 audit chain **done**, SCIM and BYOK open |
+| **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | G19 **done**; G7 crosswalk and dry-run **done**, transfer needs a source connector; G10 audit chain and user administration **done**, SCIM and BYOK open |
 
-**Next up, in order:** Pre-GA G10·2a user administration (SCIM cannot precede it — see its entry) → G10·2b SCIM → G7·2 source connectors (which wants a decision on the `csv` crate). M3d·5 (the Drupal module) is deferred until there is a Drupal environment to verify against — see its entry. M4b (local ONNX models) stays parked on the model-distribution question.
+**Next up, in order:** Pre-GA G10·2b SCIM → G7·2 source connectors (which wants a decision on the `csv` crate). M3d·5 (the Drupal module) is deferred until there is a Drupal environment to verify against — see its entry. M4b (local ONNX models) stays parked on the model-distribution question.
 M4b (local models) is parked on a distribution decision — see the M4 section.
 
 **`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
@@ -1551,20 +1551,71 @@ cost guards, notifications/Paths (G9), saved searches (G15).
 
   2 cases. This is what makes the deprovisioning in G10·2a a removal rather than a flag.
 
-- [ ] **G10·2a User administration.** Read while scoping SCIM, and it changes the order of the work:
-  **there is no way to add a person to a tenant.** `tenant_members` is read by `caller`, `auth`, `browse` and
-  `comments`, and written in exactly one place — connector registration, inserting a service account. No
-  endpoint invites a colleague, grants a role, or removes somebody who left.
+- [x] **G10·2a User administration.** Found while scoping SCIM, and it changed the order of the work:
+  **there was no way to add a person to a tenant.** `tenant_members` is read by `caller`, `auth`, `browse` and
+  `comments`, and was written in exactly one place — connector registration, inserting a service account. No
+  endpoint invited a colleague, granted a role, or removed somebody who had left.
 
-  So SCIM cannot come first. Built first, it would be the *only* way to provision a person, which leaves a
-  customer without an IdP unable to add a second user — and the operations SCIM drives are the same ones a
-  human path needs, so building SCIM first means building them twice. `Action::RoleGranted`,
-  `RoleRevoked`, `IdentityProvisioned` and `IdentityDeprovisioned` are already in the audit vocabulary for
-  this, deliberately.
+  So SCIM could not come first. Built first it would be the *only* way to provision a person, leaving a
+  customer without an IdP unable to add a second user — and it drives these same operations, so building it
+  first means building them twice. `Action::RoleGranted`, `RoleRevoked`, `IdentityProvisioned` and
+  `IdentityDeprovisioned` were already in the audit vocabulary for this.
 
-  The half that matters is removal, for the reason `0002_enterprise.sql` gives about SCIM: an account that is
-  marked gone but keeps its API keys and memberships is a flag with no effect, and that is precisely what a
-  security questionnaire asks about.
+  **The membership and its audit entry are one transaction, and the connector path's reason they cannot be is
+  wrong.** That code says "the identity, membership and key live in the control plane, so they cannot be in the
+  tenant transaction" — true of two *databases*. `dam_global` and `t_acme` are two schemas in one, so the
+  transaction `TenantConn` opens reaches both. Which matters because the alternative has no good ordering:
+  audit first and a failed write leaves a permanent record, in an append-only log, of a grant that never
+  happened; effect first and a failed write leaves a grant with nothing saying who made it. Neither is
+  correctable. One transaction removes the choice, and a case asserts the rollback leaves neither.
+
+  **An identity is global, which is a disclosure problem.** `identities` has no tenant column and is unique on
+  the lowercased address, so adding somebody has to find-or-create — and the finding must not be visible. A
+  409 saying "that person already exists" would answer "does this company use damrs" about an address somebody
+  merely typed. The conflict is about *this tenant's* membership; whether the identity pre-existed goes in the
+  audit payload, which only this tenant's administrators read.
+
+  **An unknown role name is named, because the alternative is silent.** `role_names` has no foreign key and
+  `auth` ignores a name it cannot resolve — right there, a trap here: `editors` for a role called `editor`
+  produces somebody who can see nothing with nothing saying why.
+
+  **The last administrator cannot be removed *or* demoted.** Demotion reaches the same state, so guarding only
+  removal would be a rule with a documented workaround.
+
+  I first wrote that check under a `FOR UPDATE` on the membership being changed and a comment claiming it
+  stopped two administrators stepping down at once. It does not: the rule is a check on a *set*, and locking
+  one row leaves two demotions each counting two and each seeing somebody remaining — a tenant with no
+  administrator, recoverable only by an operator with database access. Caught reviewing my own code before the
+  suite ran. Locking every administrator's row instead trades the race for a deadlock, because a demotion and
+  a removal each hold one administrator's row while waiting for the other's — so membership changes serialise
+  per tenant on an advisory lock taken before anything is read, in the two-argument keyspace so it can never
+  collide with the audit chain's one-argument lock. Asserted by holding that lock and checking a change
+  blocks, rather than by racing two tasks and hoping the window opens.
+
+  **Removal is the half that matters**, for the reason `0002_enterprise.sql` gives about SCIM: an account
+  marked gone that keeps its keys is a flag. So it revokes the keys first — everything after that can fail and
+  leave an account that cannot get in, where the other order leaves one that can — and returns the count,
+  which is the difference between removed and marked-removed. The identity itself is only disabled if this was
+  their last tenant, because `deprovisioned_at` is global and somebody working with two customers of one
+  deployment must not lose their other account. Re-adding them re-enables the identity, or the new key would
+  not work.
+
+  **Two findings that only came from reading real data.** `GET /roles` offered the `connector:<uuid>` roles
+  every registered site creates, sorted into the middle of the list where they look like they belong — an
+  invitation to grant a person a role that exists to describe a machine. And the People list contained the
+  connected sites themselves, with "Change roles" and "Remove" buttons: changing them would hand a website an
+  editor role or take away the one that makes it work, and removing one would revoke its key while the Sites
+  screen went on listing it as connected. Both excluded — the second by joining `connectors` on `api_key_id`
+  rather than by matching the `@connectors.invalid` address, because the join is the fact and the address is a
+  convention that could change silently.
+
+  **And a copy bug in the same class:** a tenant administrator gets every asset group without holding a role,
+  so "No roles — can sign in and see nothing" was printed beside four administrators who could see everything.
+
+  17 db cases, 11 API cases, 11 browser cases. `MemberAddBody` and the rest carry that prefix because
+  `AddBody`, `AddedView` and `RemovedView` already existed elsewhere in the document, and utoipa accepts a
+  duplicate schema name silently with the last one winning — which showed up as the collections screen's own
+  type changing shape.
 
 - [ ] **G10·2b SCIM 2.0**, on top of that. Notes from reading the schema:
 
@@ -1577,6 +1628,11 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   **`scim_managed` has to make the human path refuse.** 0002 says so directly: "SCIM-managed identities must
   not be editable in the damrs UI, or the IdP will overwrite local edits on next sync and the customer will
   report it as data loss." That is a constraint on G10·2a, which is another reason it lands first.
+
+  **A gap left open by G10·2a:** adding somebody does not re-enable an identity the IdP owns, because the IdP
+  may have deprovisioned them for a reason and the next sync would undo it. The result is a membership whose
+  keys do not work with nothing on screen saying why — unreachable today, since nothing sets `scim_managed`,
+  and this slice's problem to close.
 
   **PATCH is not optional.** Entra deprovisions with `PATCH` and `active: false` rather than `DELETE`, so a
   `DELETE`-only implementation fails against the second-largest IdP in the market. Filtering can stay minimal
