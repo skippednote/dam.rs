@@ -1883,7 +1883,7 @@ name = "dam-ai"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "dam-ai",
  "dam-core",
  "dam-db",
@@ -1907,7 +1907,7 @@ dependencies = [
  "argon2",
  "axum",
  "axum-extra",
- "base64 0.22.1",
+ "base64 0.23.1",
  "blake3",
  "chrono",
  "dam-ai",
@@ -1960,7 +1960,7 @@ name = "dam-connect"
 version = "0.1.0"
 dependencies = [
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "dam-core",
  "dam-db",
@@ -1980,7 +1980,7 @@ dependencies = [
 name = "dam-core"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "blake3",
  "chacha20poly1305",
  "chrono",
@@ -2076,7 +2076,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "blake3",
  "bytes",
  "chrono",

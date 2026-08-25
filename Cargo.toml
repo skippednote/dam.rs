@@ -160,7 +160,7 @@ serde_with = "3"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }   # v7 for time-ordered ids
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
 blake3 = "1"            # content addressing
-base64 = "0.22"
+base64 = "0.23"
 # Provenance (D13). Two features are pointedly absent.
 #
 # `openssl` is the default and is replaced by `rust_native_crypto`: a system OpenSSL is a build-time
