@@ -705,7 +705,14 @@ fn preview_link_with(
     // Blocking on the mint would be wrong here: it is HMAC over a few dozen bytes, so it is microseconds, and
     // making it async would mean a page of sixty awaiting sixty futures for no I/O.
     delivery
-        .sign_preview(asset_id, transform, identity, THUMBNAIL_TTL, now)
+        .sign_preview(
+            caller.tenant_id,
+            asset_id,
+            transform,
+            identity,
+            THUMBNAIL_TTL,
+            now,
+        )
         .ok()
 }
 

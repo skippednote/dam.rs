@@ -208,6 +208,14 @@ impl DeliveryState {
     /// refused. They are checked here and again at delivery.
     pub fn sign_preview(
         &self,
+        // The tenant that owns the asset, which is the caller's — not `self.tenant_id`, which is whichever
+        // tenant *this process* was configured to deliver for. Those are the same in a single-tenant
+        // deployment and diverge in the shape the API already supports: one `damd` answering the asset
+        // endpoints for every tenant while delivery serves one. Stamping the delivery tenant there put a
+        // false claim in the token — a preview URL for an asset in tenant B asserting it belongs to
+        // tenant A. It 404s either way today, so nothing observable changed; it stops being harmless the
+        // moment G22b resolves the library *from* the claim.
+        tenant_id: Uuid,
         asset_id: Uuid,
         transform: &str,
         identity_id: Uuid,
@@ -221,7 +229,7 @@ impl DeliveryState {
         let ttl = ttl.min(MAX_TOKEN_TTL).max(ChronoDuration::seconds(1));
         let claim = DeliveryClaim {
             purpose: Purpose::InternalPreview,
-            tenant_id: self.tenant_id,
+            tenant_id,
             asset_id,
             transform: transform.to_owned(),
             // Never evaluated for this purpose; `internal` is the honest label for what it names.
@@ -526,6 +534,11 @@ async fn issue_with_purpose(
     let ttl = ttl.min(MAX_TOKEN_TTL).max(ChronoDuration::seconds(1));
     let claim = DeliveryClaim {
         purpose,
+        // The delivering process's tenant, not necessarily the asset's — see `sign_preview`, which takes
+        // the owning tenant explicitly for the reason this line cannot. The distribution mints reach here
+        // from shares, portals, oembed and downloads, each knowing a tenant by a different route, so
+        // threading it through belongs with G22b rather than ahead of it. Correct for every deployment
+        // delivery supports today, which is the ones serving one tenant.
         tenant_id: state.tenant_id,
         asset_id,
         transform: transform.to_owned(),
