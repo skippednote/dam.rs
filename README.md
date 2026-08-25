@@ -4,6 +4,9 @@
 
 # dam.rs
 
+[![CI](https://github.com/skippednote/dam.rs/actions/workflows/ci.yml/badge.svg)](https://github.com/skippednote/dam.rs/actions/workflows/ci.yml)
+[![Licence](https://img.shields.io/badge/licence-Apache--2.0-blue.svg)](LICENSE)
+
 **Rights-aware digital asset management.**
 
 Find it. Trust it. Use it.
@@ -13,27 +16,20 @@ derivatives, storage, and delivery in one auditable workflow. It is built in Rus
 and S3-compatible object storage, and operated through a Svelte interface designed for large media
 libraries.
 
-> **Project status:** active development. The core library, ingest, metadata, search, rights, delivery,
-> sharing, archival, hosted enrichment, governance, and operator interface are implemented, including a
-> hash-chained audit record, user administration, and SCIM 2.0 provisioning.
+> **Project status: active development.** The core library, ingest, metadata, search, rights, delivery,
+> sharing, archival, hosted enrichment, governance and operator interface are implemented, including a
+> hash-chained audit record, user administration and SCIM 2.0 provisioning. [TASKS.md](TASKS.md) is the
+> ledger, item by item, including what is still open.
 >
-> **There is no human login yet**, and that shapes the rest: everybody — person, connected site, or
-> SCIM-provisioned account — authenticates with an API key. SCIM therefore creates accounts and access and
-> deliberately mints no credential, so a provisioned person needs a key from an administrator until SSO lands.
-> Deprovisioning is unaffected and complete. See [TASKS.md](TASKS.md) for the implementation ledger.
+> Two things to know before evaluating it:
 >
-> **One limitation worth knowing before you evaluate it.** _Delivery serves one tenant per process_: the
-> signed URL claim carries the asset, transform, channel, territory, identity, share link and expiry, but
-> not the tenant, so a second tenant's delivery URLs 404 until it does. The refusal is deliberate — the
-> alternative is minting URLs against another tenant's objects — but a multi-tenant deployment needing
-> delivery for more than one tenant currently runs one `damd` per tenant.
->
-> **The archival path is verified against real AWS.** The conformance suite ran against S3 in
-> `ap-south-1` on 2026-08-24: twenty cases passed with none skipped, and a Glacier restore completed in
-> 77 seconds and served back the original bytes. That is the case SeaweedFS and the fake store cannot
-> prove — they give the wire protocol and the tiering state machine, not an actual `RestoreObject`. The
-> run is reproducible with `mise run check:aws`; the nightly workflow does the same on a schedule once
-> its credentials are configured.
+> - **There is no human login yet.** Everybody — person, connected site, or SCIM-provisioned account —
+>   authenticates with an API key. SCIM creates accounts and access and deliberately mints no credential,
+>   so a provisioned person needs a key from an administrator until SSO lands. Deprovisioning is
+>   unaffected and complete.
+> - **Delivery serves one tenant per process.** The signed claim carries the tenant and delivery checks
+>   it, but the library is still resolved from configuration rather than from the claim, so one `damd`
+>   answers delivery for one tenant. A deployment needing delivery for several runs one per tenant.
 
 ## Why dam.rs
 
@@ -117,6 +113,12 @@ will run: the CLI can serve role credentials from its own cache after the SSO po
 while the SDK needs that token and fails with `Session token not found or invalid`, which names neither
 SSO nor the remedy.
 
+That gate is the only place real Glacier semantics are exercised, and it has been run: against S3 in
+`ap-south-1`, twenty cases passed with none skipped and a restore completed in 77 seconds, serving back
+the original bytes. A local S3 server and a fake store with a controllable clock give the wire protocol
+and the tiering state machine; neither can prove an actual `RestoreObject`, and both _skip_ those cases
+rather than claim them — which is why the run asserts that the skip count is zero.
+
 ## Deployment
 
 The repository builds one backend image containing `damd`, `dam-worker`, and `damctl`. The Svelte frontend
@@ -135,7 +137,11 @@ Read [docker/DEPLOY.md](docker/DEPLOY.md) before treating an image as a deployme
 - [Deployment](docker/DEPLOY.md) — image, configuration, rollout order, probes, and operations.
 - [Brand guide](docs/brand/README.md) — identity, logo, colour, typography, and voice.
 - [Frontend](web/README.md) — Svelte development and accessibility conventions.
+- [Writing](docs/blog/) — six posts on why this exists: what the established platforms cost, why their
+  archival story is usually unusable, where rights have to be enforced, and what building it taught us.
 
 ## Licence
 
-Apache-2.0. Internal workspace crates are marked unpublished to prevent accidental registry releases.
+Apache-2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE). Every workspace crate is marked unpublished, so
+no part of this reaches crates.io by accident; the version numbers are internal and mean nothing to a
+registry.
