@@ -1498,10 +1498,29 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   **The obvious shortcut is closed off by design.** A per-tenant pool cache would make this fifteen
   mechanical substitutions, and `single_tenant_pool` refuses in as many words: "Not for the server. The
   server holds one pool for every tenant and scopes each request with `TenantConn`, because a pool per
-  tenant at a thousand tenants is a thousand idle connection sets." So the work is threading a `TenantConn`
-  through the handler's fifteen tenant-schema reads, which is a real refactor of the rights-enforcement path
-  and wants its own session rather than a tail end of one. `ConnectorAuth.tenant_slug` needs the same
-  treatment, and `damd`'s startup refusal goes with the config key.
+  tenant at a thousand tenants is a thousand idle connection sets."
+
+  **Scoped by reading the signatures, so the next session starts here.** The fifteen reads are not one
+  shape. Some helpers already take `E: sqlx::PgExecutor<'e>` and need nothing —
+  `derivatives::by_op_hash` and `auth::grants_for` are ready as they stand. The rest take `&PgPool`
+  concretely and are the actual work:
+
+  - `shares::is_live(pool, ..)`
+  - `rights::effective(pool, ..)` — and this is the one to plan around rather than start with. It is not a
+    single read: it consults `cached(pool, ..)` first and writes through on a miss, so it needs an
+    executor that can *write*, and moving it inside the caller's transaction changes when that cache row
+    becomes visible. Worth deciding deliberately, because the rights verdict is the one answer in this
+    handler that must not be subtly wrong.
+  - `derivatives::mark_served(pool, ..)`
+  - the handler's own `fetch_optional(&state.global)` queries, which are the easy ones
+
+  A pass holds no transaction across store I/O — the same rule `integrity::scrub` and
+  `tiering::one_policy` follow — so the shape is short `TenantConn`s around groups of reads, not one
+  spanning the request. `ConnectorAuth.tenant_slug` needs resolving per request too, and `damd`'s startup
+  refusal goes with the config key.
+
+  Deliberately not started at the end of a session: this is the path that enforces rights, and a rushed
+  refactor of it is worse than a documented limitation.
 
 - [ ] **G7·2 Source connectors and transfer.** A transfer needs *bytes*, and bytes come from a source
   connector. Scoped by reading the code, so the next session starts here rather than rediscovering it.
