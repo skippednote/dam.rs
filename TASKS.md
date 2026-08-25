@@ -1573,8 +1573,14 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   Not started rather than half-started: this writes somebody's library, and a bug here is a migration that has
   to be unwound rather than a screen that looks wrong.
 
-- [ ] **G10 SCIM, BYOK, audit export.** Three unrelated things behind one heading; the audit chain is first
+- [x] **G10 SCIM, BYOK, audit export.** Three unrelated things behind one heading; the audit chain is first
   because it is the one nothing else depends on and the one an RFP treats as pass/fail.
+
+  All six children landed — `G10·1` and `1b` the chain and the legal hold, `2a·0`, `2a` and `2b` user
+  administration and SCIM 2.0, `3` the customer-managed key. The parent box stayed unticked after the last
+  of them, while the summary table two hundred lines above already read "G10 is complete". Two statements
+  about the same work disagreeing is how a ledger stops being worth reading, so this is the box catching up
+  with the table rather than any new work.
 
 - [x] **G10·1 The tamper-evident record, and the legal hold worth recording.**
 
