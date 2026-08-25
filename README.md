@@ -38,7 +38,10 @@ libraries.
   derivatives when signing is configured.
 - **Cold assets remain discoverable.** Originals can tier to archival storage without disappearing from
   search, metadata, or previews.
-- **Search is one system.** Lexical, faceted, and semantic retrieval share an explainable query model.
+- **Search is one system.** Lexical and faceted retrieval share one explainable query model, and the
+  query language is the same whichever backs a clause. Vector search is designed in and not live: the
+  columns and the planner exist, nothing generates embeddings yet, and that is a decision about
+  shipping model files rather than a coding task — see the open item in [TASKS.md](TASKS.md).
 - **Automation stays accountable.** AI-written metadata carries provenance, review state, and spend
   controls.
 - **Tenants fail closed.** Database schemas, authorization, signed delivery, and audit records are designed

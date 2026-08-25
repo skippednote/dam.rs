@@ -1,4 +1,11 @@
-//! Tantivy index, pgvector, hybrid query planner, facets, query DSL.
+//! Tantivy index, query planner, facets, query DSL.
+//!
+//! **The vector half is schema and planner, not a working path.** `pgvector` columns exist and the
+//! planner can express a semantic clause, but nothing in this workspace generates an embedding — that
+//! waits on the model-distribution decision recorded in TASKS.md, which is about shipping a
+//! multi-gigabyte ONNX file rather than about writing a query. Said here because this line is the
+//! crate's manifest description, and a header claiming a retrieval mode the code cannot perform is
+//! how a false capability reaches a README.
 //!
 //! One index per tenant (D2's isolation, applied to search), held open by an LRU pool so a thousand
 //! tenants do not mean a thousand open indexes — see [`pool`] and ARCHITECTURE §19.

@@ -1,6 +1,6 @@
 [package]
 name = "dam-search"
-description = "Tantivy index, pgvector, hybrid query planner, facets, query DSL"
+description = "Tantivy index, query planner, facets, query DSL; pgvector schema pending embeddings"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
