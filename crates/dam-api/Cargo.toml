@@ -1,5 +1,6 @@
 [package]
 name = "dam-api"
+description = "axum router, auth, OpenAPI, webhooks"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -50,13 +51,5 @@ dam-store = { path = "../dam-store" }
 # The search router needs an index directory, and a category query is only interesting if `/search` answers it.
 tempfile = { workspace = true }
 
-[lints.rust]
-unsafe_code = "forbid"
-missing_debug_implementations = "warn"
-
-[lints.clippy]
-all = { level = "deny", priority = -1 }
-todo = "warn"
-dbg_macro = "deny"
-unwrap_used = "deny"
-expect_used = "warn"
+[lints]
+workspace = true

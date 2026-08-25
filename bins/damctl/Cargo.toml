@@ -1,5 +1,6 @@
 [package]
 name = "damctl"
+description = "The operator CLI: provisioning, migrations, imports, backups, and audit verification"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -27,13 +28,5 @@ sqlx = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 
-[lints.rust]
-unsafe_code = "forbid"
-missing_debug_implementations = "warn"
-
-[lints.clippy]
-all = { level = "deny", priority = -1 }
-todo = "warn"
-dbg_macro = "deny"
-unwrap_used = "deny"
-expect_used = "warn"
+[lints]
+workspace = true

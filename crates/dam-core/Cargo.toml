@@ -1,5 +1,6 @@
 [package]
 name = "dam-core"
+description = "Domain types, metadata schema engine, ABAC policy, errors"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -33,13 +34,5 @@ figment = { workspace = true }
 figment = { workspace = true }
 serde_json = { workspace = true }
 
-[lints.rust]
-unsafe_code = "forbid"
-missing_debug_implementations = "warn"
-
-[lints.clippy]
-all = { level = "deny", priority = -1 }
-todo = "warn"
-dbg_macro = "deny"
-unwrap_used = "deny"
-expect_used = "warn"
+[lints]
+workspace = true

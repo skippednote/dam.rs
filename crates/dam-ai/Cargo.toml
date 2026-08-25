@@ -1,5 +1,6 @@
 [package]
 name = "dam-ai"
+description = "Local inference (ONNX), hosted-model clients, enrichment DAG"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -24,16 +25,8 @@ base64 = { workspace = true }
 uuid = { workspace = true }
 futures = { workspace = true }
 
-[lints.rust]
-unsafe_code = "forbid"
-missing_debug_implementations = "warn"
-
-[lints.clippy]
-all = { level = "deny", priority = -1 }
-todo = "warn"
-dbg_macro = "deny"
-unwrap_used = "deny"
-expect_used = "warn"
+[lints]
+workspace = true
 
 [features]
 # The recorded transport, behind a feature so other crates' tests can drive a model without a key or a network,

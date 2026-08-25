@@ -1,5 +1,6 @@
 [package]
 name = "dam-backup"
+description = "Backups, and the restore drill that makes them worth having (§17, G11)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -23,3 +24,6 @@ blake3 = { workspace = true }
 dam-db = { path = "../dam-db", features = ["testing"] }
 dam-store = { path = "../dam-store", features = ["testing"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

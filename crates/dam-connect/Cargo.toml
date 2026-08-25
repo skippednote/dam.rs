@@ -1,5 +1,6 @@
 [package]
 name = "dam-connect"
+description = "Connector registry, webhook outbox, oEmbed, asset browser API"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -30,13 +31,5 @@ tracing = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net"] }
 
-[lints.rust]
-unsafe_code = "forbid"
-missing_debug_implementations = "warn"
-
-[lints.clippy]
-all = { level = "deny", priority = -1 }
-todo = "warn"
-dbg_macro = "deny"
-unwrap_used = "deny"
-expect_used = "warn"
+[lints]
+workspace = true

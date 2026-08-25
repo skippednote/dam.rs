@@ -1,5 +1,6 @@
 [package]
 name = "dam-search"
+description = "Tantivy index, pgvector, hybrid query planner, facets, query DSL"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -32,13 +33,5 @@ chrono = { workspace = true }
 blake3 = { workspace = true }
 sqlx = { workspace = true }
 
-[lints.rust]
-unsafe_code = "forbid"
-missing_debug_implementations = "warn"
-
-[lints.clippy]
-all = { level = "deny", priority = -1 }
-todo = "warn"
-dbg_macro = "deny"
-unwrap_used = "deny"
-expect_used = "warn"
+[lints]
+workspace = true

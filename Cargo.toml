@@ -21,7 +21,14 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"   # raised from 1.85 by c2pa 0.90; see DECISIONS.md
+# 1.94.0, and this is verified rather than believed. It read 1.88 — plausible, since let-chains
+# stabilised there and this workspace uses twelve of them — and `cargo +1.88 check --workspace`
+# refuses outright: sqlx 0.9 requires 1.94.0, so no part of this ever built on 1.88.
+#
+# A declared MSRV nothing tests is a promise to contributors made from memory. Cargo checks this one
+# on every build, which is why the wrong value survived: it constrains what cargo *accepts*, not what
+# the dependency tree actually needs, so being wrong in the permissive direction is silent.
+rust-version = "1.94"
 license = "Apache-2.0"
 repository = "https://github.com/skippednote/dam.rs"
 # Internal crates. Marking them unpublishable prevents an accidental `cargo publish`
@@ -32,6 +39,26 @@ publish = false
 # design-time pins: tantivy 0.22 -> 0.26, rmcp 0.8 -> 3.1, sqlx 0.8 -> 0.9,
 # winnow 0.7 -> 1.0, opentelemetry 0.27 -> 0.32, testcontainers 0.23 -> 0.28.
 # `ort` has no stable release; rc.13 is pinned exactly.
+# The lint policy, in one place. It used to be copied into every member manifest, and by the time
+# anyone looked it had drifted twice: `dam-backup` carried no `[lints]` at all — so
+# `forbid(unsafe_code)` and the clippy denies simply did not apply there — and `dam-pipeline` had
+# quietly become stricter. Fourteen copies of a policy is fourteen chances to forget one, and the
+# one that gets forgotten is invisible precisely because nothing fails.
+#
+# `expect_used` is a warning rather than a denial because an `expect` carrying a real sentence is
+# often the honest thing in a binary's startup path, where the alternative is propagating an error
+# nobody can act on. `unwrap_used` is denied outright: an unwrap says nothing about why.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+todo = "warn"
+dbg_macro = "deny"
+unwrap_used = "deny"
+expect_used = "warn"
+
 [workspace.dependencies]
 
 # ── async runtime + web ───────────────────────────────────────────────────────

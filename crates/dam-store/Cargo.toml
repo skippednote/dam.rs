@@ -1,5 +1,6 @@
 [package]
 name = "dam-store"
+description = "Blob storage: the `BlobStore` trait, its drivers, pools, placements, lifecycle"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -45,16 +46,8 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 reqwest = { workspace = true }
 blake3 = { workspace = true }
 
-[lints.rust]
-unsafe_code = "forbid"
-missing_debug_implementations = "warn"
-
-[lints.clippy]
-all = { level = "deny", priority = -1 }
-todo = "warn"
-dbg_macro = "deny"
-unwrap_used = "deny"
-expect_used = "warn"
+[lints]
+workspace = true
 
 # Bound to its feature, so an ordinary `cargo test` neither compiles nor lists it. Without this the target
 # builds everywhere and shows up as an ignored test in every run, which is an invitation to `--include-ignored`
