@@ -16,14 +16,14 @@ jobs:
     name: fmt + clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The same pinned toolchain the test job and a laptop use, rather than whatever
       # `stable` is on the day. Clippy gains lints in every release, so a floating
       # toolchain means a red `main` produced by a rustc release rather than by a
       # commit — which was the state this job was in the first time it ever ran: the
       # pin says 1.94.0, `stable` was 1.98.0, and `collapsible_match` failed a
       # workspace that was clean locally.
-      - uses: jdx/mise-action@v2
+      - uses: jdx/mise-action@v4
         with:
           install: true
           cache: true
@@ -64,7 +64,7 @@ jobs:
           - name: rest
             args: --workspace --exclude dam-db --exclude dam-api
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Roughly 25GB of preinstalled toolchains this workspace never uses.
       - name: Free disk space
         run: |
@@ -80,7 +80,7 @@ jobs:
       # No `dtolnay/rust-toolchain` beside it: every cargo call here goes through
       # `mise exec`, so a second toolchain would be a gigabyte of disk and an ambiguity
       # about which compiler ran.
-      - uses: jdx/mise-action@v2
+      - uses: jdx/mise-action@v4
         with:
           install: true
           cache: true
@@ -111,11 +111,11 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with:
           version: 10
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
@@ -141,7 +141,7 @@ jobs:
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm exec vitest run
       - run: pnpm exec playwright test
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: playwright-report
@@ -152,7 +152,7 @@ jobs:
     name: cargo-deny
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check advisories bans licenses sources
@@ -164,7 +164,7 @@ jobs:
     name: schema counts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p dam-db --test migrate --test compliance_gates -- --nocapture
