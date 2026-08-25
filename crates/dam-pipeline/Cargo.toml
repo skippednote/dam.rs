@@ -1,5 +1,6 @@
 [package]
 name = "dam-pipeline"
+description = "The ingest pipeline: what turns an upload into an asset, and an asset into its derivatives"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -44,6 +45,14 @@ blake3 = { workspace = true }
 # writer leaves, which no real backend can be talked into producing.
 async-trait = { workspace = true }
 
+# Not `workspace = true`, and the difference is one line: `expect_used` is **denied** here rather
+# than warned. Cargo has no partial override — a manifest either inherits the whole table or states
+# its own — so this is the whole policy repeated to change one entry.
+#
+# Worth the duplication. This crate is the worker: every stage runs unattended against somebody
+# else's data, and an `expect` that fires takes down a process no user is watching, with a panic
+# message where a retry or a dead-lettered job belonged. The API can afford a considered `expect` on
+# a startup path a human is watching. A background worker cannot.
 [lints.rust]
 unsafe_code = "forbid"
 missing_debug_implementations = "warn"

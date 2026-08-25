@@ -1,0 +1,17 @@
+# The toolchain this repository builds with, for anyone who arrives without mise.
+#
+# `.mise.toml` already pins the same version, and that is what CI uses. This file is for the other
+# path: somebody clones the repo, runs `cargo build`, and gets whatever rustup happens to have
+# defaulted to. Rustup reads this automatically, so the two entry points agree instead of diverging
+# on whoever's machine it is.
+#
+# Not hypothetical. The lint job floated on `stable` while everything else was pinned, and the first
+# time CI ever ran it failed on a clippy lint that did not exist when the code was written — a red
+# build produced by a compiler release rather than by a commit. Pinning is what makes "works on my
+# machine" a statement about a version rather than a mystery.
+#
+# `components` matters as much as `channel`: rustup's minimal profile ships neither `cargo-fmt` nor
+# `cargo-clippy`, and a machine that already had them never notices they are missing from the pin.
+[toolchain]
+channel = "1.94.0"
+components = ["rustfmt", "clippy"]

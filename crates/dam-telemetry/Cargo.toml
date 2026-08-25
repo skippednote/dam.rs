@@ -1,5 +1,6 @@
 [package]
 name = "dam-telemetry"
+description = "Tracing, structured logs, and OTLP export"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -21,13 +22,5 @@ uuid = { workspace = true }
 [dev-dependencies]
 serde_json = { workspace = true }
 
-[lints.rust]
-unsafe_code = "forbid"
-missing_debug_implementations = "warn"
-
-[lints.clippy]
-all = { level = "deny", priority = -1 }
-todo = "warn"
-dbg_macro = "deny"
-unwrap_used = "deny"
-expect_used = "warn"
+[lints]
+workspace = true

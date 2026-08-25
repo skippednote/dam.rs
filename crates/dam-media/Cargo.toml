@@ -1,5 +1,6 @@
 [package]
 name = "dam-media"
+description = "Probe and derivative pipeline: image, video, PDF, office, audio"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -41,13 +42,5 @@ dam-store = { path = "../dam-store", features = ["testing"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 uuid = { workspace = true }
 
-[lints.rust]
-unsafe_code = "forbid"
-missing_debug_implementations = "warn"
-
-[lints.clippy]
-all = { level = "deny", priority = -1 }
-todo = "warn"
-dbg_macro = "deny"
-unwrap_used = "deny"
-expect_used = "warn"
+[lints]
+workspace = true

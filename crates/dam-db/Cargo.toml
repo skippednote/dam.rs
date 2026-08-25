@@ -1,5 +1,6 @@
 [package]
 name = "dam-db"
+description = "Postgres access: migration runner, tenant provisioning, `TenantConn`, job queue"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -49,13 +50,5 @@ dam-store = { path = "../dam-store", features = ["testing"] }
 bytes = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
-[lints.rust]
-unsafe_code = "forbid"
-missing_debug_implementations = "warn"
-
-[lints.clippy]
-all = { level = "deny", priority = -1 }
-todo = "warn"
-dbg_macro = "deny"
-unwrap_used = "deny"
-expect_used = "warn"
+[lints]
+workspace = true
