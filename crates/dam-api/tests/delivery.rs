@@ -1245,6 +1245,50 @@ fn mint_for_another_tenant(asset_id: Uuid, transform: &str, usage: &Usage) -> St
     .expect("sign")
 }
 
+async fn a_preview_token_claims_the_tenant_that_owns_the_asset(f: &Fixture) {
+    // `sign_preview` used to stamp `DeliveryState::tenant_id` — whichever tenant *this process* delivers
+    // for — rather than the tenant that owns the asset. Identical in a single-tenant deployment, and wrong
+    // in the shape the API already supports: one process answering the asset endpoints for every tenant
+    // while delivery serves one. A preview URL for an asset in tenant B then asserted it belonged to
+    // tenant A.
+    //
+    // Found by decoding a token the running dev stack had just minted: an asset in `initech` carrying
+    // `acme`'s id in its claim. Nothing observable changed, because a claim naming a tenant this process
+    // does not serve 404s either way — it stops being harmless when G22b resolves the library from the
+    // claim instead of from configuration.
+    let id = asset_with_bytes(f, "preview-tenant").await;
+    let other = Uuid::from_u128(0xbeef);
+
+    let url = f
+        .state
+        .sign_preview(
+            other,
+            id,
+            "web-2048",
+            Uuid::from_u128(0x1de),
+            Duration::minutes(10),
+            now(),
+        )
+        .expect("mint");
+
+    let token = url.rsplit('/').next().expect("a token in the url");
+    let claim = dam_core::signed_url::verify(
+        &Keyring::single("k1", Secret::new("a-signing-key".to_owned())),
+        token,
+        now(),
+    )
+    .expect("the mint signs with the fixture keyring");
+
+    assert_eq!(
+        claim.tenant_id, other,
+        "the claim carries the tenant passed in, not the one this process delivers for"
+    );
+    assert_ne!(
+        claim.tenant_id, f.tenant_id,
+        "and the two are genuinely different here, or this test asserts nothing"
+    );
+}
+
 async fn a_token_for_another_tenant_is_refused_however_valid_it_is(f: &Fixture) {
     // G22 put the tenant inside the signature. Before that a delivery URL named an asset and no tenant, so
     // a process could only ever serve the one tenant its configuration named — and a token from a
@@ -1469,6 +1513,7 @@ async fn the_delivery_chokepoint_holds() {
 
     a_signed_url_for_a_licensed_asset_redirects_to_the_object(&f).await;
     a_token_for_another_tenant_is_refused_however_valid_it_is(&f).await;
+    a_preview_token_claims_the_tenant_that_owns_the_asset(&f).await;
     the_transform_selects_which_object_is_served(&f).await;
     an_unknown_transform_is_not_deliverable(&f).await;
     a_tenant_conversion_resolves_like_a_built_in(&f).await;

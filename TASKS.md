@@ -1503,6 +1503,16 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   and wants its own session rather than a tail end of one. `ConnectorAuth.tenant_slug` needs the same
   treatment, and `damd`'s startup refusal goes with the config key.
 
+  **One symptom of this is already fixed, and it is worth knowing why the rest is not.** `sign_preview`
+  stamped `DeliveryState::tenant_id` — the tenant *this process* delivers for — into the claim, rather than
+  the tenant that owns the asset. Found by decoding a token the running dev stack had just minted: an asset
+  in `initech` carrying `acme`'s id. It takes the owning tenant now, because its one call site has
+  `caller.tenant_id` right there. The distribution mints reach `issue_with_purpose` from shares, portals,
+  oembed and downloads, each knowing a tenant by a different route, so threading it belongs with this item
+  rather than ahead of it. Nothing observable changes either way today — a claim naming a tenant the
+  process does not serve 404s regardless — which is exactly why it needs writing down instead of leaving
+  to be rediscovered.
+
 - [ ] **G7·2 Source connectors and transfer.** A transfer needs *bytes*, and bytes come from a source
   connector. Scoped by reading the code, so the next session starts here rather than rediscovering it.
 
