@@ -112,6 +112,11 @@ Point it at a throwaway bucket. The suite writes to Glacier, which bills a 90-da
 it touches — deleting the object does not cancel that — so a bucket made for the run and removed after it
 is the cheapest shape as well as the tidiest.
 
+If the profile is an SSO one, run `aws sso login` first. A working `aws` CLI is not evidence that this
+will run: the CLI can serve role credentials from its own cache after the SSO portal token has expired,
+while the SDK needs that token and fails with `Session token not found or invalid`, which names neither
+SSO nor the remedy.
+
 ## Deployment
 
 The repository builds one backend image containing `damd`, `dam-worker`, and `damctl`. The Svelte frontend

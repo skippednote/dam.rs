@@ -143,6 +143,15 @@ description = "Glacier conformance against real S3 — costs money, needs a buck
 #     AWS_PROFILE=… AWS_REGION=ap-south-1 DAMRS_TEST_BUCKET=… mise run check:aws
 #
 # Last run 2026-08-24 against ap-south-1: 20 passed, 0 skipped, restore completed in 77s.
+#
+# **On SSO, run `aws sso login` first, and do not take a working CLI as evidence.** The two read
+# different caches: the CLI can serve role credentials from its own cache after the SSO *portal* token
+# has expired, while the Rust SDK needs that portal token to fetch them and fails without it. So
+# `aws sts get-caller-identity --profile X` answers happily while this task dies on a 401 whose message
+# is `Session token not found or invalid` — which names neither SSO nor the fix.
+#
+# Measured rather than inferred: a run at 22:40Z passed, the portal token expired at 23:35Z, and every
+# run after that failed while the CLI kept working.
 run = "cargo test -p dam-store --features aws-conformance --test aws_conformance -- --ignored --nocapture"
 
 [tasks."check:all"]
