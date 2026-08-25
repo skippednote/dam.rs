@@ -1,5 +1,15 @@
 # dam.rs: a six-post series
 
+> **Published at
+> [skippednote.dev/series/building-dam-rs](https://skippednote.dev/series/building-dam-rs/), and that is
+> the version to read.** These files are the sources: they carry `press-diagram` blocks and `[!TLDR]`
+> callouts that the publishing pipeline renders and GitHub does not, so read here to review the wording
+> and there to read the posts.
+>
+> Which also means the two can drift. If a post is edited after publishing, edit it here and republish
+> rather than the other way round — the numbers in these posts were checked against the code in this
+> repository, and that is the only reason they are worth quoting.
+
 Why we built a self-hosted, S3-backed digital asset manager, and what building it taught us.
 
 The first four posts are about the problem: what the established platforms cost, why their archival
@@ -9,14 +19,14 @@ is yours. The last two are about the implementation.
 No vendor is named. The problems described are structural: they follow from the pricing model and from
 where the rights check sits, rather than being anybody's particular failing.
 
-| # | Post | About |
-|---|---|---|
-| 1 | [Your DAM bill grows with your library. Your library only grows.](01-your-bill-grows-with-your-library.md) | The four meters every platform bills on, why deletion isn't an escape hatch, and what leaving costs |
-| 2 | [Cold storage you can't search is a filing cabinet in a warehouse](02-cold-storage-you-cant-search.md) | Why archival tiering usually breaks the library, and the minimum-duration arithmetic that isn't in the proposal |
-| 3 | [The green badge is not permission](03-the-green-badge-is-not-permission.md) | Rights displayed versus rights enforced, and everything a signed URL has to carry |
-| 4 | [Your bucket, your keys, your bill](04-your-bucket-your-keys-your-bill.md) | What S3-compatible actually buys, BYOK, content addressing, and where self-hosting is the wrong call |
-| 5 | [The library said the bytes were there and only the download disagreed](05-the-library-said-the-bytes-were-there.md) | Three defects a week of load testing found, and the belief they had in common |
-| 6 | [A grid that holds a hundred thousand assets and still answers the keyboard](06-a-grid-that-holds-a-hundred-thousand-assets.md) | The Svelte implementation, generated types, accessibility as a gate, and the page-level window-loading gap that still limits the claim |
+| #   | Post                                                                                                                            | About                                                                                                                                  |
+| --- | ------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | [Your DAM bill grows with your library. Your library only grows.](01-your-bill-grows-with-your-library.md)                      | The four meters every platform bills on, why deletion isn't an escape hatch, and what leaving costs                                    |
+| 2   | [Cold storage you can't search is a filing cabinet in a warehouse](02-cold-storage-you-cant-search.md)                          | Why archival tiering usually breaks the library, and the minimum-duration arithmetic that isn't in the proposal                        |
+| 3   | [The green badge is not permission](03-the-green-badge-is-not-permission.md)                                                    | Rights displayed versus rights enforced, and everything a signed URL has to carry                                                      |
+| 4   | [Your bucket, your keys, your bill](04-your-bucket-your-keys-your-bill.md)                                                      | What S3-compatible actually buys, BYOK, content addressing, and where self-hosting is the wrong call                                   |
+| 5   | [The library said the bytes were there and only the download disagreed](05-the-library-said-the-bytes-were-there.md)            | Three defects a week of load testing found, and the belief they had in common                                                          |
+| 6   | [A grid that holds a hundred thousand assets and still answers the keyboard](06-a-grid-that-holds-a-hundred-thousand-assets.md) | The Svelte implementation, generated types, accessibility as a gate, and the page-level window-loading gap that still limits the claim |
 
 ## Numbers used in the series
 

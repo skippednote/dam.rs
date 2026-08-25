@@ -137,8 +137,11 @@ Read [docker/DEPLOY.md](docker/DEPLOY.md) before treating an image as a deployme
 - [Deployment](docker/DEPLOY.md) — image, configuration, rollout order, probes, and operations.
 - [Brand guide](docs/brand/README.md) — identity, logo, colour, typography, and voice.
 - [Frontend](web/README.md) — Svelte development and accessibility conventions.
-- [Writing](docs/blog/) — six posts on why this exists: what the established platforms cost, why their
-  archival story is usually unusable, where rights have to be enforced, and what building it taught us.
+- [Building dam.rs](https://skippednote.dev/series/building-dam-rs/) — six posts on why this exists:
+  what the established platforms cost, why their archival story is usually unusable, where rights have to
+  be enforced, and what building it taught us. The sources are in [`docs/blog/`](docs/blog/), but the
+  rendered series is the one to read — the markdown carries diagram blocks and callout types GitHub does
+  not know how to draw.
 
 ## Licence
 
