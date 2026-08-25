@@ -12,3 +12,10 @@
 # Local agent/editor state. `scheduled_tasks.lock` was committed by accident and is
 # runtime bookkeeping, not configuration anybody else can use.
 /.claude
+
+# Local credential scratch files. `.sec` was sitting untracked and un-ignored in a repository
+# about to go public — one `git add -A` from being committed. Ignoring the pattern rather than
+# the one filename, because the next one will be called something else.
+.sec
+*.sec
+secrets.env
