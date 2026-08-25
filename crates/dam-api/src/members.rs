@@ -376,7 +376,7 @@ pub async fn remove(
             "was_tenant_admin": removed.was_tenant_admin,
             // Recorded because it is the caller's own account when it is, and an administrator removing
             // themselves is a thing somebody will later ask about.
-            "removed_self": caller.identity_id == Some(identity_id),
+            "removed_self": caller.identity_id == identity_id,
         }),
     )
     .await?;
@@ -433,12 +433,8 @@ async fn record(
         conn,
         NewEntry {
             action,
-            actor_kind: if caller.identity_id.is_some() {
-                audit::ActorKind::User
-            } else {
-                audit::ActorKind::ApiKey
-            },
-            actor_id: caller.identity_id,
+            actor_kind: audit::ActorKind::User,
+            actor_id: Some(caller.identity_id),
             target_kind: "identity".to_owned(),
             target_id: Some(identity_id.to_string()),
             payload,

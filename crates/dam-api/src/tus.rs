@@ -549,6 +549,10 @@ async fn authorize(
     // A key with no identity behind it — a machine credential — has no membership and therefore no
     // roles. That is fail-closed and intended: issuing such a key today grants nothing, which is the
     // safe direction for a shape the role model does not yet describe.
+    //
+    // Note this is `auth::authenticate`'s type, not `caller::Caller`: authentication happens before
+    // authorisation, so an identity is genuinely optional here. `Caller` is the type that guarantees one,
+    // and only because `authorize` refuses this case on the way to building it.
     let identity = caller.identity_id.ok_or(Refusal::Forbidden)?;
 
     let scopes: Vec<&str> = caller.scopes.iter().map(String::as_str).collect();

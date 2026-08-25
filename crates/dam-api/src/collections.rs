@@ -164,7 +164,7 @@ pub async fn create(
             description: body.description.as_deref(),
             visibility: &body.visibility,
             pin_hot: body.pin_hot,
-            owner_id: caller.identity_id,
+            owner_id: Some(caller.identity_id),
         },
     )
     .await;
@@ -378,7 +378,7 @@ pub async fn add(
     let out_of_scope = body.asset_ids.len().saturating_sub(visible.len());
 
     for asset_id in &visible {
-        dam_db::collections::add(conn.executor(), id, *asset_id, caller.identity_id).await?;
+        dam_db::collections::add(conn.executor(), id, *asset_id, Some(caller.identity_id)).await?;
     }
     conn.commit().await?;
 

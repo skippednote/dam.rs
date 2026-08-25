@@ -203,13 +203,17 @@ pub async fn resolve(
         return Err(Failure::NotFound);
     }
 
-    let resolved =
-        dam_db::similarity::resolve(conn.executor(), id, body.state.trim(), caller.identity_id)
-            .await
-            .map_err(|error| match error {
-                dam_db::Error::Unsupported(reason) => Failure::Unprocessable(reason),
-                other => other.into(),
-            })?;
+    let resolved = dam_db::similarity::resolve(
+        conn.executor(),
+        id,
+        body.state.trim(),
+        Some(caller.identity_id),
+    )
+    .await
+    .map_err(|error| match error {
+        dam_db::Error::Unsupported(reason) => Failure::Unprocessable(reason),
+        other => other.into(),
+    })?;
     conn.commit().await?;
 
     if resolved {

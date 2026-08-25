@@ -28,9 +28,15 @@ use uuid::Uuid;
 pub struct Caller {
     pub tenant_id: Uuid,
     pub tenant_slug: dam_core::TenantSlug,
-    /// `Some` for a key issued to a person. A handler that writes an audit row needs this and must not
-    /// invent one.
-    pub identity_id: Option<Uuid>,
+    /// Who this caller is.
+    ///
+    /// Not an `Option`, and that is a guarantee this type makes rather than a convenience: [`authorize`]
+    /// refuses a key with no identity before it builds a `Caller` at all, so there is exactly one
+    /// construction site and it always has one. It used to be optional, which meant three handlers each
+    /// re-checked it and each chose a different refusal for a case none of them could reach — including one
+    /// that read as load-bearing and was dead. A type that can express a state the system never produces
+    /// invites exactly that.
+    pub identity_id: Uuid,
     pub api_key_id: Uuid,
     /// The compiled visibility scope. Every query this caller drives renders *this* value.
     pub predicate: AccessPredicate,
@@ -224,7 +230,7 @@ pub async fn authorize_as(
     Ok(Caller {
         tenant_id: who.tenant_id,
         tenant_slug: who.tenant_slug.clone(),
-        identity_id: Some(who.identity_id),
+        identity_id: who.identity_id,
         api_key_id: who.api_key_id,
         predicate,
         role_names: who.role_names.clone(),

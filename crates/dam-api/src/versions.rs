@@ -123,14 +123,13 @@ pub async fn add(
 
     // The event, in the same transaction. Recorded against the *new* asset, because that is the row that now
     // represents the group — and with the number, so a feed line can say which version it became.
-    if let Some(actor) = caller.identity_id {
-        dam_db::events::record(
-            conn.executor(),
-            dam_db::events::NewEvent::by(dam_db::events::Kind::Edited, request.new_asset_id, actor)
-                .with(serde_json::json!({ "versioned": true, "replaces": asset_id })),
-        )
-        .await?;
-    }
+    let actor = caller.identity_id;
+    dam_db::events::record(
+        conn.executor(),
+        dam_db::events::NewEvent::by(dam_db::events::Kind::Edited, request.new_asset_id, actor)
+            .with(serde_json::json!({ "versioned": true, "replaces": asset_id })),
+    )
+    .await?;
 
     // Against the asset whose id a consumer already holds — the one being superseded — not the new row. A CMS
     // stores the id it was given, so an event naming a row it has never seen is an event it cannot act on.
@@ -170,14 +169,13 @@ pub async fn make_current(
     let found = versions::restore(conn.executor(), asset_id, &caller.predicate)
         .await
         .map_err(Refused)?;
-    if let Some(actor) = caller.identity_id {
-        dam_db::events::record(
-            conn.executor(),
-            dam_db::events::NewEvent::by(dam_db::events::Kind::Edited, asset_id, actor)
-                .with(serde_json::json!({ "made_current": true })),
-        )
-        .await?;
-    }
+    let actor = caller.identity_id;
+    dam_db::events::record(
+        conn.executor(),
+        dam_db::events::NewEvent::by(dam_db::events::Kind::Edited, asset_id, actor)
+            .with(serde_json::json!({ "made_current": true })),
+    )
+    .await?;
     conn.commit().await?;
     present(&state, found).await
 }

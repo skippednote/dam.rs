@@ -139,9 +139,7 @@ pub async fn mine(
     let caller = caller::authorize(&state.global, &headers, Action::Read).await?;
     // A machine key holds no identity, so nothing can be waiting on it. An empty list rather than a refusal:
     // "nothing is waiting on you" is true and useful, and a 403 would read as a permission problem.
-    let Some(identity) = caller.identity_id else {
-        return Ok(Json(vec![]));
-    };
+    let identity = caller.identity_id;
     let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
     let rounds = proofing::waiting_on(conn.executor(), identity, &caller.predicate)
         .await
@@ -297,7 +295,7 @@ pub async fn open(
             asset_ids: &body.asset_ids,
             reviewer_ids: &body.reviewer_ids,
             due_at: body.due_at,
-            requested_by: caller.identity_id,
+            requested_by: Some(caller.identity_id),
             supersedes: body.supersedes,
         },
         &caller.predicate,
@@ -351,11 +349,7 @@ pub async fn decide(
     Json(body): Json<VerdictBody>,
 ) -> Result<Json<RoundView>, Failure> {
     let caller = caller::authorize(&state.global, &headers, Action::Read).await?;
-    let Some(identity) = caller.identity_id else {
-        // A machine key is on no reviewer list, so it cannot be one. Forbidden rather than 422: the request is
-        // well formed and the credential is the problem.
-        return Err(Failure::Refused(caller::Refusal::Forbidden));
-    };
+    let identity = caller.identity_id;
     let verdict = Verdict::parse_decision(body.verdict.trim()).ok_or_else(|| {
         Failure::Unprocessable(format!(
             "{:?} is not a verdict; use approved or changes_requested",
@@ -402,7 +396,7 @@ pub async fn cancel(
     proofing::read(conn.executor(), id, &caller.predicate)
         .await
         .map_err(Refused)?;
-    if !proofing::cancel(conn.executor(), id, caller.identity_id)
+    if !proofing::cancel(conn.executor(), id, Some(caller.identity_id))
         .await
         .map_err(Refused)?
     {

@@ -470,7 +470,7 @@ pub async fn issue(
             territory: usage.territory.clone(),
             license_scope_id: evaluation.consuming_scope,
             declared,
-            recorded_by: caller.identity_id,
+            recorded_by: Some(caller.identity_id),
         },
     )
     .await?;
@@ -490,16 +490,16 @@ pub async fn issue(
     // but `events.actor_id` is an identity and a link is not one; writing the link's own id there would put a
     // share token into a feed that resolves actor ids to people's names. `insights` reads the ledger for
     // exactly that reason.
-    if let Some(actor) = caller.identity_id
-        && let Err(error) = dam_db::events::record(
-            conn.executor(),
-            dam_db::events::NewEvent::by(dam_db::events::Kind::Downloaded, asset_id, actor).with(
-                // The format, because "downloaded harbour.jpg" and "downloaded the web-720 rendition of
-                // harbour.jpg" are different facts to somebody reading a feed for licence trouble.
-                serde_json::json!({ "format": transform, "channel": usage.channel }),
-            ),
-        )
-        .await
+    let actor = caller.identity_id;
+    if let Err(error) = dam_db::events::record(
+        conn.executor(),
+        dam_db::events::NewEvent::by(dam_db::events::Kind::Downloaded, asset_id, actor).with(
+            // The format, because "downloaded harbour.jpg" and "downloaded the web-720 rendition of
+            // harbour.jpg" are different facts to somebody reading a feed for licence trouble.
+            serde_json::json!({ "format": transform, "channel": usage.channel }),
+        ),
+    )
+    .await
     {
         // Logged, never fatal: `events` docs say recording must not fail a request, and a download that
         // happened and then failed to write its feed entry has still happened. The ledger row above is the one
@@ -518,7 +518,7 @@ pub async fn issue(
         asset_id,
         &transform,
         &usage,
-        caller.identity_id,
+        Some(caller.identity_id),
         ChronoDuration::minutes(DOWNLOAD_TTL_MINUTES),
         now,
     )

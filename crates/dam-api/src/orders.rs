@@ -157,9 +157,7 @@ pub async fn place(
     // Read, deliberately. Somebody who may already download does not need an order; requiring Download here
     // would restrict the feature to exactly the people it is not for.
     let caller = caller::authorize(&state.global, &headers, Action::Read).await?;
-    let requester = caller
-        .identity_id
-        .ok_or(Failure::Refused(caller::Refusal::Forbidden))?;
+    let requester = caller.identity_id;
     if request.purpose.trim().is_empty() {
         return Err(Failure::Unprocessable(
             "an order needs a reason: it is the question the approver answers".to_owned(),
@@ -204,9 +202,7 @@ pub async fn mine(
     headers: HeaderMap,
 ) -> Result<Json<Vec<OrderView>>, Failure> {
     let caller = caller::authorize(&state.global, &headers, Action::Read).await?;
-    let requester = caller
-        .identity_id
-        .ok_or(Failure::Refused(caller::Refusal::Forbidden))?;
+    let requester = caller.identity_id;
     let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
     let rows = orders::placed_by(conn.executor(), requester, 100).await?;
     conn.commit().await?;
@@ -265,7 +261,7 @@ pub async fn one(
     // Theirs, or somebody who may decide. A second `authorize` for the Manage case rather than a role check
     // here: whether a caller holds Manage is the caller module's question, and answering it twice differently is
     // how the two drift.
-    let is_requester = caller.identity_id == Some(order.requested_by);
+    let is_requester = caller.identity_id == order.requested_by;
     if !is_requester
         && caller::authorize(&state.global, &headers, Action::Manage)
             .await
@@ -300,9 +296,7 @@ pub async fn approve(
     Json(request): Json<DecisionRequest>,
 ) -> Result<Json<OrderView>, Failure> {
     let caller = caller::authorize(&state.global, &headers, Action::Manage).await?;
-    let approver = caller
-        .identity_id
-        .ok_or(Failure::Refused(caller::Refusal::Forbidden))?;
+    let approver = caller.identity_id;
     let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
     let decided = orders::approve(
         conn.executor(),
@@ -321,17 +315,23 @@ pub async fn approve(
     // `approved` and can be fulfilled again rather than the approver being asked to decide twice. A failure here
     // is therefore *not* an error for this request — the decision stands, and the state says what is missing.
     let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
-    let (ready, token) =
-        match make_pickup(conn.executor(), id, caller.identity_id, chrono::Utc::now()).await {
-            Ok((ready, token)) => {
-                conn.commit().await?;
-                (ready, Some(token))
-            }
-            Err(error) => {
-                tracing::error!(%error, order = %id, "approved, but the pickup could not be made");
-                (decided, None)
-            }
-        };
+    let (ready, token) = match make_pickup(
+        conn.executor(),
+        id,
+        Some(caller.identity_id),
+        chrono::Utc::now(),
+    )
+    .await
+    {
+        Ok((ready, token)) => {
+            conn.commit().await?;
+            (ready, Some(token))
+        }
+        Err(error) => {
+            tracing::error!(%error, order = %id, "approved, but the pickup could not be made");
+            (decided, None)
+        }
+    };
     let view = present(&state, vec![ready]).await?;
     let mut view = view.into_iter().next().ok_or(Failure::Internal)?;
     // Shown once, to the person who just approved it. The token is stored as a digest, so this response is the
@@ -366,9 +366,14 @@ pub async fn fulfil(
 ) -> Result<Json<OrderView>, Failure> {
     let caller = caller::authorize(&state.global, &headers, Action::Manage).await?;
     let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
-    let (ready, token) = make_pickup(conn.executor(), id, caller.identity_id, chrono::Utc::now())
-        .await
-        .map_err(Refused)?;
+    let (ready, token) = make_pickup(
+        conn.executor(),
+        id,
+        Some(caller.identity_id),
+        chrono::Utc::now(),
+    )
+    .await
+    .map_err(Refused)?;
     conn.commit().await?;
     let view = present(&state, vec![ready]).await?;
     let mut view = view.into_iter().next().ok_or(Failure::Internal)?;
@@ -469,9 +474,7 @@ pub async fn reject(
     Json(request): Json<DecisionRequest>,
 ) -> Result<Json<OrderView>, Failure> {
     let caller = caller::authorize(&state.global, &headers, Action::Manage).await?;
-    let approver = caller
-        .identity_id
-        .ok_or(Failure::Refused(caller::Refusal::Forbidden))?;
+    let approver = caller.identity_id;
     let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
     let decided = orders::reject(
         conn.executor(),
@@ -505,9 +508,7 @@ pub async fn cancel(
     Path(id): Path<Uuid>,
 ) -> Result<Json<OrderView>, Failure> {
     let caller = caller::authorize(&state.global, &headers, Action::Read).await?;
-    let requester = caller
-        .identity_id
-        .ok_or(Failure::Refused(caller::Refusal::Forbidden))?;
+    let requester = caller.identity_id;
     let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
     let cancelled = orders::cancel(conn.executor(), id, requester)
         .await
@@ -549,7 +550,7 @@ pub async fn metadata_csv(
         return Err(Failure::NotFound);
     };
     // The same audience rule as reading the order, and the same 404 rather than a 403: references are sequential.
-    if caller.identity_id != Some(order.requested_by)
+    if caller.identity_id != order.requested_by
         && caller::authorize(&state.global, &headers, Action::Manage)
             .await
             .is_err()

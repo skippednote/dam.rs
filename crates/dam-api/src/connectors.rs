@@ -598,12 +598,10 @@ async fn audit(
         conn.executor(),
         dam_db::audit::NewEntry {
             action,
-            actor_kind: if caller.identity_id.is_some() {
-                dam_db::audit::ActorKind::User
-            } else {
-                dam_db::audit::ActorKind::ApiKey
-            },
-            actor_id: caller.identity_id,
+            // Always a person: `authorize` refuses a key with no identity before a `Caller` exists,
+            // which is now in the type rather than re-checked here.
+            actor_kind: dam_db::audit::ActorKind::User,
+            actor_id: Some(caller.identity_id),
             target_kind: "connector".to_owned(),
             target_id: Some(connector_id.to_string()),
             payload,

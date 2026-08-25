@@ -278,7 +278,7 @@ pub async fn list(
     let page = assets::page(
         conn.executor(),
         &caller.predicate,
-        params.order.resolve(caller.identity_id),
+        params.order.resolve(Some(caller.identity_id)),
         params.offset,
         params.limit,
     )
@@ -699,7 +699,7 @@ fn preview_link_with(
     transform: &str,
 ) -> Option<String> {
     let delivery = delivery?;
-    let identity = caller.identity_id?;
+    let identity = caller.identity_id;
     let now = delivery.now();
 
     // Blocking on the mint would be wrong here: it is HMAC over a few dozen bytes, so it is microseconds, and
@@ -719,9 +719,7 @@ pub async fn page_engagement(
     conn: &mut sqlx::PgConnection,
     ids: &[Uuid],
 ) -> Result<Vec<dam_db::engagement::Engagement>, Failure> {
-    let Some(identity) = caller.identity_id else {
-        return Ok(Vec::new());
-    };
+    let identity = caller.identity_id;
     // The caller's predicate again, even though every current call site passes ids that came from a read which
     // already applied it. That makes this filter unobservable — mutating it to an all-groups predicate changes
     // no test outcome, and the reason is that there is no path here carrying unfiltered ids. Kept because it is

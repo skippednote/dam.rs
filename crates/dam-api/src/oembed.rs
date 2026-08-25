@@ -289,7 +289,7 @@ async fn describe(
                     channel: "web".to_owned(),
                     territory: "WORLD".to_owned(),
                 },
-                caller.identity_id,
+                Some(caller.identity_id),
                 chrono::Duration::minutes(URL_TTL_MINUTES),
                 delivery.now(),
             )

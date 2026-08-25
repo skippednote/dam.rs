@@ -241,9 +241,13 @@ pub async fn create(
         )));
     }
     let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
-    let created = conversions::create(conn.executor(), &request.into_new(key), caller.identity_id)
-        .await
-        .map_err(Refused)?;
+    let created = conversions::create(
+        conn.executor(),
+        &request.into_new(key),
+        Some(caller.identity_id),
+    )
+    .await
+    .map_err(Refused)?;
     conn.commit().await?;
     Ok((StatusCode::CREATED, Json(created.into())))
 }

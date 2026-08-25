@@ -730,12 +730,8 @@ pub async fn register(
         conn.executor(),
         dam_db::audit::NewEntry {
             action: dam_db::audit::Action::KeyIssued,
-            actor_kind: if caller.identity_id.is_some() {
-                dam_db::audit::ActorKind::User
-            } else {
-                dam_db::audit::ActorKind::ApiKey
-            },
-            actor_id: caller.identity_id,
+            actor_kind: dam_db::audit::ActorKind::User,
+            actor_id: Some(caller.identity_id),
             target_kind: "scim_client".to_owned(),
             target_id: Some(id.to_string()),
             payload: serde_json::json!({ "label": body.label.trim(), "scopes": scopes }),
@@ -792,12 +788,8 @@ pub async fn revoke(
         conn.executor(),
         dam_db::audit::NewEntry {
             action: dam_db::audit::Action::KeyRevoked,
-            actor_kind: if caller.identity_id.is_some() {
-                dam_db::audit::ActorKind::User
-            } else {
-                dam_db::audit::ActorKind::ApiKey
-            },
-            actor_id: caller.identity_id,
+            actor_kind: dam_db::audit::ActorKind::User,
+            actor_id: Some(caller.identity_id),
             target_kind: "scim_client".to_owned(),
             target_id: Some(id.to_string()),
             payload: serde_json::json!({}),

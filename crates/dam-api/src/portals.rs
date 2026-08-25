@@ -324,9 +324,9 @@ pub async fn create(
             max_downloads: request.max_downloads,
             allow_original: request.allow_original,
             requires_eula: false,
-            created_by: caller.identity_id,
+            created_by: Some(caller.identity_id),
         },
-        caller.identity_id,
+        Some(caller.identity_id),
     )
     .await
     .map_err(Refused)?;

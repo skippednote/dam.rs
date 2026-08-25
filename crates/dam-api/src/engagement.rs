@@ -320,7 +320,7 @@ async fn act(
     op: Op,
 ) -> Result<Json<EngagementView>, Failure> {
     let caller = caller::authorize(&state.global, headers, Action::Read).await?;
-    let identity = person(&caller)?;
+    let identity = caller.identity_id;
     // `Query::All` and the caller's own predicate: there is no user query here, only the access filter — which
     // is the whole point, since it is what decides whether this asset exists as far as this caller is concerned.
     let planned = Planned::new(AssetQuery::All, caller.predicate.clone(), &[])
@@ -343,7 +343,7 @@ async fn read_list(
     page: PageParams,
 ) -> Result<Json<ListPage>, Failure> {
     let caller = caller::authorize(&state.global, headers, Action::Read).await?;
-    let identity = person(&caller)?;
+    let identity = caller.identity_id;
     let planned = Planned::new(AssetQuery::All, caller.predicate.clone(), &[])
         .map_err(|_| Failure::Internal)?;
 
@@ -382,25 +382,10 @@ async fn read_list(
     }))
 }
 
-/// The person behind the key.
-///
-/// Unreachable in practice: `caller::authorize` refuses a key with no identity before any handler runs, so
-/// `Caller::identity_id` is always `Some` by the time it gets here. Kept as a fail-closed unwrap rather than an
-/// `expect`, because the alternative to a 403 would be inventing an identity — and a row keyed to a fabricated
-/// person can never be found, owned or cleared by anyone.
-///
-/// The `Option` is a wider smell: three other call sites re-check the same guarantee. Recorded in TASKS.md
-/// rather than refactored here, since narrowing the type touches every handler.
-fn person(caller: &caller::Caller) -> Result<Uuid, Failure> {
-    caller
-        .identity_id
-        .ok_or(Failure::Refused(caller::Refusal::Forbidden))
-}
-
 /// An [`EngagementView`] for an asset, from an engagement row that may not be there.
 ///
-/// The absent case is a caller with no identity, for whom "nothing is favourited" is simply true. Zeroes rather
-/// than a null object, so a panel never has to decide what a missing engagement means.
+/// The absent row is an asset this caller has never touched, for whom "nothing is favourited" is simply
+/// true. Zeroes rather than a null object, so a panel never has to decide what a missing engagement means.
 #[must_use]
 pub fn view_of(state: Option<Engagement>, asset_id: Uuid) -> EngagementView {
     state.map_or(

@@ -254,7 +254,7 @@ pub async fn create(
         conn.executor(),
         &bulk::OperationSpec {
             kind: &request.kind,
-            actor_id: caller.identity_id,
+            actor_id: Some(caller.identity_id),
             predicate: None,
             params: request.params,
         },
