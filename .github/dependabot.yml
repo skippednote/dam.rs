@@ -1,0 +1,41 @@
+# Grouped, and monthly rather than weekly.
+#
+# This workspace has several hundred transitive dependencies across cargo, pnpm and the actions
+# themselves. Ungrouped weekly updates on a repository this size produce more pull requests than
+# anyone reads, and a queue nobody reads is indistinguishable from no queue — the same failure mode
+# as a nightly job that reports success while running nothing.
+#
+# So: one PR per ecosystem per month for the routine churn, and security advisories arrive
+# separately and immediately regardless of this schedule. `cargo deny check advisories` runs in CI
+# on every push as the other half of that, so an advisory is a red build rather than a notification.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      cargo:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      npm:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # Pinned by major elsewhere, but an action that stops being maintained is a supply-chain problem
+  # rather than a version problem, and this is the only thing that surfaces it.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
