@@ -121,7 +121,7 @@ fast_image_resize = { version = "6", features = ["image"] }
 # space, and libvips marks 14 of its own loaders "untrusted", including the RAW, PSD, PDF
 # and SVG ones a DAM needs most. Out of process, a malformed file kills a subprocess the
 # sandbox already bounds.
-kamadak-exif = "0.5"
+kamadak-exif = "0.6"
 image_hasher = "3.1"      # pHash / dHash for near-duplicate detection
 symphonia = { version = "0.6", features = ["all-codecs"] }
 pdfium-render = { version = "0.9" }  # members mark this optional
