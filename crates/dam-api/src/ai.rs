@@ -955,7 +955,7 @@ pub async fn decide_tag(
         } else {
             dam_db::enrichment::Verdict::Reject
         },
-        caller.identity_id,
+        Some(caller.identity_id),
     )
     .await?;
     conn.commit().await?;

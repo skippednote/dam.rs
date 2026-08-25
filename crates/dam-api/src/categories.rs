@@ -291,16 +291,21 @@ pub async fn file(
 ) -> Result<Json<Vec<NodeRow>>, Failure> {
     let caller = caller::authorize(&state.global, &headers, Action::Manage).await?;
     let mut conn = TenantConn::begin(&state.global, &caller.tenant_slug).await?;
-    categories::file(conn.executor(), asset_id, category_id, caller.identity_id)
-        .await
-        // 422 rather than the shared 404: the path addresses an asset that exists, and the category segment
-        // names something unreal or retired — the request is wrong rather than the target missing.
-        .map_err(|refusal| match refusal {
-            CategoryRefusal::UnknownCategory(_) | CategoryRefusal::Retired(_) => {
-                Failure::Unprocessable(refusal.to_string())
-            }
-            other => Refused(other).into(),
-        })?;
+    categories::file(
+        conn.executor(),
+        asset_id,
+        category_id,
+        Some(caller.identity_id),
+    )
+    .await
+    // 422 rather than the shared 404: the path addresses an asset that exists, and the category segment
+    // names something unreal or retired — the request is wrong rather than the target missing.
+    .map_err(|refusal| match refusal {
+        CategoryRefusal::UnknownCategory(_) | CategoryRefusal::Retired(_) => {
+            Failure::Unprocessable(refusal.to_string())
+        }
+        other => Refused(other).into(),
+    })?;
     let nodes = categories::of_asset(conn.executor(), asset_id)
         .await
         .map_err(Refused)?;

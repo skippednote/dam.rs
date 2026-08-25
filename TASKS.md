@@ -2543,9 +2543,24 @@ Each item is one full-stack slice: schema, API, UI, tests, mutation-tested, driv
       the filename, so an order assertion was comparing against `'✓ Cleared'`. And the star's `aria-label` carries
       its filename, which collided with an existing loose `getByLabel('Campaign')` — the locator was always
       imprecise and the label made it ambiguous.
-- [ ] **Cleanup: `Caller::identity_id` is `Option` but `authorize` guarantees `Some`.** Three call sites re-check
-  it (`assets.rs`, `tus.rs`, `engagement.rs`), each with a different refusal, and one of them is unreachable code
-  that looks load-bearing. Narrowing the type touches every handler, so it is its own change.
+- [x] **Cleanup: `Caller::identity_id` is a `Uuid`, because `authorize` was always going to make it one.**
+
+  There is exactly one place a `Caller` is constructed and it had already refused a key with no identity
+  several lines earlier, so the `Option` described a state the system could not produce. What an
+  impossible state buys you is handlers that guess at it: a `let Some(..) else` returning an empty list, a
+  different one returning a 403 with a sentence about machine keys, an `ok_or` in four modules, and a
+  `person()` helper in `engagement.rs` whose own doc comment said it was unreachable and pointed at this
+  item. Each was a different answer to a question nobody asks.
+
+  Also six `if caller.identity_id.is_some() { User } else { ApiKey }` ternaries deciding what to write in
+  an audit row's `actor_kind` — all of which had been resolving to `User` since the day `authorize` was
+  written, while reading like a real branch.
+
+  Roughly sixty sites across twenty-five handlers, which is why it was its own change. The compiler found
+  every one; the interesting part was the site it found that should *not* have changed. `tus.rs` binds an
+  identity from `auth::authenticate` rather than from a `Caller`, and there a machine key genuinely has
+  none — authentication happens before authorisation. Removing that `ok_or` compiled fine and would have
+  been wrong, and it is now commented with the distinction rather than left looking like the others.
 - [x] **Q.5c The engagement UI.** Stars in the detail panel, a favourite toggle on the card, a watch toggle, and
       the two private lists as places you can go. Shipped in `0339f41` (the panel) and `42fac0c` (the grid star and
       `/favourites`, `/watches`); this box was left unticked by mistake and the commits are the record.

@@ -761,12 +761,9 @@ async fn plan(
             suggestion: None,
         })
     })?;
-    let planned = match caller.identity_id {
-        Some(identity) => planned.viewed_by(identity),
-        // Unreachable through `authorize`, which refuses a key with no identity. Left unnamed rather than
-        // defaulted, so a personal clause fails loudly instead of quietly matching nothing.
-        None => planned,
-    };
+    // `authorize` refuses a key with no identity, so there is always somebody to attribute a personal
+    // clause to. This used to be a `match` with an unreachable `None` arm.
+    let planned = planned.viewed_by(caller.identity_id);
     Ok((planned, defs))
 }
 

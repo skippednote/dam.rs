@@ -158,14 +158,11 @@ pub async fn set_legal_hold(
     };
     let entry = NewEntry {
         action,
-        // A key with no identity behind it has no grants, so `authorize` has already refused one — but the
-        // audit row must name a person or say that it cannot, never guess.
-        actor_kind: if caller.identity_id.is_some() {
-            ActorKind::User
-        } else {
-            ActorKind::ApiKey
-        },
-        actor_id: caller.identity_id,
+        // A key with no identity behind it has no grants, so `authorize` refuses one before a `Caller`
+        // exists. That used to be re-checked here; `Caller::identity_id` now carries the guarantee, so the
+        // audit row names a person because there is no other kind of caller that reaches this.
+        actor_kind: ActorKind::User,
+        actor_id: Some(caller.identity_id),
         target_kind: "asset".to_owned(),
         target_id: Some(asset_id.to_string()),
         payload: serde_json::json!({
@@ -413,12 +410,8 @@ pub async fn export(
         conn.executor(),
         query.from_seq.max(0),
         query.limit.unwrap_or(EXPORT_ROWS),
-        caller.identity_id,
-        if caller.identity_id.is_some() {
-            ActorKind::User
-        } else {
-            ActorKind::ApiKey
-        },
+        Some(caller.identity_id),
+        ActorKind::User,
     )
     .await?;
     conn.commit().await?;

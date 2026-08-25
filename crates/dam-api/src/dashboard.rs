@@ -119,9 +119,7 @@ pub async fn dashboard(
     // A dashboard is somebody's: the spotlights are their saved searches and the activity is scoped to what they
     // can see. `authorize` already refuses a key with no identity — no identity means no membership, so no grants —
     // and this states the requirement rather than pretending to have a branch for it.
-    let identity = caller
-        .identity_id
-        .ok_or(Failure::Refused(caller::Refusal::Forbidden))?;
+    let identity = caller.identity_id;
     let planned = Planned::new(AssetQuery::All, caller.predicate.clone(), &[])
         .map_err(|_| Failure::Internal)?;
 

@@ -338,9 +338,7 @@ pub async fn me(
     headers: HeaderMap,
 ) -> Result<Json<PersonView>, Failure> {
     let caller = caller::authorize(&state.global, &headers, Action::Read).await?;
-    let identity = caller
-        .identity_id
-        .ok_or(Failure::Refused(caller::Refusal::Forbidden))?;
+    let identity = caller.identity_id;
     let found = comments::people_by_id(&state.global, &[identity]).await?;
     found
         .into_iter()
@@ -363,9 +361,7 @@ async fn context(
     // Enforced upstream in `caller::authorize`, which refuses such a key for every endpoint in the system — so
     // this is a fail-closed unwrap behind an existing guarantee, and mutating it changes no test outcome. Same
     // shape as the engagement handlers; the `Option` that makes both necessary is the TASKS.md cleanup item.
-    let identity = caller
-        .identity_id
-        .ok_or(Failure::Refused(caller::Refusal::Forbidden))?;
+    let identity = caller.identity_id;
     // `Query::All` plus the caller's predicate: there is no user query here, only the access filter — which is
     // what decides whether the asset under discussion exists as far as this caller is concerned.
     let planned = Planned::new(AssetQuery::All, caller.predicate.clone(), &[])

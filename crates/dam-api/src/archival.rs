@@ -446,7 +446,7 @@ pub async fn request_restore(
             asset_id: Some(asset_id),
             tier,
             keep_warm_days: i32::try_from(keep_warm_days).unwrap_or(7),
-            requested_by: caller.identity_id,
+            requested_by: Some(caller.identity_id),
             batch_id: None,
             notify: serde_json::json!({}),
         },
@@ -667,12 +667,7 @@ pub async fn approve(
     // the case and because `Caller::identity_id` is an `Option` that three other call sites also re-check;
     // the cleanup that would make all four unnecessary is its own item in TASKS.md. Documented because
     // undocumented unobservable code reads as covered when it is not.
-    let Some(approver) = caller.identity_id else {
-        return Err(Failure::Forbidden(
-            "an approval records who authorised the spend, and a machine key has nobody behind it"
-                .to_owned(),
-        ));
-    };
+    let approver = caller.identity_id;
     let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
     let released = dam_db::restores::approve(conn.executor(), id, approver, Utc::now()).await?;
     if !released {

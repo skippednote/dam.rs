@@ -133,15 +133,14 @@ pub async fn attach(
 
     // Recorded against the *parent*, because that is the asset whose rights picture changed. The document's own
     // filename is in the context so a feed line can name it without a second read.
-    if let Some(actor) = caller.identity_id {
-        dam_db::events::record(
-            conn.executor(),
-            dam_db::events::NewEvent::by(dam_db::events::Kind::Edited, asset_id, actor).with(
-                serde_json::json!({ "attached": kind.as_str(), "document": request.document_id }),
-            ),
-        )
-        .await?;
-    }
+    let actor = caller.identity_id;
+    dam_db::events::record(
+        conn.executor(),
+        dam_db::events::NewEvent::by(dam_db::events::Kind::Edited, asset_id, actor).with(
+            serde_json::json!({ "attached": kind.as_str(), "document": request.document_id }),
+        ),
+    )
+    .await?;
     conn.commit().await?;
     present(&state, found).await
 }
