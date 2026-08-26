@@ -50,7 +50,7 @@ function grid(items: AssetSummary[], total = items.length, columns = 4) {
 
 describe('ARIA grid semantics', () => {
 	it('is a grid', async () => {
-		const screen = grid(assets(8));
+		const screen = await grid(assets(8));
 		await expect.element(screen.getByRole('grid')).toBeInTheDocument();
 	});
 
@@ -58,21 +58,21 @@ describe('ARIA grid semantics', () => {
 		// The bug this exists to prevent. 100,000 assets in 4 columns is 25,000 rows; a viewport that
 		// renders 5 of them must still say 25,000, or a screen reader announces a library of a hundred
 		// thousand as twenty items — with no visual symptom whatsoever.
-		const screen = grid(assets(200), 100_000);
+		const screen = await grid(assets(200), 100_000);
 		await expect
 			.element(screen.getByRole('grid'))
 			.toHaveAttribute('aria-rowcount', String(Math.ceil(100_000 / 4)));
 	});
 
 	it('reports the column count', async () => {
-		const screen = grid(assets(8), 8, 4);
+		const screen = await grid(assets(8), 8, 4);
 		await expect.element(screen.getByRole('grid')).toHaveAttribute('aria-colcount', '4');
 	});
 
 	it('gives each rendered row its true position, not its position in the window', async () => {
 		// `aria-rowindex` is 1-based and absolute. Numbering rendered rows 1..n would make every scroll
 		// position claim to be the top of the list.
-		const screen = grid(assets(40), 40, 4);
+		const screen = await grid(assets(40), 40, 4);
 		const rows = screen.container.querySelectorAll('[role="row"]');
 		expect(rows.length).toBeGreaterThan(0);
 		const first = rows[0].getAttribute('aria-rowindex');
@@ -82,7 +82,7 @@ describe('ARIA grid semantics', () => {
 	it('gives each cell a column index and an accessible name from the filename', async () => {
 		// A cell that announces only "gridcell" is unusable. The name has to be the thing the user is
 		// looking for.
-		const screen = grid(assets(4), 4, 4);
+		const screen = await grid(assets(4), 4, 4);
 		const cells = screen.container.querySelectorAll('[role="gridcell"]');
 		expect(cells[0].getAttribute('aria-colindex')).toBe('1');
 		expect(cells[0].textContent).toContain('asset-0.jpg');
@@ -94,14 +94,14 @@ describe('virtualisation', () => {
 		// The invariant that makes the grid viable at all: a 400px viewport of 120px rows needs about
 		// four rows plus overscan, whatever the collection size. Without this the browser lays out
 		// 100,000 cells and the tab stops responding.
-		const screen = grid(assets(2_000), 100_000, 4);
+		const screen = await grid(assets(2_000), 100_000, 4);
 		const cells = screen.container.querySelectorAll('[role="gridcell"]');
 		expect(cells.length).toBeGreaterThan(0);
 		expect(cells.length).toBeLessThan(80);
 	});
 
 	it('sizes the scroll area from the total, so the scrollbar tells the truth', async () => {
-		const screen = grid(assets(2_000), 100_000, 4);
+		const screen = await grid(assets(2_000), 100_000, 4);
 		const sizer = screen.container.querySelector('[data-testid="grid-sizer"]') as HTMLElement;
 		const expected = Math.ceil(100_000 / 4) * 120;
 		// Measured, not read from the style string: Chrome re-serialises a large px length in
@@ -127,13 +127,13 @@ describe('keyboard navigation follows the WAI-ARIA grid pattern', () => {
 	it('exposes exactly one tab stop', async () => {
 		// Roving tabindex. Without it, tabbing through a 100k-row grid means 100,000 tab presses to
 		// reach whatever follows it.
-		const screen = grid(assets(12), 12, 4);
+		const screen = await grid(assets(12), 12, 4);
 		const focusable = screen.container.querySelectorAll('[role="gridcell"][tabindex="0"]');
 		expect(focusable.length).toBe(1);
 	});
 
 	it('moves the tab stop with the arrow keys', async () => {
-		const screen = grid(assets(12), 12, 4);
+		const screen = await grid(assets(12), 12, 4);
 		const cellAt = (i: number) =>
 			screen.container.querySelectorAll('[role="gridcell"]')[i] as HTMLElement;
 
@@ -154,7 +154,7 @@ describe('keyboard navigation follows the WAI-ARIA grid pattern', () => {
 	it('does not wrap or run off the ends', async () => {
 		// Arrowing left from the first cell must stay put rather than jumping to the end — wrapping in a
 		// grid disorients, because the visual jump is the whole width and height of the viewport.
-		const screen = grid(assets(12), 12, 4);
+		const screen = await grid(assets(12), 12, 4);
 		const cells = () => screen.container.querySelectorAll('[role="gridcell"]');
 		const first = cells()[0] as HTMLElement;
 		first.focus();
@@ -168,7 +168,7 @@ describe('keyboard navigation follows the WAI-ARIA grid pattern', () => {
 	});
 
 	it('jumps to the start and end of the collection with ctrl+Home and ctrl+End', async () => {
-		const screen = grid(assets(12), 12, 4);
+		const screen = await grid(assets(12), 12, 4);
 		const cells = () => screen.container.querySelectorAll('[role="gridcell"]');
 		const first = cells()[0] as HTMLElement;
 		first.focus();
@@ -181,7 +181,7 @@ describe('keyboard navigation follows the WAI-ARIA grid pattern', () => {
 
 describe('selection', () => {
 	it('marks selection on the cell, where assistive technology looks for it', async () => {
-		const screen = grid(assets(8), 8, 4);
+		const screen = await grid(assets(8), 8, 4);
 		const cells = () => screen.container.querySelectorAll('[role="gridcell"]');
 		(cells()[2] as HTMLElement).click();
 		await tick();
@@ -190,7 +190,7 @@ describe('selection', () => {
 	});
 
 	it('extends a range with shift+click', async () => {
-		const screen = grid(assets(8), 8, 4);
+		const screen = await grid(assets(8), 8, 4);
 		const cells = () => screen.container.querySelectorAll('[role="gridcell"]');
 		(cells()[1] as HTMLElement).click();
 		await tick();
@@ -205,7 +205,7 @@ describe('selection', () => {
 	});
 
 	it('toggles a single item with meta+click without clearing the rest', async () => {
-		const screen = grid(assets(8), 8, 4);
+		const screen = await grid(assets(8), 8, 4);
 		const cells = () => screen.container.querySelectorAll('[role="gridcell"]');
 		(cells()[1] as HTMLElement).click();
 		await tick();
@@ -226,7 +226,7 @@ describe('selection', () => {
 	it('announces the selection count in a live region', async () => {
 		// A sighted user sees the count in a toolbar. Without a live region, a screen-reader user
 		// selecting forty assets hears nothing at all and cannot tell the action took effect.
-		const screen = grid(assets(8), 8, 4);
+		const screen = await grid(assets(8), 8, 4);
 		const status = screen.container.querySelector('[role="status"]') as HTMLElement;
 		expect(status.getAttribute('aria-live')).toBe('polite');
 
@@ -237,7 +237,7 @@ describe('selection', () => {
 	});
 
 	it('reports the selection against the total, not the rendered page', async () => {
-		const screen = grid(assets(200), 100_000, 4);
+		const screen = await grid(assets(200), 100_000, 4);
 		const status = screen.container.querySelector('[role="status"]') as HTMLElement;
 		const cells = screen.container.querySelectorAll('[role="gridcell"]');
 		(cells[0] as HTMLElement).click();
@@ -248,7 +248,7 @@ describe('selection', () => {
 
 describe('an empty grid', () => {
 	it('says it is empty rather than rendering a silent void', async () => {
-		const screen = grid([], 0, 4);
+		const screen = await grid([], 0, 4);
 		await expect.element(screen.getByText(/no assets/i)).toBeInTheDocument();
 	});
 
@@ -262,7 +262,7 @@ describe('an empty grid', () => {
 		//
 		// An empty result is the answer to a search, so it is a `status`. That is both valid and more useful:
 		// the message is announced as the live answer rather than as furniture inside an empty table.
-		const screen = grid([], 0, 4);
+		const screen = await grid([], 0, 4);
 		await expect.element(screen.getByRole('grid')).not.toBeInTheDocument();
 		await expect
 			.element(screen.getByRole('status').filter({ hasText: /no assets/i }))
