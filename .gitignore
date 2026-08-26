@@ -19,3 +19,15 @@
 .sec
 *.sec
 secrets.env
+
+# Terraform. `.terraform/` is downloaded providers — the AWS one alone is 780MB, which GitHub rejects
+# outright, and it took a rejected push to find out that the ignore rule was sitting on an unmerged
+# branch while `git add -A` ran on this one. State is worse than the providers: it holds whatever the
+# resources contain, which is why `terraform/nightly-ci` deliberately creates no access key.
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
