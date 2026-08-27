@@ -29,13 +29,13 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **Q** Commercial-DAM parity, 20 slices | **complete** — Q.1–Q.20, including Q.14b collections and Q.20a–d |
 | **Go-live Tier 1** Deployment image, backups, metrics, rate limiting, virus scan, C2PA | **done** — all six, each verified against the running stack |
 | **Archival** Tiering engine, restores, the storage screen | **done** — the sweep and poll jobs, the plan/quote/request/approve API, delivery's 202, bulk archive and restore, the restore panel |
-| **M3d** Drupal 11 connector | M3d·1–·4 done; M3d·5 in progress — `damrs`, `damrs_media` and `damrs_image_style` done and verified, three submodules to go |
+| **M3d** Drupal 11 connector | M3d·1–·4 done; M3d·5 in progress — four of six submodules done and verified, `damrs_editor` and `damrs_search_api` to go |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, colour | dedup and colour **done** (M4a); the rest needs model files — see M4 below |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | **done** — two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query, the MCP server |
 | **M6** Workflow/proofing, annotations, analytics | **done** — annotations (M6a), proofing (M6b), analytics (M6c) |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | G19 **done**; G7 crosswalk and dry-run **done**, transfer needs a source connector; G10 **done** (audit chain, user administration, SCIM, BYOK) |
 
-**Next up, in order:** Pre-GA G7·2 source connectors. G10 is complete. M3d·5 (the Drupal module) is under way: three of six submodules done, `damrs_sync` is next. M4b (local ONNX models) stays parked on the model-distribution question.
+**Next up, in order:** Pre-GA G7·2 source connectors. G10 is complete. M3d·5 (the Drupal module) is under way: four of six submodules done, `damrs_editor` is next. M4b (local ONNX models) stays parked on the model-distribution question.
 M4b (local models) is parked on a distribution decision — see the M4 section.
 
 **`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
@@ -2132,7 +2132,7 @@ API that does not exist yet is a module written twice.
   was already lurking, harmlessly, in the proofing suite's fixture.
 
 - [ ] **M3d·5 The Drupal module.** `integrations/drupal/`, Drupal 11+ only, six submodules (§11.2).
-  **Three of six done: `damrs`, `damrs_media`, `damrs_image_style`.** The other three are not started.
+  **Four of six done: `damrs`, `damrs_media`, `damrs_image_style`, `damrs_sync`.** Two remain.
 
   **The deferral's premise was wrong, and checking cost nothing.** It read "nothing in this repository can
   run PHP or a Drupal install". True of the repository, false of the machine: DDEV was already installed, so
@@ -2210,9 +2210,35 @@ API that does not exist yet is a module written twice.
   unrelated numbers in the right order by hand. Mutation-verified: making the render permanent fails the
   suite.
 
-  **Not started, in the order they should be built.** `damrs_sync` (queue worker over the webhooks — also
-  what refreshes the metadata `damrs_media` deliberately does not poll for), `damrs_editor` (CKEditor 5 +
-  oEmbed), and `damrs_search_api` last, being optional.
+  **Done and verified: `damrs_sync`.** A signed endpoint, a queue, and a worker that applies events to the
+  media items referencing an asset. Driven end to end with deliveries signed by the real Rust signer: a valid
+  one is accepted 202, and no signature, a wrong secret, a tampered body and a stale timestamp are each
+  refused 401.
+
+  **The interaction that made two correct modules destroy data together.** `damrs_media` falls back to the
+  value already in a mapped field when damrs cannot answer, so an outage cannot blank cached metadata.
+  Refreshing works by *clearing* those fields so Drupal's own "field is empty, read it" branch runs — which
+  removes the very value the fallback would have returned. A refresh event arriving during an outage
+  therefore erased the metadata it was meant to update. Both modules' suites were green, and the live check
+  showed a title going to NULL.
+
+  The fix required a distinction the client could not express: `asset()` returns NULL both for "damrs did not
+  answer" and for "damrs says there is no such asset", and those are opposites for anything deciding whether
+  to retry. Treating every failure as retryable makes a deleted asset an item that never drains; treating
+  every failure as final makes a one-minute outage erase what it could not refresh. So `ApiResult` carries
+  the status, nothing is cleared until damrs has produced the asset, an unreachable damrs suspends the queue
+  run, and a deletion never asks at all.
+
+  **The webhook verifier is pinned to the forgeries, not the happy path.** This endpoint is reachable without
+  a session, so a verifier wrong in the accepting direction is an endpoint anybody can post content changes
+  to — a different severity from the delivery tokens, where a mistake only stops images rendering. The
+  vectors therefore carry the forgeries a plausible implementation accepts, including a correct digest over
+  the body without the timestamp, which passes every happy-path test and makes every signature a permanent
+  replay token. Mutation-tested four ways; three were caught behaviourally and the fourth — `===` instead of
+  `hash_equals` — provably cannot be, since only the timing differs. That one is guarded by a structural
+  assertion that says outright what it is.
+
+  **Not started.** `damrs_editor` (CKEditor 5 + oEmbed) and `damrs_search_api`, the latter optional.
 
 - [ ] **3.x AWS-native features to rely on instead of building.** *Raised 2026-08-18; needs a decision on
   items 1 and 2 because they change architecture.* Every item is AWS-only while D1 says S3-compatible, so

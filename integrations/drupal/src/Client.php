@@ -75,9 +75,30 @@ final class Client {
 
   /**
    * One asset's metadata, or NULL if damrs could not answer.
+   *
+   * @return array|null
+   *   The decoded asset, or NULL for any failure.
    */
   public function asset(string $assetId): ?array {
-    return $this->request('GET', '/assets/' . urlencode($assetId));
+    return $this->fetchAsset($assetId)->data;
+  }
+
+  /**
+   * One asset, with enough detail to classify a failure.
+   *
+   * Used by the sync module, which has to tell an unreachable damrs from a
+   * deleted asset: the first is weather and the second is permanent, and
+   * treating them alike either erases metadata during an outage or queues an
+   * item that never drains.
+   *
+   * @return \Drupal\damrs\ApiResult
+   *   The response, the status, or the absence of both.
+   */
+  public function fetchAsset(string $assetId): ApiResult {
+    $status = NULL;
+    $data = $this->request('GET', '/assets/' . urlencode($assetId), TRUE, $status);
+
+    return new ApiResult($data, $status);
   }
 
   /**
@@ -105,7 +126,7 @@ final class Client {
    * @return array|null
    *   The decoded body, or NULL if damrs could not answer.
    */
-  private function request(string $method, string $path, bool $authenticated = TRUE): ?array {
+  private function request(string $method, string $path, bool $authenticated = TRUE, ?int &$status = NULL): ?array {
     $config = $this->configFactory->get('damrs.settings');
     $base = rtrim((string) $config->get('base_url'), '/');
     if ($base === '') {

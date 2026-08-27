@@ -2,10 +2,21 @@
 
 Connects a Drupal 11 site to a damrs library. Assets stay in the DAM; Drupal stores a reference.
 
-**Status: `damrs`, `damrs_media`, `damrs_image_style`.** The client, settings, service-account auth, the
-delivery-URL signer, the `damrs_asset` media source and the image formatter are here, verified against a
-live Drupal 11.4 and against damrs itself — a rendered page now carries signed URLs damrs honours. Three
-submodules remain: `damrs_sync`, `damrs_editor`, `damrs_search_api`. See `TASKS.md` (M3d·5).
+**Status: four of six submodules.** `damrs`, `damrs_media`, `damrs_image_style` and `damrs_sync` are here
+and verified against a live Drupal 11.4 and against damrs itself — a rendered page carries signed URLs damrs
+honours, and an event from damrs updates the site. `damrs_editor` and `damrs_search_api` remain. See
+`TASKS.md` (M3d·5).
+
+## The webhook endpoint is protected by its signature and nothing else
+
+`/damrs/webhook` has no access requirement, because damrs has no session and no form token to present. The
+HMAC over `{timestamp}.{body}` is the entire boundary, so it is verified against the raw bytes before the
+body is parsed, refusals carry no detail, and a delivery outside a five-minute window is refused however
+well signed.
+
+The forgeries a plausible verifier accepts are in `tests/fixtures/webhook_vectors.json` and required to
+fail — including a correct digest over the body *without* the timestamp, which passes every happy-path test
+and makes every signature a permanent replay token.
 
 ## Transforms are names, not descriptions
 

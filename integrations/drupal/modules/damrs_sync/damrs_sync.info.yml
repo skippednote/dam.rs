@@ -1,0 +1,7 @@
+name: 'damrs sync'
+type: module
+description: 'Applies damrs webhooks: metadata, versions, deletion, expiry.'
+package: 'damrs'
+core_version_requirement: ^11
+dependencies:
+  - damrs:damrs_media

@@ -185,6 +185,9 @@ jobs:
           cargo run -q -p dam-media --example transform_names > /tmp/transforms.json
           diff -u integrations/drupal/tests/fixtures/transform_names.json /tmp/transforms.json \
             || { echo "::error::the transform names changed; regenerate the fixture and update Transforms.php"; exit 1; }
+          cargo run -q -p dam-connect --example webhook_vectors > /tmp/webhooks.json
+          diff -u integrations/drupal/tests/fixtures/webhook_vectors.json /tmp/webhooks.json \
+            || { echo "::error::the webhook signature scheme changed; regenerate the fixture and update WebhookSignature.php"; exit 1; }
       # The phar rather than `composer install`, because the module requires drupal/core and pulling it
       # in to assert a byte comparison would make the job guarding the wire format the slowest in CI.
       # The signer needs nothing from Drupal, which is the whole reason it can run in the render path.

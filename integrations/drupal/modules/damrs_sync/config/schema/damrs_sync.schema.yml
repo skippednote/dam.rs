@@ -1,0 +1,17 @@
+damrs_sync.settings:
+  type: config_object
+  label: 'damrs sync settings'
+  mapping:
+    webhook_secret:
+      type: string
+      # The subscription secret damrs signs deliveries with. Not the same as the
+      # URL signing secret: one authenticates damrs to this site, the other
+      # authenticates this site's URLs to damrs, and sharing one key for both
+      # would make a leak in either direction a leak in both.
+      label: 'Webhook signing secret'
+    unpublish_on_delete:
+      type: boolean
+      # Whether an asset.deleted event unpublishes the media item. Off by
+      # default: deleting content is not something a remote system should do to
+      # a site without the site having asked for it.
+      label: 'Unpublish media when the asset is deleted in damrs'
