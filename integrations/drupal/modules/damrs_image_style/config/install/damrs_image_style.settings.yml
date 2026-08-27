@@ -1,0 +1,9 @@
+# Sensible defaults for the image styles a standard profile ships, so a fresh
+# install renders something rather than nothing. `thumbnail` is the grid cell,
+# `medium` the lightbox, `large` the page — matched on intent rather than on
+# pixel dimensions, because intent is the only thing the two systems share.
+map:
+  thumbnail: thumb-256
+  medium: preview-1024
+  large: web-2048
+fallback: web-2048

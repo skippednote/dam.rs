@@ -1,0 +1,9 @@
+name: 'damrs image styles'
+type: module
+description: 'Renders a damrs asset, mapping Drupal image styles onto damrs transforms.'
+package: 'damrs'
+core_version_requirement: ^11
+dependencies:
+  - damrs:damrs_media
+  - drupal:image
+configure: damrs_image_style.settings

@@ -2,10 +2,18 @@
 
 Connects a Drupal 11 site to a damrs library. Assets stay in the DAM; Drupal stores a reference.
 
-**Status: `damrs` and `damrs_media`.** The API client, settings, service-account auth, the delivery-URL
-signer and the `damrs_asset` media source are here, verified against a live Drupal 11.4 and against damrs
-itself. Four submodules remain — `damrs_image_style`, `damrs_sync`, `damrs_editor`, `damrs_search_api`. See
-`TASKS.md` (M3d·5) for what each is for.
+**Status: `damrs`, `damrs_media`, `damrs_image_style`.** The client, settings, service-account auth, the
+delivery-URL signer, the `damrs_asset` media source and the image formatter are here, verified against a
+live Drupal 11.4 and against damrs itself — a rendered page now carries signed URLs damrs honours. Three
+submodules remain: `damrs_sync`, `damrs_editor`, `damrs_search_api`. See `TASKS.md` (M3d·5).
+
+## Transforms are names, not descriptions
+
+damrs renders a fixed set of *named* transforms — `original`, `thumb-256`, `preview-1024`, `web-2048`, plus
+whatever conversions a tenant defines — and refuses anything else as not deliverable rather than
+approximating it. So a Drupal image style is **mapped** to one, not translated into parameters. That is why
+`damrs_image_style` is configuration rather than a compiler, and why `Transforms` is pinned to a fixture
+generated from the Rust.
 
 ## Why reference and not copy
 

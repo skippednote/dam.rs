@@ -1,0 +1,7 @@
+damrs_image_style.settings:
+  path: '/admin/config/media/damrs/image-styles'
+  defaults:
+    _form: '\Drupal\damrs_image_style\Form\MapForm'
+    _title: 'damrs image styles'
+  requirements:
+    _permission: 'administer damrs'

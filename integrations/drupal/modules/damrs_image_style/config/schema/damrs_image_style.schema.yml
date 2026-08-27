@@ -1,0 +1,16 @@
+damrs_image_style.settings:
+  type: config_object
+  label: 'damrs image style mapping'
+  mapping:
+    map:
+      type: sequence
+      # Keyed by Drupal image style id, valued with a damrs transform name. A
+      # sequence of strings rather than a typed mapping, because the keys are
+      # whatever image styles the site happens to have.
+      label: 'Drupal image style to damrs transform'
+      sequence:
+        type: string
+        label: 'damrs transform name'
+    fallback:
+      type: string
+      label: 'Transform used when an image style has no mapping'

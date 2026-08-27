@@ -1,0 +1,5 @@
+services:
+  damrs_image_style.transform_map:
+    class: Drupal\damrs_image_style\TransformMap
+    arguments:
+      - '@config.factory'

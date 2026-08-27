@@ -29,13 +29,13 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **Q** Commercial-DAM parity, 20 slices | **complete** — Q.1–Q.20, including Q.14b collections and Q.20a–d |
 | **Go-live Tier 1** Deployment image, backups, metrics, rate limiting, virus scan, C2PA | **done** — all six, each verified against the running stack |
 | **Archival** Tiering engine, restores, the storage screen | **done** — the sweep and poll jobs, the plan/quote/request/approve API, delivery's 202, bulk archive and restore, the restore panel |
-| **M3d** Drupal 11 connector | M3d·1–·4 done; M3d·5 in progress — `damrs` and `damrs_media` done and verified, four submodules to go |
+| **M3d** Drupal 11 connector | M3d·1–·4 done; M3d·5 in progress — `damrs`, `damrs_media` and `damrs_image_style` done and verified, three submodules to go |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, colour | dedup and colour **done** (M4a); the rest needs model files — see M4 below |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | **done** — two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query, the MCP server |
 | **M6** Workflow/proofing, annotations, analytics | **done** — annotations (M6a), proofing (M6b), analytics (M6c) |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | G19 **done**; G7 crosswalk and dry-run **done**, transfer needs a source connector; G10 **done** (audit chain, user administration, SCIM, BYOK) |
 
-**Next up, in order:** Pre-GA G7·2 source connectors. G10 is complete. M3d·5 (the Drupal module) is under way: `damrs` and `damrs_media` are done, `damrs_image_style` is next. M4b (local ONNX models) stays parked on the model-distribution question.
+**Next up, in order:** Pre-GA G7·2 source connectors. G10 is complete. M3d·5 (the Drupal module) is under way: three of six submodules done, `damrs_sync` is next. M4b (local ONNX models) stays parked on the model-distribution question.
 M4b (local models) is parked on a distribution decision — see the M4 section.
 
 **`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
@@ -2132,7 +2132,7 @@ API that does not exist yet is a module written twice.
   was already lurking, harmlessly, in the proofing suite's fixture.
 
 - [ ] **M3d·5 The Drupal module.** `integrations/drupal/`, Drupal 11+ only, six submodules (§11.2).
-  **Two of six done: `damrs` and `damrs_media`.** The other four are not started.
+  **Three of six done: `damrs`, `damrs_media`, `damrs_image_style`.** The other three are not started.
 
   **The deferral's premise was wrong, and checking cost nothing.** It read "nothing in this repository can
   run PHP or a Drupal install". True of the repository, false of the machine: DDEV was already installed, so
@@ -2192,10 +2192,27 @@ API that does not exist yet is a module written twice.
   "contrib-shaped composer package" does not permit. Both fixed; CI now runs the standards and the kernel
   tests, so neither can come back.
 
-  **Not started, in the order they should be built.** `damrs_image_style` (Drupal image style ↔ transform op,
-  which the signer already makes cheap), `damrs_sync` (queue worker over the webhooks — also what refreshes
-  the metadata this slice deliberately does not poll for), `damrs_editor` (CKEditor 5 + oEmbed), and
-  `damrs_search_api` last, being optional.
+  **Done and verified: `damrs_image_style`.** The piece that actually puts a picture on a page. A field
+  formatter renders the source field as an `<img>` whose URL is signed locally, so painting a page still
+  makes no request to damrs. Verified by rendering a real media entity and feeding the resulting token back
+  through `verify_token`: it decodes with the mapped transform and every field correct.
+
+  **It is a mapping, not a translation, and that follows from damrs rather than from Drupal.** The obvious
+  design reads an image style's effects and emits an equivalent transform. It cannot work, because a
+  transform is a name and an unrecognised one is refused. So a site says which of the transforms damrs
+  *does* render each image style corresponds to — a decision about intent, not arithmetic — and a site
+  wanting a size damrs does not offer adds a conversion there and maps to its key. One place decides what
+  renditions exist, which is what keeps the derivative cache and the rights model coherent.
+
+  **The cache lifetime is the URL lifetime.** A render array cached longer than the signed URL's TTL becomes,
+  after that TTL, a cached page whose every image damrs refuses — with nothing in the logs connecting the
+  two. The formatter caps its own `max-age` at the configured TTL rather than leaving an operator to keep two
+  unrelated numbers in the right order by hand. Mutation-verified: making the render permanent fails the
+  suite.
+
+  **Not started, in the order they should be built.** `damrs_sync` (queue worker over the webhooks — also
+  what refreshes the metadata `damrs_media` deliberately does not poll for), `damrs_editor` (CKEditor 5 +
+  oEmbed), and `damrs_search_api` last, being optional.
 
 - [ ] **3.x AWS-native features to rely on instead of building.** *Raised 2026-08-18; needs a decision on
   items 1 and 2 because they change architecture.* Every item is AWS-only while D1 says S3-compatible, so
