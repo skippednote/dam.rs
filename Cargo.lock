@@ -2205,6 +2205,8 @@ dependencies = [
  "dam-backup",
  "dam-core",
  "dam-db",
+ "dam-media",
+ "dam-pipeline",
  "dam-search",
  "dam-store",
  "dam-telemetry",

@@ -17,6 +17,7 @@ dam-media = { path = "../dam-media" }
 dam-search = { path = "../dam-search" }
 dam-ai = { path = "../dam-ai" }
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 base64 = { workspace = true }
 blake3 = { workspace = true }
 bytes = { workspace = true }
@@ -41,9 +42,6 @@ dam-store = { path = "../dam-store", features = ["testing"] }
 dam-ai = { path = "../dam-ai", features = ["testing"] }
 image = { workspace = true }
 blake3 = { workspace = true }
-# For the one test store that has to answer `head` truthfully and serve nothing — the shape a killed
-# writer leaves, which no real backend can be talked into producing.
-async-trait = { workspace = true }
 
 # Not `workspace = true`, and the difference is one line: `expect_used` is **denied** here rather
 # than warned. Cargo has no partial override — a manifest either inherits the whole table or states

@@ -693,13 +693,29 @@ pub async fn enqueue_derive(
     tenant_id: Uuid,
     asset_id: Uuid,
 ) -> Result<Uuid> {
+    // Below the default: a user is watching the grid for a thumbnail, and §6.4's background work is not.
+    // 50 is the boundary `JobSpec::priority` documents for interactive work.
+    enqueue_derive_at(global, tenant_id, asset_id, 40).await
+}
+
+/// Queues the derive stage at a chosen priority.
+///
+/// Exists because a migration is not an upload. `enqueue_derive` uses the interactive band on the premise
+/// that somebody is looking at the grid waiting for the thumbnail to appear — true for an upload, and false
+/// for the four hundred thousandth asset of a bulk transfer. Queued at 40, a migration would sit in front of
+/// every real upload on that tenant for as long as it ran, and the one person who actually was waiting would
+/// conclude the system was broken. Callers moving a library pass the default band instead.
+pub async fn enqueue_derive_at(
+    global: &sqlx::PgPool,
+    tenant_id: Uuid,
+    asset_id: Uuid,
+    priority: i16,
+) -> Result<Uuid> {
     Ok(jobs::enqueue(
         global,
         jobs::JobSpec::new(tenant_id, kind::DERIVE)
             .payload(serde_json::json!({ "asset_id": asset_id }))
-            // Below the default: a user is watching the grid for a thumbnail, and §6.4's background work is
-            // not. 50 is the boundary `JobSpec::priority` documents for interactive work.
-            .priority(40)
+            .priority(priority)
             .dedupe_key(format!("derive:{asset_id}")),
     )
     .await?)
