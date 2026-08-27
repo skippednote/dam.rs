@@ -133,6 +133,34 @@ pub async fn tenant(
     })
 }
 
+/// The slug of an *active* tenant, by id.
+///
+/// The reverse of [`find`], and it exists for delivery (G22b): a signed claim carries a tenant id, and
+/// scoping a request needs the slug that names its schema. Reading it per request rather than trusting
+/// configuration is the whole point — the claim is what says which library to answer from.
+///
+/// `status = 'active'` is part of the query rather than the caller's problem. A suspended tenant's
+/// outstanding delivery URLs should stop working, and the alternative — resolve the slug, then
+/// remember to check status separately — is a check somebody forgets in exactly the path where
+/// forgetting it serves bytes.
+pub async fn slug_of(pool: &PgPool, tenant_id: Uuid) -> Result<Option<TenantSlug>, Error> {
+    let slug: Option<String> = sqlx::query_scalar(
+        "SELECT slug FROM dam_global.tenants WHERE id = $1 AND status = 'active'",
+    )
+    .bind(tenant_id)
+    .fetch_optional(pool)
+    .await?;
+
+    match slug {
+        None => Ok(None),
+        Some(raw) => Ok(Some(TenantSlug::new(&raw).map_err(|_| {
+            // The column is what `provision::tenant` validated on the way in, so this is a repair
+            // case rather than an input case — loud, and not a 404 dressed up as one.
+            Error::Inconsistent(format!("dam_global.tenants holds slug {raw:?}"))
+        })?)),
+    }
+}
+
 /// Looks up a tenant by slug.
 pub async fn find(pool: &PgPool, slug: &TenantSlug) -> Result<Option<Tenant>, Error> {
     let row: Option<(Uuid, String, String)> = sqlx::query_as(

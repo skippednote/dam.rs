@@ -128,12 +128,14 @@ async fn fixture() -> Fixture {
         Arc::new(dam_store::FakeS3Store::with_test_clock().0);
     let delivery = Arc::new(dam_api::delivery::DeliveryState::new(
         acme.clone(),
+        acme.clone(),
         store,
         dam_core::signed_url::Keyring::single(
             "k1",
             dam_core::Secret::new("a-signing-key".to_owned()),
         ),
         tenant_id,
+        dam_core::TenantSlug::new("acme").expect("a slug"),
     ));
     let download_state = Arc::new(dam_api::downloads::DownloadState {
         global: global.clone(),

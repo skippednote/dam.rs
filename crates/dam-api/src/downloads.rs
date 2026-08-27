@@ -515,6 +515,10 @@ pub async fn issue(
     // passes through, and a caller reaching it by another route must be refused there too.
     let token = delivery::issue(
         delivery,
+        delivery::Scope {
+            tenant_id: caller.tenant_id,
+            slug: &caller.tenant_slug,
+        },
         asset_id,
         &transform,
         &usage,

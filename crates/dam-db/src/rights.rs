@@ -272,6 +272,21 @@ pub async fn cached(
     usage: &Usage,
     now: DateTime<Utc>,
 ) -> Result<Option<CachedVerdict>, Error> {
+    let mut conn = pool.acquire().await?;
+    cached_on(&mut conn, asset_id, usage, now).await
+}
+
+/// [`cached`], against a caller's connection.
+///
+/// Delivery needs this: it resolves its tenant from the signed claim and reads through a `TenantConn`,
+/// so a function that acquires its own connection from a shared pool would read the wrong schema —
+/// `search_path` is set on the transaction, not on the pool.
+pub async fn cached_on(
+    conn: &mut sqlx::PgConnection,
+    asset_id: Uuid,
+    usage: &Usage,
+    now: DateTime<Utc>,
+) -> Result<Option<CachedVerdict>, Error> {
     let row = sqlx::query_as::<
         _,
         (
@@ -290,7 +305,7 @@ pub async fn cached(
     .bind(&usage.channel)
     .bind(&usage.territory)
     .bind(now)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *conn)
     .await?;
 
     let Some((verdict, reasons, impressions_remaining, expires_at)) = row else {
@@ -324,10 +339,28 @@ pub async fn effective(
     usage: &Usage,
     now: DateTime<Utc>,
 ) -> Result<RightsState, Error> {
-    if let Some(hit) = cached(pool, asset_id, usage, now).await? {
+    let mut conn = pool.acquire().await?;
+    effective_on(&mut conn, asset_id, usage, now).await
+}
+
+/// [`effective`], against a caller's connection.
+///
+/// The cache read and the evaluation that fills it on a miss run on the *same* connection, which is
+/// what makes this usable inside a tenant transaction. It also means a miss writes
+/// `rights_evaluations` inside the caller's transaction rather than in its own — so the row becomes
+/// visible when that transaction commits instead of immediately. That is the right trade for delivery:
+/// a verdict is re-derived per request anyway, and a cache row that appears slightly later is cheaper
+/// than a verdict read from the wrong schema.
+pub async fn effective_on(
+    conn: &mut sqlx::PgConnection,
+    asset_id: Uuid,
+    usage: &Usage,
+    now: DateTime<Utc>,
+) -> Result<RightsState, Error> {
+    if let Some(hit) = cached_on(&mut *conn, asset_id, usage, now).await? {
         return Ok(hit.verdict);
     }
-    Ok(evaluate(pool, asset_id, usage, now).await?.verdict)
+    Ok(evaluate_on(&mut *conn, asset_id, usage, now).await?.verdict)
 }
 
 /// Writes a verdict into the cache, and mirrors the default usage onto the asset.

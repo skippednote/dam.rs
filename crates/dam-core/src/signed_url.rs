@@ -248,6 +248,29 @@ impl Keyring {
 /// before it can decide anything, and it is safe because naming the wrong key produces a signature that does not
 /// match. What it must not do is let the *choice* of key confer anything: see `dam_api::delivery`, where a token
 /// naming a connector key is bounded by that connector's own row before its bytes are served.
+/// The tenant a token claims, without verifying anything.
+///
+/// **Unauthenticated by construction**, exactly as [`key_id_of`] is, and safe for the same single
+/// purpose: choosing which *schema* to look something up in before verification can happen.
+///
+/// Delivery needs it because the lookup and the verification are circular otherwise. A
+/// connector-signed token names a connector, `connectors` is a tenant table, and the connector's secret
+/// is what verifies the token — so the tenant has to be known before the signature can be checked, and
+/// the tenant is inside the signature. The resolution is the same as for the key id: reading it
+/// unverified is unavoidable, and it is safe because naming the wrong tenant finds either no connector
+/// or one whose secret does not verify the signature.
+///
+/// What a caller must not do is let this value *survive* verification. Delivery uses it to scope one
+/// lookup and then reads the tenant from the verified claim for everything that follows, which is why
+/// this returns a bare id rather than anything a handler would be tempted to keep.
+#[must_use]
+pub fn tenant_id_of(token: &str) -> Option<Uuid> {
+    let encoder = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let (payload_b64, _) = token.split_once('.')?;
+    let payload = encoder.decode(payload_b64).ok()?;
+    parse(&payload).ok().map(|claim| claim.tenant_id)
+}
+
 #[must_use]
 pub fn key_id_of(token: &str) -> Option<String> {
     let encoder = base64::engine::general_purpose::URL_SAFE_NO_PAD;

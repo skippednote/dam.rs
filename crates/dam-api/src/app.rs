@@ -99,16 +99,18 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
     // presents as an intermittently broken grid rather than as a configuration error.
     let delivery = Arc::new(
         crate::delivery::DeliveryState::new(
+            deps.global.clone(),
             deps.delivery_pool.clone(),
             Arc::clone(&deps.delivery_store),
             deps.keyring.clone(),
             deps.delivery_tenant,
+            deps.delivery_tenant_slug.clone(),
         )
         .with_public_url(cfg.server.public_url.clone())
         // Connector-signed URLs (M3d·2). A site signs its own render URLs so a page render never blocks on an
         // API call, and this is what lets damrs verify them — bounded by the connector's own row, in
         // `delivery::bound_by_connector`.
-        .with_connector_auth(cfg.sealing_keyring(), deps.delivery_tenant_slug.clone()),
+        .with_connector_auth(cfg.sealing_keyring()),
     );
 
     // Built before the API router so the two share one `SearchState` and one `DownloadState` — the MCP tools

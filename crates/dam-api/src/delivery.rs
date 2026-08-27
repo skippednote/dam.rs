@@ -70,9 +70,25 @@ pub const PRESIGN_TTL: Duration = Duration::from_secs(30);
 /// Share links (3.3) are the supported way to publish a URL, and they carry their own revocation.
 pub const MAX_TOKEN_TTL: ChronoDuration = ChronoDuration::hours(24);
 
+/// Which library a mint or a delivery concerns.
+///
+/// Two fields that always travel together and are useless apart: the id goes into the signed claim, the
+/// slug names the schema a `TenantConn` resolves. Passing them as a pair rather than two arguments is
+/// what stops a caller stamping one tenant into a token while reading another one's rows — which is
+/// precisely the bug `sign_preview` had before G22a, in the one place they were allowed to differ.
+#[derive(Debug, Clone, Copy)]
+pub struct Scope<'a> {
+    pub tenant_id: Uuid,
+    pub slug: &'a dam_core::TenantSlug,
+}
+
 /// Everything the delivery path reads.
 #[derive(Clone)]
 pub struct DeliveryState {
+    /// The shared pool, unscoped. What the signed-token path uses: it reads the tenant out of the claim,
+    /// resolves the slug through `provision::slug_of`, and opens one `TenantConn` per request. Before
+    /// G22b this field *was* the pinned pool, which is why delivery could only answer for one tenant.
+    control: PgPool,
     /// A pool whose `search_path` resolves the **delivery tenant's** schema.
     ///
     /// Not the shared global pool, and the distinction is not cosmetic: almost everything this handler reads —
@@ -86,11 +102,20 @@ pub struct DeliveryState {
     global: PgPool,
     store: Arc<dyn BlobStore>,
     keyring: Keyring,
-    /// The tenant whose prefix originals live under.
+    /// The tenant this process answers the *public* paths for.
+    ///
+    /// After G22b the signed-token path (`/d/{token}`) no longer uses this: it reads the tenant out of the
+    /// claim and scopes each request itself. What still needs it is the visitor surface — `/p/{key}` and
+    /// `/s/{token}` name a portal or a share and not a library, and both are tenant tables, so the process
+    /// has to already know which one to look in. Giving those URLs a tenant is a decision about the public
+    /// URL space, recorded as G22c.
     ///
     /// A `Uuid` rather than a rendered prefix string, because `Key::original` builds the path — a caller
     /// passing a prefix would be one concatenation away from naming another tenant's.
     tenant_id: Uuid,
+    /// The same tenant, as the slug a `TenantConn` needs. Both, because they are needed in both shapes and
+    /// deriving one from the other per request would be a query to learn something already known.
+    tenant_slug: dam_core::TenantSlug,
     /// The origin to build absolute delivery URLs from, when configured.
     ///
     /// `None` means root-relative, which is right for a same-origin client and wrong for any other — see
@@ -112,15 +137,18 @@ pub struct DeliveryState {
     connectors: Option<ConnectorAuth>,
 }
 
-/// The two things a connector-signed token needs, together.
+/// The keyring that opens connector secrets.
 ///
-/// Both or neither, structurally. The secret is sealed against `{tenant}:connector:{id}`, so a keyring paired
-/// with the wrong slug opens nothing — and the failure would look like every connector URL being forged rather
-/// than like a misconfiguration.
+/// It used to carry a tenant slug as well, because a secret is sealed against `{tenant}:connector:{id}`
+/// and the slug had to come from somewhere. G22b made that somewhere the token: the slug is resolved per
+/// request from the claim, so pairing one configured slug with the keyring is not only unnecessary but
+/// exactly the thing that limited a process to one tenant's connectors.
+///
+/// A wrapper around one field rather than the field itself, kept because `Option<ConnectorAuth>` says
+/// something `Option<SealingKeyring>` does not: connector URLs are *enabled*, not merely configured.
 #[derive(Clone)]
 struct ConnectorAuth {
     sealing: dam_core::sealed::SealingKeyring,
-    tenant_slug: dam_core::TenantSlug,
 }
 
 impl std::fmt::Debug for DeliveryState {
@@ -135,16 +163,20 @@ impl std::fmt::Debug for DeliveryState {
 
 impl DeliveryState {
     pub fn new(
+        control: PgPool,
         global: PgPool,
         store: Arc<dyn BlobStore>,
         keyring: Keyring,
         tenant_id: Uuid,
+        tenant_slug: dam_core::TenantSlug,
     ) -> Self {
         Self {
+            control,
             global,
             store,
             keyring,
             tenant_id,
+            tenant_slug,
             public_url: None,
             clock: Arc::new(dam_core::SystemClock),
             connectors: None,
@@ -153,19 +185,13 @@ impl DeliveryState {
 
     /// Enables connector-signed URLs, with the keyring that opens their secrets.
     ///
-    /// Takes the slug as well as the keyring because the secret is sealed against it — see [`ConnectorAuth`].
-    /// Without this, a token naming a connector key is refused: falling back to the server keyring for an
-    /// unopenable connector secret would turn a configuration problem into a bypass.
+    /// The keyring only, since G22b: the slug the secret is sealed against comes from the token rather than
+    /// from configuration — see [`ConnectorAuth`]. Without this, a token naming a connector key is refused:
+    /// falling back to the server keyring for an unopenable connector secret would turn a configuration
+    /// problem into a bypass.
     #[must_use]
-    pub fn with_connector_auth(
-        mut self,
-        sealing: dam_core::sealed::SealingKeyring,
-        tenant_slug: dam_core::TenantSlug,
-    ) -> Self {
-        self.connectors = Some(ConnectorAuth {
-            sealing,
-            tenant_slug,
-        });
+    pub fn with_connector_auth(mut self, sealing: dam_core::sealed::SealingKeyring) -> Self {
+        self.connectors = Some(ConnectorAuth { sealing });
         self
     }
 
@@ -352,6 +378,22 @@ impl IntoResponse for Refusal {
 
 impl From<dam_db::Error> for Refusal {
     fn from(error: dam_db::Error) -> Self {
+        // An asset the resolved library does not hold is a refusal, not a fault. This became reachable
+        // with G22b and was a 500 until a test went looking: before, delivery read whichever library
+        // configuration named and a token for another tenant was stopped by a comparison. Now the library
+        // comes *from* the token, so a valid token for a tenant whose schema simply lacks the asset walks
+        // all the way to the rights evaluation, which reports `NotFound` — and the caller deserves the
+        // same flat 404 every other "no such asset" answer gives, not an internal error implying we broke.
+        if matches!(
+            error,
+            dam_db::Error::Core(dam_core::Error::NotFound {
+                kind: dam_core::ResourceKind::Asset,
+                ..
+            })
+        ) {
+            tracing::debug!(%error, "delivery asked a library that does not hold the asset");
+            return Self::NotDeliverable;
+        }
         tracing::error!(%error, "delivery database error");
         Self::Internal
     }
@@ -367,8 +409,15 @@ impl From<dam_db::Error> for Refusal {
 /// When 3.2 hydrates search results into delivery URLs it must pass the *same* access predicate that
 /// filtered the search, rather than re-deriving one — §12's argument applied to delivery, and the reason
 /// this takes the usage explicitly instead of inferring it.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the same reason `issue_for_share` gives: every one of these is signed into the token, and a \
+              struct would hide that and invite a caller to build a claim with a field left at its default. \
+              `Scope` already bundles the pair that must not be split"
+)]
 pub async fn issue(
     state: &DeliveryState,
+    scope: Scope<'_>,
     asset_id: Uuid,
     transform: &str,
     usage: &Usage,
@@ -378,6 +427,7 @@ pub async fn issue(
 ) -> Result<String, Refusal> {
     issue_with_purpose(
         state,
+        scope,
         Purpose::Distribution,
         asset_id,
         transform,
@@ -398,6 +448,7 @@ pub async fn issue(
 /// proxy-class transform.
 pub async fn issue_preview(
     state: &DeliveryState,
+    scope: Scope<'_>,
     asset_id: Uuid,
     transform: &str,
     identity_id: Uuid,
@@ -406,6 +457,7 @@ pub async fn issue_preview(
 ) -> Result<String, Refusal> {
     issue_with_purpose(
         state,
+        scope,
         Purpose::InternalPreview,
         asset_id,
         transform,
@@ -471,8 +523,18 @@ pub async fn issue_for_share(
     ttl: ChronoDuration,
     now: DateTime<Utc>,
 ) -> Result<String, Refusal> {
+    // The process's own tenant, not a caller's: this is the public visitor path. A portal address is
+    // `/p/{key}` and a share is `/s/{token}`, neither of which names a tenant — `portals` and
+    // `share_links` are tenant tables looked up on the tenant-scoped pool, so the process has to already
+    // know which library it is answering for. Giving these URLs a tenant is a decision about the public
+    // URL space rather than a refactor, and it is why `server.delivery_tenant` survives G22b. See the
+    // G22c entry in TASKS.md.
     issue_with_purpose(
         state,
+        Scope {
+            tenant_id: state.tenant_id,
+            slug: &state.tenant_slug,
+        },
         Purpose::Distribution,
         asset_id,
         transform,
@@ -493,6 +555,7 @@ pub async fn issue_for_share(
 )]
 async fn issue_with_purpose(
     state: &DeliveryState,
+    scope: Scope<'_>,
     purpose: Purpose,
     asset_id: Uuid,
     transform: &str,
@@ -502,10 +565,16 @@ async fn issue_with_purpose(
     ttl: ChronoDuration,
     now: DateTime<Utc>,
 ) -> Result<String, Refusal> {
+    // One transaction for the checks, scoped to the tenant the caller named. Everything read here —
+    // rights, conversions, derivatives — is tenant-schema, and a mint is not on the delivery hot path,
+    // so a short transaction is the cheap and obvious shape.
+    let mut tenant = dam_db::TenantConn::begin(&state.control, scope.slug).await?;
+    let conn = tenant.executor();
+
     if purpose.is_distribution() {
-        let verdict = rights::effective(&state.global, asset_id, usage, now).await?;
+        let verdict = rights::effective_on(&mut *conn, asset_id, usage, now).await?;
         if !permits(verdict) {
-            let codes = reason_codes(&state.global, asset_id, usage, now).await;
+            let codes = reason_codes(&mut *conn, asset_id, usage, now).await;
             return Err(Refusal::RightsDenied {
                 state: verdict,
                 codes,
@@ -515,7 +584,7 @@ async fn issue_with_purpose(
         // refusal whether a rendition exists. A missing rendition is `NotDeliverable`, which is what the share
         // portal and a Q.14 portal already say out loud — "no preview has been rendered yet" — and could not
         // reach until this check existed.
-        if !rendition_exists(state, asset_id, transform).await? {
+        if !rendition_exists(&mut *conn, asset_id, transform).await? {
             return Err(Refusal::NotDeliverable);
         }
     } else if !preview_is_permitted(transform, identity_id, share_link_id) {
@@ -534,12 +603,9 @@ async fn issue_with_purpose(
     let ttl = ttl.min(MAX_TOKEN_TTL).max(ChronoDuration::seconds(1));
     let claim = DeliveryClaim {
         purpose,
-        // The delivering process's tenant, not necessarily the asset's — see `sign_preview`, which takes
-        // the owning tenant explicitly for the reason this line cannot. The distribution mints reach here
-        // from shares, portals, oembed and downloads, each knowing a tenant by a different route, so
-        // threading it through belongs with G22b rather than ahead of it. Correct for every deployment
-        // delivery supports today, which is the ones serving one tenant.
-        tenant_id: state.tenant_id,
+        // The tenant the caller named, which is the one whose rows were just read. Before G22b this was
+        // the delivering process's tenant, which is the same value only in a single-tenant deployment.
+        tenant_id: scope.tenant_id,
         asset_id,
         transform: transform.to_owned(),
         channel: usage.channel.clone(),
@@ -572,7 +638,7 @@ async fn issue_with_purpose(
 /// archiving one real asset and looking at the screen: the badge said Archived and the picture next to it
 /// had gone.
 async fn archived_wait(
-    state: &DeliveryState,
+    conn: &mut sqlx::PgConnection,
     claim: &signed_url::DeliveryClaim,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<Option<RestoringBody>, Refusal> {
@@ -592,7 +658,7 @@ async fn archived_wait(
          LIMIT 1",
     )
     .bind(claim.asset_id)
-    .fetch_optional(&state.global)
+    .fetch_optional(&mut *conn)
     .await
     .map_err(|error| {
         tracing::error!(%error, "reading a placement for delivery");
@@ -625,7 +691,7 @@ async fn archived_wait(
             restore
         },
         restore_url: format!("/assets/{}/restore", claim.asset_id),
-        eta_at: in_flight_eta(state, claim.asset_id).await,
+        eta_at: in_flight_eta(&mut *conn, claim.asset_id).await,
         storage_class: class.to_string(),
     }))
 }
@@ -635,7 +701,7 @@ async fn archived_wait(
 /// Best effort: a failure to read it costs the caller a null ETA, not their request. The 202 is still the
 /// right answer with or without a date on it.
 async fn in_flight_eta(
-    state: &DeliveryState,
+    conn: &mut sqlx::PgConnection,
     asset_id: uuid::Uuid,
 ) -> Option<chrono::DateTime<chrono::Utc>> {
     sqlx::query_scalar(
@@ -644,7 +710,7 @@ async fn in_flight_eta(
          ORDER BY requested_at DESC LIMIT 1",
     )
     .bind(asset_id)
-    .fetch_optional(&state.global)
+    .fetch_optional(&mut *conn)
     .await
     .ok()
     .flatten()
@@ -656,6 +722,30 @@ async fn deliver(
 ) -> Result<Response, Refusal> {
     let now = state.now();
 
+    // The tenant, read from the token *before* its signature is checked, and used for exactly one thing:
+    // choosing the schema the lookups below run in. `connectors` is a tenant table and a connector's own
+    // secret is what verifies its token, so the tenant has to be known first — see
+    // `signed_url::tenant_id_of`, which carries the same argument `key_id_of` makes for the key.
+    //
+    // Unverified, therefore load-bearing for nothing. Naming a tenant that does not exist gets a flat
+    // refusal; naming the wrong one finds no connector, or one whose secret does not verify. And the
+    // verified claim is re-checked against this value below, so nothing downstream trusts it.
+    let claimed_tenant = signed_url::tenant_id_of(&token).ok_or(Refusal::NotDeliverable)?;
+    let slug = dam_db::provision::slug_of(&state.control, claimed_tenant)
+        .await?
+        .ok_or_else(|| {
+            // A suspended or deprovisioned tenant's URLs stop working, and this is where. The flat
+            // refusal is deliberate: saying "unknown tenant" would confirm which ids exist.
+            tracing::debug!(tenant = %claimed_tenant, "a delivery token named no active tenant");
+            Refusal::NotDeliverable
+        })?;
+
+    // One transaction for the whole request, and it can be one because nothing here goes to the network:
+    // every step is a local read and `presign_get` signs with HMAC rather than calling S3. That is the
+    // condition `integrity::scrub` and `tiering::one_policy` fail and therefore have to release early;
+    // delivery does not, so it holds a single scoped transaction instead of taking a connection per read.
+    let mut tenant = dam_db::TenantConn::begin(&state.control, &slug).await?;
+
     // Step 0. Which keyring verifies this (M3d·2).
     //
     // A connector signs its own render URLs so a page render never blocks on an API call (§11.3), which means
@@ -665,7 +755,7 @@ async fn deliver(
     // choice of key confer anything, which is what `bound_by_connector` below is for.
     let connector = match signed_url::key_id_of(&token) {
         Some(key_id) if key_id.starts_with(CONNECTOR_KEY_PREFIX) => {
-            Some(connector_for(&state, &key_id, now).await?)
+            Some(connector_for(&state, tenant.executor(), &slug, &key_id, now).await?)
         }
         _ => None,
     };
@@ -690,7 +780,17 @@ async fn deliver(
     // below, because each of those already has its own reasons to refuse and a bound buried among them is a
     // bound somebody removes while fixing something else.
     let claim = match &connector {
-        Some(connected) => bound_by_connector(&state, connected, claim, now).await?,
+        Some(connected) => {
+            bound_by_connector(
+                &state.control,
+                tenant.executor(),
+                claimed_tenant,
+                connected,
+                claim,
+                now,
+            )
+            .await?
+        }
         None => claim,
     };
 
@@ -707,11 +807,15 @@ async fn deliver(
     // environment cloned from production — and is exactly the case this refuses. Cheap, and it is the check
     // that lets the resolution half of G22 land later without a window where the claim is carried but not
     // honoured.
-    if claim.tenant_id != state.tenant_id {
-        tracing::warn!(
-            claimed = %claim.tenant_id,
-            served = %state.tenant_id,
-            "a delivery token named a tenant this process does not serve",
+    if claim.tenant_id != claimed_tenant {
+        // Unreachable through `verify`, which reads the same bytes — so this is the assertion that the
+        // unverified read above and the verified claim cannot drift apart, not a case anybody hits. It is
+        // here because the schema every read below resolves was chosen from the unverified value, and an
+        // assertion is cheaper than the reasoning required to be sure that is still safe next year.
+        tracing::error!(
+            verified = %claim.tenant_id,
+            scoped_to = %claimed_tenant,
+            "the verified claim disagrees with the tenant its reads were scoped to",
         );
         return Err(Refusal::NotDeliverable);
     }
@@ -719,7 +823,7 @@ async fn deliver(
     // Re-checked before anything else about the asset. A revoked share must stop working immediately, and it
     // must stop working *for the same reason* whether the URL was minted a second or a day ago.
     if let Some(share_id) = claim.share_link_id
-        && !dam_db::shares::is_live(&state.global, share_id, now).await?
+        && !dam_db::shares::is_live_on(tenant.executor(), share_id, now).await?
     {
         // The same flat 404 an unsigned token gets. A revoked share is no longer a thing this URL names, and
         // saying "revoked" here would confirm the asset exists to whoever now holds the link.
@@ -733,9 +837,9 @@ async fn deliver(
 
     if claim.purpose.is_distribution() {
         // Step 2. Asked afresh, which is what makes a lapsed licence stop an already-issued URL.
-        let verdict = rights::effective(&state.global, claim.asset_id, &usage, now).await?;
+        let verdict = rights::effective_on(tenant.executor(), claim.asset_id, &usage, now).await?;
         if !permits(verdict) {
-            let codes = reason_codes(&state.global, claim.asset_id, &usage, now).await;
+            let codes = reason_codes(tenant.executor(), claim.asset_id, &usage, now).await;
             return Err(Refusal::RightsDenied {
                 state: verdict,
                 codes,
@@ -748,7 +852,7 @@ async fn deliver(
         return Err(Refusal::NotDeliverable);
     }
 
-    let key = object_key(&state, &claim, now).await?;
+    let key = object_key(tenant.executor(), &claim, now).await?;
 
     // Step 3. Are the bytes reachable at all?
     //
@@ -761,9 +865,19 @@ async fn deliver(
     // row we maintain, on the hot path of every thumbnail in every grid; a vendor round trip per delivery to
     // learn something we already know would be a per-image latency cost paid to answer a question that is
     // almost always "yes, it is Standard".
-    if let Some(wait) = archived_wait(&state, &claim, now).await? {
+    if let Some(wait) = archived_wait(tenant.executor(), &claim, now).await? {
         return Err(Refusal::Restoring(wait));
     }
+
+    // Committed here, before the signing, and it has to be: this transaction wrote two things on the way
+    // through — `derivatives.last_served_at` from `object_key`, and a `rights_evaluations` row when the
+    // verdict was a cache miss. Dropping the transaction instead would roll both back, and the visible
+    // symptom would be a `last_served_at` that never advances, which reads as a tiering bug rather than a
+    // missing commit.
+    //
+    // Every early return above is a refusal, so rolling those back is right — nothing was served, and a
+    // served-at stamp for bytes that were denied would be a lie in the one column tiering trusts.
+    tenant.commit().await?;
 
     let url = state
         .store
@@ -800,12 +914,12 @@ fn permits(verdict: RightsState) -> bool {
 /// Best-effort because a failure to *explain* a refusal must not turn it into a different status. The
 /// refusal already stands; an empty reason list is worse than a 500.
 async fn reason_codes(
-    global: &PgPool,
+    conn: &mut sqlx::PgConnection,
     asset_id: Uuid,
     usage: &Usage,
     now: DateTime<Utc>,
 ) -> Vec<String> {
-    match rights::cached(global, asset_id, usage, now).await {
+    match rights::cached_on(&mut *conn, asset_id, usage, now).await {
         Ok(Some(hit)) => hit
             .reasons
             .as_array()
@@ -841,20 +955,17 @@ async fn reason_codes(
 /// endpoint returned a perfectly good signed URL for `web-1600`, and the fetch 404'd it because the name was not
 /// a built-in. An API test that asserted a URL was returned could not see that, which is what "verify by running
 /// the real thing" means in practice.
-async fn op_hash_for(state: &DeliveryState, transform: &str) -> Result<String, Refusal> {
+async fn op_hash_for(conn: &mut sqlx::PgConnection, transform: &str) -> Result<String, Refusal> {
     match dam_media::profiles::by_name(transform) {
         Some(profile) => Ok(profile.op_hash()),
-        None => dam_db::conversions::by_key(
-            &mut *state.global.acquire().await.map_err(dam_db::Error::from)?,
-            transform,
-        )
-        .await?
-        // Withdrawn conversions resolve: the token carries the key, and a link issued while a format was
-        // offered must keep working. `by_key` includes them for exactly this caller.
-        .and_then(|conversion| conversion.op_hash())
-        // An unknown transform is not deliverable rather than approximated: rendering something plausible
-        // would silently hand back a different size than the caller integrated against.
-        .ok_or(Refusal::NotDeliverable),
+        None => dam_db::conversions::by_key(&mut *conn, transform)
+            .await?
+            // Withdrawn conversions resolve: the token carries the key, and a link issued while a format was
+            // offered must keep working. `by_key` includes them for exactly this caller.
+            .and_then(|conversion| conversion.op_hash())
+            // An unknown transform is not deliverable rather than approximated: rendering something plausible
+            // would silently hand back a different size than the caller integrated against.
+            .ok_or(Refusal::NotDeliverable),
     }
 }
 
@@ -869,16 +980,16 @@ async fn op_hash_for(state: &DeliveryState, transform: &str) -> Result<String, R
 /// `original` needs no check: it is derived from the asset's own content hash, and an asset with no bytes is not
 /// a state this system has.
 async fn rendition_exists(
-    state: &DeliveryState,
+    conn: &mut sqlx::PgConnection,
     asset_id: Uuid,
     transform: &str,
 ) -> Result<bool, Refusal> {
     if transform == "original" {
         return Ok(true);
     }
-    let op_hash = op_hash_for(state, transform).await?;
+    let op_hash = op_hash_for(&mut *conn, transform).await?;
     Ok(
-        dam_db::derivatives::by_op_hash(&state.global, asset_id, &op_hash)
+        dam_db::derivatives::by_op_hash(&mut *conn, asset_id, &op_hash)
             .await?
             .is_some(),
     )
@@ -904,6 +1015,8 @@ struct Connected {
 /// them would tell whoever holds the URL which connectors exist and what state they are in.
 async fn connector_for(
     state: &DeliveryState,
+    conn: &mut sqlx::PgConnection,
+    slug: &dam_core::TenantSlug,
     key_id: &str,
     now: DateTime<Utc>,
 ) -> Result<Connected, Refusal> {
@@ -920,19 +1033,9 @@ async fn connector_for(
         Refusal::NotDeliverable
     })?;
 
-    let mut conn = state
-        .global
-        .acquire()
-        .await
-        .map_err(dam_db::Error::from)
-        .map_err(|error| {
-            tracing::error!(%error, "acquiring a connection to resolve a connector");
-            Refusal::Internal
-        })?;
-    let row = dam_db::connectors::by_id(&mut conn, id)
+    let row = dam_db::connectors::by_id(&mut *conn, id)
         .await?
         .ok_or(Refusal::NotDeliverable)?;
-    drop(conn);
 
     // A paused or revoked connector's URLs stop working immediately, which is the whole point of having the
     // states — and it works on URLs already issued, exactly as a revoked share does.
@@ -940,7 +1043,10 @@ async fn connector_for(
         return Err(Refusal::NotDeliverable);
     }
 
-    let aad = dam_db::connectors::associated_data(auth.tenant_slug.as_str(), row.id);
+    // Sealed against the tenant the *token* names rather than a configured one, which is what lets one
+    // process open connector secrets for every tenant it hosts. A slug from the wrong tenant opens
+    // nothing, so this is also the check that a connector id from another library cannot be borrowed.
+    let aad = dam_db::connectors::associated_data(slug.as_str(), row.id);
     let current = auth
         .sealing
         .open(&row.sealed_secret, &aad)
@@ -986,7 +1092,12 @@ async fn connector_for(
 /// — and a proxy is what the `<img>` tag wanted anyway. Refusing instead would blank an image on a live page
 /// for a storage-class reason the site cannot do anything about.
 async fn bound_by_connector(
-    state: &DeliveryState,
+    // Both, because `auth::grants_for` needs both: a pool for the control-plane reads it does itself,
+    // and a tenant-scoped executor for the rest. Handing it the tenant connection alone would resolve
+    // `dam_global` tables through a `search_path` rather than by name, which works until it does not.
+    global: &PgPool,
+    conn: &mut sqlx::PgConnection,
+    tenant_id: Uuid,
     connected: &Connected,
     claim: DeliveryClaim,
     now: DateTime<Utc>,
@@ -1021,7 +1132,7 @@ async fn bound_by_connector(
         "SELECT identity_id FROM dam_global.api_keys          WHERE id = $1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())",
     )
     .bind(api_key_id)
-    .fetch_optional(&state.global)
+    .fetch_optional(&mut *conn)
     .await
     .map_err(dam_db::Error::from)?
     .flatten();
@@ -1029,17 +1140,9 @@ async fn bound_by_connector(
     // its render URLs working for as long as the site kept signing them, which is indefinitely.
     let identity = identity.ok_or(Refusal::NotDeliverable)?;
 
-    let mut conn = state
-        .global
-        .acquire()
-        .await
-        .map_err(dam_db::Error::from)
-        .map_err(|_| Refusal::Internal)?;
-    let grants =
-        dam_db::auth::grants_for(&state.global, &mut *conn, state.tenant_id, identity, &[]).await?;
+    let grants = dam_db::auth::grants_for(global, &mut *conn, tenant_id, identity, &[]).await?;
     let predicate = dam_core::policy::compile(&grants, dam_core::policy::Action::Read, now);
     let visible = dam_db::assets::visible_among(&mut *conn, &predicate, &[claim.asset_id]).await?;
-    drop(conn);
     if visible.is_empty() {
         return Err(Refusal::NotDeliverable);
     }
@@ -1049,7 +1152,7 @@ async fn bound_by_connector(
     // wrong one for an `<img>` tag on a page nobody is watching.
     if claim.transform == dam_media::profiles::ORIGINAL
         && !connected.row.allow_restore
-        && archived_wait(state, &claim, now).await?.is_some()
+        && archived_wait(&mut *conn, &claim, now).await?.is_some()
     {
         return Ok(DeliveryClaim {
             transform: dam_media::profiles::WEB_2048.name.to_owned(),
@@ -1061,7 +1164,7 @@ async fn bound_by_connector(
 }
 
 async fn object_key(
-    state: &DeliveryState,
+    conn: &mut sqlx::PgConnection,
     claim: &DeliveryClaim,
     now: DateTime<Utc>,
 ) -> Result<Key, Refusal> {
@@ -1073,21 +1176,21 @@ async fn object_key(
             "SELECT content_hash FROM assets WHERE id = $1 AND deleted_at IS NULL",
         )
         .bind(claim.asset_id)
-        .fetch_optional(&state.global)
+        .fetch_optional(&mut *conn)
         .await
         .map_err(dam_db::Error::from)?;
         // A deleted asset is not deliverable, and it answers the same way an unsigned token does: the
         // caller learns nothing about whether it ever existed.
         let content_hash = content_hash.ok_or(Refusal::NotDeliverable)?;
-        return Key::original(state.tenant_id, &content_hash).map_err(|error| {
+        return Key::original(claim.tenant_id, &content_hash).map_err(|error| {
             tracing::error!(%error, "an asset's content_hash does not form a valid key");
             Refusal::Internal
         });
     }
 
-    let op_hash = op_hash_for(state, &claim.transform).await?;
+    let op_hash = op_hash_for(&mut *conn, &claim.transform).await?;
 
-    let derivative = dam_db::derivatives::by_op_hash(&state.global, claim.asset_id, &op_hash)
+    let derivative = dam_db::derivatives::by_op_hash(&mut *conn, claim.asset_id, &op_hash)
         .await?
         // A miss is not a failure — it means this recipe has not been rendered yet. For a tenant conversion the
         // download endpoint queues the render and answers 202, so a caller reaching here with a miss is one
@@ -1096,7 +1199,7 @@ async fn object_key(
 
     // Coarse by design — see `derivatives::SERVED_RESOLUTION`. Failing to record a serve must not fail the
     // delivery: the bytes are authorised and the timestamp is a lifecycle hint.
-    if let Err(error) = dam_db::derivatives::mark_served(&state.global, derivative.id, now).await {
+    if let Err(error) = dam_db::derivatives::mark_served_on(&mut *conn, derivative.id, now).await {
         tracing::warn!(%error, "recording a derivative serve");
     }
 
