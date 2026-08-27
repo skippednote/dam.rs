@@ -96,12 +96,14 @@ async fn fixture() -> Fixture {
             .expect("tenant id");
     let delivery = std::sync::Arc::new(dam_api::delivery::DeliveryState::new(
         acme.clone(),
+        acme.clone(),
         std::sync::Arc::new(dam_store::FakeS3Store::with_test_clock().0),
         dam_core::signed_url::Keyring::single(
             "k1",
             dam_core::Secret::new("a-signing-key".to_owned()),
         ),
         tenant_id,
+        dam_core::TenantSlug::new("acme").expect("a slug"),
     ));
     let app = router(EngagementState {
         global: global.clone(),

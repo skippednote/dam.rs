@@ -280,6 +280,10 @@ async fn describe(
         (Some(delivery), true) => {
             let minted = crate::delivery::issue(
                 delivery,
+                crate::delivery::Scope {
+                    tenant_id: caller.tenant_id,
+                    slug: &caller.tenant_slug,
+                },
                 asset_id,
                 profile.name,
                 // The connector's own channel and territory would be better, and there is nowhere to put them:

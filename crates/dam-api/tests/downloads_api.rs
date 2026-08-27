@@ -90,7 +90,15 @@ async fn fixture() -> Fixture {
     let clock = Arc::new(dam_core::TestClock::new());
     clock.set(now());
     let delivery = Arc::new(
-        DeliveryState::new(acme.clone(), store, keyring, tenant_id).with_clock(clock.clone()),
+        DeliveryState::new(
+            acme.clone(),
+            acme.clone(),
+            store,
+            keyring,
+            tenant_id,
+            dam_core::TenantSlug::new("acme").expect("a slug"),
+        )
+        .with_clock(clock.clone()),
     );
 
     let app = router(DownloadState {

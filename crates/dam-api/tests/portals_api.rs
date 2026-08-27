@@ -100,9 +100,11 @@ async fn fixture() -> Fixture {
 
     let delivery = Arc::new(dam_api::delivery::DeliveryState::new(
         acme.clone(),
+        acme.clone(),
         Arc::new(dam_store::FakeS3Store::with_test_clock().0),
         Keyring::single("k1", Secret::new("a-signing-key".to_owned())),
         tenant_id,
+        dam_core::TenantSlug::new("acme").expect("a slug"),
     ));
     let app = router(PortalState {
         global: global.clone(),

@@ -1490,47 +1490,52 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   is expected and shifts every field after it — naming a plausible tenant it was never issued for. Refusing
   costs nothing, since a delivery token lives at most 24 hours.
 
-- [ ] **G22b Resolve the tenant per request, and delete `server.delivery_tenant`.** The half that actually
-  lifts the limitation. Delivery still reads through a pool pinned to one tenant's `search_path`, so the
-  claim is *checked* against the configured tenant rather than *used* to select a library, and one `damd`
-  still serves one tenant.
+- [x] **G22b The signed-token path resolves its tenant from the claim.**
 
-  **The obvious shortcut is closed off by design.** A per-tenant pool cache would make this fifteen
-  mechanical substitutions, and `single_tenant_pool` refuses in as many words: "Not for the server. The
-  server holds one pool for every tenant and scopes each request with `TenantConn`, because a pool per
-  tenant at a thousand tenants is a thousand idle connection sets."
+  `/d/{token}` reads the tenant out of the verified claim, resolves the slug through
+  `provision::slug_of`, and opens one `TenantConn` for the request. `server.delivery_tenant` no longer
+  decides which library a token is answered from.
 
-  **Scoped by reading the signatures, so the next session starts here.** The fifteen reads are not one
-  shape. Some helpers already take `E: sqlx::PgExecutor<'e>` and need nothing —
-  `derivatives::by_op_hash` and `auth::grants_for` are ready as they stand. The rest take `&PgPool`
-  concretely and are the actual work:
+  **One transaction covers the whole request, and that turned out to be right rather than a compromise.**
+  The rule everywhere else in this codebase is to release the connection before store I/O — `scrub` and
+  `tiering::one_policy` both do. Delivery does not need to: every step is a local read and `presign_get`
+  signs with HMAC without calling S3. Checked rather than assumed, because holding a transaction across a
+  network round trip is exactly the mistake that rule exists to prevent.
 
-  - `shares::is_live(pool, ..)`
-  - `rights::effective(pool, ..)` — and this is the one to plan around rather than start with. It is not a
-    single read: it consults `cached(pool, ..)` first and writes through on a miss, so it needs an
-    executor that can *write*, and moving it inside the caller's transaction changes when that cache row
-    becomes visible. Worth deciding deliberately, because the rights verdict is the one answer in this
-    handler that must not be subtly wrong.
-  - `derivatives::mark_served(pool, ..)`
-  - the handler's own `fetch_optional(&state.global)` queries, which are the easy ones
+  **The circular dependency, and how it resolves.** `connectors` is a tenant table and a connector's own
+  secret verifies its token, so the tenant has to be known before the signature can be checked — and the
+  tenant is inside the signature. `signed_url::tenant_id_of` reads it unverified to choose the schema,
+  mirroring the argument `key_id_of` already makes for the key id, and the verified claim is asserted
+  against that value afterwards so nothing downstream trusts the unverified read.
 
-  A pass holds no transaction across store I/O — the same rule `integrity::scrub` and
-  `tiering::one_policy` follow — so the shape is short `TenantConn`s around groups of reads, not one
-  spanning the request. `ConnectorAuth.tenant_slug` needs resolving per request too, and `damd`'s startup
-  refusal goes with the config key.
+  **The protection is now structural, which a test proved by not failing.** Disabling the
+  claim-versus-scope comparison left the cross-tenant case passing: the library is chosen *from* the
+  token, so there is no path on which one could be answered out of the wrong library. The comparison
+  stays — it is cheap and it pins that the two reads cannot drift — but the test was rewritten to
+  exercise the real mechanism, against a second tenant that genuinely exists.
 
-  Deliberately not started at the end of a session: this is the path that enforces rights, and a rushed
-  refactor of it is worse than a documented limitation.
+  **And that new case found a 500.** A valid token for a tenant whose schema lacks the asset reaches the
+  rights evaluation, which returns `NotFound`, which delivery mapped to `Internal`. It is a refusal now.
+  Unreachable before, because a cross-tenant token was stopped by a comparison — so this is a fault G22b
+  created and the same change's test caught.
 
-  **One symptom of this is already fixed, and it is worth knowing why the rest is not.** `sign_preview`
-  stamped `DeliveryState::tenant_id` — the tenant *this process* delivers for — into the claim, rather than
-  the tenant that owns the asset. Found by decoding a token the running dev stack had just minted: an asset
-  in `initech` carrying `acme`'s id. It takes the owning tenant now, because its one call site has
-  `caller.tenant_id` right there. The distribution mints reach `issue_with_purpose` from shares, portals,
-  oembed and downloads, each knowing a tenant by a different route, so threading it belongs with this item
-  rather than ahead of it. Nothing observable changes either way today — a claim naming a tenant the
-  process does not serve 404s regardless — which is exactly why it needs writing down instead of leaving
-  to be rediscovered.
+  `ConnectorAuth` lost its configured slug, which is dead once the slug comes per request and was the
+  thing limiting a process to one tenant's connectors.
+
+- [ ] **G22c Give the public visitor URLs a tenant, and then delete `server.delivery_tenant`.** The half
+  G22b did not reach, and the reason it exists at all — which the old entry did not capture.
+
+  `/p/{key}` names a portal and `/s/{token}` names a share. `portals` and `share_links` are **tenant
+  tables**, and neither URL carries a tenant, so the process has to already know which library to look
+  in. That is why `delivery_tenant` survives: not for the token path, which now resolves itself, but for
+  the eighteen `.pool()` reads on the visitor surface.
+
+  **This is a decision about the public URL space rather than a refactor**, which is why it is its own
+  item. Three shapes, and they are not equivalent: a globally unique key registry in `dam_global` (one
+  lookup, but portal keys stop being per-tenant names and two customers can collide); a tenant in the
+  path or a subdomain (no collision, but every published portal URL changes); or keys that carry an
+  encoded tenant (no migration, longer URLs, and a format to version). Pick one before writing code —
+  the current single-tenant behaviour is correct and documented, so there is no pressure to pick fast.
 
 - [ ] **G7·2 Source connectors and transfer.** A transfer needs *bytes*, and bytes come from a source
   connector. Scoped by reading the code, so the next session starts here rather than rediscovering it.

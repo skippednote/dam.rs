@@ -56,9 +56,11 @@ async fn fixture() -> Fixture {
     let store: Arc<dyn BlobStore> = Arc::new(FakeS3Store::with_test_clock().0);
     let delivery = Arc::new(DeliveryState::new(
         pool.clone(),
+        pool.clone(),
         store,
         Keyring::single("k1", Secret::new("a-signing-key".to_owned())),
         tenant_id,
+        dam_core::TenantSlug::new("acme").expect("a slug"),
     ));
 
     let app = router(ShareState {

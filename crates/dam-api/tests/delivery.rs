@@ -42,6 +42,8 @@ struct Fixture {
     state: DeliveryState,
     app: axum::Router,
     tenant_id: Uuid,
+    /// The harness URL, so a case that needs a *second* tenant can migrate its schema.
+    url: String,
 }
 
 async fn fixture() -> Fixture {
@@ -51,6 +53,19 @@ async fn fixture() -> Fixture {
     migrate::tenant(&url, "t_acme").await.expect("tenant");
     let pool = pg.pool_for_schema("t_acme").await.expect("pool");
 
+    // A real control-plane row, which delivery now requires: since G22b it reads the tenant out of the
+    // signed claim and resolves the slug through `provision::slug_of`, so a tenant that exists only as a
+    // constant in this file gets a flat refusal — correctly, and that is what a suspended tenant gets too.
+    sqlx::query(
+        "INSERT INTO dam_global.tenants \
+         (id, slug, schema_name, display_name, storage_prefix, status) \
+         VALUES ($1, 'acme', 't_acme', 'Acme', 'acme/', 'active')",
+    )
+    .bind(TENANT)
+    .execute(&pool)
+    .await
+    .expect("tenant row");
+
     let store: Arc<dyn BlobStore> = Arc::new(FakeS3Store::with_test_clock().0);
     let keyring = Keyring::single("k1", Secret::new("a-signing-key".to_owned()));
     let tenant_id = TENANT;
@@ -59,8 +74,15 @@ async fn fixture() -> Fixture {
     // the *future* in real time, and the expiry case passed a 302 while claiming to test a 404.
     let clock = Arc::new(dam_core::TestClock::new());
     clock.set(now());
-    let state =
-        DeliveryState::new(pool.clone(), store, keyring, tenant_id).with_clock(clock.clone());
+    let state = DeliveryState::new(
+        pool.clone(),
+        pool.clone(),
+        store,
+        keyring,
+        tenant_id,
+        dam_core::TenantSlug::new("acme").expect("a slug"),
+    )
+    .with_clock(clock.clone());
     let app = delivery::router(state.clone());
 
     Fixture {
@@ -69,6 +91,7 @@ async fn fixture() -> Fixture {
         state,
         app,
         tenant_id,
+        url,
     }
 }
 
@@ -157,6 +180,10 @@ async fn an_archived_original_is_a_202_with_an_eta(f: &Fixture) {
 
     let token = delivery::issue(
         &f.state,
+        delivery::Scope {
+            tenant_id: f.tenant_id,
+            slug: &dam_core::TenantSlug::new("acme").expect("a slug"),
+        },
         id,
         dam_media::profiles::ORIGINAL,
         &web(),
@@ -204,6 +231,10 @@ async fn a_derivative_of_an_archived_asset_is_still_delivered(f: &Fixture) {
 
     let token = delivery::issue(
         &f.state,
+        delivery::Scope {
+            tenant_id: f.tenant_id,
+            slug: &dam_core::TenantSlug::new("acme").expect("a slug"),
+        },
         id,
         "web-2048",
         &web(),
@@ -243,6 +274,10 @@ async fn a_restored_copy_is_delivered_until_it_lapses(f: &Fixture) {
 
     let token = delivery::issue(
         &f.state,
+        delivery::Scope {
+            tenant_id: f.tenant_id,
+            slug: &dam_core::TenantSlug::new("acme").expect("a slug"),
+        },
         id,
         dam_media::profiles::ORIGINAL,
         &web(),
@@ -327,6 +362,10 @@ async fn a_signed_url_for_a_licensed_asset_redirects_to_the_object(f: &Fixture) 
 
     let token = delivery::issue(
         &f.state,
+        delivery::Scope {
+            tenant_id: f.tenant_id,
+            slug: &dam_core::TenantSlug::new("acme").expect("a slug"),
+        },
         id,
         "web-2048",
         &web(),
@@ -377,6 +416,10 @@ async fn the_transform_selects_which_object_is_served(f: &Fixture) {
     ] {
         let token = delivery::issue(
             &f.state,
+            delivery::Scope {
+                tenant_id: f.tenant_id,
+                slug: &dam_core::TenantSlug::new("acme").expect("a slug"),
+            },
             id,
             transform,
             &web(),
@@ -414,6 +457,10 @@ async fn a_redefined_profile_misses_the_cache_instead_of_serving_stale_bytes(f: 
     // Serving works while the recipe matches.
     let token = delivery::issue(
         &f.state,
+        delivery::Scope {
+            tenant_id: f.tenant_id,
+            slug: &dam_core::TenantSlug::new("acme").expect("a slug"),
+        },
         id,
         "web-2048",
         &web(),
@@ -457,6 +504,10 @@ async fn a_serve_is_recorded_at_most_once_an_hour(f: &Fixture) {
     licence(f, id, None).await;
     let token = delivery::issue(
         &f.state,
+        delivery::Scope {
+            tenant_id: f.tenant_id,
+            slug: &dam_core::TenantSlug::new("acme").expect("a slug"),
+        },
         id,
         "web-2048",
         &web(),
@@ -517,6 +568,10 @@ async fn an_unknown_transform_is_not_deliverable(f: &Fixture) {
 
     let refused = delivery::issue(
         &f.state,
+        delivery::Scope {
+            tenant_id: f.tenant_id,
+            slug: &dam_core::TenantSlug::new("acme").expect("a slug"),
+        },
         id,
         "print-a3",
         &web(),
@@ -560,6 +615,10 @@ async fn an_unknown_transform_is_not_deliverable(f: &Fixture) {
 
     let token = delivery::issue(
         &f.state,
+        delivery::Scope {
+            tenant_id: f.tenant_id,
+            slug: &dam_core::TenantSlug::new("acme").expect("a slug"),
+        },
         id,
         "poster-a2",
         &web(),
@@ -621,6 +680,10 @@ async fn a_tenant_conversion_resolves_like_a_built_in(f: &Fixture) {
 
     let token = delivery::issue(
         &f.state,
+        delivery::Scope {
+            tenant_id: f.tenant_id,
+            slug: &dam_core::TenantSlug::new("acme").expect("a slug"),
+        },
         id,
         "web-1600",
         &web(),
@@ -661,6 +724,10 @@ async fn a_valid_signature_over_an_unlicensed_asset_is_still_refused(f: &Fixture
     // clicked is worse than an error in front of the person who can fix it.
     let refused = delivery::issue(
         &f.state,
+        delivery::Scope {
+            tenant_id: f.tenant_id,
+            slug: &dam_core::TenantSlug::new("acme").expect("a slug"),
+        },
         id,
         "web-2048",
         &web(),
@@ -684,6 +751,10 @@ async fn a_valid_signature_over_an_unlicensed_asset_is_still_refused(f: &Fixture
         .expect("delete the rendition");
     let still_rights = delivery::issue(
         &f.state,
+        delivery::Scope {
+            tenant_id: f.tenant_id,
+            slug: &dam_core::TenantSlug::new("acme").expect("a slug"),
+        },
         id,
         "web-2048",
         &web(),
@@ -721,6 +792,10 @@ async fn a_licence_that_lapses_after_issue_stops_an_already_issued_url(f: &Fixtu
     // Valid at issue.
     let token = delivery::issue(
         &f.state,
+        delivery::Scope {
+            tenant_id: f.tenant_id,
+            slug: &dam_core::TenantSlug::new("acme").expect("a slug"),
+        },
         id,
         "web-2048",
         &web(),
@@ -760,6 +835,10 @@ async fn a_legal_hold_stops_delivery_of_an_already_issued_url(f: &Fixture) {
     licence(f, id, None).await;
     let token = delivery::issue(
         &f.state,
+        delivery::Scope {
+            tenant_id: f.tenant_id,
+            slug: &dam_core::TenantSlug::new("acme").expect("a slug"),
+        },
         id,
         "web-2048",
         &web(),
@@ -821,6 +900,10 @@ async fn the_channel_in_the_token_selects_which_licence_terms_apply(f: &Fixture)
     };
     let allowed = delivery::issue(
         &f.state,
+        delivery::Scope {
+            tenant_id: f.tenant_id,
+            slug: &dam_core::TenantSlug::new("acme").expect("a slug"),
+        },
         id,
         "web-2048",
         &editorial,
@@ -840,6 +923,10 @@ async fn the_channel_in_the_token_selects_which_licence_terms_apply(f: &Fixture)
     assert!(
         delivery::issue(
             &f.state,
+            delivery::Scope {
+                tenant_id: f.tenant_id,
+                slug: &dam_core::TenantSlug::new("acme").expect("a slug"),
+            },
             id,
             "web-2048",
             &advertising,
@@ -1040,6 +1127,10 @@ async fn a_url_with_no_share_is_unaffected_by_share_state(f: &Fixture) {
     licence(f, id, None).await;
     let token = delivery::issue(
         &f.state,
+        delivery::Scope {
+            tenant_id: f.tenant_id,
+            slug: &dam_core::TenantSlug::new("acme").expect("a slug"),
+        },
         id,
         "web-2048",
         &web(),
@@ -1072,6 +1163,10 @@ async fn an_expiring_licence_still_delivers(f: &Fixture) {
 
     let token = delivery::issue(
         &f.state,
+        delivery::Scope {
+            tenant_id: f.tenant_id,
+            slug: &dam_core::TenantSlug::new("acme").expect("a slug"),
+        },
         id,
         "web-2048",
         &web(),
@@ -1092,6 +1187,10 @@ async fn a_tampered_or_unsigned_token_is_a_flat_404(f: &Fixture) {
     licence(f, id, None).await;
     let good = delivery::issue(
         &f.state,
+        delivery::Scope {
+            tenant_id: f.tenant_id,
+            slug: &dam_core::TenantSlug::new("acme").expect("a slug"),
+        },
         id,
         "web-2048",
         &web(),
@@ -1139,6 +1238,10 @@ async fn a_deleted_asset_is_not_deliverable(f: &Fixture) {
     licence(f, id, None).await;
     let token = delivery::issue(
         &f.state,
+        delivery::Scope {
+            tenant_id: f.tenant_id,
+            slug: &dam_core::TenantSlug::new("acme").expect("a slug"),
+        },
         id,
         "web-2048",
         &web(),
@@ -1165,6 +1268,10 @@ async fn a_token_ttl_is_clamped_rather_than_refused(f: &Fixture) {
     licence(f, id, None).await;
     let token = delivery::issue(
         &f.state,
+        delivery::Scope {
+            tenant_id: f.tenant_id,
+            slug: &dam_core::TenantSlug::new("acme").expect("a slug"),
+        },
         id,
         "web-2048",
         &web(),
@@ -1225,13 +1332,18 @@ fn mint_directly(
 /// signature and needs no handler check, so the only interesting token is one that verifies cleanly and
 /// still names the wrong library. Two deployments sharing a signing key produce exactly that — a restored
 /// backup, a staging environment cloned from production.
-fn mint_for_another_tenant(asset_id: Uuid, transform: &str, usage: &Usage) -> String {
+fn mint_for_another_tenant(
+    asset_id: Uuid,
+    transform: &str,
+    usage: &Usage,
+    tenant_id: Uuid,
+) -> String {
     dam_core::signed_url::sign(
         &Keyring::single("k1", Secret::new("a-signing-key".to_owned())),
         &dam_core::signed_url::DeliveryClaim {
             purpose: dam_core::signed_url::Purpose::Distribution,
             // Not `TENANT`. Everything else about this token is valid.
-            tenant_id: Uuid::from_u128(0xd1ff),
+            tenant_id,
             asset_id,
             transform: transform.to_owned(),
             channel: usage.channel.clone(),
@@ -1305,11 +1417,38 @@ async fn a_token_for_another_tenant_is_refused_however_valid_it_is(f: &Fixture) 
         "the control: this token differs from the one below only in which tenant it names"
     );
 
-    let theirs = mint_for_another_tenant(id, "web-2048", &web());
+    // A tenant that does not exist: `provision::slug_of` finds nothing and the request stops before any
+    // library is opened. Flat 404, saying nothing about which ids exist.
+    let unknown = mint_for_another_tenant(id, "web-2048", &web(), Uuid::from_u128(0xbeef));
+    assert_eq!(
+        get(&f.app, &unknown).await.status(),
+        StatusCode::NOT_FOUND,
+        "a token naming no active tenant is not deliverable, and says nothing about why"
+    );
+
+    // And the case that matters more, now that G22b resolves the library *from* the claim: a tenant that
+    // genuinely exists and is active. Nothing refuses this token on tenant grounds — instead every read is
+    // scoped to that tenant's schema, the asset is not in it, and the refusal comes from the library
+    // itself. That is the protection being structural rather than a comparison: there is no longer a code
+    // path on which a token could be answered out of the wrong library, so there is nothing to forget.
+    let other_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO dam_global.tenants \
+         (id, slug, schema_name, display_name, storage_prefix, status) \
+         VALUES (gen_random_uuid(), 'globex', 't_globex', 'Globex', 'globex/', 'active') \
+         RETURNING id",
+    )
+    .fetch_one(&f.pool)
+    .await
+    .expect("a second tenant");
+    migrate::tenant(&f.url, "t_globex")
+        .await
+        .expect("its schema");
+
+    let theirs = mint_for_another_tenant(id, "web-2048", &web(), other_id);
     assert_eq!(
         get(&f.app, &theirs).await.status(),
         StatusCode::NOT_FOUND,
-        "a token naming another tenant is not deliverable here, and says nothing about why"
+        "an active tenant's token asks that tenant's library, which does not hold this asset"
     );
 }
 

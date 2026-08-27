@@ -27,9 +27,11 @@ libraries.
 >   authenticates with an API key. SCIM creates accounts and access and deliberately mints no credential,
 >   so a provisioned person needs a key from an administrator until SSO lands. Deprovisioning is
 >   unaffected and complete.
-> - **Delivery serves one tenant per process.** The signed claim carries the tenant and delivery checks
->   it, but the library is still resolved from configuration rather than from the claim, so one `damd`
->   answers delivery for one tenant. A deployment needing delivery for several runs one per tenant.
+> - **Public portal and share URLs serve one tenant per process.** Signed delivery URLs (`/d/{token}`)
+>   carry their tenant and resolve their library from it, so one process answers them for every tenant it
+>   hosts. A portal (`/p/{key}`) and a share (`/s/{token}`) name neither, and both are tenant tables — so
+>   those routes still read the tenant from configuration. Giving them one is a decision about the public
+>   URL space rather than a missing feature; see G22c in [TASKS.md](TASKS.md).
 
 ## Why dam.rs
 
