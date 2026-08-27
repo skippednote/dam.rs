@@ -465,8 +465,15 @@ impl Config {
         }
 
         // `split("__")` maps DAMRS_DATABASE__MAX_CONNECTIONS -> database.max_connections.
+        //
+        // `CONFIG` is ignored, and without that nothing could be configured by file at all. `damd` and
+        // `dam-worker` both take the path to this file from `DAMRS_CONFIG` — which sits under the same
+        // prefix, so the env provider offered it as a key named `config`, extraction rejected it as unknown,
+        // and setting the variable that names the config file was the one thing guaranteed to stop the
+        // process from starting. Found by starting the worker: `--config` is a `damctl` flag, and the other
+        // two binaries read the variable.
         let cfg: Self = figment
-            .merge(Env::prefixed("DAMRS_").split("__"))
+            .merge(Env::prefixed("DAMRS_").split("__").ignore(&["CONFIG"]))
             .extract()
             .map_err(|e| {
                 // Figment's error carries the offending key path, which is what
@@ -636,6 +643,35 @@ mod tests {
                 cfg.database.url.expose().starts_with("postgres://"),
                 "default database URL must be a real URL, got {:?}",
                 cfg.database.url.expose()
+            );
+            Ok(())
+        });
+    }
+
+    /// `DAMRS_CONFIG` names the config file and must not also be read as a config *key*.
+    ///
+    /// It was. `damd` and `dam-worker` both take the file path from that variable, and it sits under the
+    /// prefix the environment provider scans — so figment offered a key called `config`, strict extraction
+    /// rejected it as unknown, and the one variable that points at the configuration file was the one thing
+    /// that reliably stopped both binaries from starting. Configuring by file was impossible for anything but
+    /// `damctl`, which takes a flag.
+    ///
+    /// Found by starting the worker against a real database rather than by reading the code.
+    #[test]
+    fn the_variable_naming_the_config_file_is_not_itself_a_config_key() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "dam.toml",
+                "[database]\nurl = \"postgres://someone@example.invalid/dam\"\n",
+            )?;
+            jail.set_env("DAMRS_CONFIG", "dam.toml");
+
+            let cfg =
+                Config::load(Some("dam.toml")).expect("a file named by DAMRS_CONFIG must load");
+            assert_eq!(
+                cfg.database.url.expose(),
+                "postgres://someone@example.invalid/dam",
+                "and the file's values must be the ones that land"
             );
             Ok(())
         });
