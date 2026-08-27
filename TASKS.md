@@ -29,13 +29,13 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **Q** Commercial-DAM parity, 20 slices | **complete** — Q.1–Q.20, including Q.14b collections and Q.20a–d |
 | **Go-live Tier 1** Deployment image, backups, metrics, rate limiting, virus scan, C2PA | **done** — all six, each verified against the running stack |
 | **Archival** Tiering engine, restores, the storage screen | **done** — the sweep and poll jobs, the plan/quote/request/approve API, delivery's 202, bulk archive and restore, the restore panel |
-| **M3d** Drupal 11 connector | M3d·1–·4 done; only the Drupal module (M3d·5) open |
+| **M3d** Drupal 11 connector | M3d·1–·4 done; M3d·5 in progress — the `damrs` base module is done and verified, five submodules to go |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, colour | dedup and colour **done** (M4a); the rest needs model files — see M4 below |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | **done** — two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query, the MCP server |
 | **M6** Workflow/proofing, annotations, analytics | **done** — annotations (M6a), proofing (M6b), analytics (M6c) |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | G19 **done**; G7 crosswalk and dry-run **done**, transfer needs a source connector; G10 **done** (audit chain, user administration, SCIM, BYOK) |
 
-**Next up, in order:** Pre-GA G7·2 source connectors. G10 is complete. M3d·5 (the Drupal module) is deferred until there is a Drupal environment to verify against — see its entry. M4b (local ONNX models) stays parked on the model-distribution question.
+**Next up, in order:** Pre-GA G7·2 source connectors. G10 is complete. M3d·5 (the Drupal module) is under way: the base module is done, `damrs_media` is next. M4b (local ONNX models) stays parked on the model-distribution question.
 M4b (local models) is parked on a distribution decision — see the M4 section.
 
 **`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
@@ -2132,19 +2132,37 @@ API that does not exist yet is a module written twice.
   was already lurking, harmlessly, in the proofing suite's fixture.
 
 - [ ] **M3d·5 The Drupal module.** `integrations/drupal/`, Drupal 11+ only, six submodules (§11.2).
+  **One of six done: the `damrs` base module.** The other five are not started.
 
-  **Deferred deliberately, and this is the reasoning.** Nothing in this repository can run PHP or a Drupal
-  install, so the module would be the only thing here shipped without being exercised — against an API it would
-  be *asserting* about rather than calling. Every other slice this session was verified by driving the real
-  server, and several of the session's most useful findings came from exactly that: the CORS header the global
-  layer was overwriting, the download count that had always been zero, a stored `op_hash` from a superseded
-  profile definition. A module written against a live Drupal will be a better module than one written against a
-  spec.
+  **The deferral's premise was wrong, and checking cost nothing.** It read "nothing in this repository can
+  run PHP or a Drupal install". True of the repository, false of the machine: DDEV was already installed, so
+  a throwaway Drupal 11.4.5 took four commands. The whole reason for the deferral evaporated on inspection,
+  which is worth remembering the next time something is parked on an assumed impossibility — the deferral
+  had been restated across several sessions without anyone testing it.
 
-  **What the deferral is not blocked on.** The wire formats are proven implementable from their documentation
-  alone: a Python script reimplementing the length-prefixed canonical form and the HMAC — no damrs code in the
-  signing path — produces delivery tokens and browse tokens the running server honours, and every bound refuses
-  correctly. That is the property a PHP module needs, and it holds.
+  **Done and verified: `damrs`.** API client, settings form, service-account auth, health check, and the
+  delivery-URL signer. Enabled on a real Drupal 11.4.5; the settings form builds all nine fields through the
+  real container and both services resolve.
+
+  **The signer is the part that mattered, and it is now pinned across two languages.** §11.3 requires
+  transform URLs signed *in PHP* with no API call in the render path, so a second implementation of the
+  delivery-token canonical form exists and the two have to agree byte for byte forever.
+  `cargo run -p dam-core --example signing_vectors` emits the vectors; the PHPUnit suite compares against
+  them offline. Mutation-tested: character length instead of byte length, omitting an absent optional
+  instead of writing a zero-length field, and signing a UUID's text instead of its raw bytes each fail the
+  suite. A second example, `verify_token`, closes the other direction — a URL minted by the live Drupal
+  service from real config and the real clock verifies in Rust with every field correct, and both a wrong
+  secret and a one-character tamper are refused.
+
+  **What running it caught immediately.** Drupal's routing file must be `MODULE.routing.yml`; it was written
+  as `MODULE.routes.yml`, so the module enabled cleanly, reported no error, and had no settings page at all.
+  A module shipped against the spec rather than against an install would have shipped that.
+
+  **Not started, in the order they should be built.** `damrs_media` first — the `damrs_asset` MediaSource
+  plugin, field mapping and Media Library integration is where the connector's value actually lands, and it
+  is the largest of the five. Then `damrs_image_style` (Drupal image style ↔ transform op, which the signer
+  already makes cheap), `damrs_sync` (queue worker over the webhooks), `damrs_editor` (CKEditor 5 + oEmbed),
+  and `damrs_search_api` last, being optional.
 
 - [ ] **3.x AWS-native features to rely on instead of building.** *Raised 2026-08-18; needs a decision on
   items 1 and 2 because they change architecture.* Every item is AWS-only while D1 says S3-compatible, so

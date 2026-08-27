@@ -1,0 +1,23 @@
+{
+    "name": "damrs/damrs",
+    "description": "Drupal connector for a damrs library: reference assets, never copy them.",
+    "type": "drupal-module",
+    "license": "AGPL-3.0-or-later",
+    "require": {
+        "php": ">=8.3",
+        "drupal/core": "^11"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^10.5 || ^11 || ^12"
+    },
+    "autoload": {
+        "psr-4": {
+            "Drupal\\damrs\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Drupal\\Tests\\damrs\\": "tests/src/"
+        }
+    }
+}

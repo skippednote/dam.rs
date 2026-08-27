@@ -1,0 +1,10 @@
+name: 'damrs'
+type: module
+description: 'Connects Drupal to a damrs library: assets stay in the DAM, and rights stay authoritative.'
+package: 'damrs'
+# Drupal 11 only, and this floor is a simplification rather than a support policy. It means Symfony 7
+# throughout, CKEditor 5 as the only editor, and the modern MediaSource/OEmbed APIs with no legacy shims. A
+# module spanning 10 and 11 carries compatibility layers in exactly the places this connector is most
+# intricate — media source plugins and image style rendering — so the floor buys real simplicity.
+core_version_requirement: ^11
+configure: damrs.settings

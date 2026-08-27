@@ -1,0 +1,5 @@
+damrs.settings:
+  title: 'damrs'
+  description: 'Connect this site to a damrs library.'
+  route_name: damrs.settings
+  parent: system.admin_config_media

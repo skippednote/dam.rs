@@ -1,0 +1,37 @@
+damrs.settings:
+  type: config_object
+  label: 'damrs settings'
+  mapping:
+    base_url:
+      type: uri
+      label: 'damrs base URL'
+    tenant_id:
+      type: string
+      # Signed into every delivery token, and first in the payload: an asset id means nothing until the
+      # tenant is fixed, which is why damrs bumped the token format to carry it.
+      label: 'Tenant this site draws from'
+    api_key:
+      type: string
+      label: 'Service-account API key'
+    signing_secret:
+      type: string
+      label: 'Delivery URL signing secret'
+    previous_signing_secret:
+      type: string
+      # The grace window. This module signs URLs and *it* decides when to switch, so during a rotation the
+      # same key id is live under two secrets and damrs cannot tell which from the token — it accepts either.
+      # Without a window, rotating would break every URL already rendered into a cached page, which is a
+      # rotation that takes the site down.
+      label: 'Previous signing secret, still accepted during rotation'
+    signing_key_id:
+      type: string
+      label: 'Signing key id'
+    channel:
+      type: string
+      label: 'Delivery channel reported to damrs'
+    territory:
+      type: string
+      label: 'Delivery territory reported to damrs'
+    url_ttl:
+      type: integer
+      label: 'How long a signed delivery URL stays valid, in seconds'
