@@ -6,7 +6,8 @@
  * the server deliberately will not refuse a finished upload over it, because by then the bytes are staged and
  * refusing would strand them. So if the uploader does not apply it, nothing does.
  */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures';
+import { type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
 const WCAG_21_AA = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'];

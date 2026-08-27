@@ -14,7 +14,8 @@
  * Plus: no axe violations in either theme, which matters more here than anywhere else in the app — this is the
  * one page the tenant's customers see.
  */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures';
+import { type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
 const WCAG_21_AA = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'];

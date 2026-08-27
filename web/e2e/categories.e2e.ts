@@ -7,7 +7,8 @@
  * first rather than producing `in:a in:b` (which means "filed in both" and returns nothing), that a link
  * arriving with a deep selection opens the tree to it, and that the counts shown are whatever the server said.
  */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures';
+import { type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
 const WCAG_21_AA = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'];

@@ -17,7 +17,8 @@
  *   here would be overwritten on the next sync and reported as data loss.
  * - **Removal takes two deliberate actions**, and the confirmation says what will stop working.
  */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures';
+import { type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
 const WCAG_21_AA = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'];
