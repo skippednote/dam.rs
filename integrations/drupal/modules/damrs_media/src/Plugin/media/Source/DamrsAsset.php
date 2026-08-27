@@ -12,6 +12,7 @@ use Drupal\Core\File\FileSystemInterface;
 use Drupal\Core\StringTranslation\TranslatableMarkup;
 use Drupal\damrs\Client;
 use Drupal\damrs\Signing\SignerFactory;
+use Drupal\damrs\Transforms;
 use Drupal\media\Attribute\MediaSource;
 use Drupal\media\MediaInterface;
 use Drupal\media\MediaSourceBase;
@@ -87,9 +88,20 @@ final class DamrsAsset extends MediaSourceBase {
   private const THUMBNAIL_DIRECTORY = 'public://damrs-thumbnails';
 
   /**
-   * The transform used for the cached thumbnail.
+   * The transform fetched for the cached thumbnail.
+   *
+   * A *named* profile, and it has to be. damrs does not accept an ad-hoc
+   * parameter string: `op_hash_for` resolves a transform against the built-in
+   * profiles and then the tenant's conversions, and anything else is refused as
+   * not deliverable. That is deliberate on its side — approximating a typo'd
+   * profile would silently hand back a different size than the caller
+   * integrated against — and it means this constant cannot be a description of
+   * the image wanted, only the name of one damrs already renders.
+   *
+   * `thumb-256` is 256px square, WebP, cropped to fill, which is what a grid
+   * cell wants. The alternatives are `preview-1024`, `web-2048` and `original`.
    */
-  private const THUMBNAIL_TRANSFORM = 'w=320,h=320,fit=inside,fmt=webp';
+  private const THUMBNAIL_TRANSFORM = Transforms::THUMB_256;
 
   /**
    * Assets already fetched in this request, keyed by id.
