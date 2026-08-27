@@ -33,6 +33,7 @@ pub mod integrity;
 pub mod jobs;
 pub mod judgements;
 pub mod members;
+pub mod metadata;
 pub mod metadata_types;
 pub mod metering;
 pub mod migrate;
