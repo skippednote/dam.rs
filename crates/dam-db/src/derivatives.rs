@@ -372,6 +372,16 @@ pub async fn mark_served(
     derivative_id: Uuid,
     now: DateTime<Utc>,
 ) -> Result<bool, Error> {
+    let mut conn = pool.acquire().await?;
+    mark_served_on(&mut conn, derivative_id, now).await
+}
+
+/// [`mark_served`], against a caller's connection.
+pub async fn mark_served_on(
+    conn: &mut sqlx::PgConnection,
+    derivative_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<bool, Error> {
     let updated = sqlx::query(
         "UPDATE derivatives SET last_served_at = $2 \
          WHERE id = $1 AND (last_served_at IS NULL OR last_served_at < $3)",
@@ -379,7 +389,7 @@ pub async fn mark_served(
     .bind(derivative_id)
     .bind(now)
     .bind(now - SERVED_RESOLUTION)
-    .execute(pool)
+    .execute(&mut *conn)
     .await?
     .rows_affected();
     Ok(updated > 0)

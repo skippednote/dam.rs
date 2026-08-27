@@ -374,6 +374,20 @@ pub async fn is_live(
     share_id: Uuid,
     now: DateTime<Utc>,
 ) -> Result<bool, Error> {
+    let mut conn = pool.acquire().await?;
+    is_live_on(&mut conn, share_id, now).await
+}
+
+/// [`is_live`], against a caller's connection.
+///
+/// `share_links` is a tenant table, so this has to run wherever the caller's `search_path` points.
+/// Delivery resolves that from the signed claim rather than from configuration, and a function
+/// acquiring its own connection would silently read whichever schema the pool happens to default to.
+pub async fn is_live_on(
+    conn: &mut sqlx::PgConnection,
+    share_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<bool, Error> {
     let live: Option<bool> = sqlx::query_scalar(
         "SELECT (revoked_at IS NULL \
                  AND (expires_at IS NULL OR expires_at > $2) \
@@ -382,7 +396,7 @@ pub async fn is_live(
     )
     .bind(share_id)
     .bind(now)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *conn)
     .await?;
     Ok(live.unwrap_or(false))
 }
