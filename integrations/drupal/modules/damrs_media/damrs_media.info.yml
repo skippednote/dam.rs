@@ -1,0 +1,8 @@
+name: 'damrs media'
+type: module
+description: 'A media type backed by a damrs asset: Drupal stores the reference, damrs keeps the bytes.'
+package: 'damrs'
+core_version_requirement: ^11
+dependencies:
+  - damrs:damrs
+  - drupal:media

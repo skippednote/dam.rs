@@ -29,13 +29,13 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **Q** Commercial-DAM parity, 20 slices | **complete** — Q.1–Q.20, including Q.14b collections and Q.20a–d |
 | **Go-live Tier 1** Deployment image, backups, metrics, rate limiting, virus scan, C2PA | **done** — all six, each verified against the running stack |
 | **Archival** Tiering engine, restores, the storage screen | **done** — the sweep and poll jobs, the plan/quote/request/approve API, delivery's 202, bulk archive and restore, the restore panel |
-| **M3d** Drupal 11 connector | M3d·1–·4 done; M3d·5 in progress — the `damrs` base module is done and verified, five submodules to go |
+| **M3d** Drupal 11 connector | M3d·1–·4 done; M3d·5 in progress — `damrs` and `damrs_media` done and verified, four submodules to go |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, colour | dedup and colour **done** (M4a); the rest needs model files — see M4 below |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | **done** — two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query, the MCP server |
 | **M6** Workflow/proofing, annotations, analytics | **done** — annotations (M6a), proofing (M6b), analytics (M6c) |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | G19 **done**; G7 crosswalk and dry-run **done**, transfer needs a source connector; G10 **done** (audit chain, user administration, SCIM, BYOK) |
 
-**Next up, in order:** Pre-GA G7·2 source connectors. G10 is complete. M3d·5 (the Drupal module) is under way: the base module is done, `damrs_media` is next. M4b (local ONNX models) stays parked on the model-distribution question.
+**Next up, in order:** Pre-GA G7·2 source connectors. G10 is complete. M3d·5 (the Drupal module) is under way: `damrs` and `damrs_media` are done, `damrs_image_style` is next. M4b (local ONNX models) stays parked on the model-distribution question.
 M4b (local models) is parked on a distribution decision — see the M4 section.
 
 **`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
@@ -2132,7 +2132,7 @@ API that does not exist yet is a module written twice.
   was already lurking, harmlessly, in the proofing suite's fixture.
 
 - [ ] **M3d·5 The Drupal module.** `integrations/drupal/`, Drupal 11+ only, six submodules (§11.2).
-  **One of six done: the `damrs` base module.** The other five are not started.
+  **Two of six done: `damrs` and `damrs_media`.** The other four are not started.
 
   **The deferral's premise was wrong, and checking cost nothing.** It read "nothing in this repository can
   run PHP or a Drupal install". True of the repository, false of the machine: DDEV was already installed, so
@@ -2158,11 +2158,34 @@ API that does not exist yet is a module written twice.
   as `MODULE.routes.yml`, so the module enabled cleanly, reported no error, and had no settings page at all.
   A module shipped against the spec rather than against an install would have shipped that.
 
-  **Not started, in the order they should be built.** `damrs_media` first — the `damrs_asset` MediaSource
-  plugin, field mapping and Media Library integration is where the connector's value actually lands, and it
-  is the largest of the five. Then `damrs_image_style` (Drupal image style ↔ transform op, which the signer
-  already makes cheap), `damrs_sync` (queue worker over the webhooks), `damrs_editor` (CKEditor 5 + oEmbed),
-  and `damrs_search_api` last, being optional.
+  **Done and verified: `damrs_media`.** The `damrs_asset` MediaSource plugin, holding an asset id in a plain
+  string field and nothing else. Enabled on the live site, a media type created on it, and metadata mapped
+  into real fields.
+
+  **The hazard was not in the plugin, it was in how Drupal calls it.** `Media::preSave()` assigns whatever
+  `getMetadata()` returns straight into the mapped field — so a source that returned NULL because damrs was
+  unreachable would blank the cached title, alt text and dimensions of every item re-saved during an outage.
+  Stale metadata is the correct degraded state; empty metadata is silent data loss. The plugin therefore
+  falls back to the value already in the mapped field, and the kernel suite fails without that fallback.
+
+  **A test that was wrong before it was right, which is worth recording.** The first version of that check
+  created a new entity with values already set and concluded the fallback worked. It did not: Drupal only
+  re-reads metadata when a mapped field is *empty* or the source field *changed*, so nothing had called
+  `getMetadata` at all and the values survived because nothing touched them. Removing the fallback changed
+  nothing, which is how the bad test was caught. The real case is an existing entity whose asset id changes
+  during an outage.
+
+  **Two defects only a live Drupal produced.** The module shipped no config schema for the source's
+  `source_configuration`, so `media.type.*` failed Drupal's schema check and a site with strict checking
+  could not create the media type at all — the kernel run surfaced it. And the module failed
+  `phpcs --standard=Drupal,DrupalPractice` on 129 counts, mostly the 80-column limit, which §11.2's
+  "contrib-shaped composer package" does not permit. Both fixed; CI now runs the standards and the kernel
+  tests, so neither can come back.
+
+  **Not started, in the order they should be built.** `damrs_image_style` (Drupal image style ↔ transform op,
+  which the signer already makes cheap), `damrs_sync` (queue worker over the webhooks — also what refreshes
+  the metadata this slice deliberately does not poll for), `damrs_editor` (CKEditor 5 + oEmbed), and
+  `damrs_search_api` last, being optional.
 
 - [ ] **3.x AWS-native features to rely on instead of building.** *Raised 2026-08-18; needs a decision on
   items 1 and 2 because they change architecture.* Every item is AWS-only while D1 says S3-compatible, so

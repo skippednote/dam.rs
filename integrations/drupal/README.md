@@ -2,10 +2,10 @@
 
 Connects a Drupal 11 site to a damrs library. Assets stay in the DAM; Drupal stores a reference.
 
-**Status: the `damrs` base module only.** The API client, settings, service-account auth and the delivery-URL
-signer are here and verified against a live Drupal 11.4 and against damrs itself. The five submodules that
-sit on top of it — `damrs_media`, `damrs_image_style`, `damrs_sync`, `damrs_editor`, `damrs_search_api` — are
-not written yet. See `TASKS.md` (M3d·5) for what each is for.
+**Status: `damrs` and `damrs_media`.** The API client, settings, service-account auth, the delivery-URL
+signer and the `damrs_asset` media source are here, verified against a live Drupal 11.4 and against damrs
+itself. Four submodules remain — `damrs_image_style`, `damrs_sync`, `damrs_editor`, `damrs_search_api`. See
+`TASKS.md` (M3d·5) for what each is for.
 
 ## Why reference and not copy
 
@@ -86,3 +86,31 @@ ddev drush en damrs -y
 ```
 
 Then point it at a library at `/admin/config/media/damrs`.
+
+### Running the tests
+
+Unit tests need neither Drupal nor composer — the signer depends on nothing from Drupal, which is the same
+property that lets it run in the render path:
+
+```sh
+cd integrations/drupal
+curl -sSLo phpunit.phar https://phar.phpunit.de/phpunit-11.phar
+php phpunit.phar --configuration phpunit.xml.dist
+```
+
+Kernel tests do need a site, because what they pin is how Drupal *calls* the source plugin rather than what
+it returns. From the site root, with `drupal/core-dev` installed:
+
+```sh
+cp web/modules/custom/damrs/tests/phpunit-kernel.xml.dist phpunit-kernel.xml
+./vendor/bin/phpunit -c phpunit-kernel.xml
+```
+
+And the coding standards, which §11.2's "contrib-shaped" requires:
+
+```sh
+./vendor/bin/phpcs --standard=Drupal,DrupalPractice \
+  --extensions=php,module,inc,install,test,info,yml web/modules/custom/damrs
+```
+
+CI runs all three.

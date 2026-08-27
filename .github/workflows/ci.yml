@@ -191,6 +191,48 @@ jobs:
           curl -sSLo phpunit.phar https://phar.phpunit.de/phpunit-11.phar
           php phpunit.phar --configuration phpunit.xml.dist --colors=never
 
+  # The signing job above needs no Drupal, which is why it is fast. This one does:
+  # the property it guards — that a damrs outage cannot blank metadata a previous
+  # sync cached — lives in how `Media::preSave()` calls the source plugin, so it
+  # is only observable with a real entity system behind it. A plugin can be
+  # perfectly correct in isolation and still lose data through how Drupal calls
+  # it.
+  #
+  # Also runs Drupal's own coding standards. §11.2 calls for a contrib-shaped
+  # package, and a module failing `phpcs --standard=Drupal` is not one.
+  drupal-kernel:
+    name: drupal connector (kernel + standards)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: gd, pdo_sqlite, sqlite3
+          tools: composer
+      - name: build a throwaway Drupal site
+        run: |
+          composer create-project drupal/recommended-project site --no-interaction --no-progress
+          cd site
+          composer config --no-plugins allow-plugins true
+          composer require --dev drupal/core-dev --with-all-dependencies --no-interaction --no-progress
+      - name: install the module into it
+        run: |
+          mkdir -p site/web/modules/custom
+          cp -R integrations/drupal site/web/modules/custom/damrs
+      - name: drupal coding standards
+        working-directory: site
+        run: |
+          ./vendor/bin/phpcs --standard=Drupal,DrupalPractice \
+            --extensions=php,module,inc,install,test,info,yml \
+            web/modules/custom/damrs
+      - name: kernel tests
+        working-directory: site
+        run: |
+          mkdir -p web/sites/default/files
+          cp web/modules/custom/damrs/tests/phpunit-kernel.xml.dist phpunit-kernel.xml
+          ./vendor/bin/phpunit -c phpunit-kernel.xml
+
   # The migrations are the compliance floor (D12-D15). This job applies them to a real
   # Postgres exactly as `damctl migrate` does and asserts the object counts, so a
   # migration that silently drops a constraint fails here rather than in production.
