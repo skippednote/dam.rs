@@ -14,10 +14,12 @@ use PHPUnit\Framework\TestCase;
 /**
  * Holds the PHP signer to the bytes damrs produces.
  *
- * The vectors come from `cargo run -p dam-core --example signing_vectors`, so this is a comparison against
- * the implementation that will actually verify these tokens rather than against this file's own idea of the
- * format. Asserting "the server accepted it" would need a live server and would pass against a server
- * running the same wrong assumption; asserting the bytes catches a drift the moment it is introduced.
+ * The vectors come from `cargo run -p dam-core --example signing_vectors`, so
+ * this is a comparison against the implementation that will actually verify
+ * these tokens rather than against this file's own idea of the format.
+ * Asserting "the server accepted it" would need a live server and would pass
+ * against a server running the same wrong assumption; asserting the bytes
+ * catches a drift the moment it is introduced.
  */
 #[Group('damrs')]
 #[CoversClass(Signer::class)]
@@ -26,7 +28,8 @@ final class SignerTest extends TestCase {
   /**
    * The vectors, keyed by case name.
    *
-   * @return array<string, array{0: array<string, mixed>, 1: string, 2: string, 3: string}>
+   * @return array
+   *   Each case as [claim, expected token, secret, why], keyed by case name.
    */
   public static function vectors(): array {
     $path = __DIR__ . '/../../fixtures/signing_vectors.json';
@@ -39,8 +42,8 @@ final class SignerTest extends TestCase {
 
     $out = [];
     foreach ($data['cases'] as $case) {
-      // The name and the reason ride along so a failure says which property broke rather than only which
-      // index did.
+      // The name and the reason ride along so a failure says which property
+      // broke rather than only which index did.
       $out[$case['name']] = [$case['claim'], $case['token'], $data['secret'], $case['why']];
     }
 
@@ -73,9 +76,9 @@ final class SignerTest extends TestCase {
   /**
    * An unknown purpose is refused, not defaulted.
    *
-   * Defaulting would turn a typo into a public download URL, which is the one direction this must never
-   * fail in — damrs treats the two purposes as distinct precisely so that a preview cannot be served as a
-   * distribution.
+   * Defaulting would turn a typo into a public download URL, which is the one
+   * direction this must never fail in — damrs treats the two purposes as
+   * distinct precisely so that a preview cannot be served as a distribution.
    */
   public function testAnUnknownPurposeIsRefused(): void {
     $signer = new Signer('irrelevant');
@@ -97,7 +100,7 @@ final class SignerTest extends TestCase {
    * A malformed uuid is refused before it can shift every field after it.
    */
   #[DataProvider('malformedUuids')]
-  public function testAMalformedUuidIsRefused(string $uuid): void {
+  public function testMalformedUuidIsRefused(string $uuid): void {
     $signer = new Signer('irrelevant');
 
     $this->expectException(\InvalidArgumentException::class);
@@ -113,7 +116,10 @@ final class SignerTest extends TestCase {
   }
 
   /**
-   * @return array<string, array{0: string}>
+   * Strings that are not uuids, each wrong in a different way.
+   *
+   * @return array
+   *   One malformed uuid per case, keyed by what is wrong with it.
    */
   public static function malformedUuids(): array {
     return [
@@ -127,8 +133,9 @@ final class SignerTest extends TestCase {
   /**
    * An empty optional and an absent one must not sign the same.
    *
-   * The vectors cover this from the damrs side; this states it as a property, because it is the collision
-   * the zero-length-field rule exists to prevent and a reader of this class should see it named.
+   * The vectors cover this from the damrs side; this states it as a property,
+   * because it is the collision the zero-length-field rule exists to prevent
+   * and a reader of this class should see it named.
    */
   public function testAnAbsentOptionalDiffersFromAnEmptyString(): void {
     $signer = new Signer('secret');
@@ -141,8 +148,9 @@ final class SignerTest extends TestCase {
       'keyId' => 'k1',
     ];
 
-    // A transform of '' with no identity, against a transform of '' with an identity: the only difference
-    // is a field that would vanish under a delimiter-joined encoding.
+    // A transform of '' with no identity, against a transform of '' with an
+    // identity: the only difference is a field that would vanish under a
+    // delimiter-joined encoding.
     $without = $signer->sign(new DeliveryClaim(...[...$base, 'transform' => '']));
     $with = $signer->sign(new DeliveryClaim(...[
       ...$base,

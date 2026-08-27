@@ -7,12 +7,14 @@ namespace Drupal\damrs\Signing;
 /**
  * One delivery token's payload, before it is signed.
  *
- * A value object rather than an array, because the canonical form is positional: getting two fields the
- * wrong way round produces a token that signs and verifies as something else, and an array with string keys
- * hides that behind names the encoder ignores.
+ * A value object rather than an array, because the canonical form is
+ * positional: getting two fields the wrong way round produces a token that
+ * signs and verifies as something else, and an array with string keys hides
+ * that behind names the encoder ignores.
  *
- * The field list and its order are fixed by damrs and documented in `dam_core::signed_url`. Anything here
- * that disagrees with that module is a bug in this file.
+ * The field list and its order are fixed by damrs and documented in
+ * `dam_core::signed_url`. Anything here that disagrees with that module is a
+ * bug in this file.
  */
 final class DeliveryClaim {
 
@@ -26,8 +28,9 @@ final class DeliveryClaim {
   /**
    * A URL for looking at the asset inside the application.
    *
-   * A different purpose byte, and not interchangeable: damrs refuses a token whose purpose does not match
-   * what the route is for, so signing a download as a preview is a refusal rather than a leak.
+   * A different purpose byte, and not interchangeable: damrs refuses a token
+   * whose purpose does not match what the route is for, so signing a download
+   * as a preview is a refusal rather than a leak.
    */
   public const PURPOSE_INTERNAL_PREVIEW = 'internal_preview';
 
