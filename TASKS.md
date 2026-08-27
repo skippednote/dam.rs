@@ -1459,36 +1459,33 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   synthetic `plate-*` assets, ten legal holds each, and a soft `asset_count` quota on `globex` left from the
   enforcement check. Say the word and it goes.
 
-- [ ] **The browser suite is flaky, and CI now says so rather than going red at random.** Three full
-  runs, no test failing in more than one: an unchanged `main` at two workers lost 4 of 410
-  (`archival`, `browse` twice, `people`); a branch touching no frontend code lost 3 (`browse`,
-  `collections`, `upload-profiles`); the same branch at `--workers=1` lost 1 (`browse`). Every failure
-  a `toBeVisible` or `toContainText` timeout in an unrelated spec, so it is timing and not a broken
-  assertion — and serialising helps without curing it, which rules out worker contention as the whole
-  explanation. `browse.e2e.ts` is in all three lists and is where to start.
+- [x] **The browser suite's flakiness had one cause, and it was countable.**
 
-  `playwright.config.ts` now retries twice under CI, which converts a random red into a run labelled
-  **flaky**. That is instrumentation, not a fix: the debt is a suite whose failures cannot be told from
-  regressions on sight, and it wants one session spent on `browse.e2e.ts`'s waits rather than a
-  retry count.
+  Playwright's `click()` waits for an element to be *actionable* — attached, visible, stable,
+  unobscured. It cannot wait for a Svelte handler to be attached, because the DOM does not expose that.
+  So a click landing between first paint and hydration hits a button that looks entirely ready and does
+  nothing: no request, no panel, and a failure that surfaces later as `element(s) not found` on whatever
+  the click should have produced, thirty seconds from its cause, in an assertion that is not wrong.
 
-- [x] **G22a The tenant is in the claim, and delivery refuses a token that names another one.**
+  **The distribution proved it.** No settling pattern existed anywhere in the suite, and 85 places
+  navigate and then immediately click or fill — 30 of them in `browse.e2e.ts`, which is why that file
+  appeared in every failure list while passing 52 of 52 in isolation three times running. Failures
+  tracked unsettled navigations rather than any particular test, which is why five observations named
+  five different tests.
 
-  `DeliveryClaim` carries `tenant_id`, first in the payload because every field after it is meaningless until
-  the tenant is fixed, and `VERSION` goes to 4. Both mint sites pass it; the connector tests carry it on
-  `Site` so the id, the secret and the tenant cannot drift apart.
+  Fixed at the fixture rather than the call sites: `e2e/fixtures.ts` overrides `page.goto` to settle, so
+  the guarantee belongs to navigation. Eighty-five `waitForLoadState` lines would have fixed the
+  eighty-five that exist and none written next month.
 
-  **This turned out to close a hole rather than only prepare for the refactor.** Delivery now compares the
-  claim's tenant against the one the process serves, and removing that comparison makes an existing test
-  return **302** — the asset served — for a token naming a completely different tenant. Any two deployments
-  sharing a signing key produce exactly that token: a restored backup, a staging environment cloned from
-  production. Before this the tenant was not in the signature at all, so there was nothing to compare and
-  nothing to forge; the URL simply resolved against whichever library the process was configured for.
+  **One test opts out, and it found itself.** `branding.e2e.ts` asserts that a customer's header never
+  flashes the vendor's name *while branding is still loading* — visible only before the load finishes.
+  Settling unconditionally made it watch the settled page and fail, correctly. An explicit `waitUntil`
+  now means the test knows which moment it wants and the fixture stands aside.
 
-  A v3 token now fails as `WrongVersion` rather than being reinterpreted, and that is the bump where it
-  matters most: with no tenant field, a v3 payload read under v4 rules lands its `asset_id` where the tenant
-  is expected and shifts every field after it — naming a plausible tenant it was never issued for. Refusing
-  costs nothing, since a delivery token lives at most 24 hours.
+  **Measured, and not cured.** Before: `--workers=4` failed two tests reliably, and three default runs
+  lost 4, 3 and 1 of 410 with no test failing twice. After: three `--workers=4` runs clean at 410, and
+  one failure across three default runs. A large reduction rather than zero, so the CI retries stay —
+  covering a rare residue now instead of masking a systematic race.
 
 - [ ] **G22b Resolve the tenant per request, and delete `server.delivery_tenant`.** The half that actually
   lifts the limitation. Delivery still reads through a pool pinned to one tenant's `search_path`, so the
