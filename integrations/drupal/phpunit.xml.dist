@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Runs the unit tests with no Drupal bootstrap. See tests/bootstrap.php for why: the signer depends on
+  nothing from Drupal, and the job that guards the wire format should not be the slowest in CI.
+-->
+<phpunit bootstrap="tests/bootstrap.php" colors="true" cacheDirectory=".phpunit.cache" failOnWarning="true" failOnRisky="true">
+  <testsuites>
+    <testsuite name="damrs unit">
+      <directory>tests/src/Unit</directory>
+    </testsuite>
+  </testsuites>
+</phpunit>
