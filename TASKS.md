@@ -1891,6 +1891,7 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   somebody's afternoon.
 
 - [x] **G10·3 BYOK.** `DAMRS_STORAGE__SSE_KMS_KEY_ID` encrypts every object under a customer-managed KMS key.
+  One key for the deployment, which is what this claimed and delivered; per-tenant keys are **G10·3b**.
   §19's "building anything here would be worse" was about an encryption layer of our own, not the wiring.
 
   **The risk is not that it does not work; it is that one write path forgets.** Seven calls create an object —
@@ -2146,6 +2147,61 @@ API that does not exist yet is a module written twice.
   signing path — produces delivery tokens and browse tokens the running server honours, and every bound refuses
   correctly. That is the property a PHP module needs, and it holds.
 
+- [ ] **G10·3b Per-tenant keys, and a table that has never been read.** *Found 2026-08-28 while checking
+  whether the AWS-native list's SSE-KMS item was stale. It was half stale, and the other half is larger than
+  the list suggested.*
+
+  `dam_global.encryption_keys` has existed since migration `0002_enterprise.sql` — `tenant_id`, `purpose`
+  with a CHECK of `blob`, `c2pa_signing`, `field`, `backup`, a `provider` CHECK across five KMS vendors,
+  `key_ref` commented "ARN or URI; never key material", `customer_managed`, a `state` lifecycle including
+  `rotating` and `revoked`, plus a unique partial index on the active key per tenant and purpose. Nothing
+  reads or writes it. Searched across Rust, SQL, TypeScript, Svelte and Markdown: the only three hits are the
+  `CREATE TABLE` and its two indexes.
+
+  The same shape as `audit_log`'s hash columns and `assets.legal_hold` before G10·1 — a schema that describes
+  a capability the code does not have. Recording it here rather than fixing it silently, because the fix is a
+  decision rather than a refactor.
+
+  **What exists today, for each of the four purposes the table anticipates.** All four are process-wide
+  configuration or absent:
+
+  | Purpose | Today |
+  |---|---|
+  | `blob` | `storage.sse_kms_key_id`, one key for the deployment (G10·3) |
+  | `c2pa_signing` | `security.signing_cert_pem` / `signing_key_pem`, one identity for the deployment |
+  | `field` | not implemented |
+  | `backup` | relies on the bucket's and the managed database's own encryption |
+
+  So "BYOK" is true of a single-tenant deployment and of a dedicated one, and not of a shared one — which is
+  worth being exact about, because it is an RFP pass/fail question and the honest answer differs by
+  deployment shape. G10·3 never claimed otherwise; the AWS-native list did, by listing per-tenant keys as
+  though the whole item were outstanding.
+
+  **The decision, because it is not a refactor.** `build_store` returns one `S3Store` for the process and
+  G10·3's applicator puts the key on it once, deliberately, so that a write path added later cannot miss it.
+  A per-tenant key breaks that: the key is no longer a property of the process. Three shapes, and they are
+  not equivalent.
+
+  1. **A store per tenant, cached.** Smallest change to the write paths — they keep taking a store — and it
+     keeps G10·3's guarantee that the key is applied in one place. Costs a client per active tenant, and the
+     cache needs invalidating when a key rotates or is revoked, which is the part that will be got wrong.
+  2. **Resolve the key at each write.** No cache and no lifetime question, and it is the only shape where a
+     revocation takes effect on the next write rather than on the next cache eviction. But it reopens exactly
+     what G10·3 closed: seven call sites that create an object, each of which must not forget, and the
+     source-reading test that guards them would need to guard a threaded parameter instead of one applicator.
+  3. **A pool per tenant in `storage_pools`.** The table already carries `tenant_id`, `bucket`, `endpoint` and
+     `credentials_ref` per pool, so a `kms_key_ref` beside them would follow the grain of the schema and need
+     no new resolution path — the pool is already looked up per placement. Least new machinery; but it ties a
+     key to a pool rather than to a tenant, and `encryption_keys` was designed for the other three purposes
+     too, which have no pool.
+
+  Shape 3 is the smallest honest step for `blob` alone and does not answer `c2pa_signing`, `field` or
+  `backup`. Whether those are wanted at all is the prior question — a per-tenant signing identity in
+  particular has consequences well beyond storage, since it is what a consumer verifies a C2PA claim against.
+
+  **Not started, and no pressure to start.** A single-key deployment is correctly implemented, tested and
+  documented, and the gap is a capability the schema promises rather than a defect in what runs.
+
 - [ ] **3.x AWS-native features to rely on instead of building.** *Raised 2026-08-18; needs a decision on
   items 1 and 2 because they change architecture.* Every item is AWS-only while D1 says S3-compatible, so
   each belongs behind `dam_store::Capabilities` with a fallback — the pattern already exists, and the
@@ -2163,7 +2219,8 @@ API that does not exist yet is a module written twice.
   3. **S3 Batch Operations for 3.4's bulk restore.** Manifest-driven, with retries, throttling and a
      completion report. Better than a job loop. Does **not** help 2.10, which is database-side.
   4. **S3 Inventory instead of LIST for reconciliation** — a daily manifest rather than paginated LIST.
-  5. **SSE-KMS for BYOK (G10).** Per-tenant key; building anything here would be worse.
+  5. **SSE-KMS for BYOK (G10).** *The wiring landed under G10·3; only the per-tenant half is open —* see
+     **G10·3b** just above, which is where that now lives rather than in this list.
   6. **A lifecycle rule on `*/staging/`** as a safety net beneath the reaper. Prefix-based, so it maps onto
      `Key::is_tier_exempt`'s existing scheme.
   7. **CloudFront in front of derivatives — not replacing the chokepoint.** CloudFront signed URLs cannot
