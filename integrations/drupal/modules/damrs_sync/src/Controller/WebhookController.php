@@ -17,7 +17,7 @@ use Symfony\Component\HttpFoundation\Request;
 /**
  * Receives a damrs webhook, verifies it, and queues it.
  *
- * ## Queued rather than applied
+ * ## Queued rather than applied.
  *
  * The response says "accepted", not "done". damrs waits ten seconds and then
  * retries, and applying an event inline would mean a slow re-save turning into
@@ -31,14 +31,14 @@ use Symfony\Component\HttpFoundation\Request;
  * endpoint that times out under load and a retry storm behind it — but it does
  * mean the queue needs to be running, not merely configured.
  *
- * ## Verified before anything else is read
+ * ## Verified before anything else is read.
  *
  * The route has no access requirement, because damrs has no session and no form
  * token; the signature is the entire boundary. So the body is read as raw bytes
  * and verified before it is parsed, and nothing derived from it is used before
  * that check passes.
  *
- * ## What the response says, and does not
+ * ## What the response says, and does not.
  *
  * A bad signature is a flat 401 with no detail. Telling a caller *why* a
  * signature failed — stale, wrong version, wrong digest — is a hint about how

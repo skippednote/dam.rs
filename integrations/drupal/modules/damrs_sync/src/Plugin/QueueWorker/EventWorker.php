@@ -88,10 +88,10 @@ final class EventWorker extends QueueWorkerBase implements ContainerFactoryPlugi
       );
     }
     catch (UnreachableException $e) {
-      // damrs is not answering. Every remaining item would fail the same way,
-      // and each failure would be an entity load and an HTTP timeout, so the
-      // run stops here rather than working through the backlog to discover the
-      // same thing repeatedly. The items stay queued and the next cron retries.
+      // Nothing is answering at damrs. Every remaining item would fail the
+      // same way, and each failure costs an entity load and an HTTP timeout, so
+      // the run stops here rather than working through the backlog to discover
+      // the same thing repeatedly. Items stay queued; the next cron retries.
       throw new SuspendQueueException($e->getMessage(), 0, $e);
     }
     catch (EntityStorageException $e) {

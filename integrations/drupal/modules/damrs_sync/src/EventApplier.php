@@ -12,7 +12,7 @@ use Psr\Log\LoggerInterface;
 /**
  * Applies one damrs event to whatever media items reference the asset.
  *
- * ## Re-saving is how metadata refreshes, and it is not a workaround
+ * ## Re-saving is how metadata refreshes, and it is not a workaround.
  *
  * `damrs_media` reads metadata in `Media::preSave()`, and Drupal re-reads it
  * only when a mapped field is empty or the source field changed. So an asset
@@ -26,7 +26,7 @@ use Psr\Log\LoggerInterface;
  * itself keeps finding, and forcing a source-field change would mean writing a
  * value in order to write it back.
  *
- * ## Clearing the fields is only safe once damrs has answered
+ * ## Clearing the fields is only safe once damrs has answered.
  *
  * This is the interaction that made the two halves of this connector destroy
  * data together while each was correct alone. `damrs_media` falls back to the
@@ -43,7 +43,7 @@ use Psr\Log\LoggerInterface;
  * the last thing known about a deleted asset is more useful to an editor than
  * nothing.
  *
- * ## An event names an asset, not a media item
+ * ## An event names an asset, not a media item.
  *
  * One asset can be referenced by several media items, and by none. Both are
  * ordinary: a library is bigger than any one site's use of it, so an event for
