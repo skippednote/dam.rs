@@ -7,7 +7,8 @@
  * when the server says 401 and shows the server's own refusal text otherwise, that a rights-refused share
  * renders the filename but neither pixels nor a download button, and that none of it has an axe violation.
  */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures';
+import { type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
 const WCAG_21_AA = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'];

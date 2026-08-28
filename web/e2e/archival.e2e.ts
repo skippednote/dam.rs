@@ -18,7 +18,8 @@
  * - **Dry run is stated on the row.** A rule nobody has taken off dry run has never moved anything, and that is
  *   the most important fact about it.
  */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures';
+import { type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
 const WCAG_21_AA = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'];

@@ -12,7 +12,8 @@
  *   people to distrust every control beside it.
  * - **No reply control on a reply.** Threads are one level deep and the server refuses a deeper one.
  */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures';
+import { type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
 const WCAG_21_AA = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'];

@@ -33,9 +33,9 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, colour | dedup and colour **done** (M4a); the rest needs model files — see M4 below |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | **done** — two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query, the MCP server |
 | **M6** Workflow/proofing, annotations, analytics | **done** — annotations (M6a), proofing (M6b), analytics (M6c) |
-| **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | G19 **done**; G7 crosswalk and dry-run **done**, transfer needs a source connector; G10 **done** (audit chain, user administration, SCIM, BYOK) |
+| **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | G19 **done**; G7 **done** (crosswalk, dry run, filesystem source, transfer); G10 **done** (audit chain, user administration, SCIM, BYOK) |
 
-**Next up, in order:** Pre-GA G7·2 source connectors. G10 is complete. M3d·5 (the Drupal module) is complete: all six submodules. M4b (local ONNX models) stays parked on the model-distribution question.
+**Next up, in order:** G7, G10 and M3d·5 are complete. What remains is decisions rather than build work: G22c (the public URL space), G10·3b (per-tenant keys), the AWS-native items 1 and 2, and M4b's model-distribution question.
 M4b (local models) is parked on a distribution decision — see the M4 section.
 
 **`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
@@ -1459,36 +1459,33 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   synthetic `plate-*` assets, ten legal holds each, and a soft `asset_count` quota on `globex` left from the
   enforcement check. Say the word and it goes.
 
-- [ ] **The browser suite is flaky, and CI now says so rather than going red at random.** Three full
-  runs, no test failing in more than one: an unchanged `main` at two workers lost 4 of 410
-  (`archival`, `browse` twice, `people`); a branch touching no frontend code lost 3 (`browse`,
-  `collections`, `upload-profiles`); the same branch at `--workers=1` lost 1 (`browse`). Every failure
-  a `toBeVisible` or `toContainText` timeout in an unrelated spec, so it is timing and not a broken
-  assertion — and serialising helps without curing it, which rules out worker contention as the whole
-  explanation. `browse.e2e.ts` is in all three lists and is where to start.
+- [x] **The browser suite's flakiness had one cause, and it was countable.**
 
-  `playwright.config.ts` now retries twice under CI, which converts a random red into a run labelled
-  **flaky**. That is instrumentation, not a fix: the debt is a suite whose failures cannot be told from
-  regressions on sight, and it wants one session spent on `browse.e2e.ts`'s waits rather than a
-  retry count.
+  Playwright's `click()` waits for an element to be *actionable* — attached, visible, stable,
+  unobscured. It cannot wait for a Svelte handler to be attached, because the DOM does not expose that.
+  So a click landing between first paint and hydration hits a button that looks entirely ready and does
+  nothing: no request, no panel, and a failure that surfaces later as `element(s) not found` on whatever
+  the click should have produced, thirty seconds from its cause, in an assertion that is not wrong.
 
-- [x] **G22a The tenant is in the claim, and delivery refuses a token that names another one.**
+  **The distribution proved it.** No settling pattern existed anywhere in the suite, and 85 places
+  navigate and then immediately click or fill — 30 of them in `browse.e2e.ts`, which is why that file
+  appeared in every failure list while passing 52 of 52 in isolation three times running. Failures
+  tracked unsettled navigations rather than any particular test, which is why five observations named
+  five different tests.
 
-  `DeliveryClaim` carries `tenant_id`, first in the payload because every field after it is meaningless until
-  the tenant is fixed, and `VERSION` goes to 4. Both mint sites pass it; the connector tests carry it on
-  `Site` so the id, the secret and the tenant cannot drift apart.
+  Fixed at the fixture rather than the call sites: `e2e/fixtures.ts` overrides `page.goto` to settle, so
+  the guarantee belongs to navigation. Eighty-five `waitForLoadState` lines would have fixed the
+  eighty-five that exist and none written next month.
 
-  **This turned out to close a hole rather than only prepare for the refactor.** Delivery now compares the
-  claim's tenant against the one the process serves, and removing that comparison makes an existing test
-  return **302** — the asset served — for a token naming a completely different tenant. Any two deployments
-  sharing a signing key produce exactly that token: a restored backup, a staging environment cloned from
-  production. Before this the tenant was not in the signature at all, so there was nothing to compare and
-  nothing to forge; the URL simply resolved against whichever library the process was configured for.
+  **One test opts out, and it found itself.** `branding.e2e.ts` asserts that a customer's header never
+  flashes the vendor's name *while branding is still loading* — visible only before the load finishes.
+  Settling unconditionally made it watch the settled page and fail, correctly. An explicit `waitUntil`
+  now means the test knows which moment it wants and the fixture stands aside.
 
-  A v3 token now fails as `WrongVersion` rather than being reinterpreted, and that is the bump where it
-  matters most: with no tenant field, a v3 payload read under v4 rules lands its `asset_id` where the tenant
-  is expected and shifts every field after it — naming a plausible tenant it was never issued for. Refusing
-  costs nothing, since a delivery token lives at most 24 hours.
+  **Measured, and not cured.** Before: `--workers=4` failed two tests reliably, and three default runs
+  lost 4, 3 and 1 of 410 with no test failing twice. After: three `--workers=4` runs clean at 410, and
+  one failure across three default runs. A large reduction rather than zero, so the CI retries stay —
+  covering a rare residue now instead of masking a systematic race.
 
 - [x] **G22b The signed-token path resolves its tenant from the claim.**
 
@@ -1537,46 +1534,65 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   encoded tenant (no migration, longer URLs, and a format to version). Pick one before writing code —
   the current single-tenant behaviour is correct and documented, so there is no pressure to pick fast.
 
-- [ ] **G7·2 Source connectors and transfer.** A transfer needs *bytes*, and bytes come from a source
-  connector. Scoped by reading the code, so the next session starts here rather than rediscovering it.
+- [x] **G7·2 Source connectors and transfer.** `damctl import transfer` streams a folder of files into the
+  library through the ordinary upload path. `dam_pipeline::source` holds the `Source` trait and the filesystem
+  implementation; `dam_pipeline::transfer` holds one record's worth of work; the loop, the batch ceiling and
+  the phase gate are in `damctl`.
 
-  **The `csv` crate is not the blocker it was recorded as.** That note conflated two things. The *metadata*
-  reader is already JSON lines on stdin, deliberately — "the mapping is the hard part and it is
-  source-agnostic, so anything that can emit JSON lines is a source", which routes around CSV entirely via
-  `jq` or a spreadsheet export. The *filesystem* reader needs `std::fs` and no dependency at all. So a CSV
-  reader is a convenience, not a prerequisite, and should not gate the slice.
+  **Everything the plan said held.** The filesystem was the right first connector — the slice was driven end
+  to end against real files, which is where four of the five findings below came from. Transfer has no ingest
+  of its own: it opens a session, streams the bytes, and calls `finalise`. Records still do not carry their
+  source payload, so the transfer re-reads the JSON lines and `source_id` is the idempotency key.
 
-  **The first connector should be the filesystem, not a vendor API.** §G7 names the comparator's public API as the obvious first
-  one, and it is the wrong first one here: it cannot be reached from this machine, so it would be verified
-  only against its own fakes. A filesystem source covers the shape most DAM exports actually take — a metadata
-  file plus a folder of assets — needs no vendor credentials, and can be driven end to end against real files.
+  **The prerequisite refactor found a bug before the third copy arrived, which is what it was for.** The two
+  metadata writes had already drifted: the bulk executor's, documented as merging "exactly as the single-asset
+  PATCH endpoint does", omitted `enrichment::forget_provenance`. A bulk edit left a model's marking on a field
+  a person had overwritten, so every AI disclosure built on it named a model as the author of somebody's
+  sentence. Now `dam_db::metadata::merge` and three callers.
 
-  **Transfer must not have its own ingest, and this is the load-bearing decision.** A browser upload becomes
-  an asset through `uploads::create` → `resumable::patch` → `finalise::upload`, which is where content
-  addressing, deduplication, virus scanning, derivation and indexing happen. A transfer that wrote assets
-  directly would be a second ingest path, and the two would drift in exactly the ways that matter — a
-  migrated asset with no derivatives, or one that skipped the scanner. So transfer creates a session and
-  streams the file into it, and the existing path does the rest. `damctl` already has everything it needs: a
-  single-tenant pool and a store.
+  **Five things only running it could have found.**
 
-  **Records do not carry their source payload, and should not start.** `import_records` has `source_id` and
-  `source_checksum` and no source document, so transfer re-reads the JSON lines — which matches the design and
-  keeps a 400k-asset migration from storing 400k source documents twice. `source_id` is the idempotency key,
-  so a resumed transfer skips what is already `migrated`.
+  1. **`finalise` does not queue the follow-on work — its caller does.** Its one production caller is the
+     worker's finalise handler, which calls `enqueue_derive` afterwards, and that single enqueue is what
+     chains derive → index → similarity → enrichment. The first real run produced five assets with a
+     placement each and nothing queued: no proxy, no thumbnail, nothing in the index. The library looked full
+     and searched empty — precisely the drift the "no second ingest" rule exists to prevent, arriving through
+     the gap between `finalise` and the thing that calls it.
+  2. **A migration must not queue its renders in the interactive band.** `enqueue_derive` uses priority 40 on
+     the premise that somebody is watching the grid for a thumbnail. True for an upload; false for the four
+     hundred thousandth asset of a transfer, which would sit in front of every real upload on that tenant for
+     as long as it ran. Split into `enqueue_derive_at`; transfers use the default band.
+  3. **A store outage is not a bad record.** Every failure used to mark the record `failed`. The object store
+     was unreachable during a run and all seven records were branded failed, permanently, for a connection
+     refused — on a real migration, four hundred thousand records to reset by hand over a one-minute outage,
+     and a report blaming the export. `Error::is_transient` already existed to make this distinction; now a
+     transient error stops the run and leaves the record `pending`, and only `Permanent` is written against it.
+  4. **`damd` and `dam-worker` could not be given a config file at all.** Both read the path from
+     `DAMRS_CONFIG`, which sits under the prefix the environment provider scans, so figment offered a key
+     named `config`, strict extraction rejected it as unknown, and setting the variable that names the config
+     file was the one thing guaranteed to stop the process starting. Only `damctl` was unaffected, because it
+     takes a flag. Fixed in `Config::load`. This is a go-live bug that nothing in the repo would have caught:
+     every test constructs config in-process.
 
-  **A refactor the slice needs first.** The metadata write is inline in `assets::update_metadata` — an upsert
-  into `asset_metadata`, an `updated_at` bump on the asset, and an outbox row — and the bulk executor has its
-  own copy. Transfer would be the third. That wants extracting into `dam_db` and having all three use it
-  *before* the third arrives, or the divergence this codebase keeps finding gets one more instance: an event
-  that fires for one route and not another is a consumer's cache that goes stale depending on how the edit was
-  made.
+  5. **The sniffer panicked on binary content, on any upload path.** Not a migration bug at all — the SVG
+     search truncated the lowercased head at byte 1024, and that head comes through `from_utf8_lossy`, whose
+     replacement character is three bytes, so on binary input the slice often landed mid-character. Any
+     upload of a file that is not text could take the worker down with a panic where a sniff verdict belonged
+     — the exact failure `dam-pipeline` denies `expect_used` to prevent. It surfaced here only because every
+     other fixture in the repo is an image or text; the migration suite was the first thing to push nine
+     megabytes of arbitrary bytes through `sniff`.
 
-  The rollback machinery is already built and tested against real records, so the transfer slice does not have
-  to build its own escape hatch under pressure. `imports::pending`, `migrated`, `failed`, `created_assets` and
-  `mark_rolled_back` are all in place; what is missing is only the loop and the source.
+  **Verified by migrating.** Five files off disk became five assets with the type sniffed from the bytes
+  rather than taken from the record, dimensions probed, content hashes computed, and the crosswalked metadata
+  landed. A record naming a missing file and one whose path was `../../../../etc/passwd` each failed alone and
+  the run continued. Re-running skipped what had arrived. `--limit 2` stopped at the ceiling. Then a real
+  worker drained the queue: 15 derivatives — thumbnail, preview and proxy for each of the five — and five
+  index jobs, all succeeded. The suite in `crates/dam-pipeline/tests/transfer.rs` pins the chain, the
+  idempotency skip, the traversal refusal and the per-record isolation.
 
-  Not started rather than half-started: this writes somebody's library, and a bug here is a migration that has
-  to be unwound rather than a screen that looks wrong.
+  **Still open, deliberately.** Vendor connectors and a CSV reader; the JSON-lines input routes around both.
+  The batch ceiling stops a run but nothing yet advances the job to `verify` or `complete` — an operator moves
+  it, which is the right default while the QA gate between batches is a human.
 
 - [x] **G10 SCIM, BYOK, audit export.** Three unrelated things behind one heading; the audit chain is first
   because it is the one nothing else depends on and the one an RFP treats as pass/fail.
@@ -1891,6 +1907,7 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   somebody's afternoon.
 
 - [x] **G10·3 BYOK.** `DAMRS_STORAGE__SSE_KMS_KEY_ID` encrypts every object under a customer-managed KMS key.
+  One key for the deployment, which is what this claimed and delivered; per-tenant keys are **G10·3b**.
   §19's "building anything here would be worse" was about an encryption layer of our own, not the wiring.
 
   **The risk is not that it does not work; it is that one write path forgets.** Seven calls create an object —
@@ -2279,6 +2296,61 @@ API that does not exist yet is a module written twice.
   contact damrs at all, because a site clearing its search index has not asked to empty somebody's asset
   library.
 
+- [ ] **G10·3b Per-tenant keys, and a table that has never been read.** *Found 2026-08-28 while checking
+  whether the AWS-native list's SSE-KMS item was stale. It was half stale, and the other half is larger than
+  the list suggested.*
+
+  `dam_global.encryption_keys` has existed since migration `0002_enterprise.sql` — `tenant_id`, `purpose`
+  with a CHECK of `blob`, `c2pa_signing`, `field`, `backup`, a `provider` CHECK across five KMS vendors,
+  `key_ref` commented "ARN or URI; never key material", `customer_managed`, a `state` lifecycle including
+  `rotating` and `revoked`, plus a unique partial index on the active key per tenant and purpose. Nothing
+  reads or writes it. Searched across Rust, SQL, TypeScript, Svelte and Markdown: the only three hits are the
+  `CREATE TABLE` and its two indexes.
+
+  The same shape as `audit_log`'s hash columns and `assets.legal_hold` before G10·1 — a schema that describes
+  a capability the code does not have. Recording it here rather than fixing it silently, because the fix is a
+  decision rather than a refactor.
+
+  **What exists today, for each of the four purposes the table anticipates.** All four are process-wide
+  configuration or absent:
+
+  | Purpose | Today |
+  |---|---|
+  | `blob` | `storage.sse_kms_key_id`, one key for the deployment (G10·3) |
+  | `c2pa_signing` | `security.signing_cert_pem` / `signing_key_pem`, one identity for the deployment |
+  | `field` | not implemented |
+  | `backup` | relies on the bucket's and the managed database's own encryption |
+
+  So "BYOK" is true of a single-tenant deployment and of a dedicated one, and not of a shared one — which is
+  worth being exact about, because it is an RFP pass/fail question and the honest answer differs by
+  deployment shape. G10·3 never claimed otherwise; the AWS-native list did, by listing per-tenant keys as
+  though the whole item were outstanding.
+
+  **The decision, because it is not a refactor.** `build_store` returns one `S3Store` for the process and
+  G10·3's applicator puts the key on it once, deliberately, so that a write path added later cannot miss it.
+  A per-tenant key breaks that: the key is no longer a property of the process. Three shapes, and they are
+  not equivalent.
+
+  1. **A store per tenant, cached.** Smallest change to the write paths — they keep taking a store — and it
+     keeps G10·3's guarantee that the key is applied in one place. Costs a client per active tenant, and the
+     cache needs invalidating when a key rotates or is revoked, which is the part that will be got wrong.
+  2. **Resolve the key at each write.** No cache and no lifetime question, and it is the only shape where a
+     revocation takes effect on the next write rather than on the next cache eviction. But it reopens exactly
+     what G10·3 closed: seven call sites that create an object, each of which must not forget, and the
+     source-reading test that guards them would need to guard a threaded parameter instead of one applicator.
+  3. **A pool per tenant in `storage_pools`.** The table already carries `tenant_id`, `bucket`, `endpoint` and
+     `credentials_ref` per pool, so a `kms_key_ref` beside them would follow the grain of the schema and need
+     no new resolution path — the pool is already looked up per placement. Least new machinery; but it ties a
+     key to a pool rather than to a tenant, and `encryption_keys` was designed for the other three purposes
+     too, which have no pool.
+
+  Shape 3 is the smallest honest step for `blob` alone and does not answer `c2pa_signing`, `field` or
+  `backup`. Whether those are wanted at all is the prior question — a per-tenant signing identity in
+  particular has consequences well beyond storage, since it is what a consumer verifies a C2PA claim against.
+
+  **Not started, and no pressure to start.** A single-key deployment is correctly implemented, tested and
+  documented, and the gap is a capability the schema promises rather than a defect in what runs.
+
 - [ ] **3.x AWS-native features to rely on instead of building.** *Raised 2026-08-18; needs a decision on
   items 1 and 2 because they change architecture.* Every item is AWS-only while D1 says S3-compatible, so
   each belongs behind `dam_store::Capabilities` with a fallback — the pattern already exists, and the
@@ -2296,7 +2368,8 @@ API that does not exist yet is a module written twice.
   3. **S3 Batch Operations for 3.4's bulk restore.** Manifest-driven, with retries, throttling and a
      completion report. Better than a job loop. Does **not** help 2.10, which is database-side.
   4. **S3 Inventory instead of LIST for reconciliation** — a daily manifest rather than paginated LIST.
-  5. **SSE-KMS for BYOK (G10).** Per-tenant key; building anything here would be worse.
+  5. **SSE-KMS for BYOK (G10).** *The wiring landed under G10·3; only the per-tenant half is open —* see
+     **G10·3b** just above, which is where that now lives rather than in this list.
   6. **A lifecycle rule on `*/staging/`** as a safety net beneath the reaper. Prefix-based, so it maps onto
      `Key::is_tier_exempt`'s existing scheme.
   7. **CloudFront in front of derivatives — not replacing the chokepoint.** CloudFront signed URLs cannot

@@ -248,6 +248,47 @@ async fn a_bulk_metadata_set_merges_into_every_target(f: &Fixture) {
     assert_eq!(gained["campaign"], "spring-2026");
 }
 
+/// A bulk edit takes the field away from the model, exactly as the single-asset endpoint does.
+///
+/// This is the drift that motivated moving the write into `dam_db::metadata`: the two paths were separate,
+/// this one never dropped the provenance, and a field a model had written stayed marked as machine output
+/// after a person overwrote it in bulk. Nothing failed — the value was right and the marking was a lie, so
+/// every AI disclosure built on it said a model wrote a sentence a person had replaced.
+async fn a_bulk_edit_takes_the_field_back_from_the_model(f: &Fixture) {
+    field(f, "alt_text").await;
+    let target = asset(f, "meta-provenance.jpg").await;
+
+    // A model wrote this one, and said so.
+    sqlx::query("INSERT INTO asset_metadata (asset_id, values, provenance) VALUES ($1, $2, $3)")
+        .bind(target)
+        .bind(serde_json::json!({"alt_text": "what the model saw"}))
+        .bind(serde_json::json!({"alt_text": {"model": "claude-test", "kind": "vision"}}))
+        .execute(&f.tenant)
+        .await
+        .expect("seed a model-written field");
+
+    let id = operation(
+        f,
+        "metadata_set",
+        serde_json::json!({"values": {"alt_text": "what a person wrote instead"}}),
+        &[target],
+    )
+    .await;
+    assert_eq!(run(f, id).await.expect("run").state, "completed");
+
+    let (values, provenance): (serde_json::Value, serde_json::Value) =
+        sqlx::query_as("SELECT values, provenance FROM asset_metadata WHERE asset_id = $1")
+            .bind(target)
+            .fetch_one(&f.tenant)
+            .await
+            .expect("metadata");
+    assert_eq!(values["alt_text"], "what a person wrote instead");
+    assert!(
+        provenance.get("alt_text").is_none(),
+        "a person overwrote it in bulk, so the model's claim on it has to go: {provenance}"
+    );
+}
+
 async fn a_target_whose_type_excludes_the_field_is_reported_not_written(f: &Fixture) {
     // With metadata types, "does this patch apply" stops being a property of the patch alone (Q.1): a field on
     // the image form is not on the archive form, and a selection spanning both is legitimately partial. The
@@ -450,6 +491,7 @@ async fn bulk_execution_holds() {
     a_bulk_delete_deletes_what_it_may_and_reports_the_rest(&f).await;
     re_running_a_finished_operation_changes_nothing(&f).await;
     a_bulk_metadata_set_merges_into_every_target(&f).await;
+    a_bulk_edit_takes_the_field_back_from_the_model(&f).await;
     a_target_whose_type_excludes_the_field_is_reported_not_written(&f).await;
     an_invalid_patch_fails_before_any_asset_is_touched(&f).await;
     an_unimplemented_kind_is_refused_by_name(&f).await;

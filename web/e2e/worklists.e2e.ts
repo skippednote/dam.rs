@@ -13,7 +13,8 @@
  * - **The explanation comes from the server.** The label and the sentence live beside the SQL that decides the
  *   list, so the detail page shows what it was given rather than a second copy that drifts.
  */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures';
+import { type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
 const WCAG_21_AA = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'];

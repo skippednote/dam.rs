@@ -10,7 +10,8 @@
  * - **Promoting keeps the version number.** The history is the one place that has to stay literal: renumbering
  *   version 2 as version 4 would claim somebody uploaded something they did not.
  */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures';
+import { type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
 const WCAG_21_AA = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'];

@@ -10,7 +10,8 @@
  * - **Detaching says it is not deleting.** Somebody correcting a mis-attachment must not have to wonder whether
  *   they destroyed a signed release.
  */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures';
+import { type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
 const WCAG_21_AA = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'];

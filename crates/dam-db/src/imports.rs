@@ -366,6 +366,27 @@ pub async fn note(
     Ok(())
 }
 
+/// What state one record is in, if the run has heard of it at all.
+///
+/// The transfer's idempotency check. `source_id` is the key a migration is resumed on, so a run that died
+/// half way asks this per record and skips what already arrived — the alternative being a second asset for
+/// every source asset the first attempt got to, which is the failure mode a migration cannot be allowed to
+/// have. One indexed lookup against a step that then uploads a whole file, so the cost does not register.
+pub async fn state_of(
+    conn: &mut sqlx::PgConnection,
+    job: Uuid,
+    source_id: &str,
+) -> Result<Option<String>, Error> {
+    let state: Option<String> = sqlx::query_scalar(
+        "SELECT state FROM import_records WHERE import_job_id = $1 AND source_id = $2",
+    )
+    .bind(job)
+    .bind(source_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(state)
+}
+
 /// Records that a source asset arrived, and as what.
 ///
 /// Also bumps the job's counter, in the same statement pair, so a crash cannot leave the count disagreeing with
