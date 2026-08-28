@@ -29,13 +29,13 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **Q** Commercial-DAM parity, 20 slices | **complete** — Q.1–Q.20, including Q.14b collections and Q.20a–d |
 | **Go-live Tier 1** Deployment image, backups, metrics, rate limiting, virus scan, C2PA | **done** — all six, each verified against the running stack |
 | **Archival** Tiering engine, restores, the storage screen | **done** — the sweep and poll jobs, the plan/quote/request/approve API, delivery's 202, bulk archive and restore, the restore panel |
-| **M3d** Drupal 11 connector | M3d·1–·4 done; M3d·5 in progress — the `damrs` base module is done and verified, five submodules to go |
+| **M3d** Drupal 11 connector | **done** — M3d·1–·4, and M3d·5's six submodules, verified against a live Drupal 11.4 |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, colour | dedup and colour **done** (M4a); the rest needs model files — see M4 below |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | **done** — two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query, the MCP server |
 | **M6** Workflow/proofing, annotations, analytics | **done** — annotations (M6a), proofing (M6b), analytics (M6c) |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | G19 **done**; G7 **done** (crosswalk, dry run, filesystem source, transfer); G10 **done** (audit chain, user administration, SCIM, BYOK) |
 
-**Next up, in order:** G7 and G10 are complete. M3d·5 (the Drupal module) is under way: the base module is done, `damrs_media` is next. M4b (local ONNX models) stays parked on the model-distribution question.
+**Next up, in order:** G7, G10 and M3d·5 are complete. What remains is decisions rather than build work: G22c (the public URL space), G10·3b (per-tenant keys), the AWS-native items 1 and 2, and M4b's model-distribution question.
 M4b (local models) is parked on a distribution decision — see the M4 section.
 
 **`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
@@ -2148,8 +2148,8 @@ API that does not exist yet is a module written twice.
   from a metadata lookup, which presents as the panel simply never opening — it cost a debugging round here and
   was already lurking, harmlessly, in the proofing suite's fixture.
 
-- [ ] **M3d·5 The Drupal module.** `integrations/drupal/`, Drupal 11+ only, six submodules (§11.2).
-  **One of six done: the `damrs` base module.** The other five are not started.
+- [x] **M3d·5 The Drupal module.** `integrations/drupal/`, Drupal 11+ only, six submodules (§11.2).
+  **All six submodules done and verified.**
 
   **The deferral's premise was wrong, and checking cost nothing.** It read "nothing in this repository can
   run PHP or a Drupal install". True of the repository, false of the machine: DDEV was already installed, so
@@ -2175,11 +2175,126 @@ API that does not exist yet is a module written twice.
   as `MODULE.routes.yml`, so the module enabled cleanly, reported no error, and had no settings page at all.
   A module shipped against the spec rather than against an install would have shipped that.
 
-  **Not started, in the order they should be built.** `damrs_media` first — the `damrs_asset` MediaSource
-  plugin, field mapping and Media Library integration is where the connector's value actually lands, and it
-  is the largest of the five. Then `damrs_image_style` (Drupal image style ↔ transform op, which the signer
-  already makes cheap), `damrs_sync` (queue worker over the webhooks), `damrs_editor` (CKEditor 5 + oEmbed),
-  and `damrs_search_api` last, being optional.
+  **Done and verified: `damrs_media`.** The `damrs_asset` MediaSource plugin, holding an asset id in a plain
+  string field and nothing else. Enabled on the live site, a media type created on it, and metadata mapped
+  into real fields.
+
+  **The hazard was not in the plugin, it was in how Drupal calls it.** `Media::preSave()` assigns whatever
+  `getMetadata()` returns straight into the mapped field — so a source that returned NULL because damrs was
+  unreachable would blank the cached title, alt text and dimensions of every item re-saved during an outage.
+  Stale metadata is the correct degraded state; empty metadata is silent data loss. The plugin therefore
+  falls back to the value already in the mapped field, and the kernel suite fails without that fallback.
+
+  **A test that was wrong before it was right, which is worth recording.** The first version of that check
+  created a new entity with values already set and concluded the fallback worked. It did not: Drupal only
+  re-reads metadata when a mapped field is *empty* or the source field *changed*, so nothing had called
+  `getMetadata` at all and the values survived because nothing touched them. Removing the fallback changed
+  nothing, which is how the bad test was caught. The real case is an existing entity whose asset id changes
+  during an outage.
+
+  **And a bug found by reading damrs rather than Drupal.** The media source was written against an invented
+  transform string — `w=320,h=320,fit=inside,fmt=webp` — on the assumption that a transform describes an
+  image. It does not: `delivery::op_hash_for` resolves a transform against the built-in profiles and then the
+  tenant's conversions, and anything else is `NotDeliverable`. Every thumbnail this module fetched would have
+  been refused, and nothing in Drupal would have said why. The valid names are `original`, `thumb-256`,
+  `preview-1024` and `web-2048`, plus a tenant's conversion keys. They are now a `Transforms` class pinned to
+  a fixture generated by `cargo run -p dam-media --example transform_names`, so a rename upstream fails the
+  connector's tests rather than its users' pages — the same arrangement as the signing vectors, and for the
+  same reason.
+
+  **Two defects only a live Drupal produced.** The module shipped no config schema for the source's
+  `source_configuration`, so `media.type.*` failed Drupal's schema check and a site with strict checking
+  could not create the media type at all — the kernel run surfaced it. And the module failed
+  `phpcs --standard=Drupal,DrupalPractice` on 129 counts, mostly the 80-column limit, which §11.2's
+  "contrib-shaped composer package" does not permit. Both fixed; CI now runs the standards and the kernel
+  tests, so neither can come back.
+
+  **Done and verified: `damrs_image_style`.** The piece that actually puts a picture on a page. A field
+  formatter renders the source field as an `<img>` whose URL is signed locally, so painting a page still
+  makes no request to damrs. Verified by rendering a real media entity and feeding the resulting token back
+  through `verify_token`: it decodes with the mapped transform and every field correct.
+
+  **It is a mapping, not a translation, and that follows from damrs rather than from Drupal.** The obvious
+  design reads an image style's effects and emits an equivalent transform. It cannot work, because a
+  transform is a name and an unrecognised one is refused. So a site says which of the transforms damrs
+  *does* render each image style corresponds to — a decision about intent, not arithmetic — and a site
+  wanting a size damrs does not offer adds a conversion there and maps to its key. One place decides what
+  renditions exist, which is what keeps the derivative cache and the rights model coherent.
+
+  **The cache lifetime is the URL lifetime.** A render array cached longer than the signed URL's TTL becomes,
+  after that TTL, a cached page whose every image damrs refuses — with nothing in the logs connecting the
+  two. The formatter caps its own `max-age` at the configured TTL rather than leaving an operator to keep two
+  unrelated numbers in the right order by hand. Mutation-verified: making the render permanent fails the
+  suite.
+
+  **Done and verified: `damrs_sync`.** A signed endpoint, a queue, and a worker that applies events to the
+  media items referencing an asset. Driven end to end with deliveries signed by the real Rust signer: a valid
+  one is accepted 202, and no signature, a wrong secret, a tampered body and a stale timestamp are each
+  refused 401.
+
+  **The interaction that made two correct modules destroy data together.** `damrs_media` falls back to the
+  value already in a mapped field when damrs cannot answer, so an outage cannot blank cached metadata.
+  Refreshing works by *clearing* those fields so Drupal's own "field is empty, read it" branch runs — which
+  removes the very value the fallback would have returned. A refresh event arriving during an outage
+  therefore erased the metadata it was meant to update. Both modules' suites were green, and the live check
+  showed a title going to NULL.
+
+  The fix required a distinction the client could not express: `asset()` returns NULL both for "damrs did not
+  answer" and for "damrs says there is no such asset", and those are opposites for anything deciding whether
+  to retry. Treating every failure as retryable makes a deleted asset an item that never drains; treating
+  every failure as final makes a one-minute outage erase what it could not refresh. So `ApiResult` carries
+  the status, nothing is cleared until damrs has produced the asset, an unreachable damrs suspends the queue
+  run, and a deletion never asks at all.
+
+  **The webhook verifier is pinned to the forgeries, not the happy path.** This endpoint is reachable without
+  a session, so a verifier wrong in the accepting direction is an endpoint anybody can post content changes
+  to — a different severity from the delivery tokens, where a mistake only stops images rendering. The
+  vectors therefore carry the forgeries a plausible implementation accepts, including a correct digest over
+  the body without the timestamp, which passes every happy-path test and makes every signature a permanent
+  replay token. Mutation-tested four ways; three were caught behaviourally and the fourth — `===` instead of
+  `hash_equals` — provably cannot be, since only the timing differs. That one is guarded by a structural
+  assertion that says outright what it is.
+
+  **Done and verified: `damrs_editor` — and half of it turned out to be core's already.** Inserting a damrs
+  asset as a *media entity* needs nothing from this connector: `damrs_media` makes an ordinary media type, so
+  CKEditor 5's Media Library button and the `media_embed` filter handle it. Checked rather than assumed — a
+  `<drupal-media>` tag pointing at a damrs item renders our signed URL today. Writing a CKEditor plugin for
+  that would have been re-implementing something that already worked.
+
+  What core cannot do is resolve a *pasted URL*, because its OEmbed source uses the public provider registry
+  and sends no credential, while damrs's oEmbed is authenticated on purpose. So the filter makes that call
+  server-side with the connector's key — the arrangement damrs's own oEmbed module documents as its
+  expectation. A `photo` becomes an image; anything else becomes a thumbnail link rather than a player this
+  has no code for.
+
+  **The cache-lifetime trap, in its third form.** damrs reports a `cache_age` deliberately shorter than the
+  signed URL inside the response. A filtered body is cached separately from the formatter's render array, so
+  the same mistake was available again here; with several embeds in one body the shortest age wins, because
+  one expired URL is enough to break the page.
+
+  **A test harness bug worth recording, because it made a green suite meaningless.** The HTTP client was
+  being replaced in `setUp()`, which is too late whenever anything has already caused `damrs.client` to be
+  constructed — the client keeps the real Guzzle it was handed, the queued mock is never consumed, and the
+  call fails a genuine DNS lookup and returns NULL as though damrs had refused. Four tests failed for that
+  reason and none of them was about what it appeared to be. Replacing the service in `register()`, at
+  container-build time, is the fix, and all three kernel suites now do it.
+
+  **Done and verified: `damrs_search_api`.** A Search API backend that proxies to damrs rather than indexing
+  into Drupal. That is the design and not a shortcut: Search API's usual shape is index-then-query, and a
+  local copy would make every rights decision be taken against it — an asset whose licence lapsed would keep
+  appearing in results until the next reindex, which is exactly what the connector exists to prevent. So
+  `indexItems()` stores nothing and *says so*, because returning the ids would tell Search API's tracker
+  these items are searchable here and the lie surfaces later as results that never appear.
+
+  `/browse` rather than `/search`, because it answers with the results and the facet rail from one call,
+  counted over the same query — one round trip, and a facet cannot claim forty while the grid beside it shows
+  three.
+
+  Three refusals are pinned by tests: paging past damrs's depth cap raises rather than returning an empty
+  page that reads as "no more results"; an unreachable damrs empties the results with a warning rather than
+  throwing, since this backend can sit behind a block on every page; and clearing the Drupal index must not
+  contact damrs at all, because a site clearing its search index has not asked to empty somebody's asset
+  library.
 
 - [ ] **G10·3b Per-tenant keys, and a table that has never been read.** *Found 2026-08-28 while checking
   whether the AWS-native list's SSE-KMS item was stale. It was half stale, and the other half is larger than

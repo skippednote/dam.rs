@@ -1,0 +1,8 @@
+name: 'damrs search'
+type: module
+description: 'A Search API backend that queries damrs instead of a local index.'
+package: 'damrs'
+core_version_requirement: ^11
+dependencies:
+  - damrs:damrs
+  - search_api:search_api

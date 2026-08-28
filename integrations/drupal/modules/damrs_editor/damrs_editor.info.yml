@@ -1,0 +1,8 @@
+name: 'damrs editor'
+type: module
+description: 'Turns a pasted damrs asset URL into an inline embed, over damrs oEmbed.'
+package: 'damrs'
+core_version_requirement: ^11
+dependencies:
+  - damrs:damrs
+  - drupal:filter

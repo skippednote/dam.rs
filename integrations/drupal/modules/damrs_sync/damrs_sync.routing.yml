@@ -1,0 +1,17 @@
+damrs_sync.receive:
+  path: '/damrs/webhook'
+  defaults:
+    _controller: '\Drupal\damrs_sync\Controller\WebhookController::receive'
+  methods: [POST]
+  requirements:
+    # Open by route and closed by signature. damrs authenticates with an HMAC
+    # over the timestamp and body, not with a session, so there is no Drupal
+    # credential to require here — and requiring a permission would just mean
+    # damrs could never deliver. The controller refuses anything unsigned.
+    _access: 'TRUE'
+  options:
+    # Turned off deliberately, for the same reason: damrs has no session and no
+    # form token to send. The signature is the only thing standing here, which
+    # is why it is verified before the body is looked at.
+    no_cache: TRUE
+    _csrf_token: FALSE

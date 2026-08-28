@@ -1,0 +1,13 @@
+# Without this, saving a media type on this source fails Drupal's config schema
+# check — `source_configuration.source_field missing schema` — because core
+# resolves the source's configuration through `media.source.[%parent.source]`
+# and every source has to declare its own. It is not optional: a site with
+# strict schema checking on cannot create the media type at all, and the kernel
+# suite is where that surfaced.
+#
+# `media.source.field_aware` is core's own type for a source whose configuration
+# is just a source field, which is exactly this one — the asset id and nothing
+# else.
+media.source.damrs_asset:
+  type: media.source.field_aware
+  label: '"damrs asset" media source configuration'

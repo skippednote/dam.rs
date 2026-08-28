@@ -1,0 +1,7 @@
+services:
+  damrs_sync.applier:
+    class: Drupal\damrs_sync\EventApplier
+    arguments:
+      - '@entity_type.manager'
+      - '@damrs.client'
+      - '@logger.channel.damrs'

@@ -12,15 +12,17 @@ use Symfony\Component\DependencyInjection\ContainerInterface;
 /**
  * Where a site is pointed at a damrs library.
  *
- * The connection check is on submit rather than behind a separate button, because the failure this form
- * exists to prevent is a site saved with a credential that does not work and nobody finding out until an
- * editor opens the Media Library. It reports the two failures separately — unreachable and refused — since
- * one is a URL or a firewall and the other is a credential, and conflating them sends an operator to check
- * the wrong thing.
+ * The connection check is on submit rather than behind a separate button,
+ * because the failure this form exists to prevent is a site saved with a
+ * credential that does not work and nobody finding out until an editor opens
+ * the Media Library. It reports the two failures separately — unreachable and
+ * refused — since one is a URL or a firewall and the other is a credential, and
+ * conflating them sends an operator to check the wrong thing.
  *
- * Neither failure blocks the save. An operator configuring a site before the library exists, or during an
- * outage, has a legitimate reason to store the settings anyway; refusing would make this form unusable in
- * exactly the situations where somebody is trying to fix things.
+ * Neither failure blocks the save. An operator configuring a site before the
+ * library exists, or during an outage, has a legitimate reason to store the
+ * settings anyway; refusing would make this form unusable in exactly the
+ * situations where somebody is trying to fix things.
  */
 final class SettingsForm extends ConfigFormBase {
 
@@ -31,8 +33,9 @@ final class SettingsForm extends ConfigFormBase {
    */
   public static function create(ContainerInterface $container): static {
     $form = new static($container->get('damrs.client'));
-    // ConfigFormBase's own dependencies come from the container rather than through the constructor, which
-    // is what the base class expects of a subclass that adds its own.
+    // ConfigFormBase's own dependencies come from the container rather than
+    // through the constructor, which is what the base class expects of a
+    // subclass that adds its own.
     $form->setConfigFactory($container->get('config.factory'));
     $form->setMessenger($container->get('messenger'));
     $form->setStringTranslation($container->get('string_translation'));
@@ -155,8 +158,9 @@ final class SettingsForm extends ConfigFormBase {
 
     parent::submitForm($form, $form_state);
 
-    // Checked after saving, against what was just stored, so the message describes the configuration the
-    // site now has rather than the one that was in the form.
+    // Checked after saving, against what was just stored, so the message
+    // describes the configuration the site now has rather than the one that was
+    // in the form.
     if (!$this->client->reachable()) {
       $this->messenger()->addWarning($this->t('Saved, but damrs did not answer at that URL. The settings are stored; check the URL and that this site can reach it.'));
 

@@ -1,0 +1,10 @@
+filter_settings.damrs_embed:
+  type: mapping
+  label: 'damrs embed filter settings'
+  mapping:
+    max_width:
+      type: integer
+      # Passed to damrs as the oEmbed maxwidth hint. Not a CSS width: it lets
+      # damrs pick a rendition rather than serving a 4000px original into a
+      # 600px column.
+      label: 'Maximum width to request'

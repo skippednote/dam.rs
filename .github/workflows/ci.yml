@@ -177,11 +177,17 @@ jobs:
         with:
           php-version: '8.3'
           tools: composer
-      - name: fail if the committed signing vectors are stale
+      - name: fail if the committed fixtures are stale
         run: |
           cargo run -q -p dam-core --example signing_vectors > /tmp/vectors.json
           diff -u integrations/drupal/tests/fixtures/signing_vectors.json /tmp/vectors.json \
             || { echo "::error::the delivery-token format changed; regenerate the vectors and update the PHP signer"; exit 1; }
+          cargo run -q -p dam-media --example transform_names > /tmp/transforms.json
+          diff -u integrations/drupal/tests/fixtures/transform_names.json /tmp/transforms.json \
+            || { echo "::error::the transform names changed; regenerate the fixture and update Transforms.php"; exit 1; }
+          cargo run -q -p dam-connect --example webhook_vectors > /tmp/webhooks.json
+          diff -u integrations/drupal/tests/fixtures/webhook_vectors.json /tmp/webhooks.json \
+            || { echo "::error::the webhook signature scheme changed; regenerate the fixture and update WebhookSignature.php"; exit 1; }
       # The phar rather than `composer install`, because the module requires drupal/core and pulling it
       # in to assert a byte comparison would make the job guarding the wire format the slowest in CI.
       # The signer needs nothing from Drupal, which is the whole reason it can run in the render path.
@@ -190,6 +196,52 @@ jobs:
         run: |
           curl -sSLo phpunit.phar https://phar.phpunit.de/phpunit-11.phar
           php phpunit.phar --configuration phpunit.xml.dist --colors=never
+
+  # The signing job above needs no Drupal, which is why it is fast. This one does:
+  # the property it guards — that a damrs outage cannot blank metadata a previous
+  # sync cached — lives in how `Media::preSave()` calls the source plugin, so it
+  # is only observable with a real entity system behind it. A plugin can be
+  # perfectly correct in isolation and still lose data through how Drupal calls
+  # it.
+  #
+  # Also runs Drupal's own coding standards. §11.2 calls for a contrib-shaped
+  # package, and a module failing `phpcs --standard=Drupal` is not one.
+  drupal-kernel:
+    name: drupal connector (kernel + standards)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: gd, pdo_sqlite, sqlite3
+          tools: composer
+      - name: build a throwaway Drupal site
+        run: |
+          composer create-project drupal/recommended-project site --no-interaction --no-progress
+          cd site
+          composer config --no-plugins allow-plugins true
+          composer require --dev drupal/core-dev --with-all-dependencies --no-interaction --no-progress
+          # search_api is a contrib dependency of the optional damrs_search_api
+          # submodule. Installed here rather than skipping that suite: a test
+          # that only runs on somebody's laptop is one that stops being run.
+          composer require drupal/search_api --no-interaction --no-progress
+      - name: install the module into it
+        run: |
+          mkdir -p site/web/modules/custom
+          cp -R integrations/drupal site/web/modules/custom/damrs
+      - name: drupal coding standards
+        working-directory: site
+        run: |
+          ./vendor/bin/phpcs --standard=Drupal,DrupalPractice \
+            --extensions=php,module,inc,install,test,info,yml \
+            web/modules/custom/damrs
+      - name: kernel tests
+        working-directory: site
+        run: |
+          mkdir -p web/sites/default/files
+          cp web/modules/custom/damrs/tests/phpunit-kernel.xml.dist phpunit-kernel.xml
+          ./vendor/bin/phpunit -c phpunit-kernel.xml
 
   # The migrations are the compliance floor (D12-D15). This job applies them to a real
   # Postgres exactly as `damctl migrate` does and asserts the object counts, so a
