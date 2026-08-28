@@ -1,0 +1,7 @@
+damrs.settings:
+  path: '/admin/config/media/damrs'
+  defaults:
+    _form: '\Drupal\damrs\Form\SettingsForm'
+    _title: 'damrs'
+  requirements:
+    _permission: 'administer damrs'

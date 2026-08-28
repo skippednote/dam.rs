@@ -1,0 +1,4 @@
+# Fetched by CI rather than committed — see the drupal job in .github/workflows/ci.yml.
+phpunit.phar
+.phpunit.cache/
+vendor/

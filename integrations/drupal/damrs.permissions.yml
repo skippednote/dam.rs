@@ -1,0 +1,5 @@
+administer damrs:
+  title: 'Administer damrs'
+  description: 'Configure the connection to the damrs library, including its service-account credential.'
+  # The credential is on this form, so holding it is equivalent to holding read access to the library.
+  restrict access: true

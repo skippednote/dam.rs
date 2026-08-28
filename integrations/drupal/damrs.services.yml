@@ -1,0 +1,18 @@
+services:
+  damrs.client:
+    class: Drupal\damrs\Client
+    arguments:
+      - '@http_client'
+      - '@config.factory'
+      - '@logger.channel.damrs'
+
+  damrs.signer_factory:
+    class: Drupal\damrs\Signing\SignerFactory
+    arguments:
+      - '@config.factory'
+      - '@datetime.time'
+
+  logger.channel.damrs:
+    parent: logger.channel_base
+    arguments:
+      - 'damrs'
