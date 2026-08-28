@@ -7,7 +7,7 @@
  * user depends on. A scan that passes on a page with no landmarks and no skip link is exactly the
  * false comfort §14.2 warns about.
  */
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 import AxeBuilder from '@axe-core/playwright';
 
 /** WCAG 2.1 A and AA — the operative benchmark, since 2.2 is not yet in the harmonised standard. */

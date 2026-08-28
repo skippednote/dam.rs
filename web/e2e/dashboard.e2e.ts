@@ -11,7 +11,8 @@
  * - **A count with nothing to do about it is not a link.** "Nothing written about them" has no selector yet, and a
  *   link that led elsewhere would answer a different question while looking like it answered this one.
  */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures';
+import { type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
 const WCAG_21_AA = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'];

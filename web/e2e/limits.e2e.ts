@@ -14,7 +14,8 @@
  * - **Units are part of the meaning.** Bytes render as bytes and cents as currency; a raw integer for either is
  *   a number nobody can act on.
  */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures';
+import { type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
 const WCAG_21_AA = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'];

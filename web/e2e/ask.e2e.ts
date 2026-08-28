@@ -12,7 +12,8 @@
  *   one keystroke away and costs nothing; replacing what they typed with an unusable query is not.
  * - **A spend cap reads as a spend cap**, not as a broken search.
  */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures';
+import { type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
 const WCAG_21_AA = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'];

@@ -13,7 +13,8 @@
  * - **The phrasing is the dashboard's.** One renderer, so an unrecognised kind is phrased rather than dropped here
  *   too. That is asserted rather than assumed, because the shared module is only shared while both sides import it.
  */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures';
+import { type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
 const WCAG_21_AA = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'];
