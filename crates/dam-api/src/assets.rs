@@ -453,8 +453,10 @@ pub async fn update_metadata(
     let mut conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
 
     // The predicate is applied first, so an asset the caller may not see cannot be written to — and it
-    // answers 404 rather than 403 for the same reason the read does.
-    let existing = assets::detail(conn.executor(), &caller.predicate, asset_id)
+    // answers 404 rather than 403 for the same reason the read does. The row itself is discarded: what this
+    // read is for is the refusal, and the document the merge needs is read inside `metadata::merge`, in this
+    // same transaction.
+    assets::detail(conn.executor(), &caller.predicate, asset_id)
         .await?
         .ok_or(Failure::NotFound)?;
 
@@ -492,41 +494,11 @@ pub async fn update_metadata(
 
     // Merged onto the stored document, using the *normalised* values rather than the ones that arrived — a
     // date reformatted or a number coerced has to be what lands, or the next read shows an unexplained diff.
-    let mut merged = existing.values.as_object().cloned().unwrap_or_default();
-    // Every key this request touched is now a human's, whatever it was before. Collected here because the
-    // provenance for those keys has to go: leaving it would mark a person's sentence as machine output for as
-    // long as the asset exists, and a disclosure wrong in that direction teaches people to ignore the marking
-    // altogether. See `dam_db::enrichment`.
-    let mut edited: Vec<String> = Vec::with_capacity(accepted.values.len());
-    for (key, value) in accepted.values {
-        edited.push(key.clone());
-        if value.is_null() {
-            merged.remove(&key);
-        } else {
-            merged.insert(key, value);
-        }
-    }
-    let stored = serde_json::Value::Object(merged);
-
-    sqlx::query(
-        "INSERT INTO asset_metadata (asset_id, values) VALUES ($1, $2) \
-         ON CONFLICT (asset_id) DO UPDATE SET values = excluded.values, updated_at = now()",
-    )
-    .bind(asset_id)
-    .bind(&stored)
-    .execute(conn.executor())
-    .await
-    .map_err(dam_db::Error::from)?;
-
-    dam_db::enrichment::forget_provenance(conn.executor(), asset_id, &edited).await?;
-
-    // The asset's own `updated_at` moves too, or a metadata edit is invisible to anything watching the
-    // asset — the reindex queue and the connector both key off it.
-    sqlx::query("UPDATE assets SET updated_at = now() WHERE id = $1")
-        .bind(asset_id)
-        .execute(conn.executor())
-        .await
-        .map_err(dam_db::Error::from)?;
+    // Every write this edit implies — the merged document, the provenance for the keys a person just
+    // took over, the asset's own `updated_at` — lives in `dam_db::metadata`, so the bulk executor and the
+    // transfer do exactly the same thing. See that module for the drift that motivated moving it there.
+    let dam_db::metadata::Merged { values, edited } =
+        dam_db::metadata::merge(conn.executor(), asset_id, accepted.values).await?;
 
     // The outbox row, in this transaction. Both edit paths emit — this one and the bulk executor's — because
     // a consumer cannot tell which route an edit took, and an event that fired for one and not the other
@@ -541,7 +513,7 @@ pub async fn update_metadata(
 
     conn.commit().await?;
 
-    Ok(Json(MetadataAccepted { values: stored }))
+    Ok(Json(MetadataAccepted { values }))
 }
 
 /// Everything that can go wrong in these handlers.

@@ -24,7 +24,9 @@ pub mod finalise;
 pub mod integrity;
 pub mod metering;
 pub mod similarity;
+pub mod source;
 pub mod tiering;
+pub mod transfer;
 pub mod webhooks;
 pub mod worker;
 

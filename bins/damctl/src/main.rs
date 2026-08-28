@@ -41,8 +41,10 @@ enum Command {
     /// part and it is source-agnostic, so anything that can emit JSON lines is a source. `jq` over an incumbent DAM's API
     /// response, a spreadsheet exported and converted, a script walking a file share.
     ///
-    /// Vendor connectors and a CSV reader are a later slice; a CSV reader in particular wants a dependency
-    /// decision rather than a hand-rolled quoting parser.
+    /// The *bytes* come from a source connector, and the filesystem is the one that exists: `transfer`
+    /// streams each record's file out of a folder and into the ordinary upload path. Vendor connectors are a
+    /// later slice, as is a CSV reader — which in particular wants a dependency decision rather than a
+    /// hand-rolled quoting parser, and which the JSON-lines input already routes around.
     Import {
         #[arg(long)]
         tenant: String,
@@ -242,6 +244,36 @@ enum ImportAction {
         /// gets asked".
         #[arg(long, default_value = "id")]
         id_field: String,
+    },
+
+    /// Transfer every record on stdin into the library, streaming each file from `--root`.
+    ///
+    /// The records are the same JSON lines the dry run read, because `import_records` deliberately does not
+    /// store the source document — a 400k-asset migration would be storing it twice — and `source_id` is
+    /// what ties the two passes together. A record already `migrated` is skipped, so a run that died half
+    /// way is resumed by running it again.
+    ///
+    /// Refuses a job that has not been dry-run: the report is the artifact the customer signs off, and a
+    /// transfer that could skip it would make the sign-off optional.
+    Transfer {
+        #[arg(long)]
+        job: uuid::Uuid,
+        /// Folder the records' file paths are relative to. A path leaving it is a failed record.
+        #[arg(long)]
+        root: std::path::PathBuf,
+        /// Which field of each record names its file, relative to `--root`.
+        #[arg(long, default_value = "file")]
+        file_field: String,
+        /// Which field identifies the record at the source. Must match the dry run's.
+        #[arg(long, default_value = "id")]
+        id_field: String,
+        /// Stop after this many records arrive. Defaults to the job's batch size, because §G7 moves a
+        /// migration in batches with a QA gate between them rather than in one unattended run.
+        #[arg(long)]
+        limit: Option<i64>,
+        /// Required. This writes assets into somebody's library.
+        #[arg(long)]
+        confirm: bool,
     },
 
     /// Print the run's stored report.
@@ -898,6 +930,145 @@ async fn main() -> anyhow::Result<()> {
                             .context("advancing to dry run")?;
                     }
                     print_report(&report);
+                }
+
+                ImportAction::Transfer {
+                    job,
+                    root,
+                    file_field,
+                    id_field,
+                    limit,
+                    confirm,
+                } => {
+                    anyhow::ensure!(
+                        confirm,
+                        "refusing to transfer without --confirm: this writes assets"
+                    );
+                    let found = dam_db::imports::by_id(&mut conn, job)
+                        .await
+                        .context("reading the import")?
+                        .ok_or_else(|| anyhow::anyhow!("no import {job}"))?;
+                    // The dry run is the sign-off. A job that has not reached it has no report for anybody
+                    // to have agreed to, and `transfer` is also the phase a resumed run is already in.
+                    anyhow::ensure!(
+                        matches!(
+                            found.phase,
+                            dam_db::imports::Phase::DryRun | dam_db::imports::Phase::Transfer
+                        ),
+                        "import {job} is at {}; run a dry run first",
+                        found.phase.as_str()
+                    );
+
+                    let tenant = dam_db::provision::find(&pool, &slug)
+                        .await
+                        .context("reading the tenant")?
+                        .ok_or_else(|| anyhow::anyhow!("no tenant {slug}"))?;
+                    let store = build_store(&cfg).await?;
+                    // Built from the same config key the worker uses, so a migration scans exactly when an
+                    // ordinary upload would. Passing `None` here would make a transfer the one way into the
+                    // library that skips the scanner, which is the drift this slice exists to avoid.
+                    let scanner = cfg.security.clamd_address.as_deref().map(|address| {
+                        dam_media::antivirus::Scanner::new(address, cfg.security.max_scan_bytes)
+                    });
+                    if scanner.is_none() {
+                        eprintln!(
+                            "note: security.clamd_address is unset, so nothing transferred is scanned"
+                        );
+                    }
+                    let source = dam_pipeline::source::Filesystem::rooted(&root, &file_field)
+                        .context("opening the source")?;
+
+                    let mut crosswalk: dam_core::crosswalk::Crosswalk =
+                        serde_json::from_value(found.crosswalk.clone())
+                            .context("the stored crosswalk")?;
+                    if !crosswalk.ignored.iter().any(|one| one == &id_field) {
+                        crosswalk.ignored.push(id_field.clone());
+                    }
+                    let defs = dam_db::fields::load(&mut *conn)
+                        .await
+                        .context("reading the field definitions")?;
+
+                    if found.phase == dam_db::imports::Phase::DryRun {
+                        dam_db::imports::advance(&mut conn, job, dam_db::imports::Phase::Transfer)
+                            .await
+                            .context("advancing to transfer")?;
+                    }
+
+                    let ceiling = limit.unwrap_or_else(|| i64::from(found.batch_size).max(1));
+                    let (mut migrated, mut skipped, mut failed) = (0i64, 0i64, 0i64);
+                    let mut seen = 0i64;
+
+                    for line in std::io::stdin().lines() {
+                        let line = line.context("reading stdin")?;
+                        if line.trim().is_empty() {
+                            continue;
+                        }
+                        if migrated >= ceiling {
+                            break;
+                        }
+                        let record: serde_json::Map<String, serde_json::Value> =
+                            serde_json::from_str(&line).context("parsing a record")?;
+                        seen += 1;
+
+                        let source_id = record
+                            .get(&id_field)
+                            .and_then(|value| value.as_str().map(str::to_owned))
+                            .unwrap_or_else(|| seen.to_string());
+
+                        // Mapped with the same crosswalk and the same code the dry run reported on, so what
+                        // arrives is what the report said would.
+                        let mapped = dam_core::crosswalk::apply(&crosswalk, &record, &defs);
+
+                        let outcome = dam_pipeline::transfer::one(
+                            &pool,
+                            &store,
+                            &source,
+                            &slug,
+                            tenant.id,
+                            job,
+                            &source_id,
+                            &record,
+                            &mapped.payload,
+                            scanner.as_ref(),
+                        )
+                        .await
+                        // A transient failure stops the run rather than branding the record. The records
+                        // it has not reached are still `pending`, so the fix is to deal with what broke and
+                        // run the same command again — nothing already migrated is moved twice.
+                        .with_context(|| {
+                            format!(
+                                "stopped at {source_id} after {migrated} migrated; \
+                                 the untransferred records are still pending, so re-run when it is fixed"
+                            )
+                        })?;
+
+                        match outcome {
+                            dam_pipeline::transfer::Outcome::Migrated { asset_id, created } => {
+                                migrated += 1;
+                                println!(
+                                    "{source_id}\t{asset_id}\t{}",
+                                    if created { "created" } else { "deduplicated" }
+                                );
+                            }
+                            dam_pipeline::transfer::Outcome::Skipped => skipped += 1,
+                            dam_pipeline::transfer::Outcome::Failed(reason) => {
+                                failed += 1;
+                                println!("{source_id}\t-\t{reason}");
+                            }
+                        }
+                    }
+
+                    dam_db::imports::recount(&mut conn, job)
+                        .await
+                        .context("recounting")?;
+                    println!(
+                        "\n{migrated} migrated, {skipped} already there, {failed} failed, of {seen} read"
+                    );
+                    if migrated >= ceiling {
+                        println!(
+                            "stopped at the batch ceiling of {ceiling}; run again for the next batch"
+                        );
+                    }
                 }
 
                 ImportAction::Report { job } => {

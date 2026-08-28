@@ -33,9 +33,9 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, colour | dedup and colour **done** (M4a); the rest needs model files — see M4 below |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | **done** — two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query, the MCP server |
 | **M6** Workflow/proofing, annotations, analytics | **done** — annotations (M6a), proofing (M6b), analytics (M6c) |
-| **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | G19 **done**; G7 crosswalk and dry-run **done**, transfer needs a source connector; G10 **done** (audit chain, user administration, SCIM, BYOK) |
+| **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | G19 **done**; G7 **done** (crosswalk, dry run, filesystem source, transfer); G10 **done** (audit chain, user administration, SCIM, BYOK) |
 
-**Next up, in order:** Pre-GA G7·2 source connectors. G10 is complete. M3d·5 (the Drupal module) is deferred until there is a Drupal environment to verify against — see its entry. M4b (local ONNX models) stays parked on the model-distribution question.
+**Next up, in order:** G7 and G10 are complete. M3d·5 (the Drupal module) is deferred until there is a Drupal environment to verify against — see its entry. M4b (local ONNX models) stays parked on the model-distribution question.
 M4b (local models) is parked on a distribution decision — see the M4 section.
 
 **`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
@@ -1534,46 +1534,65 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   encoded tenant (no migration, longer URLs, and a format to version). Pick one before writing code —
   the current single-tenant behaviour is correct and documented, so there is no pressure to pick fast.
 
-- [ ] **G7·2 Source connectors and transfer.** A transfer needs *bytes*, and bytes come from a source
-  connector. Scoped by reading the code, so the next session starts here rather than rediscovering it.
+- [x] **G7·2 Source connectors and transfer.** `damctl import transfer` streams a folder of files into the
+  library through the ordinary upload path. `dam_pipeline::source` holds the `Source` trait and the filesystem
+  implementation; `dam_pipeline::transfer` holds one record's worth of work; the loop, the batch ceiling and
+  the phase gate are in `damctl`.
 
-  **The `csv` crate is not the blocker it was recorded as.** That note conflated two things. The *metadata*
-  reader is already JSON lines on stdin, deliberately — "the mapping is the hard part and it is
-  source-agnostic, so anything that can emit JSON lines is a source", which routes around CSV entirely via
-  `jq` or a spreadsheet export. The *filesystem* reader needs `std::fs` and no dependency at all. So a CSV
-  reader is a convenience, not a prerequisite, and should not gate the slice.
+  **Everything the plan said held.** The filesystem was the right first connector — the slice was driven end
+  to end against real files, which is where four of the five findings below came from. Transfer has no ingest
+  of its own: it opens a session, streams the bytes, and calls `finalise`. Records still do not carry their
+  source payload, so the transfer re-reads the JSON lines and `source_id` is the idempotency key.
 
-  **The first connector should be the filesystem, not a vendor API.** §G7 names the comparator's public API as the obvious first
-  one, and it is the wrong first one here: it cannot be reached from this machine, so it would be verified
-  only against its own fakes. A filesystem source covers the shape most DAM exports actually take — a metadata
-  file plus a folder of assets — needs no vendor credentials, and can be driven end to end against real files.
+  **The prerequisite refactor found a bug before the third copy arrived, which is what it was for.** The two
+  metadata writes had already drifted: the bulk executor's, documented as merging "exactly as the single-asset
+  PATCH endpoint does", omitted `enrichment::forget_provenance`. A bulk edit left a model's marking on a field
+  a person had overwritten, so every AI disclosure built on it named a model as the author of somebody's
+  sentence. Now `dam_db::metadata::merge` and three callers.
 
-  **Transfer must not have its own ingest, and this is the load-bearing decision.** A browser upload becomes
-  an asset through `uploads::create` → `resumable::patch` → `finalise::upload`, which is where content
-  addressing, deduplication, virus scanning, derivation and indexing happen. A transfer that wrote assets
-  directly would be a second ingest path, and the two would drift in exactly the ways that matter — a
-  migrated asset with no derivatives, or one that skipped the scanner. So transfer creates a session and
-  streams the file into it, and the existing path does the rest. `damctl` already has everything it needs: a
-  single-tenant pool and a store.
+  **Five things only running it could have found.**
 
-  **Records do not carry their source payload, and should not start.** `import_records` has `source_id` and
-  `source_checksum` and no source document, so transfer re-reads the JSON lines — which matches the design and
-  keeps a 400k-asset migration from storing 400k source documents twice. `source_id` is the idempotency key,
-  so a resumed transfer skips what is already `migrated`.
+  1. **`finalise` does not queue the follow-on work — its caller does.** Its one production caller is the
+     worker's finalise handler, which calls `enqueue_derive` afterwards, and that single enqueue is what
+     chains derive → index → similarity → enrichment. The first real run produced five assets with a
+     placement each and nothing queued: no proxy, no thumbnail, nothing in the index. The library looked full
+     and searched empty — precisely the drift the "no second ingest" rule exists to prevent, arriving through
+     the gap between `finalise` and the thing that calls it.
+  2. **A migration must not queue its renders in the interactive band.** `enqueue_derive` uses priority 40 on
+     the premise that somebody is watching the grid for a thumbnail. True for an upload; false for the four
+     hundred thousandth asset of a transfer, which would sit in front of every real upload on that tenant for
+     as long as it ran. Split into `enqueue_derive_at`; transfers use the default band.
+  3. **A store outage is not a bad record.** Every failure used to mark the record `failed`. The object store
+     was unreachable during a run and all seven records were branded failed, permanently, for a connection
+     refused — on a real migration, four hundred thousand records to reset by hand over a one-minute outage,
+     and a report blaming the export. `Error::is_transient` already existed to make this distinction; now a
+     transient error stops the run and leaves the record `pending`, and only `Permanent` is written against it.
+  4. **`damd` and `dam-worker` could not be given a config file at all.** Both read the path from
+     `DAMRS_CONFIG`, which sits under the prefix the environment provider scans, so figment offered a key
+     named `config`, strict extraction rejected it as unknown, and setting the variable that names the config
+     file was the one thing guaranteed to stop the process starting. Only `damctl` was unaffected, because it
+     takes a flag. Fixed in `Config::load`. This is a go-live bug that nothing in the repo would have caught:
+     every test constructs config in-process.
 
-  **A refactor the slice needs first.** The metadata write is inline in `assets::update_metadata` — an upsert
-  into `asset_metadata`, an `updated_at` bump on the asset, and an outbox row — and the bulk executor has its
-  own copy. Transfer would be the third. That wants extracting into `dam_db` and having all three use it
-  *before* the third arrives, or the divergence this codebase keeps finding gets one more instance: an event
-  that fires for one route and not another is a consumer's cache that goes stale depending on how the edit was
-  made.
+  5. **The sniffer panicked on binary content, on any upload path.** Not a migration bug at all — the SVG
+     search truncated the lowercased head at byte 1024, and that head comes through `from_utf8_lossy`, whose
+     replacement character is three bytes, so on binary input the slice often landed mid-character. Any
+     upload of a file that is not text could take the worker down with a panic where a sniff verdict belonged
+     — the exact failure `dam-pipeline` denies `expect_used` to prevent. It surfaced here only because every
+     other fixture in the repo is an image or text; the migration suite was the first thing to push nine
+     megabytes of arbitrary bytes through `sniff`.
 
-  The rollback machinery is already built and tested against real records, so the transfer slice does not have
-  to build its own escape hatch under pressure. `imports::pending`, `migrated`, `failed`, `created_assets` and
-  `mark_rolled_back` are all in place; what is missing is only the loop and the source.
+  **Verified by migrating.** Five files off disk became five assets with the type sniffed from the bytes
+  rather than taken from the record, dimensions probed, content hashes computed, and the crosswalked metadata
+  landed. A record naming a missing file and one whose path was `../../../../etc/passwd` each failed alone and
+  the run continued. Re-running skipped what had arrived. `--limit 2` stopped at the ceiling. Then a real
+  worker drained the queue: 15 derivatives — thumbnail, preview and proxy for each of the five — and five
+  index jobs, all succeeded. The suite in `crates/dam-pipeline/tests/transfer.rs` pins the chain, the
+  idempotency skip, the traversal refusal and the per-record isolation.
 
-  Not started rather than half-started: this writes somebody's library, and a bug here is a migration that has
-  to be unwound rather than a screen that looks wrong.
+  **Still open, deliberately.** Vendor connectors and a CSV reader; the JSON-lines input routes around both.
+  The batch ceiling stops a run but nothing yet advances the job to `verify` or `complete` — an operator moves
+  it, which is the right default while the QA gate between batches is a human.
 
 - [x] **G10 SCIM, BYOK, audit export.** Three unrelated things behind one heading; the audit chain is first
   because it is the one nothing else depends on and the one an RFP treats as pass/fail.
