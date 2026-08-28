@@ -13,7 +13,8 @@
  *   letting somebody assume.
  * - **An empty queue distinguishes its two meanings**: nothing found, or nothing you can see both halves of.
  */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures';
+import { type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
 const WCAG_21_AA = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'];

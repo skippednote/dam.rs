@@ -564,40 +564,10 @@ async fn apply_metadata(
         )));
     }
 
-    let stored: Option<Value> =
-        sqlx::query_scalar("SELECT values FROM asset_metadata WHERE asset_id = $1")
-            .bind(asset_id)
-            .fetch_optional(&mut *conn)
-            .await
-            .map_err(dam_db::Error::from)?;
-    let mut merged = stored
-        .and_then(|v| v.as_object().cloned())
-        .unwrap_or_default();
-    for (key, value) in values {
-        if value.is_null() {
-            merged.remove(key);
-        } else {
-            merged.insert(key.clone(), value.clone());
-        }
-    }
-
-    sqlx::query(
-        "INSERT INTO asset_metadata (asset_id, values) VALUES ($1, $2) \
-         ON CONFLICT (asset_id) DO UPDATE SET values = excluded.values, updated_at = now()",
-    )
-    .bind(asset_id)
-    .bind(Value::Object(merged))
-    .execute(&mut *conn)
-    .await
-    .map_err(dam_db::Error::from)?;
-
-    // The asset's own `updated_at` moves too, or the edit is invisible to anything watching the asset — the
-    // reindex queue and the connector both key off it.
-    sqlx::query("UPDATE assets SET updated_at = now() WHERE id = $1")
-        .bind(asset_id)
-        .execute(&mut *conn)
-        .await
-        .map_err(dam_db::Error::from)?;
+    // The merge and every write it implies live in `dam_db::metadata`, shared with the single-asset
+    // endpoint. They were separate once and had already drifted: this path skipped dropping the provenance
+    // for the keys it overwrote, so a bulk edit left a model's marking on a value a person had replaced.
+    let merged = dam_db::metadata::merge(&mut *conn, asset_id, values.clone()).await?;
 
     // The *keys* that changed, not the values. A consumer needs to know whether the field it renders was
     // touched, which the keys answer; the values would put a tenant's metadata in a delivery log and in
@@ -607,7 +577,7 @@ async fn apply_metadata(
         conn,
         dam_db::webhooks::kind::METADATA_UPDATED,
         asset_id,
-        serde_json::json!({ "fields": values.keys().collect::<Vec<_>>() }),
+        serde_json::json!({ "fields": merged.edited }),
     )
     .await?;
 

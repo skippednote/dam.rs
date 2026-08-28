@@ -12,7 +12,8 @@
  *   conflation the model avoids — an average over a table where zero means absent is wrong in a way nobody sees
  *   until the numbers are on a screen.
  */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures';
+import { type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
 const WCAG_21_AA = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'];

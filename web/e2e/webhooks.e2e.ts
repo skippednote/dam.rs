@@ -13,7 +13,8 @@
  *   that would break per-asset ordering, and a button that 404s is worse than no button.
  * - **The receiver's own words are on screen.** A row saying "failed" with nothing else is a support ticket.
  */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures';
+import { type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
 const WCAG_21_AA = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'];

@@ -15,7 +15,8 @@
  * The rest is what makes the feature usable: fractions rather than pixels on the wire, a click that is not a
  * drag deselecting rather than creating a one-pixel annotation, and an honest statement about the keyboard.
  */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures';
+import { type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
 const WCAG_21_AA = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'];

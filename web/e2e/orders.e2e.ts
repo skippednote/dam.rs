@@ -14,7 +14,8 @@
  * - **Ordering from a selection reports the server's count**, so somebody who selected ten and may ask for nine
  *   is told, exactly as the bulk bar does for the same reason.
  */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures';
+import { type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
 const WCAG_21_AA = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'];

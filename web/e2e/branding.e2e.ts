@@ -14,7 +14,8 @@
  * - **The accent has a swatch**, because `#ff6600` is not a colour anybody can see — and the copy says where it
  *   actually applies, which is mostly portals rather than this application.
  */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures';
+import { type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
 const WCAG_21_AA = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'];
@@ -134,7 +135,10 @@ test('the header never shows the vendors name while branding loads', async ({ pa
 	// customer's library flashed the vendor's name — the exact thing this feature removes, just briefly.
 	// Driving the real page is what found it: "immediately: damrs | settled: Acme Picture Library".
 	await connect(page, { slow: true });
-	await page.goto('/branding');
+	// `waitUntil` on purpose: this is the one case that has to look at the page *before* its branding
+	// request finishes, and the settling `goto` in `./fixtures` steps aside when a test says which moment
+	// it wants. Without it this test watches the settled header and asserts nothing it was written for.
+	await page.goto('/branding', { waitUntil: 'domcontentloaded' });
 
 	const home = page.locator('nav a').first();
 	// Nothing *visible*, and specifically not the vendor's name. Asserted on the rendered text rather than on

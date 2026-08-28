@@ -14,7 +14,8 @@
  * - **A curator who may manage the asset but not read the log keeps the control.** The history disappears and
  *   no error appears for something they cannot fix.
  */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures';
+import { type Page } from '@playwright/test';
 
 const ASSET = '00000000-0000-4000-8000-000000000000';
 

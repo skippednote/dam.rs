@@ -14,7 +14,8 @@
  * - **A grace window is stated as a state, not as an event.** "Rotated on Tuesday" is not actionable; "the old
  *   secret still works, so this site keeps rendering until it deploys" is.
  */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures';
+import { type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
 const WCAG_21_AA = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'];

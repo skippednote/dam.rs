@@ -250,7 +250,18 @@ fn sniff_text_specific(prefix: &[u8]) -> Option<Sniffed> {
 
     // SVG may or may not carry an XML prolog, a doctype, or comments before the root element,
     // so the tag is searched for near the start rather than expected at offset zero.
-    let leading = &lower[..lower.len().min(1024)];
+    //
+    // Truncated to a char boundary, not to byte 1024. `lower` came through `from_utf8_lossy`, which
+    // turns every invalid sequence into a three-byte replacement character — so on binary input the
+    // 1024th byte is very often the middle of one, and slicing there panicked. Reachable from any
+    // upload of a file that is not text, which is most of them: the worker died with a panic message
+    // where a sniff verdict belonged. Found by transferring a nine-megabyte binary.
+    let cap = lower.len().min(1024);
+    let cap = (0..=cap)
+        .rev()
+        .find(|&index| lower.is_char_boundary(index))
+        .unwrap_or(0);
+    let leading = &lower[..cap];
     if leading.contains("<svg") {
         return Some(Sniffed::known(
             "image/svg+xml",
@@ -373,6 +384,32 @@ fn text_class(mime: &str) -> MediaClass {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Sniffing binary content must not panic, whatever the bytes are.
+    ///
+    /// It did. The SVG search truncated the lowercased head at byte 1024, and that head comes through
+    /// `from_utf8_lossy`, which replaces every invalid sequence with a three-byte replacement character —
+    /// so on binary input byte 1024 is very often inside one, and a `&str` slice there panics. Reachable
+    /// from any upload of a non-text file, and in the worker it meant a dead process with a panic message
+    /// where a verdict belonged.
+    ///
+    /// The loop walks offsets rather than picking one shape of input, because which byte lands on the
+    /// boundary depends on the content: a single hand-picked blob would pass over a fix that was still
+    /// wrong by one.
+    #[test]
+    fn sniffing_binary_content_never_panics_on_a_char_boundary() {
+        for offset in 0..48usize {
+            let mut bytes = vec![b'a'; offset];
+            // Invalid UTF-8, so each becomes a three-byte replacement character and the byte offsets of
+            // the boundaries shift with `offset`.
+            bytes.extend(std::iter::repeat_n(0xF8u8, 2048));
+            let got = sniff(&bytes, None, None);
+            assert!(
+                !got.mime.is_empty(),
+                "offset {offset} produced no verdict at all"
+            );
+        }
+    }
 
     #[test]
     fn a_declared_type_with_parameters_is_compared_on_the_type_alone() {
