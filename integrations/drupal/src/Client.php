@@ -102,6 +102,33 @@ final class Client {
   }
 
   /**
+   * The oEmbed description of an asset URL.
+   *
+   * The oEmbed provider is authenticated, which the spec does not
+   * contemplate — an unauthenticated endpoint turning an asset id into a
+   * filename and a preview URL would be an enumeration API for the whole
+   * library. That is exactly why core's OEmbed media source cannot be used for
+   * this: it fetches through the public provider registry with no credential.
+   * The call is made here instead, server-side, where the key is.
+   *
+   * @param string $url
+   *   The asset URL an editor pasted.
+   * @param int|null $maxWidth
+   *   A width hint, so damrs picks a rendition rather than the largest one.
+   *
+   * @return array|null
+   *   The oEmbed response, or NULL if damrs would not describe it.
+   */
+  public function oembed(string $url, ?int $maxWidth = NULL): ?array {
+    $query = ['url' => $url, 'format' => 'json'];
+    if ($maxWidth !== NULL) {
+      $query['maxwidth'] = $maxWidth;
+    }
+
+    return $this->request('GET', '/oembed?' . http_build_query($query));
+  }
+
+  /**
    * A page of the library, for the Media Library picker.
    *
    * @param array $query

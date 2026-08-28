@@ -7,6 +7,7 @@ namespace Drupal\Tests\damrs_sync\Kernel;
 use Drupal\damrs_sync\UnreachableException;
 use Drupal\field\Entity\FieldConfig;
 use Drupal\field\Entity\FieldStorageConfig;
+use Drupal\Core\DependencyInjection\ContainerBuilder;
 use Drupal\KernelTests\KernelTestBase;
 use Drupal\media\Entity\Media;
 use Drupal\media\Entity\MediaType;
@@ -61,6 +62,23 @@ final class EventApplierTest extends KernelTestBase {
   /**
    * {@inheritdoc}
    */
+  public function register(ContainerBuilder $container): void {
+    parent::register($container);
+    // Replaced at container-build time, not in setUp(). Setting it afterwards
+    // is too late whenever anything has already caused `damrs.client` to be
+    // constructed: the client keeps the real Guzzle it was handed, the mock is
+    // never consumed, and the test silently exercises a real DNS lookup that
+    // fails. That is exactly what happened here — the queued response went
+    // untouched and the call returned NULL as if damrs had refused.
+    $this->handler ??= new MockHandler();
+    $container->set('http_client', new GuzzleClient([
+      'handler' => HandlerStack::create($this->handler),
+    ]));
+  }
+
+  /**
+   * {@inheritdoc}
+   */
   protected function setUp(): void {
     parent::setUp();
     $this->installEntitySchema('user');
@@ -77,11 +95,6 @@ final class EventApplierTest extends KernelTestBase {
       ->set('signing_secret', 'test-secret')
       ->set('url_ttl', 1800)
       ->save();
-
-    $this->handler = new MockHandler();
-    $this->container->set('http_client', new GuzzleClient([
-      'handler' => HandlerStack::create($this->handler),
-    ]));
 
     $type = MediaType::create([
       'id' => 'damrs_asset',

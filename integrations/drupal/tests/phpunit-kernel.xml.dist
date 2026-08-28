@@ -22,6 +22,7 @@
       <directory>web/modules/custom/damrs/modules/damrs_media/tests/src/Kernel</directory>
       <directory>web/modules/custom/damrs/modules/damrs_image_style/tests/src/Kernel</directory>
       <directory>web/modules/custom/damrs/modules/damrs_sync/tests/src/Kernel</directory>
+      <directory>web/modules/custom/damrs/modules/damrs_editor/tests/src/Kernel</directory>
     </testsuite>
   </testsuites>
 </phpunit>

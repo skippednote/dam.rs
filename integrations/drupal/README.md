@@ -2,10 +2,23 @@
 
 Connects a Drupal 11 site to a damrs library. Assets stay in the DAM; Drupal stores a reference.
 
-**Status: four of six submodules.** `damrs`, `damrs_media`, `damrs_image_style` and `damrs_sync` are here
-and verified against a live Drupal 11.4 and against damrs itself — a rendered page carries signed URLs damrs
-honours, and an event from damrs updates the site. `damrs_editor` and `damrs_search_api` remain. See
-`TASKS.md` (M3d·5).
+**Status: five of six submodules.** `damrs`, `damrs_media`, `damrs_image_style`, `damrs_sync` and
+`damrs_editor` are here and verified against a live Drupal 11.4 and against damrs itself. Only
+`damrs_search_api` remains, and it is optional. See `TASKS.md` (M3d·5).
+
+## Inserting an asset into rich text
+
+Two paths, and only one of them needed code.
+
+**Core already handles media embeds.** `damrs_media` makes an ordinary media type, so CKEditor 5's Media
+Library button and the `media_embed` filter work with damrs assets today — verified, not assumed: a
+`<drupal-media>` tag pointing at a damrs media item renders our signed URL. No plugin of ours is involved.
+
+**Pasting a URL is what core cannot do.** Its OEmbed source discovers providers through the public registry
+and fetches with no credential, and damrs's oEmbed provider is authenticated on purpose — an
+unauthenticated endpoint that turns an asset id into a filename, a size and a preview is an enumeration API
+for somebody's whole library. So `damrs_editor` makes that call server-side with the connector's key, which
+is the arrangement damrs's own oEmbed module says it expects.
 
 ## The webhook endpoint is protected by its signature and nothing else
 
