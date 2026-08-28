@@ -19,5 +19,8 @@
         "psr-4": {
             "Drupal\\Tests\\damrs\\": "tests/src/"
         }
+    },
+    "suggest": {
+        "drupal/search_api": "Required by the optional damrs_search_api submodule, which queries damrs instead of a local index."
     }
 }

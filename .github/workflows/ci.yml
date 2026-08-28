@@ -222,6 +222,10 @@ jobs:
           cd site
           composer config --no-plugins allow-plugins true
           composer require --dev drupal/core-dev --with-all-dependencies --no-interaction --no-progress
+          # search_api is a contrib dependency of the optional damrs_search_api
+          # submodule. Installed here rather than skipping that suite: a test
+          # that only runs on somebody's laptop is one that stops being run.
+          composer require drupal/search_api --no-interaction --no-progress
       - name: install the module into it
         run: |
           mkdir -p site/web/modules/custom

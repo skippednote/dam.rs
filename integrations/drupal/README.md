@@ -2,9 +2,20 @@
 
 Connects a Drupal 11 site to a damrs library. Assets stay in the DAM; Drupal stores a reference.
 
-**Status: five of six submodules.** `damrs`, `damrs_media`, `damrs_image_style`, `damrs_sync` and
-`damrs_editor` are here and verified against a live Drupal 11.4 and against damrs itself. Only
-`damrs_search_api` remains, and it is optional. See `TASKS.md` (M3d·5).
+**Status: all six submodules.** `damrs`, `damrs_media`, `damrs_image_style`, `damrs_sync`, `damrs_editor`
+and `damrs_search_api`, each verified against a live Drupal 11.4 and against damrs itself. See `TASKS.md`
+(M3d·5).
+
+## Search does not index
+
+`damrs_search_api` is a Search API backend that proxies queries to damrs rather than copying the library
+into Drupal. Indexing would put a second copy of somebody's library inside the site and make every rights
+decision be taken against it, so an asset whose licence lapsed would keep appearing until the next reindex —
+which is the thing this whole connector exists to prevent.
+
+So `indexItems()` stores nothing and reports that honestly, and `search()` proxies. `/browse` returns the
+results and the facet rail from one call, counted over the same query, so a facet cannot claim forty while
+the grid beside it shows three. Requires the contrib `search_api` module.
 
 ## Inserting an asset into rich text
 

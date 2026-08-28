@@ -29,13 +29,13 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **Q** Commercial-DAM parity, 20 slices | **complete** — Q.1–Q.20, including Q.14b collections and Q.20a–d |
 | **Go-live Tier 1** Deployment image, backups, metrics, rate limiting, virus scan, C2PA | **done** — all six, each verified against the running stack |
 | **Archival** Tiering engine, restores, the storage screen | **done** — the sweep and poll jobs, the plan/quote/request/approve API, delivery's 202, bulk archive and restore, the restore panel |
-| **M3d** Drupal 11 connector | M3d·1–·4 done; M3d·5 in progress — five of six submodules done and verified, only the optional `damrs_search_api` to go |
+| **M3d** Drupal 11 connector | **done** — M3d·1–·4, and M3d·5's six submodules, verified against a live Drupal 11.4 |
 | **M4** Local AI: embeddings, OCR, ASR, faces, dedup, colour | dedup and colour **done** (M4a); the rest needs model files — see M4 below |
 | **M5** Claude enrichment, MCP server, AI Act marking G2, budget caps G20 | **done** — two clients, BYO keys, spend caps, the enrichment job, G2 marking, the review queue, batch backfill, NL→query, the MCP server |
 | **M6** Workflow/proofing, annotations, analytics | **done** — annotations (M6a), proofing (M6b), analytics (M6c) |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | G19 **done**; G7 crosswalk and dry-run **done**, transfer needs a source connector; G10 **done** (audit chain, user administration, SCIM, BYOK) |
 
-**Next up, in order:** Pre-GA G7·2 source connectors. G10 is complete. M3d·5 (the Drupal module) is nearly done: five of six submodules, only the optional `damrs_search_api` left. M4b (local ONNX models) stays parked on the model-distribution question.
+**Next up, in order:** Pre-GA G7·2 source connectors. G10 is complete. M3d·5 (the Drupal module) is complete: all six submodules. M4b (local ONNX models) stays parked on the model-distribution question.
 M4b (local models) is parked on a distribution decision — see the M4 section.
 
 **`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
@@ -2131,8 +2131,8 @@ API that does not exist yet is a module written twice.
   from a metadata lookup, which presents as the panel simply never opening — it cost a debugging round here and
   was already lurking, harmlessly, in the proofing suite's fixture.
 
-- [ ] **M3d·5 The Drupal module.** `integrations/drupal/`, Drupal 11+ only, six submodules (§11.2).
-  **Five of six done.** Only `damrs_search_api` remains, and §11.2 marks it optional.
+- [x] **M3d·5 The Drupal module.** `integrations/drupal/`, Drupal 11+ only, six submodules (§11.2).
+  **All six submodules done and verified.**
 
   **The deferral's premise was wrong, and checking cost nothing.** It read "nothing in this repository can
   run PHP or a Drupal install". True of the repository, false of the machine: DDEV was already installed, so
@@ -2262,7 +2262,22 @@ API that does not exist yet is a module written twice.
   reason and none of them was about what it appeared to be. Replacing the service in `register()`, at
   container-build time, is the fix, and all three kernel suites now do it.
 
-  **Not started.** `damrs_search_api`, which §11.2 marks optional.
+  **Done and verified: `damrs_search_api`.** A Search API backend that proxies to damrs rather than indexing
+  into Drupal. That is the design and not a shortcut: Search API's usual shape is index-then-query, and a
+  local copy would make every rights decision be taken against it — an asset whose licence lapsed would keep
+  appearing in results until the next reindex, which is exactly what the connector exists to prevent. So
+  `indexItems()` stores nothing and *says so*, because returning the ids would tell Search API's tracker
+  these items are searchable here and the lie surfaces later as results that never appear.
+
+  `/browse` rather than `/search`, because it answers with the results and the facet rail from one call,
+  counted over the same query — one round trip, and a facet cannot claim forty while the grid beside it shows
+  three.
+
+  Three refusals are pinned by tests: paging past damrs's depth cap raises rather than returning an empty
+  page that reads as "no more results"; an unreachable damrs empties the results with a warning rather than
+  throwing, since this backend can sit behind a block on every page; and clearing the Drupal index must not
+  contact damrs at all, because a site clearing its search index has not asked to empty somebody's asset
+  library.
 
 - [ ] **3.x AWS-native features to rely on instead of building.** *Raised 2026-08-18; needs a decision on
   items 1 and 2 because they change architecture.* Every item is AWS-only while D1 says S3-compatible, so
