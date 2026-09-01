@@ -32,26 +32,11 @@ use tower_http::trace::TraceLayer;
 pub struct AppDeps {
     /// The shared pool. Tenant scoping is per request through `TenantConn` (§5.2).
     pub global: PgPool,
-    /// A pool pinned to the delivery tenant's schema.
-    ///
-    /// The delivery route reads tenant-schema tables written unqualified, and it serves exactly one tenant by
-    /// construction — see `DeliveryState::global`. Separate from `global` rather than derived here, because
-    /// building it needs the database URL and this function has a `Config` that redacts it.
-    pub delivery_pool: PgPool,
     pub store: Arc<dyn dam_store::ResumableStore>,
     /// The blob store the delivery path presigns from.
     pub delivery_store: Arc<dyn dam_store::BlobStore>,
     pub indexes: Arc<IndexPool>,
     pub keyring: dam_core::signed_url::Keyring,
-    /// Only the delivery routes need this, and only until 3.x makes delivery tenant-resolved from the token
-    /// rather than from configuration.
-    pub delivery_tenant: uuid::Uuid,
-    /// The same tenant, by slug.
-    ///
-    /// Both, because they answer different questions: `Key::original` builds a path from the id, and a
-    /// connector's sealed secret is bound to the slug. Deriving either from the other would be a lookup on the
-    /// delivery path to learn something configuration already said.
-    pub delivery_tenant_slug: dam_core::TenantSlug,
     /// Builds a protocol router over the states this module assembles — today, the MCP server.
     ///
     /// A closure rather than a `Router` or a flag, and the reason is the dependency graph: `dam-mcp` calls the
@@ -100,11 +85,8 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
     let delivery = Arc::new(
         crate::delivery::DeliveryState::new(
             deps.global.clone(),
-            deps.delivery_pool.clone(),
             Arc::clone(&deps.delivery_store),
             deps.keyring.clone(),
-            deps.delivery_tenant,
-            deps.delivery_tenant_slug.clone(),
         )
         .with_public_url(cfg.server.public_url.clone())
         // Connector-signed URLs (M3d·2). A site signs its own render URLs so a page render never blocks on an
@@ -138,7 +120,6 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
             global: deps.global.clone(),
             connectors: Some(crate::browse::ConnectorAuth {
                 sealing: cfg.sealing_keyring(),
-                tenant_slug: deps.delivery_tenant_slug.clone(),
             }),
         }))
         .merge(crate::oembed::router(crate::oembed::OembedState {
@@ -147,7 +128,6 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
                 global: deps.global.clone(),
                 connectors: Some(crate::browse::ConnectorAuth {
                     sealing: cfg.sealing_keyring(),
-                    tenant_slug: deps.delivery_tenant_slug.clone(),
                 }),
             }),
             delivery: Some(Arc::clone(&delivery)),
@@ -280,6 +260,7 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
         .merge(crate::engagement::router(
             crate::engagement::EngagementState {
                 global: deps.global.clone(),
+                delivery: Some(Arc::clone(&delivery)),
             },
         ))
         .merge(crate::auto_import::router(

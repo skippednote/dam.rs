@@ -73,6 +73,7 @@ fn context(f: &Fixture) -> dam_pipeline::worker::Context {
         indexes: std::sync::Arc::new(dam_search::IndexPool::new(dam_search::PoolConfig::new(
             std::env::temp_dir().join("damrs-metering-index"),
         ))),
+        sealing: None,
         ai: None,
         scanner: None,
         signing_identity: None,

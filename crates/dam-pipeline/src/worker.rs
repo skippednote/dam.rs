@@ -107,6 +107,12 @@ pub struct Context {
     /// gets — and it is a *skip*, not a failure: a queue full of dead letters is a worse way to say "not
     /// configured" than a run row that says so.
     pub ai: Option<crate::enrich::AiContext>,
+    /// The deployment's sealing keyring, for opening what tenants have sealed.
+    ///
+    /// Held here rather than inside [`crate::enrich::AiContext`], where the only other sealed secret lives: a
+    /// deployment can have per-tenant signing identities and no model configuration at all, and reaching
+    /// through `ai` for the keyring would make signing silently depend on whether enrichment was set up.
+    pub sealing: Option<dam_core::sealed::SealingKeyring>,
     /// This worker's id, for the lease. Distinct per process, or two workers share a lease and both run the
     /// same job while each believes it holds it.
     pub worker: String,
@@ -164,6 +170,7 @@ pub async fn run(context: &Context, shutdown: impl std::future::Future<Output = 
         if metering_swept.elapsed() >= METERING_SWEEP {
             start_missing_metering_chains(&context.global).await;
             start_missing_scrub_chains(&context.global).await;
+            sweep_abandoned_uploads(context).await;
             metering_swept = std::time::Instant::now();
         }
 
@@ -289,6 +296,16 @@ pub async fn handle(context: &Context, job: &Job) -> Result<()> {
 
         kind::DERIVE => {
             let asset_id = uuid_field(job, "asset_id")?;
+            // The tenant's own signing identity when it has one (G10·3b). Resolved per job rather than held
+            // on the context, so a rotation takes effect on the next derivative rather than the next restart.
+            let signing = crate::signing::for_tenant(
+                &context.global,
+                &slug,
+                job.tenant_id,
+                context.sealing.as_ref(),
+                context.signing_identity.as_ref(),
+            )
+            .await?;
             let derived = crate::derive::asset(
                 &context.global,
                 // The resumable store is a blob store; the upcast is because the derive stage needs no
@@ -297,7 +314,7 @@ pub async fn handle(context: &Context, job: &Job) -> Result<()> {
                 &slug,
                 job.tenant_id,
                 asset_id,
-                context.signing_identity.as_ref(),
+                signing.identity(),
             )
             .await?;
 
@@ -354,6 +371,16 @@ pub async fn handle(context: &Context, job: &Job) -> Result<()> {
         kind::RENDER_CONVERSION => {
             let asset_id = uuid_field(job, "asset_id")?;
             let key = string_field(job, "conversion")?;
+            // The tenant's own signing identity when it has one (G10·3b). Resolved per job rather than held
+            // on the context, so a rotation takes effect on the next derivative rather than the next restart.
+            let signing = crate::signing::for_tenant(
+                &context.global,
+                &slug,
+                job.tenant_id,
+                context.sealing.as_ref(),
+                context.signing_identity.as_ref(),
+            )
+            .await?;
             let rendered = crate::derive::conversion(
                 &context.global,
                 context.store.as_ref() as &dyn BlobStore,
@@ -361,7 +388,7 @@ pub async fn handle(context: &Context, job: &Job) -> Result<()> {
                 job.tenant_id,
                 asset_id,
                 &key,
-                context.signing_identity.as_ref(),
+                signing.identity(),
             )
             .await?;
 
@@ -1119,6 +1146,76 @@ pub async fn enqueue_bulk(
             .dedupe_key(format!("bulk:{operation_id}")),
     )
     .await?)
+}
+
+/// Rescues or reclaims uploads whose client never came back (3.x item 1).
+///
+/// Here rather than as a job kind, and beside the metering repair for the same reason it is: this is a
+/// *repair* rather than a unit of tenant work. A job would need something to enqueue it, and the thing that
+/// forgets to enqueue a repair is the same class of bug the repair exists to fix — which is exactly how
+/// `usage_rollup` came to have tenants with no chain at all.
+///
+/// Never fails the loop. Every outcome here is either logged or counted; a sweep that could stop a worker
+/// claiming jobs would trade a lost upload for a stalled queue.
+async fn sweep_abandoned_uploads(context: &Context) {
+    let tenants: Vec<(Uuid, String)> = match sqlx::query_as(
+        "SELECT id, slug FROM dam_global.tenants WHERE status = 'active' ORDER BY slug",
+    )
+    .fetch_all(&context.global)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::warn!(%error, "listing tenants for the abandoned-upload sweep");
+            return;
+        }
+    };
+
+    let mut total = crate::abandoned::Swept::default();
+    for (tenant_id, slug) in tenants {
+        let Ok(slug) = TenantSlug::new(&slug) else {
+            continue;
+        };
+        let mut conn = match dam_db::TenantConn::begin(&context.global, &slug).await {
+            Ok(conn) => conn,
+            Err(error) => {
+                tracing::warn!(%error, %tenant_id, "opening a tenant for the abandoned-upload sweep");
+                continue;
+            }
+        };
+        let swept = crate::abandoned::sweep_tenant(
+            &context.global,
+            conn.executor(),
+            context.store.as_ref(),
+            tenant_id,
+        )
+        .await;
+        match swept {
+            Ok(swept) => {
+                if let Err(error) = conn.commit().await {
+                    tracing::warn!(%error, %tenant_id, "committing the abandoned-upload sweep");
+                    continue;
+                }
+                total.rescued += swept.rescued;
+                total.reclaimed += swept.reclaimed;
+                total.deferred += swept.deferred;
+            }
+            Err(error) => {
+                tracing::warn!(%error, %tenant_id, "sweeping abandoned uploads");
+            }
+        }
+    }
+
+    // Logged only when it did something. A sweep that says "0, 0, 0" every five minutes is a log nobody
+    // reads, and the rescued count is the one worth seeing: it is a user's file that would have been deleted.
+    if total.rescued > 0 || total.reclaimed > 0 || total.deferred > 0 {
+        tracing::info!(
+            rescued = total.rescued,
+            reclaimed = total.reclaimed,
+            deferred = total.deferred,
+            "swept abandoned uploads",
+        );
+    }
 }
 
 /// Queues finalisation for a completed upload.

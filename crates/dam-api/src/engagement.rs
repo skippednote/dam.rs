@@ -41,6 +41,14 @@ use uuid::Uuid;
 /// What the engagement endpoints need.
 pub struct EngagementState {
     pub global: PgPool,
+    /// The delivery keyring, for minting the thumbnail links these lists draw.
+    ///
+    /// The third state to need this, and its absence here was the same visible bug twice over: `/assets` and
+    /// `/search` fill `thumbnail_url` and `/favourites` and `/watches` did not, so the identical assets showed
+    /// pictures while browsing and grey "Preview processing" placeholders the moment they were favourited.
+    /// Optional for the reason the other two are: the endpoint tests build a state without one, and a
+    /// deployment that cannot sign a preview should return the list without pictures rather than no list.
+    pub delivery: Option<Arc<crate::delivery::DeliveryState>>,
 }
 
 impl std::fmt::Debug for EngagementState {
@@ -363,15 +371,26 @@ async fn read_list(
     // than one set query, exactly as the ranked search path does and for the same reason: a set query returns
     // rows in whatever order it likes, and the order *is* the answer here.
     let engaged = crate::assets::page_engagement(&caller, conn.executor(), &asset_ids).await?;
+    // Which of these have a thumbnail, in one query for the page rather than one per row — the same read
+    // `/assets` and `/search` do, for the same reason. Without it every tile here renders "Preview processing"
+    // however many derivatives exist, because an absent `thumbnail_url` is defined to mean "not rendered yet".
+    let with_thumbnails = dam_db::derivatives::which_have(
+        conn.executor(),
+        &asset_ids,
+        &crate::assets::thumb_op_hash(),
+    )
+    .await?;
     let mut items = Vec::with_capacity(asset_ids.len());
     for asset_id in &asset_ids {
         if let Some(found) =
             dam_db::assets::detail(conn.executor(), &caller.predicate, *asset_id).await?
         {
-            items.push(crate::assets::summary_with_engagement(
-                &found.summary,
-                &engaged,
-            ));
+            let mut summary = crate::assets::summary_with_engagement(&found.summary, &engaged);
+            if with_thumbnails.contains(asset_id) {
+                summary.thumbnail_url =
+                    crate::assets::thumbnail_url(state.delivery.as_deref(), &caller, *asset_id);
+            }
+            items.push(summary);
         }
     }
     conn.commit().await?;

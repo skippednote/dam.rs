@@ -210,6 +210,27 @@ impl S3Store {
     /// the bucket's default key. The only thing that makes BYOK a guarantee rather than an intention is a
     /// bucket policy denying `s3:PutObject` without the expected key id — `docker/DEPLOY.md` states that as
     /// required, because a deployment that treats it as optional believes it has BYOK and does not.
+    /// The same store, writing under a different key (G10·3b).
+    ///
+    /// A cheap clone: `Client` is internally reference-counted, so this is a handle, not a second connection
+    /// pool. That is what makes per-tenant BYOK expressible without a store per tenant held somewhere and
+    /// invalidated on rotation — a caller that knows whose write this is derives a store for it, uses it, and
+    /// drops it.
+    ///
+    /// `None` clears the key rather than keeping the current one, so this is total: a caller resolving "this
+    /// tenant has no key of its own" gets the bucket default, which is what it asked for. Keeping the
+    /// previous key on `None` would silently encrypt one tenant's object under another's, which is the exact
+    /// failure per-tenant keys exist to prevent.
+    #[must_use]
+    pub fn writing_under(&self, key_id: Option<&str>) -> Self {
+        let mut derived = self.clone();
+        derived.sse_kms_key_id = key_id
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+            .map(ToOwned::to_owned);
+        derived
+    }
+
     #[must_use]
     pub fn with_sse_kms(mut self, key_id: impl Into<String>) -> Self {
         // Blank means no key, matching what `StorageConfig` does with an empty variable. Without this the two

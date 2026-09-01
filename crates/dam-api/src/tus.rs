@@ -186,7 +186,25 @@ async fn options(State(state): State<Arc<AppState>>) -> Response {
     (StatusCode::NO_CONTENT, headers).into_response()
 }
 
-async fn create(
+/// Opens a resumable upload session (TUS 1.0.0).
+#[utoipa::path(
+    post,
+    path = "/uploads",
+    params(
+        ("Tus-Resumable" = String, Header, description = "Must be 1.0.0"),
+        ("Upload-Length" = Option<u64>, Header, description = "Total size in bytes. Omit only with Upload-Defer-Length: 1"),
+        ("Upload-Defer-Length" = Option<String>, Header, description = "\"1\" when the size is not yet known"),
+        ("Upload-Metadata" = Option<String>, Header, description = "TUS metadata: comma-separated `key base64value` pairs, e.g. `filename <base64>`"),
+    ),
+    responses(
+        (status = 201, description = "Session created. `Location` carries the upload URL"),
+        (status = 400, description = "A required header is missing or unparseable"),
+        (status = 412, description = "Tus-Resumable is absent or names another version"),
+        (status = 413, description = "Upload-Length exceeds the configured maximum"),
+    ),
+    tag = "uploads",
+)]
+pub(crate) async fn create(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Response, Refusal> {
@@ -304,7 +322,27 @@ async fn create(
 /// and re-measures the object after the fact, and why this endpoint records a session rather than
 /// trusting the response: the session's declared length is the cross-check that finalisation compares
 /// against, and a key with no session behind it is an object nothing will ever adopt.
-async fn presign(
+/// Issues a presigned `PUT` for a direct-to-store upload.
+///
+/// Takes no request body. The size and metadata arrive as TUS headers, because this shares the version gate
+/// and the session bookkeeping with the resumable path even though a single PUT is not itself a TUS operation.
+#[utoipa::path(
+    post,
+    path = "/uploads/presign",
+    params(
+        ("Tus-Resumable" = String, Header, description = "Must be 1.0.0"),
+        ("Upload-Length" = u64, Header, description = "Total size in bytes. Required here: a single PUT cannot defer it"),
+        ("Upload-Metadata" = Option<String>, Header, description = "TUS metadata: comma-separated `key base64value` pairs"),
+    ),
+    responses(
+        (status = 201, description = "A presigned PUT, the upload id, its expiry and the staging key"),
+        (status = 400, description = "Upload-Length is missing or unparseable"),
+        (status = 412, description = "Tus-Resumable is absent or names another version"),
+        (status = 413, description = "Upload-Length exceeds the configured maximum"),
+    ),
+    tag = "uploads",
+)]
+pub(crate) async fn presign(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Response, Refusal> {
@@ -367,7 +405,22 @@ async fn presign(
         .into_response())
 }
 
-async fn head_upload(
+/// How many bytes of a session have arrived, so a client can resume.
+#[utoipa::path(
+    head,
+    path = "/uploads/{upload_id}",
+    params(
+        ("upload_id" = String, Path, description = "The session id from the create response's Location"),
+        ("Tus-Resumable" = String, Header, description = "Must be 1.0.0"),
+    ),
+    responses(
+        (status = 200, description = "`Upload-Offset` carries the bytes stored so far"),
+        (status = 404, description = "No such session, or not one this key may see"),
+        (status = 412, description = "Tus-Resumable is absent or names another version"),
+    ),
+    tag = "uploads",
+)]
+pub(crate) async fn head_upload(
     State(state): State<Arc<AppState>>,
     Path(upload_id): Path<String>,
     headers: HeaderMap,
@@ -401,7 +454,26 @@ async fn head_upload(
     Ok((StatusCode::OK, out).into_response())
 }
 
-async fn patch_upload(
+/// Appends a chunk at a byte offset.
+#[utoipa::path(
+    patch,
+    path = "/uploads/{upload_id}",
+    request_body(content = String, description = "Raw bytes", content_type = "application/offset+octet-stream"),
+    params(
+        ("upload_id" = String, Path, description = "The session id from the create response's Location"),
+        ("Tus-Resumable" = String, Header, description = "Must be 1.0.0"),
+        ("Upload-Offset" = u64, Header, description = "Where these bytes begin. Must equal the server's current offset"),
+    ),
+    responses(
+        (status = 204, description = "Appended. `Upload-Offset` carries the new offset"),
+        (status = 404, description = "No such session, or not one this key may see"),
+        (status = 409, description = "Upload-Offset does not match the server's offset"),
+        (status = 412, description = "Tus-Resumable is absent or names another version"),
+        (status = 415, description = "Content-Type is not application/offset+octet-stream"),
+    ),
+    tag = "uploads",
+)]
+pub(crate) async fn patch_upload(
     State(state): State<Arc<AppState>>,
     Path(upload_id): Path<String>,
     headers: HeaderMap,
@@ -634,7 +706,7 @@ impl Metadata {
 
 /// Every way a request can be refused, and the status each maps to.
 #[derive(Debug)]
-enum Refusal {
+pub(crate) enum Refusal {
     BadRequest,
     Unauthorized,
     Forbidden,

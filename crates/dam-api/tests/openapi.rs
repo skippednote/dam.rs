@@ -211,21 +211,25 @@ async fn every_documented_path_is_mounted_on_the_app_router() {
     let mut probed = 0usize;
     let mut unmounted = Vec::new();
     for (path, methods) in doc["paths"].as_object().expect("paths") {
-        let method = methods
+        let documented: Vec<String> = methods
             .as_object()
             .expect("methods")
             .keys()
-            .find(|name| {
+            .filter(|name| {
                 matches!(
                     name.as_str(),
                     "get" | "post" | "put" | "patch" | "delete" | "head"
                 )
             })
-            .cloned()
-            .expect("every documented path has a method");
+            .map(|name| name.to_uppercase())
+            .collect();
+        assert!(
+            !documented.is_empty(),
+            "every documented path has a method: {path}"
+        );
 
-        // Template parameters get a syntactically valid stand-in. It is never dereferenced: the request is
-        // refused at authentication, long before a handler reads a path parameter.
+        // Template parameters get a syntactically valid stand-in. It is never dereferenced — see below, the
+        // probe never reaches a handler.
         let concrete = path
             .split('/')
             .map(|segment| {
@@ -238,11 +242,23 @@ async fn every_documented_path_is_mounted_on_the_app_router() {
             .collect::<Vec<_>>()
             .join("/");
 
+        // Probed with a method no route implements, rather than with the documented one.
+        //
+        // The router answers `405` with an `Allow` header naming the methods a matched path really serves, and
+        // `404` when nothing matches at all — so mounted and unmounted are distinguished without any handler
+        // running, without a credential, and without a valid path parameter.
+        //
+        // The earlier version sent the documented method and read `404` as "not mounted". That worked only
+        // because every route refused at authentication before its handler could answer, and `/d/{token}`
+        // broke the assumption the moment it was documented: delivery is deliberately unauthenticated — the
+        // token *is* the credential — and it deliberately answers `404` for a token it cannot verify, which is
+        // the property that stops a signed URL from being an oracle. A mounted route was therefore reported as
+        // missing. Asking about methods instead removes the assumption rather than special-casing the route.
         let response = app
             .clone()
             .oneshot(
                 Request::builder()
-                    .method(method.to_uppercase().as_str())
+                    .method("TRACE")
                     .uri(&concrete)
                     .body(Body::empty())
                     .expect("request"),
@@ -252,7 +268,30 @@ async fn every_documented_path_is_mounted_on_the_app_router() {
 
         probed += 1;
         if response.status() == StatusCode::NOT_FOUND {
-            unmounted.push(format!("{} {path}", method.to_uppercase()));
+            unmounted.push(format!("{path} (no route at all)"));
+            continue;
+        }
+        let allowed: Vec<String> = response
+            .headers()
+            .get(axum::http::header::ALLOW)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .split(',')
+            .map(|name| name.trim().to_uppercase())
+            .filter(|name| !name.is_empty())
+            .collect();
+        // HEAD rides along with GET in axum and OPTIONS is answered by the CORS layer, so neither absence
+        // from `Allow` is a real gap.
+        let missing: Vec<&String> = documented
+            .iter()
+            .filter(|name| {
+                name.as_str() != "HEAD" && !allowed.iter().any(|have| have == name.as_str())
+            })
+            .collect();
+        if !missing.is_empty() {
+            unmounted.push(format!(
+                "{path} documents {missing:?} but serves {allowed:?}"
+            ));
         }
     }
 
@@ -280,7 +319,6 @@ fn route_inspection_deps() -> dam_api::app::AppDeps {
     };
     dam_api::app::AppDeps {
         global: lazy("global"),
-        delivery_pool: lazy("delivery"),
         store: std::sync::Arc::new(dam_store::FakeS3Store::with_test_clock().0),
         delivery_store: std::sync::Arc::new(dam_store::FakeS3Store::with_test_clock().0),
         indexes: std::sync::Arc::new(dam_search::IndexPool::new(dam_search::PoolConfig::new(
@@ -290,8 +328,6 @@ fn route_inspection_deps() -> dam_api::app::AppDeps {
             "k1",
             dam_core::Secret::new("route-inspection".to_owned()),
         ),
-        delivery_tenant: uuid::Uuid::nil(),
-        delivery_tenant_slug: dam_core::TenantSlug::new("acme").expect("a slug"),
         // Never called: OPTIONS is answered by the routing table before any handler runs.
         model_transport: std::sync::Arc::new(dam_ai::testing::Recorded::always(
             200,

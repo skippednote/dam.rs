@@ -47,20 +47,11 @@ async fn fixture() -> Fixture {
     provision(&global, "globex", "b@example.com").await;
     let read_only_key = scoped_key(&global, "acme").await;
 
-    let tenant_id: Uuid =
-        sqlx::query_scalar("SELECT id FROM dam_global.tenants WHERE slug = 'acme'")
-            .fetch_one(&global)
-            .await
-            .expect("tenant id");
-
     let store: Arc<dyn BlobStore> = Arc::new(FakeS3Store::with_test_clock().0);
     let delivery = Arc::new(DeliveryState::new(
         pool.clone(),
-        pool.clone(),
         store,
         Keyring::single("k1", Secret::new("a-signing-key".to_owned())),
-        tenant_id,
-        dam_core::TenantSlug::new("acme").expect("a slug"),
     ));
 
     let app = router(ShareState {
@@ -348,7 +339,7 @@ async fn the_portal_serves_a_licensed_share_without_any_credential(f: &Fixture) 
     let target = licensed_asset(f, "portal-ok").await;
     let (_, token) = share(f, json!({"asset_id": target})).await;
 
-    let response = send(&f.app, public(&format!("/share/{token}"), json!({}))).await;
+    let response = send(&f.app, public(&format!("/share/acme.{token}"), json!({}))).await;
     assert_eq!(response.status(), StatusCode::OK);
     let view = json(response).await;
     assert_eq!(view["filename"], "portal-ok.jpg");
@@ -365,7 +356,7 @@ async fn the_portal_serves_a_licensed_share_without_any_credential(f: &Fixture) 
 async fn a_dead_token_says_why_but_never_what(f: &Fixture) {
     let response = send(
         &f.app,
-        public(&format!("/share/{}", "ab".repeat(32)), json!({})),
+        public(&format!("/share/acme.{}", "ab".repeat(32)), json!({})),
     )
     .await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
@@ -383,7 +374,7 @@ async fn a_passcode_gates_the_portal_and_the_download_alike(f: &Fixture) {
     let target = licensed_asset(f, "portal-pass").await;
     let (_, token) = share(f, json!({"asset_id": target, "passcode": "spring2026"})).await;
 
-    let bare = send(&f.app, public(&format!("/share/{token}"), json!({}))).await;
+    let bare = send(&f.app, public(&format!("/share/acme.{token}"), json!({}))).await;
     assert_eq!(bare.status(), StatusCode::UNAUTHORIZED);
     assert!(
         json(bare).await["reason"]
@@ -395,7 +386,10 @@ async fn a_passcode_gates_the_portal_and_the_download_alike(f: &Fixture) {
 
     let wrong = send(
         &f.app,
-        public(&format!("/share/{token}"), json!({"passcode": "wrong"})),
+        public(
+            &format!("/share/acme.{token}"),
+            json!({"passcode": "wrong"}),
+        ),
     )
     .await;
     assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
@@ -410,7 +404,7 @@ async fn a_passcode_gates_the_portal_and_the_download_alike(f: &Fixture) {
     let right = send(
         &f.app,
         public(
-            &format!("/share/{token}"),
+            &format!("/share/acme.{token}"),
             json!({"passcode": "spring2026"}),
         ),
     )
@@ -420,7 +414,7 @@ async fn a_passcode_gates_the_portal_and_the_download_alike(f: &Fixture) {
     // The download route runs the same gate: a passcode checked on view but not on download is no gate.
     let download_bare = send(
         &f.app,
-        public(&format!("/share/{token}/download"), json!({})),
+        public(&format!("/share/acme.{token}/download"), json!({})),
     )
     .await;
     assert_eq!(download_bare.status(), StatusCode::UNAUTHORIZED);
@@ -432,7 +426,7 @@ async fn downloads_consume_the_limit_and_a_refusal_does_not(f: &Fixture) {
 
     let first = send(
         &f.app,
-        public(&format!("/share/{token}/download"), json!({})),
+        public(&format!("/share/acme.{token}/download"), json!({})),
     )
     .await;
     assert_eq!(first.status(), StatusCode::OK);
@@ -442,7 +436,7 @@ async fn downloads_consume_the_limit_and_a_refusal_does_not(f: &Fixture) {
 
     let second = send(
         &f.app,
-        public(&format!("/share/{token}/download"), json!({})),
+        public(&format!("/share/acme.{token}/download"), json!({})),
     )
     .await;
     assert_eq!(
@@ -464,7 +458,7 @@ async fn an_unlicensed_asset_shares_its_name_but_never_its_bytes(f: &Fixture) {
     let target = unlicensed_asset(f, "portal-unlicensed").await;
     let (_, token) = share(f, json!({"asset_id": target})).await;
 
-    let view = json(send(&f.app, public(&format!("/share/{token}"), json!({}))).await).await;
+    let view = json(send(&f.app, public(&format!("/share/acme.{token}"), json!({}))).await).await;
     assert_eq!(view["filename"], "portal-unlicensed.jpg");
     assert!(
         view["preview_url"].is_null(),
@@ -479,7 +473,7 @@ async fn an_unlicensed_asset_shares_its_name_but_never_its_bytes(f: &Fixture) {
 
     let download = send(
         &f.app,
-        public(&format!("/share/{token}/download"), json!({})),
+        public(&format!("/share/acme.{token}/download"), json!({})),
     )
     .await;
     assert_eq!(download.status(), StatusCode::FORBIDDEN);
@@ -498,7 +492,7 @@ async fn revoking_kills_the_portal_immediately(f: &Fixture) {
     let target = licensed_asset(f, "portal-revoked").await;
     let (id, token) = share(f, json!({"asset_id": target})).await;
     assert_eq!(
-        send(&f.app, public(&format!("/share/{token}"), json!({})))
+        send(&f.app, public(&format!("/share/acme.{token}"), json!({})))
             .await
             .status(),
         StatusCode::OK
@@ -510,7 +504,7 @@ async fn revoking_kills_the_portal_immediately(f: &Fixture) {
     )
     .await;
 
-    let after = send(&f.app, public(&format!("/share/{token}"), json!({}))).await;
+    let after = send(&f.app, public(&format!("/share/acme.{token}"), json!({}))).await;
     assert_eq!(after.status(), StatusCode::NOT_FOUND);
     assert!(
         json(after).await["reason"]
@@ -533,8 +527,8 @@ async fn a_eula_gated_share_fails_closed_until_the_flow_exists(f: &Fixture) {
         .expect("set the flag");
 
     for uri in [
-        format!("/share/{token}"),
-        format!("/share/{token}/download"),
+        format!("/share/acme.{token}"),
+        format!("/share/acme.{token}/download"),
     ] {
         let response = send(&f.app, public(&uri, json!({}))).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}");
@@ -653,7 +647,11 @@ async fn an_order_pickup_renders_the_whole_set(f: &Fixture) {
     let two = licensed_asset(f, "pickup-two").await;
     let (_, token) = order_pickup(f, &[one, two], Some("print")).await;
 
-    let response = send(&f.app, public(&format!("/share/{token}/set"), json!({}))).await;
+    let response = send(
+        &f.app,
+        public(&format!("/share/acme.{token}/set"), json!({})),
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = json(response).await;
     assert!(
@@ -683,7 +681,7 @@ async fn an_order_pickup_renders_the_whole_set(f: &Fixture) {
 
     // The single-asset portal answers this token by pointing at the right route rather than 404ing blankly, and
     // never by reading an order id as an asset id.
-    let wrong = send(&f.app, public(&format!("/share/{token}"), json!({}))).await;
+    let wrong = send(&f.app, public(&format!("/share/acme.{token}"), json!({}))).await;
     assert_eq!(wrong.status(), StatusCode::NOT_FOUND);
     let reason = json(wrong).await;
     assert!(
@@ -702,7 +700,10 @@ async fn a_pickup_download_records_the_declared_use(f: &Fixture) {
 
     let response = send(
         &f.app,
-        public(&format!("/share/{token}/items/{one}/download"), json!({})),
+        public(
+            &format!("/share/acme.{token}/items/{one}/download"),
+            json!({}),
+        ),
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -747,7 +748,11 @@ async fn an_asset_share_is_not_a_pickup(f: &Fixture) {
     let one = licensed_asset(f, "not-a-pickup").await;
     let (_, token) = share(f, json!({ "asset_id": one })).await;
 
-    let response = send(&f.app, public(&format!("/share/{token}/set"), json!({}))).await;
+    let response = send(
+        &f.app,
+        public(&format!("/share/acme.{token}/set"), json!({})),
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let body = json(response).await;
     assert!(
@@ -763,7 +768,10 @@ async fn an_asset_share_is_not_a_pickup(f: &Fixture) {
     // link that was never a pickup.
     let item = send(
         &f.app,
-        public(&format!("/share/{token}/items/{one}/download"), json!({})),
+        public(
+            &format!("/share/acme.{token}/items/{one}/download"),
+            json!({}),
+        ),
     )
     .await;
     assert_eq!(item.status(), StatusCode::NOT_FOUND);
@@ -786,7 +794,7 @@ async fn a_pickup_refuses_an_asset_that_is_not_in_it(f: &Fixture) {
     let response = send(
         &f.app,
         public(
-            &format!("/share/{token}/items/{outside}/download"),
+            &format!("/share/acme.{token}/items/{outside}/download"),
             json!({}),
         ),
     )
@@ -811,7 +819,11 @@ async fn one_unlicensed_item_does_not_deny_the_rest(f: &Fixture) {
     let bad = unlicensed_asset(f, "pickup-bad").await;
     let (_, token) = order_pickup(f, &[good, bad], None).await;
 
-    let response = send(&f.app, public(&format!("/share/{token}/set"), json!({}))).await;
+    let response = send(
+        &f.app,
+        public(&format!("/share/acme.{token}/set"), json!({})),
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = json(response).await;
     let items = body["items"].as_array().expect("items");
@@ -830,7 +842,10 @@ async fn one_unlicensed_item_does_not_deny_the_rest(f: &Fixture) {
     assert!(refused["filename"].is_string(), "{body}");
     let allowed = send(
         &f.app,
-        public(&format!("/share/{token}/items/{good}/download"), json!({})),
+        public(
+            &format!("/share/acme.{token}/items/{good}/download"),
+            json!({}),
+        ),
     )
     .await;
     assert_eq!(allowed.status(), StatusCode::OK);
@@ -838,7 +853,10 @@ async fn one_unlicensed_item_does_not_deny_the_rest(f: &Fixture) {
     // The unlicensed one is refused at the item route too, with the reason rather than a flat 404.
     let denied = send(
         &f.app,
-        public(&format!("/share/{token}/items/{bad}/download"), json!({})),
+        public(
+            &format!("/share/acme.{token}/items/{bad}/download"),
+            json!({}),
+        ),
     )
     .await;
     assert_eq!(denied.status(), StatusCode::FORBIDDEN);

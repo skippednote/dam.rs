@@ -124,9 +124,11 @@ pub struct ShareSpec<'a> {
 }
 
 /// Creates a share link and returns its one-time token.
-pub async fn create(pool: &sqlx::PgPool, spec: &ShareSpec<'_>) -> Result<NewShare, Error> {
-    let mut conn = pool.acquire().await?;
-    create_on(&mut conn, spec).await
+pub async fn create(
+    conn: &mut sqlx::PgConnection,
+    spec: &ShareSpec<'_>,
+) -> Result<NewShare, Error> {
+    create_on(&mut *conn, spec).await
 }
 
 /// The same creation, on a connection the caller has already scoped — see `bulk::create_on` for why.
@@ -171,11 +173,11 @@ pub async fn create_on(
 /// The passcode is separate because the two answers are different: a live link with a wrong passcode should
 /// prompt again, while a revoked one should not prompt at all.
 pub async fn resolve(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     token: &str,
     now: DateTime<Utc>,
 ) -> Result<Share, ShareRefusal> {
-    let share = load_by_token(pool, token)
+    let share = load_by_token(&mut *conn, token)
         .await
         .map_err(|_| ShareRefusal::NotFound)?
         .ok_or(ShareRefusal::NotFound)?;
@@ -202,14 +204,14 @@ pub async fn resolve(
 /// refusals: "a passcode is required" tells a recipient to look for one in the email, and "that passcode is
 /// not correct" tells them to re-read it.
 pub async fn check_passcode(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     share_id: Uuid,
     presented: Option<&str>,
 ) -> Result<(), ShareRefusal> {
     let stored: Option<Option<String>> =
         sqlx::query_scalar("SELECT passcode_hash FROM share_links WHERE id = $1")
             .bind(share_id)
-            .fetch_optional(pool)
+            .fetch_optional(&mut *conn)
             .await
             .map_err(|_| ShareRefusal::NotFound)?;
     let stored = stored.ok_or(ShareRefusal::NotFound)?;
@@ -236,7 +238,7 @@ pub async fn check_passcode(
 /// gives — so a caller that forgets this still cannot exceed the limit by more than the requests already in
 /// flight when it checked.
 pub async fn consume_download(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     share_id: Uuid,
     now: DateTime<Utc>,
 ) -> Result<i32, ShareRefusal> {
@@ -249,7 +251,7 @@ pub async fn consume_download(
     )
     .bind(share_id)
     .bind(now)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *conn)
     .await
     .map_err(|_| ShareRefusal::NotFound)?;
 
@@ -261,12 +263,11 @@ pub async fn consume_download(
 /// Returns whether this call was the one that revoked it, so an audit entry is written once rather than on
 /// every retry.
 pub async fn revoke(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     share_id: Uuid,
     now: DateTime<Utc>,
 ) -> Result<bool, Error> {
-    let mut conn = pool.acquire().await?;
-    revoke_on(&mut conn, share_id, now).await
+    revoke_on(&mut *conn, share_id, now).await
 }
 
 /// The same revocation, on a scoped connection.
@@ -370,12 +371,11 @@ pub async fn list_on(conn: &mut sqlx::PgConnection, limit: i64) -> Result<Vec<Li
 /// lookup, because it runs before every download and the alternative is revocation that takes effect
 /// eventually.
 pub async fn is_live(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     share_id: Uuid,
     now: DateTime<Utc>,
 ) -> Result<bool, Error> {
-    let mut conn = pool.acquire().await?;
-    is_live_on(&mut conn, share_id, now).await
+    is_live_on(&mut *conn, share_id, now).await
 }
 
 /// [`is_live`], against a caller's connection.
@@ -407,7 +407,7 @@ pub async fn is_live_on(
 /// for instance — and still has to ask the share machinery whether it is usable. Returning the row rather than a
 /// verdict is deliberate: the caller then runs the same `is_live` and `check_passcode` pair every other path
 /// runs, instead of a second copy of those rules.
-pub async fn by_id(pool: &sqlx::PgPool, id: Uuid) -> Result<Option<Share>, Error> {
+pub async fn by_id(conn: &mut sqlx::PgConnection, id: Uuid) -> Result<Option<Share>, Error> {
     let row = sqlx::query_as::<
         _,
         (
@@ -428,7 +428,7 @@ pub async fn by_id(pool: &sqlx::PgPool, id: Uuid) -> Result<Option<Share>, Error
          FROM share_links WHERE id = $1",
     )
     .bind(id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *conn)
     .await?;
 
     Ok(row.map(
@@ -483,7 +483,7 @@ impl ShareRefusal {
 }
 
 /// Loads a share by its presented token.
-async fn load_by_token(pool: &sqlx::PgPool, token: &str) -> Result<Option<Share>, Error> {
+async fn load_by_token(conn: &mut sqlx::PgConnection, token: &str) -> Result<Option<Share>, Error> {
     let row = sqlx::query_as::<
         _,
         (
@@ -505,7 +505,7 @@ async fn load_by_token(pool: &sqlx::PgPool, token: &str) -> Result<Option<Share>
     )
     // The digest, never the token — so the plaintext appears in no statement, query log or error.
     .bind(token_digest(token))
-    .fetch_optional(pool)
+    .fetch_optional(&mut *conn)
     .await?;
 
     Ok(row.map(

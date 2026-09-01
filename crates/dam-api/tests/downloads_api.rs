@@ -89,17 +89,8 @@ async fn fixture() -> Fixture {
     let keyring = Keyring::single("k1", Secret::new("a-signing-key".to_owned()));
     let clock = Arc::new(dam_core::TestClock::new());
     clock.set(now());
-    let delivery = Arc::new(
-        DeliveryState::new(
-            acme.clone(),
-            acme.clone(),
-            store,
-            keyring,
-            tenant_id,
-            dam_core::TenantSlug::new("acme").expect("a slug"),
-        )
-        .with_clock(clock.clone()),
-    );
+    let delivery =
+        Arc::new(DeliveryState::new(acme.clone(), store, keyring).with_clock(clock.clone()));
 
     let app = router(DownloadState {
         global: global.clone(),

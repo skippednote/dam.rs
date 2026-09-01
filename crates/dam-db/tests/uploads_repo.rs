@@ -232,7 +232,9 @@ async fn only_expired_active_sessions_are_reapable() {
         .await
         .expect("create");
 
-    let reapable = uploads::reapable(&pool, 100).await.expect("reapable");
+    let reapable = uploads::reapable(&mut pool.acquire().await.expect("conn"), 100)
+        .await
+        .expect("reapable");
     let ids: Vec<&str> = reapable.iter().map(|s| s.id.as_str()).collect();
     assert_eq!(
         ids,
@@ -281,7 +283,9 @@ async fn reaping_aborts_the_multipart_upload_and_removes_every_staged_object() {
     uploads::force_expiry_for_test(&pool, &session.id, -1)
         .await
         .expect("age it");
-    let reaped = uploads::reap(&pool, &store, 100).await.expect("reap");
+    let reaped = uploads::reap(&mut pool.acquire().await.expect("conn"), &store, 100)
+        .await
+        .expect("reap");
     assert_eq!(reaped, 1);
 
     let left = store
@@ -311,7 +315,9 @@ async fn reaping_is_idempotent_and_reaping_nothing_is_not_an_error() {
     let store = s3.store();
 
     assert_eq!(
-        uploads::reap(&pool, &store, 100).await.expect("empty reap"),
+        uploads::reap(&mut pool.acquire().await.expect("conn"), &store, 100)
+            .await
+            .expect("empty reap"),
         0,
         "a reaper that errors when there is nothing to do fails its own cron every minute"
     );
@@ -322,9 +328,16 @@ async fn reaping_is_idempotent_and_reaping_nothing_is_not_an_error() {
     uploads::force_expiry_for_test(&pool, &session.id, -1)
         .await
         .expect("age it");
-    assert_eq!(uploads::reap(&pool, &store, 100).await.expect("first"), 1);
     assert_eq!(
-        uploads::reap(&pool, &store, 100).await.expect("second"),
+        uploads::reap(&mut pool.acquire().await.expect("conn"), &store, 100)
+            .await
+            .expect("first"),
+        1
+    );
+    assert_eq!(
+        uploads::reap(&mut pool.acquire().await.expect("conn"), &store, 100)
+            .await
+            .expect("second"),
         0,
         "the second pass must find nothing — a reaper that keeps reclaiming the same row \
          never drains its queue"
@@ -353,5 +366,11 @@ async fn the_reaper_respects_its_batch_limit() {
             .await
             .expect("age it");
     }
-    assert_eq!(uploads::reapable(&pool, 2).await.expect("limited").len(), 2);
+    assert_eq!(
+        uploads::reapable(&mut pool.acquire().await.expect("conn"), 2)
+            .await
+            .expect("limited")
+            .len(),
+        2
+    );
 }

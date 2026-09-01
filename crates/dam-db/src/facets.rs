@@ -156,19 +156,64 @@ pub async fn count_on(
     defs: &[FieldDef],
     requests: &[FacetRequest],
 ) -> Result<Vec<Facet>, Error> {
+    count_on_within(conn, planned, defs, requests, None).await
+}
+
+/// The same counting, restricted to a set of asset ids the caller has already chosen.
+///
+/// Exists because the rail and the results have to be the same answer, and for a ranked query they are not
+/// computed the same way. Results come from the search index; `planned` rendered to SQL is a *second*
+/// implementation of the same query, and the two agree only where a substring match happens to coincide with
+/// what the index tokenised. `"beach hut"` matches `beach-hut.jpg` in the index and `ILIKE '%beach hut%'`
+/// does not, so the grid showed a result and the rail beside it showed nothing.
+///
+/// Passing the ids the index already chose makes the rail count exactly the set the grid is showing, by
+/// construction rather than by the two renderings agreeing. `planned` still carries the access predicate and
+/// is still applied — the ids narrow the set, they never widen it, and an id the caller may not see is
+/// filtered out here as it would be anywhere else.
+///
+/// `None` keeps the old behaviour, which stays correct for the queries answered in SQL to begin with: an
+/// empty query, and the relational clauses the index refuses.
+pub async fn count_on_within(
+    conn: &mut sqlx::PgConnection,
+    planned: &Planned,
+    defs: &[FieldDef],
+    requests: &[FacetRequest],
+    restrict: Option<&[Uuid]>,
+) -> Result<Vec<Facet>, Error> {
     let mut facets = Vec::with_capacity(requests.len());
     for request in requests {
         facets.push(match request {
             FacetRequest::Field { key, limit } => {
-                count_field(&mut *conn, planned, defs, key, *limit).await?
+                count_field(&mut *conn, planned, defs, key, *limit, restrict).await?
             }
             FacetRequest::Taxonomy { taxonomy_id, limit } => {
-                count_taxonomy(&mut *conn, planned, *taxonomy_id, *limit).await?
+                count_taxonomy(&mut *conn, planned, *taxonomy_id, *limit, restrict).await?
             }
-            FacetRequest::Builtin(builtin) => count_builtin(&mut *conn, planned, *builtin).await?,
+            FacetRequest::Builtin(builtin) => {
+                count_builtin(&mut *conn, planned, *builtin, restrict).await?
+            }
         });
     }
     Ok(facets)
+}
+
+/// The planned query's `WHERE`, plus the id restriction when there is one.
+///
+/// One helper rather than three copies, because a facet that forgot the restriction would silently count a
+/// different set from the two beside it — the exact class of disagreement this parameter exists to end.
+fn push_scope(
+    builder: &mut QueryBuilder<Postgres>,
+    planned: &Planned,
+    restrict: Option<&[Uuid]>,
+) -> Result<(), Error> {
+    crate::query_sql::push_where(builder, planned)?;
+    if let Some(ids) = restrict {
+        builder.push(" AND assets.id = ANY(");
+        builder.push_bind(ids.to_vec());
+        builder.push(")");
+    }
+    Ok(())
 }
 
 async fn count_field(
@@ -177,6 +222,7 @@ async fn count_field(
     defs: &[FieldDef],
     key: &str,
     limit: i64,
+    restrict: Option<&[Uuid]>,
 ) -> Result<Facet, Error> {
     let Some(def) = defs.iter().find(|d| d.key == key) else {
         return Err(Error::Core(dam_core::Error::NotFound {
@@ -209,7 +255,7 @@ async fn count_field(
         "WITH visible AS (SELECT assets.id, asset_metadata.values FROM assets \
          LEFT JOIN asset_metadata ON asset_metadata.asset_id = assets.id WHERE ",
     );
-    crate::query_sql::push_where(&mut builder, planned)?;
+    push_scope(&mut builder, planned, restrict)?;
     // The library's rows. Counting three versions of one asset as three, or counting release forms, would make
     // the rail's numbers disagree with the grid beside it.
     builder.push(crate::versions::LIBRARY_ROWS);
@@ -245,6 +291,7 @@ async fn count_taxonomy(
     planned: &Planned,
     taxonomy_id: Uuid,
     limit: i64,
+    restrict: Option<&[Uuid]>,
 ) -> Result<Facet, Error> {
     let effective = limit.clamp(1, MAX_BUCKETS);
 
@@ -252,7 +299,7 @@ async fn count_taxonomy(
         "WITH visible AS (SELECT assets.id FROM assets \
          LEFT JOIN asset_metadata ON asset_metadata.asset_id = assets.id WHERE ",
     );
-    crate::query_sql::push_where(&mut builder, planned)?;
+    push_scope(&mut builder, planned, restrict)?;
     // `DISTINCT` on `(ancestor, asset)`: an asset tagged with two leaves under one ancestor must count
     // once for that ancestor, or a rollup exceeds the number of assets that exist and a user sees
     // "Outdoor (7)" over a library of five.
@@ -298,6 +345,7 @@ async fn count_builtin(
     conn: &mut sqlx::PgConnection,
     planned: &Planned,
     builtin: Builtin,
+    restrict: Option<&[Uuid]>,
 ) -> Result<Facet, Error> {
     // The bucket expression, and it must agree with `query_sql`'s clause for the same thing: the rail counts
     // with this and then filters with that, so a difference between them is a bucket whose count does not
@@ -329,7 +377,7 @@ async fn count_builtin(
         "::text AS value, count(*) AS n FROM assets \
                   LEFT JOIN asset_metadata ON asset_metadata.asset_id = assets.id WHERE ",
     );
-    crate::query_sql::push_where(&mut builder, planned)?;
+    push_scope(&mut builder, planned, restrict)?;
     builder.push(crate::versions::LIBRARY_ROWS);
     builder.push(" AND ");
     builder.push(bucket);

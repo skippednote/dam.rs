@@ -415,7 +415,7 @@ async fn an_unreadable_stored_query_is_refused_rather_than_matching_everything(p
     .await
     .expect("corrupt");
 
-    let reloaded = saved_searches::load(pool, saved.id)
+    let reloaded = saved_searches::load(&mut pool.acquire().await.expect("conn"), saved.id)
         .await
         .expect("load")
         .expect("present");
@@ -435,7 +435,7 @@ async fn an_unreadable_stored_query_is_refused_rather_than_matching_everything(p
     .execute(pool)
     .await
     .expect("corrupt");
-    let future = saved_searches::load(pool, saved.id)
+    let future = saved_searches::load(&mut pool.acquire().await.expect("conn"), saved.id)
         .await
         .expect("load")
         .expect("present");
@@ -616,7 +616,7 @@ async fn the_cached_count_is_not_presented_as_the_viewers_count(pool: &PgPool) {
     saved_searches::record_count(pool, saved.id, 999, now())
         .await
         .expect("count");
-    let reloaded = saved_searches::load(pool, saved.id)
+    let reloaded = saved_searches::load(&mut pool.acquire().await.expect("conn"), saved.id)
         .await
         .expect("load")
         .expect("present");
@@ -709,7 +709,7 @@ async fn deleting_removes_it(pool: &PgPool) {
         "deleting twice reports that it did nothing"
     );
     assert!(
-        saved_searches::load(pool, saved.id)
+        saved_searches::load(&mut pool.acquire().await.expect("conn"), saved.id)
             .await
             .expect("load")
             .is_none()

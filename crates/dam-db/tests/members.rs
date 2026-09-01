@@ -420,6 +420,13 @@ async fn membership_changes_serialise_per_tenant() {
     )
     .await
     .expect("another tenant");
+    // Released before the concurrency below starts. It is finished with — the three writes above are setup —
+    // and holding it makes this case need *four* connections at once: this one, the blocker's transaction,
+    // the blocked task's, and the one the other tenant's change takes. The shared-server pool is three, so
+    // keeping it turned the last acquire into a `PoolTimedOut` whenever the suite ran against a shared
+    // Postgres, and passed on an owned one where the pool is eight. A test whose result depends on how the
+    // harness was started is worse than a slow one.
+    drop(conn);
 
     let mut blocker = f.tenant.begin().await.expect("begin");
     sqlx::query(

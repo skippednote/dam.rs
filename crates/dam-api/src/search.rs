@@ -71,6 +71,15 @@ const OVERFETCH: usize = 4;
 /// nobody will read. A caller who wants everything wants the list endpoint, which pages on an index.
 pub const MAX_SEARCH_DEPTH: i64 = 1_000;
 
+/// The most matches a facet count will walk before it stops and says so.
+///
+/// A rail counts the whole match set rather than a page of it, so this is a ceiling on work, not a window:
+/// there is no offset to page past it with. Set well above `MAX_SEARCH_DEPTH` because the two answer
+/// different questions — a person pages a thousand results at most, and a bucket that says 4,000 is still
+/// useful. When it does bite, the facet is marked `truncated`, so "at least this many" is never presented as
+/// "exactly this many".
+const MAX_FACET_MATCHES: usize = 20_000;
+
 /// The query string.
 #[derive(Debug, Clone, Deserialize, IntoParams)]
 pub struct SearchParams {
@@ -464,6 +473,55 @@ pub async fn facets_for(
     // then shows them three.
     let (planned, defs) = plan(conn.executor(), caller, q).await?;
 
+    // ...and "the same query" has to mean the same *engine*, not the same query string.
+    //
+    // `run` sends an ordinary text query to the search index and everything else to SQL. This has to split
+    // the same way, because rendering `planned` to SQL here is a second implementation of a query the index
+    // already answered, and two implementations agree only by coincidence. They stopped agreeing on anything
+    // the index tokenises differently from a substring: `"beach hut"` matches `beach-hut.jpg` in the index,
+    // and `ILIKE '%beach hut%'` cannot. The rail went empty beside a grid that was showing results.
+    //
+    // So for an index-answered query the ids come from the index, and the counting narrows to exactly the set
+    // the grid is drawing. For the queries `run` itself answers in SQL — an empty query, and the relational
+    // clauses the index refuses — there is no second implementation to disagree with, and the planned query
+    // is counted directly as before.
+    let mut at_ceiling = false;
+    let restrict = if q.trim().is_empty() || is_relational(planned.query()) {
+        None
+    } else {
+        let index_schema = IndexSchema::new(defs.clone());
+        let open = state
+            .indexes
+            .get(&caller.tenant_slug, &index_schema)
+            .await
+            .map_err(Failure::from)?;
+        // As in `run`: a searcher held over from a previous request answers from the index as it was, and an
+        // asset edited a moment ago would be missing from the counts for its own library.
+        open.reload().map_err(Failure::from)?;
+        // No overfetch window here, unlike `run`. A rail is a count of everything that matches, so a depth
+        // limit would not truncate the list politely — it would report a smaller number, and a number that is
+        // quietly a page-worth is worse than no number. `MAX_FACET_MATCHES` is a ceiling on the work rather
+        // than a page size, and it is reported through `truncated` when it bites.
+        let ranked = dam_search::query::search(&open, &index_schema, &planned, MAX_FACET_MATCHES)
+            .map_err(Failure::from)?;
+        // Hitting the ceiling exactly is indistinguishable from matching exactly that many, so it is treated
+        // as truncation. Erring towards "at least" is the safe direction: a count presented as exact when it
+        // is a ceiling is the kind of number somebody makes a decision on.
+        at_ceiling = ranked.len() >= MAX_FACET_MATCHES;
+        // Through Postgres with the caller's predicate, exactly as `run` hydrates: this is what keeps a stale
+        // or over-permissive index from widening what gets counted.
+        Some(assets::visible_among(conn.executor(), &caller.predicate, &ranked).await?)
+    };
+
+    // With the ids doing the narrowing, the planned *query* must not narrow again — it was already applied by
+    // the index, and re-applying its SQL rendering would reintroduce the disagreement this exists to remove.
+    // The access predicate stays, because it is the one filter that must hold on every path.
+    let counting = match &restrict {
+        Some(_) => Planned::new(dam_core::query::Query::All, caller.predicate.clone(), &defs)
+            .map_err(|_| Failure::Internal)?,
+        None => planned,
+    };
+
     // Every facetable field, plus every taxonomy — each paired with the rail entry that names it, so the
     // tenant's own order can be applied below (Q.19). Which fields are facetable is the tenant's decision,
     // recorded on the field definition; a hard-coded list here would be a second schema.
@@ -515,14 +573,21 @@ pub async fn facets_for(
     let configured = dam_db::rail::read(conn.executor()).await?;
     let requests = dam_db::rail::arrange(&requests, &configured);
 
-    let counted = dam_db::facets::count_on(conn.executor(), &planned, &defs, &requests).await?;
+    let counted = dam_db::facets::count_on_within(
+        conn.executor(),
+        &counting,
+        &defs,
+        &requests,
+        restrict.as_deref(),
+    )
+    .await?;
     conn.commit().await?;
 
     Ok(counted
         .into_iter()
         .map(|facet| Facet {
             key: facet.key,
-            truncated: facet.truncated,
+            truncated: facet.truncated || at_ceiling,
             buckets: facet
                 .buckets
                 .into_iter()

@@ -42,6 +42,8 @@ fn sealing() -> SealingKeyring {
 struct Fixture {
     _pg: PostgresHarness,
     pool: PgPool,
+    /// The tenant, because a browse token names one since G22c.
+    tenant_id: Uuid,
     app: axum::Router,
     /// The connector's own API key, for the server-side path.
     api_key: String,
@@ -170,13 +172,11 @@ async fn fixture() -> Fixture {
 
     Fixture {
         _pg: pg,
+        tenant_id,
         app: router(BrowseState {
             search,
             global: pool.clone(),
-            connectors: Some(ConnectorAuth {
-                sealing: sealing(),
-                tenant_slug: dam_core::TenantSlug::new(TENANT).expect("slug"),
-            }),
+            connectors: Some(ConnectorAuth { sealing: sealing() }),
         }),
         pool,
         api_key: key.into_plaintext(),
@@ -211,6 +211,7 @@ fn token(f: &Fixture, ttl_minutes: i64) -> String {
     browse_token::sign(
         &Secret::new(f.secret.clone()),
         &BrowseClaim {
+            tenant_id: f.tenant_id,
             connector_id: f.connector_id,
             expires_at: chrono::Utc::now() + chrono::Duration::minutes(ttl_minutes),
         },
@@ -346,6 +347,7 @@ async fn a_preflight_says_which_origin_may_try(f: &Fixture) {
     let forged = browse_token::sign(
         &Secret::new("not-the-secret".to_owned()),
         &BrowseClaim {
+            tenant_id: f.tenant_id,
             connector_id: f.connector_id,
             expires_at: chrono::Utc::now() + chrono::Duration::minutes(5),
         },
@@ -359,6 +361,7 @@ async fn every_bad_token_is_the_same_one_answer(f: &Fixture) {
     let forged = browse_token::sign(
         &Secret::new("not-the-secret".to_owned()),
         &BrowseClaim {
+            tenant_id: f.tenant_id,
             connector_id: f.connector_id,
             expires_at: chrono::Utc::now() + chrono::Duration::minutes(5),
         },
@@ -367,6 +370,7 @@ async fn every_bad_token_is_the_same_one_answer(f: &Fixture) {
     let expired = browse_token::sign(
         &Secret::new(f.secret.clone()),
         &BrowseClaim {
+            tenant_id: f.tenant_id,
             connector_id: f.connector_id,
             expires_at: chrono::Utc::now() - chrono::Duration::minutes(1),
         },
@@ -375,6 +379,7 @@ async fn every_bad_token_is_the_same_one_answer(f: &Fixture) {
     let overlong = browse_token::sign(
         &Secret::new(f.secret.clone()),
         &BrowseClaim {
+            tenant_id: f.tenant_id,
             connector_id: f.connector_id,
             expires_at: chrono::Utc::now() + chrono::Duration::days(365),
         },
@@ -383,6 +388,7 @@ async fn every_bad_token_is_the_same_one_answer(f: &Fixture) {
     let unknown = browse_token::sign(
         &Secret::new(f.secret.clone()),
         &BrowseClaim {
+            tenant_id: f.tenant_id,
             connector_id: Uuid::now_v7(),
             expires_at: chrono::Utc::now() + chrono::Duration::minutes(5),
         },
@@ -513,6 +519,7 @@ async fn a_rotation_does_not_close_an_open_picker(f: &Fixture) {
     let after = browse_token::sign(
         &Secret::new(fresh.to_owned()),
         &BrowseClaim {
+            tenant_id: f.tenant_id,
             connector_id: f.connector_id,
             expires_at: chrono::Utc::now() + chrono::Duration::minutes(5),
         },

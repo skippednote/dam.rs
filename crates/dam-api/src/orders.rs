@@ -337,7 +337,7 @@ pub async fn approve(
     // Shown once, to the person who just approved it. The token is stored as a digest, so this response is the
     // only place it exists in readable form — which is why the approver is told to pass it on, and why
     // re-issuing exists for when they lose it.
-    view.pickup_url = token.map(|token| pickup_url(&state, &token));
+    view.pickup_url = token.map(|token| pickup_url(&state, &caller.tenant_slug, &token));
     Ok(Json(view))
 }
 
@@ -377,7 +377,7 @@ pub async fn fulfil(
     conn.commit().await?;
     let view = present(&state, vec![ready]).await?;
     let mut view = view.into_iter().next().ok_or(Failure::Internal)?;
-    view.pickup_url = Some(pickup_url(&state, &token));
+    view.pickup_url = Some(pickup_url(&state, &caller.tenant_slug, &token));
     Ok(Json(view))
 }
 
@@ -386,10 +386,18 @@ pub async fn fulfil(
 /// Built from the configured public URL when there is one, root-relative otherwise — the same rule
 /// `DeliveryState::url_for` follows, and for the same reason: a hand-written path somewhere else is one rename
 /// away from a dead link. The portal path is `/share/{token}`, and an order pickup is read at `/share/{token}/set`.
-fn pickup_url(state: &Arc<OrderState>, token: &str) -> String {
+fn pickup_url(state: &Arc<OrderState>, tenant: &dam_core::TenantSlug, token: &str) -> String {
+    // The segment carries the tenant (G22c): a pickup URL is opened by somebody with no account, so it has to
+    // say which library it belongs to or the process has to be configured to serve exactly one.
+    let reference = match dam_core::public_ref::PublicRef::new(tenant.clone(), token) {
+        Ok(reference) => reference.to_string(),
+        // A token is never empty, so this is unreachable; falling back to the bare token keeps the caller
+        // total rather than making an infallible-in-practice path return a Result.
+        Err(_) => token.to_owned(),
+    };
     match &state.public_url {
-        Some(base) => format!("{base}/share/{token}"),
-        None => format!("/share/{token}"),
+        Some(base) => format!("{base}/share/{reference}"),
+        None => format!("/share/{reference}"),
     }
 }
 

@@ -133,11 +133,6 @@ enum Command {
         admin: bool,
     },
 
-    /// Rebuild a tenant's search index from Postgres.
-    ///
-    /// Postgres is the record and the index is derived, so this is the command that regenerates the
-    /// derived thing. It replaces the index in one commit: a reader sees the old index or the new one,
-    /// never a fraction of the library.
     /// Take a logical backup of one tenant's schema and upload it (§17, G11).
     ///
     /// A dump, not a base backup: per-tenant restore is the case worth having, and a physical backup cannot
@@ -162,7 +157,13 @@ enum Command {
     /// Unverified first, because §17 says that list "should be short" and a report that buries them among the
     /// healthy rows is one nobody reads to the end.
     DrReport,
+    /// Rebuild a tenant's search index from Postgres.
+    ///
+    /// Postgres is the record and the index is derived, so this is the command that regenerates the
+    /// derived thing. It replaces the index in one commit: a reader sees the old index or the new one,
+    /// never a fraction of the library.
     Reindex {
+        /// The tenant whose index to rebuild.
         #[arg(long)]
         tenant: String,
         /// Rows per round trip.
@@ -528,9 +529,24 @@ async fn main() -> anyhow::Result<()> {
             // hear about.
             let mut failed = 0;
             for slug in &slugs {
+                // The tenant's own backup key when it has one (G10·3b). Applied by deriving a store rather
+                // than by teaching `dam_backup` about keys: a dump is an object like any other, and the one
+                // place that decides how an object is encrypted stays `S3Store`.
+                let tenant_store = match backup_key(&pool, slug).await {
+                    Ok(key) => store.writing_under(key.as_deref()),
+                    // A key that cannot be looked up is not a reason to skip the backup — an unencrypted
+                    // backup is worth more than none — but it must be loud, because the operator believes
+                    // their key is in use.
+                    Err(error) => {
+                        eprintln!(
+                            "{slug}: could not resolve a backup key ({error}); using the deployment's"
+                        );
+                        store.clone()
+                    }
+                };
                 match dam_backup::backup_tenant(
                     &pool,
-                    &store,
+                    &tenant_store,
                     &tools,
                     url,
                     slug,
@@ -1443,6 +1459,31 @@ async fn bootstrap(pool: &sqlx::PgPool) -> anyhow::Result<()> {
             .with_context(|| format!("bootstrap: {stmt}"))?;
     }
     Ok(())
+}
+
+/// The KMS key this tenant's backups should be encrypted with, if it has one of its own (G10·3b).
+///
+/// `None` leaves the deployment's configured key in place, which is what every deployment had before this
+/// existed and remains correct for a dedicated one. Backups are the purpose where falling back matters most:
+/// refusing to back up because a key is missing turns a key-management gap into a data-loss one.
+async fn backup_key(pool: &sqlx::PgPool, slug: &TenantSlug) -> anyhow::Result<Option<String>> {
+    let tenant_id: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT id FROM dam_global.tenants WHERE slug = $1 AND status = 'active'",
+    )
+    .bind(slug.as_str())
+    .fetch_optional(pool)
+    .await?;
+    let Some(tenant_id) = tenant_id else {
+        return Ok(None);
+    };
+    let mut conn = pool.acquire().await?;
+    let key = dam_db::encryption_keys::resolve(
+        &mut conn,
+        tenant_id,
+        dam_db::encryption_keys::Purpose::Backup,
+    )
+    .await?;
+    Ok(key.map(|k| k.key_ref))
 }
 
 /// The blob store, from configuration.

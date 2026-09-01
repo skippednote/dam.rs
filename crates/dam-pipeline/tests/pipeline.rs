@@ -1689,6 +1689,7 @@ async fn the_whole_chain_runs_through_the_worker() {
     let dir = tempfile::tempdir().expect("tempdir");
     let context = dam_pipeline::worker::Context {
         // No hosted-model context: these suites are about the queue and the render stages.
+        sealing: None,
         ai: None,
         scanner: None,
         signing_identity: None,

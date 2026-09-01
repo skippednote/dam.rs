@@ -111,7 +111,7 @@ async function connectManagement(page: Page): Promise<Recorder> {
 				json: {
 					id: SHARE_ID,
 					token: 'tok-e2e-shown-once',
-					portal_path: '/share/tok-e2e-shown-once'
+					portal_path: '/share/acme.tok-e2e-shown-once'
 				}
 			});
 		}
@@ -247,7 +247,9 @@ test('creating a share shows the link once, on this origin', async ({ page }) =>
 	// The link is the *web app's* origin plus the portal route — not the API's origin. A recipient opens
 	// the portal page; the portal page talks to the API.
 	const link = page.getByRole('textbox', { name: 'Share link' });
-	await expect(link).toHaveValue(/^http:\/\/localhost:\d+\/share\/tok-e2e-shown-once$/);
+	// The tenant is in the segment (G22c): the panel shows the path the *server* returned rather than one
+	// built from the bare token, so this pins the qualified shape a visitor actually opens.
+	await expect(link).toHaveValue(/^http:\/\/localhost:\d+\/share\/acme\.tok-e2e-shown-once$/);
 	await expect(page.getByText(/shown once/)).toBeVisible();
 
 	// The default posture travels: expiring (a week), web rendition only.
@@ -278,7 +280,7 @@ test('the portal shows the file and a download spends the limit', async ({ page 
 	const recorder = await connectPortal(page, {
 		view: () => ({ status: 200, json: PORTAL_VIEW })
 	});
-	await page.goto('/share/tok-e2e-live');
+	await page.goto('/share/acme.tok-e2e-live');
 
 	await expect(page.getByRole('heading', { name: 'campaign-0000.jpg' })).toBeVisible();
 	await expect(page.getByRole('img', { name: 'campaign-0000.jpg' })).toBeVisible();
@@ -288,8 +290,8 @@ test('the portal shows the file and a download spends the limit', async ({ page 
 	// The grant navigates the page itself (no popup to block); the mock serves image bytes at /d/.
 	await page.waitForURL('**/d/portal-download-token');
 	expect(recorder.portal.map((call) => call.path)).toEqual([
-		'/share/tok-e2e-live',
-		'/share/tok-e2e-live/download'
+		'/share/acme.tok-e2e-live',
+		'/share/acme.tok-e2e-live/download'
 	]);
 });
 
@@ -310,7 +312,7 @@ test('a passcode-gated link asks, refuses a wrong one, opens on the right one', 
 			};
 		}
 	});
-	await page.goto('/share/tok-e2e-coded');
+	await page.goto('/share/acme.tok-e2e-coded');
 
 	await expect(page.getByRole('heading', { name: 'This link needs a passcode' })).toBeVisible();
 
@@ -346,7 +348,7 @@ test('a rights-refused share names the file but offers neither pixels nor a down
 			}
 		})
 	});
-	await page.goto('/share/tok-e2e-unlicensed');
+	await page.goto('/share/acme.tok-e2e-unlicensed');
 
 	await expect(page.getByRole('heading', { name: 'campaign-0000.jpg' })).toBeVisible();
 	await expect(page.getByText('This file is not licensed for distribution.')).toBeVisible();
@@ -358,7 +360,7 @@ test('a dead link says why and what to do, not a bare error', async ({ page }) =
 	await connectPortal(page, {
 		view: () => ({ status: 404, json: { reason: 'this link has expired' } })
 	});
-	await page.goto('/share/tok-e2e-dead');
+	await page.goto('/share/acme.tok-e2e-dead');
 
 	await expect(
 		page.getByRole('heading', { name: 'This link does not work any more' })
@@ -386,7 +388,7 @@ test('the portal has no axe violations, passcode form included', async ({ page }
 				? { status: 200, json: PORTAL_VIEW }
 				: { status: 401, json: { reason: 'this link requires a passcode' } }
 	});
-	await page.goto('/share/tok-e2e-axe');
+	await page.goto('/share/acme.tok-e2e-axe');
 
 	await expect(page.getByRole('heading', { name: 'This link needs a passcode' })).toBeVisible();
 	let results = await new AxeBuilder({ page }).withTags(WCAG_21_AA).analyze();

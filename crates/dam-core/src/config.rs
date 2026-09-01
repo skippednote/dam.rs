@@ -79,14 +79,6 @@ pub struct ServerConfig {
     /// Optional rather than required, because a required value is one that is wrong in every deployment behind
     /// a proxy until somebody sets it, and a root-relative URL at least works for the same-origin case.
     pub public_url: Option<String>,
-    /// Which tenant the delivery routes serve, by slug.
-    ///
-    /// Needed because the delivery path resolves its tenant from configuration rather than from the
-    /// signed claim (3.x moves it into the token). With one active tenant this can be left unset and
-    /// the tenant is inferred; with several, inferring would mint delivery URLs against the wrong
-    /// tenant's objects, so it must be named. Naming it is also the right posture for a deployment
-    /// that later grows a second tenant: the answer does not silently change under it.
-    pub delivery_tenant: Option<String>,
     /// Origins the browser API accepts in production.
     ///
     /// Empty outside production, where any origin is allowed so a Vite dev server on a different port works
@@ -360,7 +352,6 @@ impl Default for ServerConfig {
             url_signing_key: Secret::new(DEV_SIGNING_KEY.into()),
             request_timeout_secs: 30,
             public_url: None,
-            delivery_tenant: None,
             allowed_origins: Vec::new(),
             mcp_enabled: false,
             metrics_token: None,

@@ -60,7 +60,6 @@ pub struct BrowseState {
 #[derive(Clone)]
 pub struct ConnectorAuth {
     pub sealing: dam_core::sealed::SealingKeyring,
-    pub tenant_slug: dam_core::TenantSlug,
 }
 
 impl std::fmt::Debug for BrowseState {
@@ -184,9 +183,15 @@ pub async fn preflight(
     let Some(id) = dam_connect::browse_token::connector_of(token) else {
         return StatusCode::NO_CONTENT.into_response();
     };
+    let Some(tenant_id) = dam_connect::browse_token::tenant_of(token) else {
+        return StatusCode::NO_CONTENT.into_response();
+    };
+    let Ok(Some(slug)) = dam_db::provision::slug_of(&state.global, tenant_id).await else {
+        return StatusCode::NO_CONTENT.into_response();
+    };
     // Unverified, deliberately, and it grants nothing: the answer is a set of headers saying which origin may
     // *attempt* the real request. A forged token gets a preflight it cannot then use.
-    match connector_row(&state, id).await {
+    match connector_row(&state, &slug, id).await {
         Ok(Some(connector)) => (StatusCode::NO_CONTENT, cors(&connector, &headers)).into_response(),
         _ => StatusCode::NO_CONTENT.into_response(),
     }
@@ -203,13 +208,23 @@ async fn by_token(state: &BrowseState, token: &str) -> Result<(Caller, Connector
         tracing::error!("a browse token arrived with no connector auth configured");
         refused()
     })?;
+    // The tenant comes out of the token, unverified, for the one thing it is needed for: choosing the schema
+    // the connector is looked up in (G22c). `connectors` is a tenant table, so this used to require a tenant
+    // the process had been configured with — which is what made the connector surface serve one library.
+    let tenant_id = dam_connect::browse_token::tenant_of(token).ok_or_else(refused)?;
+    let slug = dam_db::provision::slug_of(&state.global, tenant_id)
+        .await
+        .map_err(|_| refused())?
+        .ok_or_else(refused)?;
     let id = dam_connect::browse_token::connector_of(token).ok_or_else(refused)?;
-    let connector = connector_row(state, id).await?.ok_or_else(refused)?;
+    let connector = connector_row(state, &slug, id).await?.ok_or_else(refused)?;
     if !connector.status.may_render() {
         return Err(refused());
     }
 
-    let aad = dam_db::connectors::associated_data(auth.tenant_slug.as_str(), connector.id);
+    // The AAD binds the sealed secret to its tenant, so this slug has to be the one the row actually lives in.
+    // It is: the connector was just read out of that schema.
+    let aad = dam_db::connectors::associated_data(slug.as_str(), connector.id);
     let now = chrono::Utc::now();
     let mut secrets = Vec::with_capacity(2);
     if let Ok(current) = auth.sealing.open(&connector.sealed_secret, &aad) {
@@ -250,7 +265,7 @@ async fn by_token(state: &BrowseState, token: &str) -> Result<(Caller, Connector
         &state.global,
         &Authorized {
             tenant_id,
-            tenant_slug: auth.tenant_slug.clone(),
+            tenant_slug: slug.clone(),
             identity_id,
             api_key_id,
             // None. A browse token narrows nothing and widens nothing — see `browse_token`.
@@ -263,13 +278,15 @@ async fn by_token(state: &BrowseState, token: &str) -> Result<(Caller, Connector
     Ok((caller, connector))
 }
 
-async fn connector_row(state: &BrowseState, id: uuid::Uuid) -> Result<Option<Connector>, Failure> {
-    let auth = state.connectors.as_ref();
-    let slug = match auth {
-        Some(auth) => auth.tenant_slug.clone(),
-        None => return Ok(None),
-    };
-    let mut conn = dam_db::TenantConn::begin(&state.global, &slug).await?;
+async fn connector_row(
+    state: &BrowseState,
+    slug: &dam_core::TenantSlug,
+    id: uuid::Uuid,
+) -> Result<Option<Connector>, Failure> {
+    if state.connectors.is_none() {
+        return Ok(None);
+    }
+    let mut conn = dam_db::TenantConn::begin(&state.global, slug).await?;
     let found = dam_db::connectors::by_id(conn.executor(), id).await?;
     conn.commit().await?;
     Ok(found)

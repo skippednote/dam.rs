@@ -425,6 +425,7 @@ async fn the_worker_runs_it_and_queues_the_reindex(f: &Fixture) {
     let dir = tempfile::tempdir().expect("tempdir");
     let context = dam_pipeline::worker::Context {
         // No hosted-model context: these suites are about the queue and the render stages.
+        sealing: None,
         ai: None,
         scanner: None,
         signing_identity: None,

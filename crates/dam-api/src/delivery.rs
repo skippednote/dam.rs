@@ -89,33 +89,8 @@ pub struct DeliveryState {
     /// resolves the slug through `provision::slug_of`, and opens one `TenantConn` per request. Before
     /// G22b this field *was* the pinned pool, which is why delivery could only answer for one tenant.
     control: PgPool,
-    /// A pool whose `search_path` resolves the **delivery tenant's** schema.
-    ///
-    /// Not the shared global pool, and the distinction is not cosmetic: almost everything this handler reads —
-    /// `assets`, `derivatives`, the rights tables, `share_links` — is tenant-schema, written unqualified, and
-    /// resolved through `search_path`. Handed the global pool it fails with `relation "derivatives" does not
-    /// exist`, which is what happened the first time a real derivative existed to serve. The delivery route
-    /// serves exactly one tenant by construction (`damd` refuses to start otherwise), so a pool pinned to that
-    /// tenant is the right shape rather than a compromise — see `dam_db::tenant_conn::single_tenant_pool`.
-    ///
-    /// The `dam_global.` reads in here are schema-qualified and work through either pool.
-    global: PgPool,
     store: Arc<dyn BlobStore>,
     keyring: Keyring,
-    /// The tenant this process answers the *public* paths for.
-    ///
-    /// After G22b the signed-token path (`/d/{token}`) no longer uses this: it reads the tenant out of the
-    /// claim and scopes each request itself. What still needs it is the visitor surface — `/p/{key}` and
-    /// `/s/{token}` name a portal or a share and not a library, and both are tenant tables, so the process
-    /// has to already know which one to look in. Giving those URLs a tenant is a decision about the public
-    /// URL space, recorded as G22c.
-    ///
-    /// A `Uuid` rather than a rendered prefix string, because `Key::original` builds the path — a caller
-    /// passing a prefix would be one concatenation away from naming another tenant's.
-    tenant_id: Uuid,
-    /// The same tenant, as the slug a `TenantConn` needs. Both, because they are needed in both shapes and
-    /// deriving one from the other per request would be a query to learn something already known.
-    tenant_slug: dam_core::TenantSlug,
     /// The origin to build absolute delivery URLs from, when configured.
     ///
     /// `None` means root-relative, which is right for a same-origin client and wrong for any other — see
@@ -155,28 +130,17 @@ impl std::fmt::Debug for DeliveryState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Neither the pool nor the keyring: one carries a database password and the other the signing key.
         f.debug_struct("DeliveryState")
-            .field("tenant_id", &self.tenant_id)
             .field("clock", &self.clock)
             .finish_non_exhaustive()
     }
 }
 
 impl DeliveryState {
-    pub fn new(
-        control: PgPool,
-        global: PgPool,
-        store: Arc<dyn BlobStore>,
-        keyring: Keyring,
-        tenant_id: Uuid,
-        tenant_slug: dam_core::TenantSlug,
-    ) -> Self {
+    pub fn new(control: PgPool, store: Arc<dyn BlobStore>, keyring: Keyring) -> Self {
         Self {
             control,
-            global,
             store,
             keyring,
-            tenant_id,
-            tenant_slug,
             public_url: None,
             clock: Arc::new(dam_core::SystemClock),
             connectors: None,
@@ -278,14 +242,6 @@ impl DeliveryState {
     pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
         self.clock = clock;
         self
-    }
-
-    /// The pool this state reads through — pinned to the delivery tenant's schema.
-    ///
-    /// Exposed for the share portal, which serves the same single tenant for the same reason delivery does:
-    /// a share token arrives with no tenant attached. Goes away with 3.x, alongside `tenant_id`.
-    pub fn pool(&self) -> &PgPool {
-        &self.global
     }
 
     /// The current instant, from this state's clock.
@@ -515,6 +471,7 @@ fn preview_is_permitted(
 )]
 pub async fn issue_for_share(
     state: &DeliveryState,
+    scope: Scope<'_>,
     asset_id: Uuid,
     transform: &str,
     usage: &Usage,
@@ -523,18 +480,13 @@ pub async fn issue_for_share(
     ttl: ChronoDuration,
     now: DateTime<Utc>,
 ) -> Result<String, Refusal> {
-    // The process's own tenant, not a caller's: this is the public visitor path. A portal address is
-    // `/p/{key}` and a share is `/s/{token}`, neither of which names a tenant — `portals` and
-    // `share_links` are tenant tables looked up on the tenant-scoped pool, so the process has to already
-    // know which library it is answering for. Giving these URLs a tenant is a decision about the public
-    // URL space rather than a refactor, and it is why `server.delivery_tenant` survives G22b. See the
-    // G22c entry in TASKS.md.
+    // The tenant the *visitor URL* named, not the process's own (G22c). A portal address is
+    // `/portal/{tenant}.{key}` and a share is `/share/{tenant}.{token}`, so the caller resolved a tenant
+    // before it got here and passes it down. This used to read `state.tenant_id`, which is what made one
+    // process answer for exactly one library's public surface.
     issue_with_purpose(
         state,
-        Scope {
-            tenant_id: state.tenant_id,
-            slug: &state.tenant_slug,
-        },
+        scope,
         Purpose::Distribution,
         asset_id,
         transform,
@@ -716,7 +668,30 @@ async fn in_flight_eta(
     .flatten()
 }
 
-async fn deliver(
+/// Redeems a signed delivery token for the bytes it names.
+///
+/// The one route in the system that yields asset bytes, and the only one that is unauthenticated in the
+/// ordinary sense: the token *is* the credential. It is documented for that reason rather than despite it —
+/// an integrator has to be able to look up what a signed URL does, and "not in the contract" reads as
+/// "not supported" to anyone building against it.
+///
+/// The signature is permission to *attempt*. Rights are evaluated here, at redemption, so a URL minted while
+/// a licence was valid stops working when it lapses.
+#[utoipa::path(
+    get,
+    path = "/d/{token}",
+    params(
+        ("token" = String, Path, description = "The signed delivery token"),
+    ),
+    responses(
+        (status = 302, description = "Redirect to the bytes"),
+        (status = 403, description = "Rights refuse this delivery"),
+        (status = 404, description = "The token is malformed, expired, unverifiable, or names nothing deliverable"),
+        (status = 409, description = "The original is in cold storage; a restore is in flight"),
+    ),
+    tag = "delivery",
+)]
+pub async fn deliver(
     State(state): State<Arc<DeliveryState>>,
     Path(token): Path<String>,
 ) -> Result<Response, Refusal> {

@@ -33,8 +33,14 @@ fn secret(text: &str) -> Secret<String> {
     Secret::new(text.to_owned())
 }
 
+/// A fixed tenant, so a token's tenant is a property the tests can assert rather than a fresh uuid each time.
+fn tenant() -> Uuid {
+    Uuid::from_u128(0x7e_11)
+}
+
 fn claim(connector_id: Uuid, ttl: Duration) -> BrowseClaim {
     BrowseClaim {
+        tenant_id: tenant(),
         connector_id,
         expires_at: now() + ttl,
     }

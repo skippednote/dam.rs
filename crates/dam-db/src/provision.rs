@@ -143,6 +143,24 @@ pub async fn tenant(
 /// outstanding delivery URLs should stop working, and the alternative — resolve the slug, then
 /// remember to check status separately — is a check somebody forgets in exactly the path where
 /// forgetting it serves bytes.
+/// The active tenant a slug names, if it names one.
+///
+/// The inverse of [`slug_of`], and it exists for the same reason: the visitor surface resolves a tenant from
+/// the URL (G22c) and needs its id to put inside a signed delivery claim. Inactive tenants are absent rather
+/// than returned, so a suspended library cannot have URLs minted against it.
+///
+/// # Errors
+/// Any database failure.
+pub async fn id_of(pool: &PgPool, slug: &TenantSlug) -> Result<Option<Uuid>, Error> {
+    let id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM dam_global.tenants WHERE slug = $1 AND status = 'active'",
+    )
+    .bind(slug.as_str())
+    .fetch_optional(pool)
+    .await?;
+    Ok(id)
+}
+
 pub async fn slug_of(pool: &PgPool, tenant_id: Uuid) -> Result<Option<TenantSlug>, Error> {
     let slug: Option<String> = sqlx::query_scalar(
         "SELECT slug FROM dam_global.tenants WHERE id = $1 AND status = 'active'",

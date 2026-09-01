@@ -1141,6 +1141,32 @@ export interface paths {
         patch: operations["set_active"];
         trace?: never;
     };
+    "/d/{token}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Redeems a signed delivery token for the bytes it names.
+         * @description The one route in the system that yields asset bytes, and the only one that is unauthenticated in the
+         *     ordinary sense: the token *is* the credential. It is documented for that reason rather than despite it —
+         *     an integrator has to be able to look up what a signed URL does, and "not in the contract" reads as
+         *     "not supported" to anyone building against it.
+         *
+         *     The signature is permission to *attempt*. Rights are evaluated here, at redemption, so a URL minted while
+         *     a licence was valid stops working when it lapses.
+         */
+        get: operations["deliver"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/dashboard": {
         parameters: {
             query?: never;
@@ -1491,6 +1517,32 @@ export interface paths {
          *     grant. It inherits the order's expiry, so the window an approver granted is the window the link has.
          */
         post: operations["fulfil"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orders/{id}/metadata.csv": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The order's assets as a CSV, for the requester or an approver.
+         * @description **Authenticated only, and deliberately not part of the pickup.** An export of descriptive metadata to an
+         *     external recipient is a disclosure decision nobody has made: `field_defs` has no notion of which fields an
+         *     outsider may see, so the honest options were to invent one or to keep the export inside the tenant. This is the
+         *     second. Somebody signed in exporting metadata they can already read is not a disclosure at all; the portal case
+         *     is written up in NEEDS-REVIEW.md.
+         *
+         *     Read scope, and the same audience as the order itself: its requester, or anybody who may decide.
+         */
+        get: operations["metadata_csv"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2241,6 +2293,74 @@ export interface paths {
         head?: never;
         /** Amends a profile. */
         patch: operations["amend"];
+        trace?: never;
+    };
+    "/uploads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Opens a resumable upload session (TUS 1.0.0). */
+        post: operations["create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/uploads/presign": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Issues a presigned `PUT` for a direct-to-S3 upload.
+         * @description The alternative to TUS, and the right one for a 3 MB photograph: the bytes go straight to the bucket
+         *     and never traverse this process, which is the difference between a stateless API server and one
+         *     sized for its customers' bandwidth.
+         *
+         *     What it costs is the validation that a proxied upload gets for free. A presigned PUT hands out a URL
+         *     and steps out of the way, so the server sees neither the bytes nor their length — the client can
+         *     upload anything, of any size, whatever it declared here. That is why `dam_media::ingest` re-sniffs
+         *     and re-measures the object after the fact, and why this endpoint records a session rather than
+         *     trusting the response: the session's declared length is the cross-check that finalisation compares
+         *     against, and a key with no session behind it is an object nothing will ever adopt.
+         *     Issues a presigned `PUT` for a direct-to-store upload.
+         *
+         *     Takes no request body. The size and metadata arrive as TUS headers, because this shares the version gate
+         *     and the session bookkeeping with the resumable path even though a single PUT is not itself a TUS operation.
+         */
+        post: operations["presign"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/uploads/{upload_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        /** How many bytes of a session have arrived, so a client can resume. */
+        head: operations["head_upload"];
+        /** Appends a chunk at a byte offset. */
+        patch: operations["patch_upload"];
         trace?: never;
     };
     "/usage-options": {
@@ -8322,6 +8442,48 @@ export interface operations {
             };
         };
     };
+    deliver: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The signed delivery token */
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Redirect to the bytes */
+            302: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Rights refuse this delivery */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The token is malformed, expired, unverifiable, or names nothing deliverable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The original is in cold storage; a restore is in flight */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     dashboard: {
         parameters: {
             query?: never;
@@ -9100,6 +9262,35 @@ export interface operations {
             };
         };
     };
+    metadata_csv: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description text/csv */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": unknown;
+                };
+            };
+            /** @description No such order, or not one this caller may read */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     reject: {
         parameters: {
             query?: never;
@@ -9166,6 +9357,7 @@ export interface operations {
             };
             header?: never;
             path: {
+                /** @description The portal's address as `{tenant}.{key}` — the segment names its own tenant, so one deployment serves every library's public pages */
                 key: string;
             };
             cookie?: never;
@@ -10450,6 +10642,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description The share's address as `{tenant}.{token}` — the segment names its own tenant, so one deployment serves every library's public pages */
                 token: string;
             };
             cookie?: never;
@@ -10489,6 +10682,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description The share's address as `{tenant}.{token}` — the segment names its own tenant, so one deployment serves every library's public pages */
                 token: string;
             };
             cookie?: never;
@@ -10535,6 +10729,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description The share's address as `{tenant}.{token}` — the segment names its own tenant, so one deployment serves every library's public pages */
                 token: string;
                 asset_id: string;
             };
@@ -10621,6 +10816,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description The share's address as `{tenant}.{token}` — the segment names its own tenant, so one deployment serves every library's public pages */
                 token: string;
             };
             cookie?: never;
@@ -10883,6 +11079,197 @@ export interface operations {
             };
             /** @description The defaults do not validate */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Must be 1.0.0 */
+                "Tus-Resumable": string;
+                /** @description Total size in bytes. Omit only with Upload-Defer-Length: 1 */
+                "Upload-Length"?: number | null;
+                /** @description "1" when the size is not yet known */
+                "Upload-Defer-Length"?: string | null;
+                /** @description TUS metadata: comma-separated `key base64value` pairs, e.g. `filename <base64>` */
+                "Upload-Metadata"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Session created. `Location` carries the upload URL */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A required header is missing or unparseable */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Tus-Resumable is absent or names another version */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Upload-Length exceeds the configured maximum */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    presign: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Must be 1.0.0 */
+                "Tus-Resumable": string;
+                /** @description Total size in bytes. Required here: a single PUT cannot defer it */
+                "Upload-Length": number;
+                /** @description TUS metadata: comma-separated `key base64value` pairs */
+                "Upload-Metadata"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A presigned PUT, the upload id, its expiry and the staging key */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Upload-Length is missing or unparseable */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Tus-Resumable is absent or names another version */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Upload-Length exceeds the configured maximum */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    head_upload: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Must be 1.0.0 */
+                "Tus-Resumable": string;
+            };
+            path: {
+                /** @description The session id from the create response's Location */
+                upload_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description `Upload-Offset` carries the bytes stored so far */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such session, or not one this key may see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Tus-Resumable is absent or names another version */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    patch_upload: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Must be 1.0.0 */
+                "Tus-Resumable": string;
+                /** @description Where these bytes begin. Must equal the server's current offset */
+                "Upload-Offset": number;
+            };
+            path: {
+                /** @description The session id from the create response's Location */
+                upload_id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Raw bytes */
+        requestBody: {
+            content: {
+                "application/offset+octet-stream": string;
+            };
+        };
+        responses: {
+            /** @description Appended. `Upload-Offset` carries the new offset */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such session, or not one this key may see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Upload-Offset does not match the server's offset */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Tus-Resumable is absent or names another version */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Content-Type is not application/offset+octet-stream */
+            415: {
                 headers: {
                     [name: string]: unknown;
                 };

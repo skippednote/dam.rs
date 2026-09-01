@@ -36,13 +36,13 @@
 	/**
 	 * The URL a recipient opens.
 	 *
-	 * The *web app's* origin plus the portal route — not the API's. The portal page is ours; it calls the API
-	 * itself. Composed at display time so the same share works whatever host the app is served from.
+	 * The *web app's* origin plus the path the server returned — not the API's, and not a path built here. The
+	 * portal page is ours; it calls the API itself. The path comes from the server because a visitor URL now
+	 * carries its tenant (G22c), and a client that concatenated the bare token would produce a link that 404s
+	 * without saying why.
 	 */
 	const portalUrl = $derived(
-		created
-			? `${typeof location === 'undefined' ? '' : location.origin}/share/${created.token}`
-			: ''
+		created ? `${typeof location === 'undefined' ? '' : location.origin}${created.portal_path}` : ''
 	);
 
 	async function make(event: SubmitEvent) {
