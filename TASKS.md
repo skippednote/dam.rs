@@ -2414,11 +2414,22 @@ API that does not exist yet is a module written twice.
      Intelligent-Tiering, policy stays ours.
   3. **S3 Batch Operations for 3.4's bulk restore.** Manifest-driven, with retries, throttling and a
      completion report. Better than a job loop. Does **not** help 2.10, which is database-side.
-  4. **S3 Inventory instead of LIST for reconciliation** — a daily manifest rather than paginated LIST.
+  4. **S3 Inventory for reconciliation.** *Re-costed 2026-09-01: not the cheap item this list implied.* The
+     entry says "instead of LIST", but nothing reconciles by LIST — the integrity scrub asks `head` per
+     placement, which at four hundred thousand assets is four hundred thousand round trips. Inventory would
+     replace those with one manifest read carrying key, size, storage class and checksum, which is the right
+     shape and a large win. It is also a manifest reader (CSV/ORC/Parquet), a `Capabilities` flag and a
+     fallback to the current per-object path, because SeaweedFS has no Inventory — so it is a day's work
+     rather than a configuration change, and it is an optimisation rather than a correctness fix.
   5. **SSE-KMS for BYOK (G10).** *The wiring landed under G10·3; only the per-tenant half is open —* see
      **G10·3b** just above, which is where that now lives rather than in this list.
-  6. **A lifecycle rule on `*/staging/`** as a safety net beneath the reaper. Prefix-based, so it maps onto
-     `Key::is_tier_exempt`'s existing scheme.
+  6. ~~**A lifecycle rule on `*/staging/`**~~ **Done — documented in `docker/DEPLOY.md`**, which is where it
+     belongs: it is bucket configuration, not code. Two things the writing turned up. S3 lifecycle filters
+     match from the *start* of a key and the tenant comes first, so one rule cannot express "any tenant, then
+     `staging/`" — it is per-tenant prefixes or a separate bucket. And the expiry is now constrained from
+     below: a session lives 24 hours and the sweep that *rescues* an abandoned upload runs only after that, so
+     a rule shorter than the session lifetime would delete the object before the sweep saw it and turn a
+     recoverable upload into a lost one. Seven days, and not less.
   7. **CloudFront in front of derivatives — not replacing the chokepoint.** CloudFront signed URLs cannot
      consult live database state, and D12 requires rights evaluated at delivery. It fronts the presigned URL
      we redirect to.
