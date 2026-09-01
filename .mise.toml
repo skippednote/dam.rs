@@ -240,8 +240,14 @@ description = "The bar: fmt, clippy, test — Postgres shared, SeaweedFS per har
 run = """
 set -eu
 PG=damrs-check-postgres
-cleanup() { docker rm -f "$PG" >/dev/null 2>&1 || true; }
-trap cleanup EXIT
+# `-v` is load-bearing. The container is started `--rm`, which removes its anonymous volume when it exits on
+# its own — but `docker rm -f` bypasses that, so without `-v` every forced cleanup leaves a multi-gigabyte
+# Postgres data volume behind, invisible in `docker ps` and attached to nothing. Eight of them accumulated
+# before anybody looked, and filled the disk.
+cleanup() { docker rm -fv "$PG" >/dev/null 2>&1 || true; }
+# EXIT alone is not enough: a POSIX shell does not run the EXIT trap when it is killed, so an interrupted or
+# timed-out run — which is how a long gate usually ends — left the container and its volume in place.
+trap cleanup EXIT INT TERM
 cleanup
 
 docker run -d --rm --name "$PG" -p 0:5432 \
