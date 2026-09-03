@@ -45,6 +45,66 @@ async fn the_key_table_invariants_hold() {
     tenants_do_not_resolve_each_other(&mut conn, acme, globex).await;
     a_revoked_key_stops_resolving_but_stays_on_the_record(&mut conn, globex).await;
     the_write_key_prefers_the_tenants_over_the_pools(&mut conn, &pool).await;
+    a_deployment_wide_key_retires_its_predecessor(&mut conn).await;
+}
+
+/// Rotating a deployment-wide key (NULL tenant) must retire the previous one.
+///
+/// `WHERE tenant_id = $1` is never true when `$1` is NULL, so an `=` retire clause would leave the old
+/// deployment key active beside the new — two active rows the partial unique index does not catch either,
+/// because it treats NULLs as distinct. The retire uses `IS NOT DISTINCT FROM`, and this pins it. Nothing
+/// creates a NULL-tenant key in the product yet, so without this test the path is entirely unexercised.
+async fn a_deployment_wide_key_retires_its_predecessor(conn: &mut sqlx::PgConnection) {
+    let first = encryption_keys::activate(
+        &mut *conn,
+        &NewKey {
+            tenant_id: None,
+            purpose: Purpose::Blob,
+            provider: Provider::AwsKms,
+            key_ref: "arn:deployment/first",
+            customer_managed: false,
+        },
+    )
+    .await
+    .expect("first deployment key");
+
+    let second = encryption_keys::activate(
+        &mut *conn,
+        &NewKey {
+            tenant_id: None,
+            purpose: Purpose::Blob,
+            provider: Provider::AwsKms,
+            key_ref: "arn:deployment/second",
+            customer_managed: false,
+        },
+    )
+    .await
+    .expect("rotate the deployment key");
+
+    // Only the second is active. The first must have been retired despite its NULL tenant.
+    let active_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM dam_global.encryption_keys \
+         WHERE tenant_id IS NULL AND purpose = 'blob' AND state = 'active'",
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .expect("count");
+    assert_eq!(
+        active_count, 1,
+        "exactly one deployment-wide blob key may be active"
+    );
+
+    let first_state: String =
+        sqlx::query_scalar("SELECT state FROM dam_global.encryption_keys WHERE id = $1")
+            .bind(first.id)
+            .fetch_one(&mut *conn)
+            .await
+            .expect("first state");
+    assert_eq!(
+        first_state, "retired",
+        "the predecessor deployment key must be retired, not left active"
+    );
+    assert_ne!(first.id, second.id);
 }
 
 /// The precedence that makes BYOK mean something: a customer's key beats the bucket's.

@@ -2334,12 +2334,17 @@ API that does not exist yet is a module written twice.
   a stronger key that might wrongly be skipped. Refusing would stop every correctly-encrypting deployment from
   writing the moment this empty table went live, which is every deployment at the moment of upgrade.
 
-  **`blob`.** Migration 0007 adds `kms_key_ref` to `storage_pools`. `key_for_write` resolves the tenant's own
-  active key, else the pool's, else the deployment's `storage.sse_kms_key_id` — each step more specific than
-  the last. `S3Store::writing_under` derives a store for one tenant's write as a cheap clone (the AWS client is
-  reference-counted), which keeps G10·3's guarantee that one place applies the key instead of reopening the
-  seven call sites. The clearing case is tested explicitly: `None` must clear, not keep, or one tenant's object
-  is encrypted under another's key and reports success.
+  **`blob` — resolution complete, asset writes NOT yet keyed.** *Corrected 2026-09-01 after review.* Migration
+  0007 adds `kms_key_ref` to `storage_pools`; `key_for_write` resolves the tenant's own active key, else the
+  pool's, else the deployment's `storage.sse_kms_key_id`; and `S3Store::writing_under` derives a per-tenant
+  store as a cheap clone. **But that derivation is called only from `damctl backup`.** The asset write path —
+  `finalise` and `derive` — holds an `Arc<dyn ResumableStore>` (the process store) and calls `store.put`
+  without ever deriving a tenant store, so an *asset object* is still encrypted with the process-wide key, not
+  the tenant's. The earlier entry claimed this was done; it was not. What is done is the resolution layer, the
+  `storage_pools` column, and the clearing semantics (tested: `None` must clear, not keep). Wiring the asset
+  writes needs the tenant store threaded to those two `put` sites, which is the "resolve at each write" shape
+  the G10·3b decision weighed — a `BlobStore`-trait method or a concrete-store thread through the pipeline
+  context. Left open, and flagged, rather than claimed.
 
   **`backup`.** No change to `dam-backup` at all: a dump is an object, so `damctl backup` derives the store
   with the tenant's `backup` key and passes it in. Falling back is loudest here — refusing to back up because a

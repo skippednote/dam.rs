@@ -607,31 +607,18 @@ pub async fn by_key(
     tenant.commit().await?;
     verify_gate(gate, params.passcode.as_deref()).await?;
 
-    let mut tenant = dam_db::TenantConn::begin(&state.global, reference.tenant())
-        .await
-        .map_err(|_| {
-            VisitorFailure::Portal(
-                StatusCode::NOT_FOUND,
-                "there is no portal at that address".to_owned(),
-            )
-        })?;
-    let conn = tenant.executor();
-    let page = render(
+    // `render` opens and releases its own connection, so nothing is held across its per-item signing.
+    render(
         &state,
         delivery::Scope {
             tenant_id,
             slug: reference.tenant(),
         },
-        &mut *conn,
         portal,
         share,
         params.q.as_deref(),
     )
-    .await?;
-    // Committed even though this reads: `rights::evaluate_on` writes the verdict it computed, and a dropped
-    // transaction would throw that away on every portal view. See the same note in `shares`.
-    tenant.commit().await?;
-    Ok(page)
+    .await
 }
 
 /// A portal by its share token — the way a private one is reached.
@@ -688,25 +675,18 @@ pub async fn by_token(
     tenant.commit().await?;
     verify_gate(gate, request.passcode.as_deref()).await?;
 
-    let mut tenant = dam_db::TenantConn::begin(&state.global, reference.tenant())
-        .await
-        .map_err(|_| dam_db::shares::ShareRefusal::NotFound)?;
-    let conn = tenant.executor();
-    let page = render(
+    // `render` opens and releases its own connection, so nothing is held across its per-item signing.
+    render(
         &state,
         delivery::Scope {
             tenant_id,
             slug: reference.tenant(),
         },
-        &mut *conn,
         portal,
         share,
         request.q.as_deref(),
     )
-    .await?;
-    // As in `by_key`: the render caches a rights verdict, so this transaction has a write in it.
-    tenant.commit().await?;
-    Ok(page)
+    .await
 }
 
 /// Resolves the share, then renders the set.
@@ -732,15 +712,28 @@ async fn verify_gate(
 async fn render(
     state: &PortalState,
     scope: delivery::Scope<'_>,
-    conn: &mut sqlx::PgConnection,
     portal: Portal,
     share: dam_db::shares::Share,
     query: Option<&str>,
 ) -> Result<Json<PortalPage>, VisitorFailure> {
-    // The share is already resolved, live-checked and passcode-verified by the caller — see `gate_portal`. It
-    // is done there rather than here because the passcode check must not hold this rendering connection: argon2
-    // is ~100ms of CPU, and holding a pooled connection idle-in-transaction through it starves the pool.
+    // The share is already resolved, live-checked and passcode-verified by the caller — see `gate_portal`.
+    //
+    // This function opens its own connection for the member reads and releases it *before* the per-item
+    // signing below. Signing calls `issue_for_share`, which opens a tenant transaction of its own, so holding
+    // this connection across the loop would mean two transactions from the same pool per portal view — and N
+    // concurrent views each holding one while waiting for a second is the classic pool deadlock, the same
+    // shape a members test hit earlier. The reads finish, the connection is returned, then the signing runs
+    // holding nothing of this pool.
     let now = state.delivery.now();
+    let mut tenant = dam_db::TenantConn::begin(&state.global, scope.slug)
+        .await
+        .map_err(|_| {
+            VisitorFailure::Portal(
+                StatusCode::NOT_FOUND,
+                "there is no portal at that address".to_owned(),
+            )
+        })?;
+    let conn = tenant.executor();
     let searching = portal
         .allow_search
         .then(|| query.unwrap_or("").trim())
@@ -777,6 +770,8 @@ async fn render(
     let rows =
         dam_db::portals::members(&mut *conn, source, searching, media_class, MAX_ITEMS).await?;
     let total = dam_db::portals::member_count(&mut *conn, source, searching, media_class).await?;
+    // Every read is done; return the connection to the pool before signing, which opens its own transactions.
+    tenant.commit().await?;
 
     let mut items = Vec::with_capacity(rows.len());
     for row in &rows {

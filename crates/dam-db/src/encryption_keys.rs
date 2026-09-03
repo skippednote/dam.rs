@@ -265,9 +265,13 @@ pub async fn activate(
     conn: &mut sqlx::PgConnection,
     new: &NewKey<'_>,
 ) -> Result<EncryptionKey, Error> {
+    // `IS NOT DISTINCT FROM`, not `=`: a deployment-wide key has a NULL tenant, and `tenant_id = NULL` is
+    // never true, so `=` would fail to retire the previous deployment key and leave two active — which the
+    // partial unique index does not catch either, because it treats NULLs as distinct. Nothing creates a
+    // NULL-tenant key today, so this is latent, but the wrong operator here is a silent double-active key.
     sqlx::query(
         "UPDATE dam_global.encryption_keys SET state = 'retired', retired_at = now() \
-         WHERE tenant_id = $1 AND purpose = $2 AND state = 'active'",
+         WHERE tenant_id IS NOT DISTINCT FROM $1 AND purpose = $2 AND state = 'active'",
     )
     .bind(new.tenant_id)
     .bind(new.purpose.as_str())
