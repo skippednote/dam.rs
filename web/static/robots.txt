@@ -2,4 +2,4 @@
 User-agent: *
 Disallow:
 
-Sitemap: https://damrs.github.io/sitemap.xml
+Sitemap: https://skippednote.github.io/dam.rs/sitemap.xml

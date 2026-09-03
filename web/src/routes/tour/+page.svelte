@@ -237,7 +237,7 @@
 </script>
 
 <svelte:head>
-	<link rel="canonical" href="https://damrs.github.io/" />
+	<link rel="canonical" href="https://skippednote.github.io/dam.rs/" />
 	<meta
 		name="description"
 		content="Explore dam.rs: rights-aware digital asset management with enforceable delivery, auditable provenance and archive-ready storage."
@@ -249,7 +249,7 @@
 		property="og:description"
 		content="Find every asset. Prove you can use it. Search, rights, provenance, storage and delivery in one auditable workflow."
 	/>
-	<meta property="og:url" content="https://damrs.github.io/" />
+	<meta property="og:url" content="https://skippednote.github.io/dam.rs/" />
 	<meta name="twitter:card" content="summary" />
 </svelte:head>
 

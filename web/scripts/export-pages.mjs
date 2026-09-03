@@ -4,21 +4,22 @@ import path from 'node:path';
 
 const output = path.resolve('pages-dist');
 const origin = 'http://127.0.0.1:4175';
+const pagesBase = '/dam.rs';
 const routes = [
-	['/', '/tour'],
-	['/tour/', '/tour'],
-	['/tour/docs/', '/tour/docs'],
-	['/tour/docs/architecture/', '/tour/docs/architecture'],
-	['/tour/docs/ingest-delivery/', '/tour/docs/ingest-delivery'],
-	['/tour/docs/api-mcp/', '/tour/docs/api-mcp'],
-	['/tour/docs/operations/', '/tour/docs/operations'],
-	['/tour/docs/security/', '/tour/docs/security'],
-	['/tour/docs/contributing/', '/tour/docs/contributing']
+	['/', `${pagesBase}/tour`],
+	['/tour/', `${pagesBase}/tour`],
+	['/tour/docs/', `${pagesBase}/tour/docs`],
+	['/tour/docs/architecture/', `${pagesBase}/tour/docs/architecture`],
+	['/tour/docs/ingest-delivery/', `${pagesBase}/tour/docs/ingest-delivery`],
+	['/tour/docs/api-mcp/', `${pagesBase}/tour/docs/api-mcp`],
+	['/tour/docs/operations/', `${pagesBase}/tour/docs/operations`],
+	['/tour/docs/security/', `${pagesBase}/tour/docs/security`],
+	['/tour/docs/contributing/', `${pagesBase}/tour/docs/contributing`]
 ];
 
 await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
-await cp(path.resolve('build/client'), output, { recursive: true });
+await cp(path.resolve('build/client', pagesBase.slice(1)), output, { recursive: true });
 
 const server = spawn(process.execPath, ['build/index.js'], {
 	env: { ...process.env, HOST: '127.0.0.1', PORT: '4175', NODE_ENV: 'production' },
@@ -32,7 +33,7 @@ server.stderr.on('data', (chunk) => (serverOutput += chunk));
 async function waitUntilReady() {
 	for (let attempt = 0; attempt < 80; attempt += 1) {
 		try {
-			const response = await fetch(`${origin}/tour`);
+			const response = await fetch(`${origin}${pagesBase}/tour`);
 			if (response.ok) return;
 		} catch {
 			// The server has not bound its socket yet.
@@ -50,20 +51,18 @@ async function render(target, source) {
 
 	const directory = target === '/' ? output : path.join(output, target);
 	await mkdir(directory, { recursive: true });
-	await writeFile(path.join(directory, 'index.html'), normalizeAssetPaths(await response.text()));
-}
-
-function normalizeAssetPaths(html) {
-	// SvelteKit emits paths relative to the route it rendered. GitHub Pages serves directory indexes
-	// with a trailing slash, which adds one path segment and makes ../../_app resolve to /tour/_app.
-	// Root-absolute references are correct because this is a user site at damrs.github.io, not a project
-	// site under a repository subdirectory.
-	return html.replaceAll(/(?:\.\.?\/)*\/?_app\//g, '/_app/');
+	const html = await response.text();
+	if (!html.includes(`${pagesBase}/_app/`)) {
+		throw new Error(`GET ${source} did not use the GitHub Pages asset base`);
+	}
+	await writeFile(path.join(directory, 'index.html'), html);
 }
 
 function sitemap() {
 	const urls = routes.map(([route]) =>
-		route === '/' ? 'https://damrs.github.io/' : `https://damrs.github.io${route}`
+		route === '/'
+			? 'https://skippednote.github.io/dam.rs/'
+			: `https://skippednote.github.io/dam.rs${route}`
 	);
 	return [
 		'<?xml version="1.0" encoding="UTF-8"?>',
@@ -80,8 +79,8 @@ try {
 		await render(target, source);
 	}
 
-	const notFound = await fetch(`${origin}/this-page-does-not-exist`);
-	await writeFile(path.join(output, '404.html'), normalizeAssetPaths(await notFound.text()));
+	const notFound = await fetch(`${origin}${pagesBase}/this-page-does-not-exist`);
+	await writeFile(path.join(output, '404.html'), await notFound.text());
 	await writeFile(path.join(output, '.nojekyll'), '');
 	await writeFile(path.join(output, 'sitemap.xml'), sitemap());
 	console.log(`Exported ${routes.length} pages to ${output}`);

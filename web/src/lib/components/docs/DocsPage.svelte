@@ -21,8 +21,8 @@
 	const doc = $derived(DOCS[slug]);
 	const canonicalUrl = $derived(
 		slug === 'getting-started'
-			? 'https://damrs.github.io/tour/docs/'
-			: `https://damrs.github.io/tour/docs/${slug}/`
+			? 'https://skippednote.github.io/dam.rs/tour/docs/'
+			: `https://skippednote.github.io/dam.rs/tour/docs/${slug}/`
 	);
 	const index = $derived(DOC_ORDER.indexOf(slug));
 	const previous = $derived(index > 0 ? DOCS[DOC_ORDER[index - 1]] : null);
