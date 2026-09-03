@@ -1,0 +1,1 @@
+import{bt as e}from"../chunks/Bxda0U1Y.js";import"../chunks/xihTtKlq.js";import{t}from"../chunks/DIjiaKmf.js";var n=e({load:()=>r});function r(){return{title:`Documentation`}}function i(e){t(e,{slug:`getting-started`})}export{i as component,n as universal};
