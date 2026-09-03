@@ -13,6 +13,7 @@
  */
 const OUTSIDE = ['/share/', '/portal/', '/tour'];
 
-export function isPublicRoute(pathname: string): boolean {
-	return OUTSIDE.some((prefix) => pathname.startsWith(prefix));
+export function isPublicRoute(pathname: string, base = ''): boolean {
+	const appPath = base && pathname.startsWith(base) ? pathname.slice(base.length) || '/' : pathname;
+	return OUTSIDE.some((prefix) => appPath.startsWith(prefix));
 }

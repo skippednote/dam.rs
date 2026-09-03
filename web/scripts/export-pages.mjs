@@ -5,8 +5,8 @@ import path from 'node:path';
 const output = path.resolve('pages-dist');
 const origin = 'http://127.0.0.1:4175';
 const pagesBase = '/dam.rs';
+const publicOrigin = 'https://skippednote.github.io/dam.rs';
 const routes = [
-	['/', `${pagesBase}/tour`],
 	['/tour/', `${pagesBase}/tour`],
 	['/tour/docs/', `${pagesBase}/tour/docs`],
 	['/tour/docs/architecture/', `${pagesBase}/tour/docs/architecture`],
@@ -59,11 +59,7 @@ async function render(target, source) {
 }
 
 function sitemap() {
-	const urls = routes.map(([route]) =>
-		route === '/'
-			? 'https://skippednote.github.io/dam.rs/'
-			: `https://skippednote.github.io/dam.rs${route}`
-	);
+	const urls = [`${publicOrigin}/`, ...routes.map(([route]) => `${publicOrigin}${route}`)];
 	return [
 		'<?xml version="1.0" encoding="UTF-8"?>',
 		'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
@@ -73,17 +69,37 @@ function sitemap() {
 	].join('\n');
 }
 
+function rootRedirect() {
+	const target = `${pagesBase}/tour/`;
+	return `<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1">
+		<meta http-equiv="refresh" content="0; url=${target}">
+		<link rel="canonical" href="${publicOrigin}/tour/">
+		<title>dam.rs · Rights-aware digital asset management</title>
+		<script>location.replace("${target}")</script>
+	</head>
+	<body>
+		<p><a href="${target}">Open dam.rs</a></p>
+	</body>
+</html>
+`;
+}
+
 try {
 	await waitUntilReady();
 	for (const [target, source] of routes) {
 		await render(target, source);
 	}
 
+	await writeFile(path.join(output, 'index.html'), rootRedirect());
 	const notFound = await fetch(`${origin}${pagesBase}/this-page-does-not-exist`);
 	await writeFile(path.join(output, '404.html'), await notFound.text());
 	await writeFile(path.join(output, '.nojekyll'), '');
 	await writeFile(path.join(output, 'sitemap.xml'), sitemap());
-	console.log(`Exported ${routes.length} pages to ${output}`);
+	console.log(`Exported ${routes.length} pages and the root redirect to ${output}`);
 } finally {
 	server.kill('SIGTERM');
 }

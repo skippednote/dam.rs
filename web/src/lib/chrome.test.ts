@@ -9,6 +9,13 @@ describe('isPublicRoute', () => {
 		}
 	);
 
+	it.each(['/dam.rs/tour', '/dam.rs/tour/docs', '/dam.rs/share/token'])(
+		'keeps %s outside the operator shell when the app has a Pages base',
+		(pathname) => {
+			expect(isPublicRoute(pathname, '/dam.rs')).toBe(true);
+		}
+	);
+
 	it.each(['/', '/assets', '/settings'])('keeps %s inside the operator shell', (pathname) => {
 		expect(isPublicRoute(pathname)).toBe(false);
 	});
