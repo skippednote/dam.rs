@@ -389,12 +389,7 @@ pub async fn fulfil(
 fn pickup_url(state: &Arc<OrderState>, tenant: &dam_core::TenantSlug, token: &str) -> String {
     // The segment carries the tenant (G22c): a pickup URL is opened by somebody with no account, so it has to
     // say which library it belongs to or the process has to be configured to serve exactly one.
-    let reference = match dam_core::public_ref::PublicRef::new(tenant.clone(), token) {
-        Ok(reference) => reference.to_string(),
-        // A token is never empty, so this is unreachable; falling back to the bare token keeps the caller
-        // total rather than making an infallible-in-practice path return a Result.
-        Err(_) => token.to_owned(),
-    };
+    let reference = dam_core::public_ref::PublicRef::qualify(tenant, token);
     match &state.public_url {
         Some(base) => format!("{base}/share/{reference}"),
         None => format!("/share/{reference}"),

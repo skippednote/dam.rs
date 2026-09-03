@@ -206,3 +206,105 @@ async fn reclaiming_acts_on_the_session_that_was_checked_not_the_oldest() {
         "the finished upload's object must survive a pass that also reclaimed another"
     );
 }
+
+/// An upload whose finalisation has already died is left alone, not enqueued forever.
+///
+/// This is the loop the dedupe key does not close: it stops a second *live* finalise, but its unique index
+/// only covers queued and running jobs, so once one dies the sweep would enqueue the same work on every pass.
+/// For an upload the pipeline permanently refuses that is a five-minute-forever churn. The object is kept —
+/// unfinishable is not junk — but no new job is queued.
+#[tokio::test]
+async fn a_dead_finalisation_is_not_re_enqueued() {
+    let (_pg, global, tenant, tenant_id, store) = fixture().await;
+
+    session(&tenant, tenant_id, "unfinishable", Some(11)).await;
+    let key = Key::staging(tenant_id, "unfinishable").expect("key");
+    store
+        .put(&key, "hello world".into(), StorageClass::Standard)
+        .await
+        .expect("the client's PUT");
+    uploads::force_expiry_for_test(&tenant, "unfinishable", -1)
+        .await
+        .expect("age it");
+
+    // A finalisation for this upload that ran out of attempts. `dead`, the terminal state.
+    sqlx::query(
+        "INSERT INTO dam_global.jobs          (id, tenant_id, kind, dedupe_key, state, attempts, max_attempts, finished_at)          VALUES (gen_random_uuid(), $1, 'finalise_upload', 'finalise:unfinishable', 'dead', 5, 5, now())",
+    )
+    .bind(tenant_id)
+    .execute(&global)
+    .await
+    .expect("dead job");
+
+    let swept = dam_pipeline::abandoned::sweep_tenant(
+        &global,
+        &mut tenant.acquire().await.expect("conn"),
+        &store,
+        tenant_id,
+    )
+    .await
+    .expect("sweep");
+
+    assert_eq!(
+        swept.rescued, 0,
+        "a dead finalisation must not be retried: {swept:?}"
+    );
+    assert_eq!(
+        swept.deferred, 1,
+        "it is deferred for review, not churned: {swept:?}"
+    );
+    assert_eq!(
+        queued_finalisations(&global, tenant_id).await,
+        0,
+        "no new finalise job may be queued behind a dead one"
+    );
+    assert!(
+        store.head(&key).await.is_ok(),
+        "and the object is kept — unfinishable is not the same as junk"
+    );
+}
+
+/// A *failed* finalisation — between retries, not terminal — is left to the queue rather than re-enqueued.
+///
+/// The distinction from `dead` matters: a `failed` job runs again on its own, so enqueuing beside it would
+/// be fighting the queue. The dedupe key already blocks a live duplicate, so the sweep enqueues nothing new
+/// and the existing job is what retries.
+#[tokio::test]
+async fn a_failed_finalisation_between_retries_is_left_to_the_queue() {
+    let (_pg, global, tenant, tenant_id, store) = fixture().await;
+
+    session(&tenant, tenant_id, "retrying", Some(11)).await;
+    let key = Key::staging(tenant_id, "retrying").expect("key");
+    store
+        .put(&key, "hello world".into(), StorageClass::Standard)
+        .await
+        .expect("put");
+    uploads::force_expiry_for_test(&tenant, "retrying", -1)
+        .await
+        .expect("age it");
+
+    // A finalise that failed but has attempts left: it is back to `queued`, which the dedupe key covers.
+    sqlx::query(
+        "INSERT INTO dam_global.jobs          (id, tenant_id, kind, dedupe_key, state, attempts, max_attempts)          VALUES (gen_random_uuid(), $1, 'finalise_upload', 'finalise:retrying', 'queued', 2, 5)",
+    )
+    .bind(tenant_id)
+    .execute(&global)
+    .await
+    .expect("queued job");
+
+    let swept = dam_pipeline::abandoned::sweep_tenant(
+        &global,
+        &mut tenant.acquire().await.expect("conn"),
+        &store,
+        tenant_id,
+    )
+    .await
+    .expect("sweep");
+
+    // The enqueue is a no-op against the live dedupe key, so nothing new appears and the existing job stands.
+    assert_eq!(
+        queued_finalisations(&global, tenant_id).await,
+        1,
+        "the one live job stands; the sweep adds nothing: {swept:?}"
+    );
+}

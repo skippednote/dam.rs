@@ -82,6 +82,28 @@ pub async fn sweep_tenant(
 
         match (store as &dyn BlobStore).head(&key).await {
             Ok(state) if state.size > 0 => {
+                // Finalisation already tried this upload to exhaustion. Enqueuing it again would fail again
+                // in five minutes, and the pass after that, forever — the dedupe key only blocks a *live*
+                // duplicate, not a dead one. A finalise dies permanently when the upload is genuinely
+                // unfinishable: the client sent fewer bytes than it declared, or the pipeline refused the
+                // content. Neither is fixed by retrying, so this is left for a person to look at rather than
+                // churned. The object is kept, not deleted — being unfinishable is not the same as being junk.
+                if dam_db::jobs::has_dead(
+                    global,
+                    tenant_id,
+                    crate::worker::kind::FINALISE_UPLOAD,
+                    &crate::worker::finalise_dedupe_key(&session.id),
+                )
+                .await?
+                {
+                    tracing::warn!(
+                        upload_id = %session.id, %tenant_id,
+                        "an expired upload has an object but its finalisation has died; leaving it for review",
+                    );
+                    swept.deferred += 1;
+                    continue;
+                }
+
                 // The client finished and never said so. Hand it to the ordinary finalisation path.
                 match crate::worker::enqueue_finalise(global, tenant_id, &session.id).await {
                     Ok(_) => {

@@ -1218,6 +1218,13 @@ async fn sweep_abandoned_uploads(context: &Context) {
     }
 }
 
+/// The dedupe key for a finalisation, in one place so the enqueuer and the abandoned-upload sweep cannot
+/// disagree about its shape — a mismatch would defeat both the live-duplicate guard and the dead-job check.
+#[must_use]
+pub fn finalise_dedupe_key(upload_id: &str) -> String {
+    format!("finalise:{upload_id}")
+}
+
 /// Queues finalisation for a completed upload.
 pub async fn enqueue_finalise(
     global: &sqlx::PgPool,
@@ -1231,7 +1238,7 @@ pub async fn enqueue_finalise(
             // The most interactive job there is: a user has just finished uploading and is waiting for their
             // asset to appear.
             .priority(30)
-            .dedupe_key(format!("finalise:{upload_id}")),
+            .dedupe_key(finalise_dedupe_key(upload_id)),
     )
     .await?)
 }

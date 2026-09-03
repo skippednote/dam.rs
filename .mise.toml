@@ -77,9 +77,6 @@ DAMRS_STORAGE__SECRET_ACCESS_KEY = "damrsdevsecret"
 # /var/lib: a default that needs root to create is a default that fails on a first run.
 DAMRS_SEARCH__INDEX_ROOT = "./data/search"
 
-# Which tenant the delivery routes serve. Named rather than inferred, because a dev database that has
-# grown a second tenant makes the answer ambiguous and `damd` then refuses to start rather than guess.
-
 # Where the API is reached from a browser. Set locally because the Svelte dev server is on another port, and a
 # root-relative delivery URL would resolve against *it* — a 404 from the wrong server.
 DAMRS_SERVER__PUBLIC_URL = "http://localhost:8080"

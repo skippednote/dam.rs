@@ -85,6 +85,21 @@ impl PublicRef {
     pub fn rest(&self) -> &str {
         &self.rest
     }
+
+    /// Renders a `{tenant}.{rest}` public segment directly, for a caller that only needs the string.
+    ///
+    /// Three handlers were each doing this inline and disagreeing about the impossible case — one returned an
+    /// error, two fell back to the bare `rest`, each a `PublicRef::new(...).map_or/map_err` from scratch. This
+    /// is the single spelling. `rest` is empty only for a caller that lost its own token or key, which the
+    /// paths building these URLs never do, so the branch is unreachable; it falls back to the bare `rest`
+    /// because a URL missing its tenant is a visible 404 while a 500 on an impossible branch is a mystery.
+    #[must_use]
+    pub fn qualify(tenant: &TenantSlug, rest: &str) -> String {
+        match Self::new(tenant.clone(), rest) {
+            Ok(reference) => reference.to_string(),
+            Err(_) => rest.to_owned(),
+        }
+    }
 }
 
 impl fmt::Display for PublicRef {
@@ -99,6 +114,16 @@ mod tests {
 
     fn slug(s: &str) -> TenantSlug {
         TenantSlug::new(s).expect("a valid slug")
+    }
+
+    #[test]
+    fn qualify_renders_the_same_string_as_a_built_reference() {
+        // The one spelling every emitted URL uses. It must match what parsing back would expect.
+        let rendered = PublicRef::qualify(&slug("acme"), "press-kit");
+        assert_eq!(rendered, "acme.press-kit");
+        let read = PublicRef::parse(&rendered).expect("round trips");
+        assert_eq!(read.tenant().as_str(), "acme");
+        assert_eq!(read.rest(), "press-kit");
     }
 
     #[test]

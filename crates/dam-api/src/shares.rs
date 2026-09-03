@@ -192,9 +192,10 @@ pub async fn create(
     // The path carries the tenant, because the visitor URL has to resolve without a configured one (G22c).
     // Built here rather than by the client: a client that concatenated the token itself would produce a URL
     // that 404s, and it would do it silently.
-    let reference =
-        dam_core::public_ref::PublicRef::new(caller.tenant_slug.clone(), created.token())
-            .map_err(|_| Failure::Internal)?;
+    // One spelling for every emitted public URL — see `PublicRef::qualify`. This path used to error on the
+    // impossible empty-token case; it now falls back like the others, which cannot differ in practice because
+    // a freshly created share always has a token.
+    let reference = dam_core::public_ref::PublicRef::qualify(&caller.tenant_slug, created.token());
     let portal_path = format!("/share/{reference}");
     Ok((
         StatusCode::CREATED,
@@ -370,15 +371,11 @@ pub async fn portal(
     let now = state.delivery.now();
     let reference = visitor_reference(&token)?;
     let tenant_id = visitor_tenant_id(&state, &reference).await?;
+    let share = resolve_for_portal(&state, &reference, request.passcode.as_deref(), now).await?;
+    // A fresh connection for the reads below. `resolve_for_portal` released its own before the passcode
+    // check, so nothing is held across that ~100ms of CPU.
     let mut tenant = visitor_conn(&state, &reference).await?;
     let conn = tenant.executor();
-    let share = resolve_for_portal(
-        &mut *conn,
-        reference.rest(),
-        request.passcode.as_deref(),
-        now,
-    )
-    .await?;
     let asset_id = share.target_id.ok_or_else(|| {
         // A collection or search share. Those still need their own view; an order pickup is handled by
         // `portal_set` below, which is a *different route* because the two answers have different shapes and one
@@ -482,15 +479,11 @@ pub async fn portal_set(
     let now = state.delivery.now();
     let reference = visitor_reference(&token)?;
     let tenant_id = visitor_tenant_id(&state, &reference).await?;
+    let share = resolve_for_portal(&state, &reference, request.passcode.as_deref(), now).await?;
+    // A fresh connection for the reads below. `resolve_for_portal` released its own before the passcode
+    // check, so nothing is held across that ~100ms of CPU.
     let mut tenant = visitor_conn(&state, &reference).await?;
     let conn = tenant.executor();
-    let share = resolve_for_portal(
-        &mut *conn,
-        reference.rest(),
-        request.passcode.as_deref(),
-        now,
-    )
-    .await?;
     let order_id = match (share.kind.as_str(), share.target_id) {
         ("order", Some(id)) => id,
         // The same flat answer a dead token gets. A recipient of an asset share learns nothing about what other
@@ -635,21 +628,9 @@ pub async fn download(
     let now = state.delivery.now();
     let reference = visitor_reference(&token)?;
     let tenant_id = visitor_tenant_id(&state, &reference).await?;
-    let share = {
-        // Scoped so the transaction ends here. The signing below opens a tenant transaction of its own, and
-        // holding this one across it makes two transactions from the same pool contend — a deadlock on a small
-        // pool. The pinned pool this replaced was autocommit-per-statement, so it never held one at all.
-        let mut tenant = visitor_conn(&state, &reference).await?;
-        let share = resolve_for_portal(
-            tenant.executor(),
-            reference.rest(),
-            request.passcode.as_deref(),
-            now,
-        )
-        .await?;
-        tenant.commit().await?;
-        share
-    };
+    // `resolve_for_portal` is self-contained and holds no connection across its passcode check, so the signing
+    // below cannot contend with a transaction held open here.
+    let share = resolve_for_portal(&state, &reference, request.passcode.as_deref(), now).await?;
     let asset_id = share.target_id.ok_or(Failure::Portal(
         StatusCode::NOT_FOUND,
         "this link shares something this portal cannot download yet".to_owned(),
@@ -734,21 +715,9 @@ pub async fn download_item(
     let now = state.delivery.now();
     let reference = visitor_reference(&token)?;
     let tenant_id = visitor_tenant_id(&state, &reference).await?;
-    let share = {
-        // Scoped so the transaction ends here. The signing below opens a tenant transaction of its own, and
-        // holding this one across it makes two transactions from the same pool contend — a deadlock on a small
-        // pool. The pinned pool this replaced was autocommit-per-statement, so it never held one at all.
-        let mut tenant = visitor_conn(&state, &reference).await?;
-        let share = resolve_for_portal(
-            tenant.executor(),
-            reference.rest(),
-            request.passcode.as_deref(),
-            now,
-        )
-        .await?;
-        tenant.commit().await?;
-        share
-    };
+    // `resolve_for_portal` is self-contained and holds no connection across its passcode check, so the signing
+    // below cannot contend with a transaction held open here.
+    let share = resolve_for_portal(&state, &reference, request.passcode.as_deref(), now).await?;
     if share.kind != "order" {
         return Err(Failure::Portal(
             StatusCode::NOT_FOUND,
@@ -902,13 +871,30 @@ async fn visitor_tenant_id(
 
 /// Resolve + passcode + the EULA fail-closed gate, shared by both portal routes.
 async fn resolve_for_portal(
-    conn: &mut sqlx::PgConnection,
-    token: &str,
+    state: &ShareState,
+    reference: &dam_core::public_ref::PublicRef,
     passcode: Option<&str>,
     now: DateTime<Utc>,
 ) -> Result<shares::Share, Failure> {
-    let share = shares::resolve(&mut *conn, token, now).await?;
-    shares::check_passcode(&mut *conn, share.id, passcode).await?;
+    // Self-contained, and holds no connection during the passcode check. The share resolve and the gate read
+    // run on a short-lived connection that is released before the argon2 verification — see `PasscodeGate`.
+    // A handful of concurrent wrong-passcode guesses used to pin one pooled connection each, idle in a
+    // transaction, for ~100ms apiece; on a sixteen-connection pool that starves unrelated requests.
+    let (share, gate) = {
+        let mut tenant = visitor_conn(state, reference).await?;
+        let conn = tenant.executor();
+        let share = shares::resolve(&mut *conn, reference.rest(), now).await?;
+        let gate = shares::passcode_gate(&mut *conn, share.id).await?;
+        tenant.commit().await?;
+        (share, gate)
+    };
+
+    // The argon2 work off the runtime, holding nothing. `spawn_blocking` because ~100ms of CPU on a runtime
+    // worker starves every task multiplexed onto that thread.
+    let presented = passcode.map(ToOwned::to_owned);
+    tokio::task::spawn_blocking(move || gate.verify(presented.as_deref()))
+        .await
+        .map_err(|_| Failure::Internal)??;
 
     if share.requires_eula {
         // Fail closed: the flag exists, the acceptance machinery does not, and enforcing nothing while the

@@ -586,7 +586,36 @@ pub async fn by_key(
             "there is no portal at that address".to_owned(),
         ));
     };
+    let now = state.delivery.now();
+    let share =
+        dam_db::shares::by_id(&mut *conn, share_id)
+            .await?
+            .ok_or(VisitorFailure::Portal(
+                StatusCode::NOT_FOUND,
+                "there is no portal at that address".to_owned(),
+            ))?;
+    if !share.is_live(now) {
+        // The share's own vocabulary — expired, revoked, exhausted — through the same refusal type the share
+        // portal uses, so a revoked portal and a revoked asset link read alike. A flat "not found" here would
+        // lose the one thing the recipient can act on: whether to ask for a fresh link.
+        return Err(VisitorFailure::from(
+            dam_db::shares::ShareRefusal::from_share(&share, now),
+        ));
+    }
+    // Release the connection before the passcode check, so the argon2 work holds nothing.
+    let gate = dam_db::shares::passcode_gate(&mut *conn, share.id).await?;
+    tenant.commit().await?;
+    verify_gate(gate, params.passcode.as_deref()).await?;
 
+    let mut tenant = dam_db::TenantConn::begin(&state.global, reference.tenant())
+        .await
+        .map_err(|_| {
+            VisitorFailure::Portal(
+                StatusCode::NOT_FOUND,
+                "there is no portal at that address".to_owned(),
+            )
+        })?;
+    let conn = tenant.executor();
     let page = render(
         &state,
         delivery::Scope {
@@ -595,8 +624,7 @@ pub async fn by_key(
         },
         &mut *conn,
         portal,
-        share_id,
-        params.passcode.as_deref(),
+        share,
         params.q.as_deref(),
     )
     .await?;
@@ -655,7 +683,15 @@ pub async fn by_token(
             "this portal is no longer available".to_owned(),
         ));
     };
+    // The gate read completes the reads; release the connection before verifying, so argon2 holds nothing.
+    let gate = dam_db::shares::passcode_gate(&mut *conn, share.id).await?;
+    tenant.commit().await?;
+    verify_gate(gate, request.passcode.as_deref()).await?;
 
+    let mut tenant = dam_db::TenantConn::begin(&state.global, reference.tenant())
+        .await
+        .map_err(|_| dam_db::shares::ShareRefusal::NotFound)?;
+    let conn = tenant.executor();
     let page = render(
         &state,
         delivery::Scope {
@@ -664,8 +700,7 @@ pub async fn by_token(
         },
         &mut *conn,
         portal,
-        share.id,
-        request.passcode.as_deref(),
+        share,
         request.q.as_deref(),
     )
     .await?;
@@ -678,32 +713,34 @@ pub async fn by_token(
 ///
 /// Both routes end here, which is the point: the slug and the token are two addresses for one page, and the
 /// checks — passcode, expiry, cap, revocation — happen once, in the share machinery, whichever address was used.
+/// Verifies a passcode gate off the async runtime, holding no connection.
+///
+/// The argon2 work is ~100ms of CPU. On a runtime worker it starves every task that thread multiplexes, and
+/// on a pooled connection it starves the pool — so the caller reads the gate, releases its connection, and
+/// hands the gate here. See `dam_db::shares::PasscodeGate`.
+async fn verify_gate(
+    gate: dam_db::shares::PasscodeGate,
+    passcode: Option<&str>,
+) -> Result<(), VisitorFailure> {
+    let presented = passcode.map(ToOwned::to_owned);
+    tokio::task::spawn_blocking(move || gate.verify(presented.as_deref()))
+        .await
+        .map_err(|_| VisitorFailure::Internal)?
+        .map_err(VisitorFailure::from)
+}
+
 async fn render(
     state: &PortalState,
     scope: delivery::Scope<'_>,
     conn: &mut sqlx::PgConnection,
     portal: Portal,
-    share_id: Uuid,
-    passcode: Option<&str>,
+    share: dam_db::shares::Share,
     query: Option<&str>,
 ) -> Result<Json<PortalPage>, VisitorFailure> {
+    // The share is already resolved, live-checked and passcode-verified by the caller — see `gate_portal`. It
+    // is done there rather than here because the passcode check must not hold this rendering connection: argon2
+    // is ~100ms of CPU, and holding a pooled connection idle-in-transaction through it starves the pool.
     let now = state.delivery.now();
-    let share =
-        dam_db::shares::by_id(&mut *conn, share_id)
-            .await?
-            .ok_or(VisitorFailure::Portal(
-                StatusCode::NOT_FOUND,
-                "there is no portal at that address".to_owned(),
-            ))?;
-    if !share.is_live(now) {
-        // The share's own vocabulary, through the same refusal type the share portal uses, so a revoked portal
-        // and a revoked asset link read alike.
-        return Err(VisitorFailure::from(
-            dam_db::shares::ShareRefusal::from_share(&share, now),
-        ));
-    }
-    dam_db::shares::check_passcode(&mut *conn, share.id, passcode).await?;
-
     let searching = portal
         .allow_search
         .then(|| query.unwrap_or("").trim())
@@ -849,8 +886,7 @@ fn public_url(state: &PortalState, tenant: &dam_core::TenantSlug, key: &str) -> 
 /// address looks like. A key is never empty — the schema refuses it — so the fallback is unreachable; it exists
 /// to keep the two callers total rather than to handle a case that can happen.
 fn qualified(tenant: &dam_core::TenantSlug, rest: &str) -> String {
-    dam_core::public_ref::PublicRef::new(tenant.clone(), rest)
-        .map_or_else(|_| rest.to_owned(), |reference| reference.to_string())
+    dam_core::public_ref::PublicRef::qualify(tenant, rest)
 }
 
 /// Turns a store refusal into an HTTP one.
