@@ -106,7 +106,11 @@ impl OpenAiCompatibleModel {
 
         let mut object = serde_json::Map::new();
         object.insert("model".to_owned(), self.model.clone().into());
-        object.insert("max_tokens".to_owned(), ask.max_tokens.into());
+        // `max_completion_tokens`, not the older `max_tokens`: every current OpenAI model (the whole GPT-5
+        // line) hard-rejects `max_tokens` with a 400 ("Unsupported parameter: 'max_tokens' … Use
+        // 'max_completion_tokens' instead"), while gpt-4o-mini and current OpenAI-compatible vendors accept
+        // the newer name. Sending both is not an option — the presence of `max_tokens` alone triggers the 400.
+        object.insert("max_completion_tokens".to_owned(), ask.max_tokens.into());
         object.insert(
             "messages".to_owned(),
             serde_json::json!([
