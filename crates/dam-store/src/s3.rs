@@ -190,7 +190,16 @@ impl S3Store {
         Self {
             client: Client::new(&conf),
             bucket: bucket.to_owned(),
-            capabilities: Capabilities::full(),
+            // `server_checksums` is deliberately NOT claimed: `put` sets no `checksum_algorithm` and `head`
+            // no `checksum_mode`, so real S3 stores and returns no comparable server checksum, and the
+            // integrity scrub's checksum cross-check (`verify`, only fires when both sides have one) would
+            // silently never run while the flag said it did. The scrub relies on size + a first-byte probe.
+            // Earning this back means threading a checksum algorithm through put/multipart/copy and enabling
+            // checksum_mode on head — tracked, not done here.
+            capabilities: Capabilities {
+                server_checksums: false,
+                ..Capabilities::full()
+            },
             latency_class: LatencyClass::Instant,
             driver: "s3",
             // Real AWS is always HTTPS, so the root store is both needed and used.
