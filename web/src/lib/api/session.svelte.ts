@@ -22,8 +22,27 @@
 const KEY_STORAGE = 'damrs.api_key';
 const BASE_STORAGE = 'damrs.api_base';
 
-/** Where `damd` listens by default in development. */
-export const DEFAULT_BASE = 'http://127.0.0.1:8099';
+/**
+ * The API base.
+ *
+ * In a browser on a real host, the API is reached under the `/__api` prefix on the *same* origin the app is
+ * served from (the reverse proxy strips `/__api` and forwards to `damd`). This keeps app and API on one
+ * origin+cert while avoiding the ~20 top-level path names they share, so a fresh visitor — and an
+ * unauthenticated share recipient, who has no localStorage — reaches the API without configuring anything.
+ * Falls back to the dev listener during SSR and on localhost. A stored `damrs.api_base` still overrides.
+ */
+function defaultBase(): string {
+	if (
+		typeof window !== 'undefined' &&
+		window.location.hostname !== 'localhost' &&
+		window.location.hostname !== '127.0.0.1'
+	) {
+		return `${window.location.origin}/__api`;
+	}
+	return 'http://127.0.0.1:8099';
+}
+
+export const DEFAULT_BASE = defaultBase();
 
 /**
  * How much of a key is safe to show.
