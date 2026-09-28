@@ -35,14 +35,14 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M6** Workflow/proofing, annotations, analytics | **done** — annotations (M6a), proofing (M6b), analytics (M6c) |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | G19 **done**; G7 **done** (crosswalk, dry run, filesystem source, transfer); G10 **done** (audit chain, user administration, SCIM, BYOK) |
 
-**Next up, in order:** G7, G10 and M3d·5 are complete. What remains is decisions rather than build work: G22c (the public URL space), G10·3b (per-tenant keys), the AWS-native items 1 and 2, and M4b's model-distribution question.
+**Next up, in order:** G7, G10, M3d·5, G22c (the public URL space) and G10·3b (per-tenant keys) are all complete, as is C2PA (task 1.9 — verify/preserve/re-sign on ingest and derivation — with the per-tenant signing identities that answer its parked certificate question, wired into the worker per job). What remains, in this order: the **AWS-native items** — locked sub-order **4 S3 Inventory → 3 S3 Batch bulk restore → 2 Intelligent-Tiering** (Inventory first: costed at ~a day, no decision; Intelligent-Tiering last, gated on the noncurrent-version decision — `object_placements` has no `version_id`; item 1 is closed); then a **management surface for `signing_identities`** — the repo and pipeline are wired but no API/CLI installs a tenant's certificate, so mirror `POST /ai/credentials`; then wiring the **per-tenant blob key to asset writes** — the BYOK gap G10·3b left open, where `finalise`/`derive` still `put` under the process key. M4b's model-distribution question stays parked.
 M4b (local models) is parked on a distribution decision — see the M4 section.
 
 **`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
 note carried; `DECISIONS.md` records what was chosen. Two of them needed code: a portal may now be backed by a
 live query because publication became a per-asset act (Q.14 above), and a namespace wildcard in a permission
 string is expanded, which fixed a seeded `admin` role that conferred nothing unless its holder also carried the
-tenant-admin flag. C2PA (task 1.9) is unblocked and still unbuilt.
+tenant-admin flag. C2PA (task 1.9) is built — verify/preserve/re-sign on ingest and derivation, with per-tenant signing identities wired into the worker; only a management API for those identities remains (mirror `POST /ai/credentials`).
 M5 is complete. M5a and M5b are done and verified against the running stack: both
 hosted clients reach their real vendor endpoints, and a full enrichment ran end to end through the worker against
 a local OpenAI-compatible endpoint — values written with provenance, a disclosure row, tags suggested, 0.75¢
