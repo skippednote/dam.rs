@@ -1492,6 +1492,18 @@ async fn backup_key(pool: &sqlx::PgPool, slug: &TenantSlug) -> anyhow::Result<Op
 /// twelve lines, and the alternative is a crate that exists so three binaries can agree on something they
 /// each read from the same config. If it grows a third case it should move.
 async fn build_store(cfg: &Config) -> anyhow::Result<dam_store::S3Store> {
+    // The customer-managed key is applied to whichever store gets built, at the end — mirroring
+    // `damd`/`dam-worker`'s `build_store`. Without it, `damctl backup` and `import transfer` wrote every
+    // object with no CMK at all (not even the deployment default), silently bypassing G10·3 for the two
+    // ingestion/DR paths that do not run inside the server.
+    let store = build_store_inner(cfg).await?;
+    Ok(match cfg.storage.sse_kms_key_id.as_deref() {
+        Some(key) => store.with_sse_kms(key),
+        None => store,
+    })
+}
+
+async fn build_store_inner(cfg: &Config) -> anyhow::Result<dam_store::S3Store> {
     match cfg.storage.endpoint.as_deref() {
         None => Ok(dam_store::S3Store::aws(&cfg.storage.bucket, &cfg.storage.region).await),
         Some(endpoint) => {
