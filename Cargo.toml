@@ -160,6 +160,7 @@ serde_with = "3"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }   # v7 for time-ordered ids
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
 blake3 = "1"            # content addressing
+flate2 = "1"            # gunzip for the S3 Inventory CSV reader
 base64 = "0.23"
 # Provenance (D13). Two features are pointedly absent.
 #

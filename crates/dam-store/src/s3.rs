@@ -17,8 +17,8 @@
 //! Hence the explicit declaration rather than a probe.
 
 use crate::{
-    BlobStore, ByteRange, Capabilities, Error, GetOutcome, Key, ObjectState, Placement,
-    RestoreTicket, Result,
+    BlobStore, ByteRange, Capabilities, Error, GetOutcome, InventoryEntry, Key, ObjectState,
+    Placement, RestoreTicket, Result, inventory,
 };
 use async_trait::async_trait;
 use aws_sdk_s3::{
@@ -130,6 +130,10 @@ pub struct S3Store {
     /// That is the default here because a key id we invented would fail every write, and because most
     /// deployments do not want BYOK.
     sse_kms_key_id: Option<String>,
+    /// The S3 key prefix under which S3 Inventory drops its `<date>/manifest.json` reports, or `None`
+    /// when no inventory is configured. Set via [`Self::with_inventory_prefix`], which also flips the
+    /// `object_inventory` capability — the two are kept in lockstep so the claim never outruns the data.
+    inventory_prefix: Option<String>,
 }
 
 /// Applies the store's encryption choice to a request that creates an object.
@@ -198,8 +202,9 @@ impl S3Store {
             // checksum_mode on head — tracked, not done here.
             capabilities: Capabilities {
                 server_checksums: false,
-                // No reader for the S3 inventory manifest yet; the scrub uses the per-object path until one
-                // lands, at which point this flips to true.
+                // Off until an inventory prefix is configured. `with_inventory_prefix` flips this to true,
+                // because a store that claims `object_inventory` must have somewhere to read the manifest
+                // from; without a prefix `inventory()` has nothing to list and returns `Unsupported`.
                 object_inventory: false,
                 ..Capabilities::full()
             },
@@ -208,6 +213,7 @@ impl S3Store {
             // Real AWS is always HTTPS, so the root store is both needed and used.
             tls: true,
             sse_kms_key_id: None,
+            inventory_prefix: None,
         }
     }
 
@@ -264,6 +270,37 @@ impl S3Store {
     #[must_use]
     pub fn sse_kms_key_id(&self) -> Option<&str> {
         self.sse_kms_key_id.as_deref()
+    }
+
+    /// Point this store at an S3 Inventory report and, in the same move, claim the `object_inventory`
+    /// capability (§20.2's claim-⇒-implement rule: the flag and the data source flip together, so a store
+    /// can never advertise inventory it has no prefix to read).
+    ///
+    /// `prefix` is the S3 key prefix S3 Inventory writes under — everything before the date component, e.g.
+    /// `inventory/damrs-dev/daily`. `inventory()` lists it, takes the lexically-greatest
+    /// `<date>/manifest.json` (those names sort chronologically, so that is the newest run), and reads the
+    /// data files it names.
+    ///
+    /// A blank prefix clears both, matching `with_sse_kms`: an empty environment variable reads as "no
+    /// inventory", not as a prefix of `""` that would list the whole bucket.
+    #[must_use]
+    pub fn with_inventory_prefix(mut self, prefix: impl Into<String>) -> Self {
+        let prefix = prefix.into();
+        let trimmed = prefix.trim().trim_end_matches('/');
+        if trimmed.is_empty() {
+            self.inventory_prefix = None;
+            self.capabilities.object_inventory = false;
+        } else {
+            self.inventory_prefix = Some(trimmed.to_owned());
+            self.capabilities.object_inventory = true;
+        }
+        self
+    }
+
+    /// The inventory prefix this store reads reports from, if any. Exposed so it is assertable.
+    #[must_use]
+    pub fn inventory_prefix(&self) -> Option<&str> {
+        self.inventory_prefix.as_deref()
     }
 
     /// Whether this store's HTTP client has TLS support.
@@ -324,6 +361,7 @@ impl S3Store {
             driver,
             tls: !plain_http,
             sse_kms_key_id: None,
+            inventory_prefix: None,
         }
     }
 
@@ -391,6 +429,63 @@ impl S3Store {
 
     pub(crate) fn bucket_name(&self) -> &str {
         &self.bucket
+    }
+
+    /// The `<date>/manifest.json` of the most recent inventory run under `prefix`, or `None` if none has
+    /// been delivered yet.
+    ///
+    /// S3 Inventory names each run's directory with an ISO-8601 timestamp, which sorts chronologically, so
+    /// the lexically-greatest `manifest.json` is the newest. Paginated: a bucket keeps every past run, so
+    /// the listing outgrows one page within weeks.
+    async fn latest_manifest_key(&self, prefix: &str) -> Result<Option<String>> {
+        let mut latest: Option<String> = None;
+        let mut token: Option<String> = None;
+        loop {
+            let mut req = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(prefix);
+            if let Some(t) = &token {
+                req = req.continuation_token(t);
+            }
+            let out = req
+                .send()
+                .await
+                .map_err(|e| Error::Backend(format!("inventory list {prefix}: {e:?}")))?;
+            for obj in out.contents() {
+                if let Some(k) = obj.key()
+                    && k.ends_with("/manifest.json")
+                    && latest.as_deref().is_none_or(|cur| k > cur)
+                {
+                    latest = Some(k.to_owned());
+                }
+            }
+            match out.next_continuation_token() {
+                Some(t) if out.is_truncated().unwrap_or(false) => token = Some(t.to_owned()),
+                _ => break,
+            }
+        }
+        Ok(latest)
+    }
+
+    /// GET one object whole, into memory. Used only for inventory manifests and their gzipped CSV data
+    /// files, which are small (kilobytes to low megabytes) relative to the blobs the store otherwise holds.
+    async fn get_object_bytes(&self, key: &str) -> Result<Vec<u8>> {
+        let out = self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+            .map_err(|e| Error::Backend(format!("inventory get {key}: {e:?}")))?;
+        let body = out
+            .body
+            .collect()
+            .await
+            .map_err(|e| Error::Backend(format!("inventory read {key}: {e}")))?;
+        Ok(body.into_bytes().to_vec())
     }
 
     /// Refuses a call the backend cannot honour, before it reaches the wire.
@@ -774,6 +869,35 @@ impl BlobStore for S3Store {
             .filter_map(|o| o.key())
             .map(|k| Key::new(k.to_owned()))
             .collect()
+    }
+
+    /// Read the whole object listing from the most recent S3 Inventory report.
+    ///
+    /// This is the one-manifest-read side of the integrity scrub: instead of a HEAD per placement to learn
+    /// size and class, the scrub reads the daily inventory once and looks each placement up in it. The
+    /// first-byte probe still runs per placement (see `dam_pipeline::integrity`), because a manifest lists a
+    /// size it cannot prove the object still has.
+    async fn inventory(&self) -> Result<Vec<InventoryEntry>> {
+        let prefix = self.inventory_prefix.as_deref().ok_or(Error::Unsupported {
+            driver: "s3",
+            capability: "object inventory",
+        })?;
+        let Some(manifest_key) = self.latest_manifest_key(prefix).await? else {
+            // Configured but nothing delivered yet — the first report lands up to ~24h after the inventory
+            // is created. Empty rather than an error so the scrub verifies nothing this run instead of
+            // failing; the next run, once a manifest exists, does the work.
+            return Ok(Vec::new());
+        };
+        let manifest = inventory::parse_manifest(&self.get_object_bytes(&manifest_key).await?)?;
+        let mut entries = Vec::new();
+        for file in &manifest.files {
+            let gz = self.get_object_bytes(&file.key).await?;
+            entries.extend(inventory::entries_from_gzipped_csv(
+                &manifest.file_schema,
+                &gz,
+            )?);
+        }
+        Ok(entries)
     }
 
     async fn transition(&self, key: &Key, to: StorageClass) -> Result<()> {

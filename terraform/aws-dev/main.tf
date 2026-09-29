@@ -210,6 +210,82 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "objects" {
   }
 }
 
+# ---------- S3 Inventory ----------
+# A daily CSV report of every current object with its size and storage class, delivered back to this same
+# bucket under `inventory/`. dam's integrity scrub reads the latest manifest once per run
+# (dam_store::S3Store::with_inventory_prefix) instead of issuing one HEAD per placement — the manifest lands
+# at inventory/<bucket>/daily/<date>/manifest.json, which is what DAMRS_STORAGE__INVENTORY_PREFIX points at.
+#
+# "Current" object versions only: the scrub reconciles the live object per placement, and object_placements
+# carries no version id (that is the deferred Intelligent-Tiering decision, DECISIONS.md), so noncurrent
+# versions would be rows the scrub can never match.
+resource "aws_s3_bucket_inventory" "objects" {
+  bucket                   = aws_s3_bucket.objects.id
+  name                     = "daily"
+  included_object_versions = "Current"
+
+  schedule {
+    frequency = "Daily"
+  }
+
+  optional_fields = ["Size", "StorageClass"]
+
+  destination {
+    bucket {
+      format     = "CSV"
+      bucket_arn = aws_s3_bucket.objects.arn
+      prefix     = "inventory"
+      # SSE-S3, not the bucket's CMK: an inventory report is object keys and sizes, not object content, and
+      # SSE-S3 avoids granting the S3 service principal a key-policy grant on the CMK for the delivery to
+      # succeed. The explicit header overrides the bucket's aws:kms default for these objects only.
+      encryption {
+        sse_s3 {}
+      }
+    }
+  }
+
+  # The service can only write once the bucket policy grants it; without this the first scheduled run can
+  # race ahead of the policy.
+  depends_on = [aws_s3_bucket_policy.objects]
+}
+
+# S3 Inventory writes as the S3 service principal, which needs an explicit bucket-policy grant even when the
+# destination is the same bucket in the same account. The SourceAccount/SourceArn conditions scope it to this
+# account's own inventory of this bucket; the block_public_policy setting above accepts it because a service
+# principal with these conditions is not a public grant.
+data "aws_iam_policy_document" "bucket" {
+  statement {
+    sid     = "AllowS3InventoryDelivery"
+    effect  = "Allow"
+    actions = ["s3:PutObject"]
+    principals {
+      type        = "Service"
+      identifiers = ["s3.amazonaws.com"]
+    }
+    resources = ["${aws_s3_bucket.objects.arn}/inventory/*"]
+    condition {
+      test     = "ArnLike"
+      variable = "aws:SourceArn"
+      values   = [aws_s3_bucket.objects.arn]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [data.aws_caller_identity.me.account_id]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "s3:x-amz-acl"
+      values   = ["bucket-owner-full-control"]
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "objects" {
+  bucket = aws_s3_bucket.objects.id
+  policy = data.aws_iam_policy_document.bucket.json
+}
+
 # ---------- ECR ----------
 resource "aws_ecr_repository" "damrs" {
   name                 = var.name_prefix
@@ -389,6 +465,7 @@ resource "aws_instance" "app" {
     ecr_repo_url      = aws_ecr_repository.damrs.repository_url
     image_tag         = var.image_tag
     bucket            = aws_s3_bucket.objects.bucket
+    inventory_prefix  = "inventory/${aws_s3_bucket.objects.bucket}/${aws_s3_bucket_inventory.objects.name}"
     kms_key_arn       = aws_kms_key.objects.arn
     db_url_param      = aws_ssm_parameter.database_url.name
     signing_key_param = aws_ssm_parameter.url_signing_key.name

@@ -35,7 +35,7 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M6** Workflow/proofing, annotations, analytics | **done** — annotations (M6a), proofing (M6b), analytics (M6c) |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | G19 **done**; G7 **done** (crosswalk, dry run, filesystem source, transfer); G10 **done** (audit chain, user administration, SCIM, BYOK) |
 
-**Next up, in order:** G7, G10, M3d·5, G22c (the public URL space) and G10·3b (per-tenant keys) are all complete, as is C2PA (task 1.9 — verify/preserve/re-sign on ingest and derivation — with the per-tenant signing identities that answer its parked certificate question, wired into the worker per job). What remains, in this order: the **AWS-native items** — locked sub-order **4 S3 Inventory → 3 S3 Batch bulk restore → 2 Intelligent-Tiering** (Inventory first: costed at ~a day, no decision; Intelligent-Tiering last, gated on the noncurrent-version decision — `object_placements` has no `version_id`; item 1 is closed); then a **management surface for `signing_identities`** — the repo and pipeline are wired but no API/CLI installs a tenant's certificate, so mirror `POST /ai/credentials`; then wiring the **per-tenant blob key to asset writes** — the BYOK gap G10·3b left open, where `finalise`/`derive` still `put` under the process key. M4b's model-distribution question stays parked.
+**Next up, in order:** G7, G10, M3d·5, G22c (the public URL space) and G10·3b (per-tenant keys) are all complete, as is C2PA (task 1.9 — verify/preserve/re-sign on ingest and derivation — with the per-tenant signing identities that answer its parked certificate question, wired into the worker per job). What remains, in this order: the **AWS-native items** — locked sub-order was **4 S3 Inventory → 3 S3 Batch bulk restore → 2 Intelligent-Tiering**; **item 4 is now landed** (mechanism #48, activation this PR), so what remains is **3 S3 Batch bulk restore → 2 Intelligent-Tiering** (Intelligent-Tiering last, gated on the noncurrent-version decision — `object_placements` has no `version_id`; item 1 is closed); then a **management surface for `signing_identities`** — the repo and pipeline are wired but no API/CLI installs a tenant's certificate, so mirror `POST /ai/credentials`; then wiring the **per-tenant blob key to asset writes** — the BYOK gap G10·3b left open, where `finalise`/`derive` still `put` under the process key. M4b's model-distribution question stays parked.
 M4b (local models) is parked on a distribution decision — see the M4 section.
 
 **`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
@@ -2419,13 +2419,26 @@ API that does not exist yet is a module written twice.
      Intelligent-Tiering, policy stays ours.
   3. **S3 Batch Operations for 3.4's bulk restore.** Manifest-driven, with retries, throttling and a
      completion report. Better than a job loop. Does **not** help 2.10, which is database-side.
-  4. **S3 Inventory for reconciliation.** *Re-costed 2026-09-01: not the cheap item this list implied.* The
-     entry says "instead of LIST", but nothing reconciles by LIST — the integrity scrub asks `head` per
-     placement, which at four hundred thousand assets is four hundred thousand round trips. Inventory would
-     replace those with one manifest read carrying key, size, storage class and checksum, which is the right
-     shape and a large win. It is also a manifest reader (CSV/ORC/Parquet), a `Capabilities` flag and a
-     fallback to the current per-object path, because SeaweedFS has no Inventory — so it is a day's work
-     rather than a configuration change, and it is an optimisation rather than a correctness fix.
+  4. ~~**S3 Inventory for reconciliation.**~~ **Landed.** *Re-costed 2026-09-01: not the cheap item this list
+     implied.* The entry said "instead of LIST", but nothing reconciles by LIST — the integrity scrub asked
+     `head` per placement, which at four hundred thousand assets is four hundred thousand round trips.
+     Inventory replaces those with one manifest read carrying key, size and storage class.
+
+     Two commits. The **mechanism** (#48): `Capabilities::object_inventory`, an `InventoryEntry`, a
+     `BlobStore::inventory` default, and `scrub` split into a dispatcher — `scrub_via_inventory` reads the
+     manifest once into a map and looks each placement up, `scrub_via_head` is the fallback when the store
+     publishes none. The **activation** (this PR): `S3Store::inventory` finds the latest
+     `<date>/manifest.json`, gunzips and CSV-parses the data files (a hand-rolled RFC-4180 line reader, not a
+     new `csv` crate) using the manifest's declared column order, and `with_inventory_prefix` flips the flag
+     and the prefix together; Terraform configures a daily CSV inventory on the bucket with the required
+     delivery bucket-policy grant, wired through `DAMRS_STORAGE__INVENTORY_PREFIX`.
+
+     **No checksum cross-check on S3, by design.** The inventory's ETag is an MD5 (or a multipart
+     composite), not the blake3 dam records in `object_placements.remote_checksum`, so S3 entries carry no
+     comparable checksum and the scrub keeps its size + first-byte probe — the same floor the per-object S3
+     path already has, since S3 claims no server checksum. SeaweedFS publishes no inventory, so it stays on
+     the per-object path (the `Capabilities` fallback). Real-S3 delivery runs on a ~24h cycle, so the live
+     path is an ops-verify follow-up rather than a CI assertion; the parsing is unit-tested.
   5. **SSE-KMS for BYOK (G10).** *The wiring landed under G10·3; only the per-tenant half is open —* see
      **G10·3b** just above, which is where that now lives rather than in this list.
   6. ~~**A lifecycle rule on `*/staging/`**~~ **Done — documented in `docker/DEPLOY.md`**, which is where it
