@@ -45,9 +45,7 @@
 	let loading = $state(true);
 	let deciding = $state<string | null>(null);
 
-	const pending = $derived(
-		queue.reduce((total, row) => total + row.suggested.length + row.fields.length, 0)
-	);
+	const pending = $derived(queue.reduce((n, r) => n + r.suggested.length + r.fields.length, 0));
 
 	async function load() {
 		loading = true;
