@@ -70,7 +70,7 @@ axum = { version = "0.8", features = ["macros", "multipart"] }
 http = "1"
 axum-extra = { version = "0.10", features = ["typed-header"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["trace", "cors", "compression-br", "limit", "timeout", "set-header"] }
+tower-http = { version = "0.7", features = ["trace", "cors", "compression-br", "limit", "timeout", "set-header"] }
 hyper = "1"
 utoipa = { version = "5.5", features = ["axum_extras", "uuid", "chrono"] }
 utoipa-axum = "0.2"
