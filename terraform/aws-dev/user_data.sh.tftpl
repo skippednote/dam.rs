@@ -1,0 +1,86 @@
+#!/bin/bash
+# dam.rs all-in-one dev host bootstrap (Amazon Linux 2023, arm64).
+# Containers run with --network host so: (a) they reach IMDS at hop 1 (metadata hop-limit is 1, the SSRF
+# control), (b) damd binds :8080 and ClamAV :3310 with no NAT, (c) the app talks to clamd at 127.0.0.1.
+set -euxo pipefail
+exec > >(tee /var/log/damrs-bootstrap.log) 2>&1
+
+REGION="${region}"
+IMAGE="${ecr_repo_url}:${image_tag}"
+REGISTRY="$(echo "${ecr_repo_url}" | cut -d/ -f1)"
+
+dnf update -y
+dnf install -y docker unzip
+systemctl enable --now docker
+
+# AWS CLI v2 (arm64) for SSM reads + ECR login.
+curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o /tmp/awscliv2.zip
+unzip -q -o /tmp/awscliv2.zip -d /tmp
+/tmp/aws/install --update
+
+# IMDSv2 token, then discover our own public IP for the signing/delivery base URL.
+TOKEN=$(curl -fsS -X PUT "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
+PUBIP=$(curl -fsS -H "X-aws-ec2-metadata-token: $${TOKEN}" \
+  "http://169.254.169.254/latest/meta-data/public-ipv4")
+
+# Secrets from SSM (never baked into the image or this script).
+DB_URL=$(aws ssm get-parameter --name "${db_url_param}" --with-decryption --region "$${REGION}" --query 'Parameter.Value' --output text)
+SIGNING_KEY=$(aws ssm get-parameter --name "${signing_key_param}" --with-decryption --region "$${REGION}" --query 'Parameter.Value' --output text)
+SEALING_KEY=$(aws ssm get-parameter --name "${sealing_key_param}" --with-decryption --region "$${REGION}" --query 'Parameter.Value' --output text)
+
+# ECR login and wait for the image to be pushed (decouples apply order from the image build).
+aws ecr get-login-password --region "$${REGION}" | docker login --username AWS --password-stdin "$${REGISTRY}"
+until docker pull "$${IMAGE}"; do echo "waiting for image $${IMAGE}..."; sleep 15; done
+
+mkdir -p /data/search && chmod 777 /data/search
+
+# Shared env for damd + dam-worker. endpoint is unset => real AWS S3 via the instance role.
+cat >/etc/damrs.env <<EOF
+DAMRS_ENVIRONMENT=production
+DAMRS_SERVER__HOST=0.0.0.0
+DAMRS_SERVER__PORT=8080
+DAMRS_SERVER__PUBLIC_URL=http://$${PUBIP}:8080
+DAMRS_SERVER__URL_SIGNING_KEY=$${SIGNING_KEY}
+DAMRS_SERVER__ALLOWED_ORIGINS=["http://$${PUBIP}:8080"]
+DAMRS_DATABASE__URL=$${DB_URL}
+DAMRS_STORAGE__REGION=${region}
+DAMRS_STORAGE__BUCKET=${bucket}
+DAMRS_STORAGE__SSE_KMS_KEY_ID=${kms_key_arn}
+DAMRS_SECURITY__CLAMD_ADDRESS=127.0.0.1:3310
+DAMRS_SEARCH__INDEX_ROOT=/data/search
+DAMRS_AI__SEALING_KEY=$${SEALING_KEY}
+DAMRS_AI__SEALING_KEY_ID=v1
+DAMRS_TELEMETRY__LOG_FORMAT=json
+AWS_REGION=${region}
+EOF
+chmod 600 /etc/damrs.env
+
+# Migrate once, then run the API and the worker. These must succeed.
+docker run --rm --network host --env-file /etc/damrs.env "$${IMAGE}" damctl migrate --all
+
+docker run -d --name damd --restart unless-stopped --network host \
+  --env-file /etc/damrs.env -v /data/search:/data/search "$${IMAGE}" damd
+
+docker run -d --name dam-worker --restart unless-stopped --network host \
+  --env-file /etc/damrs.env -v /data/search:/data/search "$${IMAGE}" dam-worker
+
+# ClamAV last and BEST-EFFORT. The official clamav/clamav image has NO arm64 build (no manifest for
+# linux/arm64 on stable/1.4/latest), so on Graviton it is installed as the native AL2023 package instead,
+# listening on TCP 127.0.0.1:3310 to match DAMRS_SECURITY__CLAMD_ADDRESS. Best-effort so a signature-DB
+# hiccup can't wedge the box; note that finalise treats an unreachable clamd as a transient error and will
+# retry, so ingest resumes once clamd is up.
+set +e
+dnf install -y clamd clamav clamav-update
+CLAMCONF=$(ls /etc/clamd.d/*.conf 2>/dev/null | head -1)
+if [ -n "$${CLAMCONF}" ]; then
+  sed -i 's/^Example/#Example/' "$${CLAMCONF}"
+  grep -q '^TCPSocket 3310'    "$${CLAMCONF}" || echo 'TCPSocket 3310'    >> "$${CLAMCONF}"
+  grep -q '^TCPAddr 127.0.0.1' "$${CLAMCONF}" || echo 'TCPAddr 127.0.0.1' >> "$${CLAMCONF}"
+  sed -i 's/^Example/#Example/' /etc/freshclam.conf
+  freshclam
+  systemctl enable --now "clamd@$(basename $${CLAMCONF%.conf})"
+fi
+set -e
+
+echo "dam.rs bootstrap complete; API at http://$${PUBIP}:8080"
