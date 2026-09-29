@@ -179,6 +179,16 @@ pub struct StorageConfig {
     /// presigned PUT is executed by the browser, so the bucket needs a policy denying `s3:PutObject` without
     /// the expected key id — `docker/DEPLOY.md` states that as required rather than advisable.
     pub sse_kms_key_id: Option<String>,
+    /// The S3 key prefix S3 Inventory delivers its reports under, e.g. `inventory/damrs-dev/daily`.
+    ///
+    /// When set (AWS only), the integrity scrub reads the daily inventory once per run instead of a HEAD per
+    /// placement — see `dam_store::S3Store::with_inventory_prefix`. `None`, and an empty string also means
+    /// `None`, for the same reason `endpoint` and `sse_kms_key_id` do: a higher-precedence variable must be
+    /// able to unset one a file already set, and figment cannot write a null through an environment variable.
+    ///
+    /// It buys nothing against a non-AWS endpoint (SeaweedFS and the other gateways publish no inventory);
+    /// setting it there is flagged as an advisory rather than refused, since a future gateway might.
+    pub inventory_prefix: Option<String>,
 }
 
 /// Scanning uploads before they become assets (M1).
@@ -389,6 +399,8 @@ impl Default for StorageConfig {
             multipart_part_mib: 16,
             // No key. A default here would fail every write, and BYOK is opt-in.
             sse_kms_key_id: None,
+            // No inventory. The scrub falls back to a HEAD per placement, which is correct if slower.
+            inventory_prefix: None,
         }
     }
 }
@@ -502,6 +514,16 @@ impl Config {
             .filter(|value| !value.is_empty())
             .map(str::to_owned);
 
+        // Same escape hatch as the two above: an empty variable unsets a prefix a file set, and a trailing
+        // slash is trimmed so the listing prefix is the same whether the operator wrote one or not.
+        cfg.storage.inventory_prefix = cfg
+            .storage
+            .inventory_prefix
+            .as_deref()
+            .map(|value| value.trim().trim_end_matches('/'))
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned);
+
         cfg.validate()?;
         Ok(cfg)
     }
@@ -551,6 +573,21 @@ impl Config {
                  without the expected key id. docker/DEPLOY.md has the policy."
                     .to_owned(),
             );
+        }
+
+        // An inventory prefix only means something against AWS S3 Inventory. A non-AWS gateway publishes no
+        // such report, so `inventory()` would list a prefix that never fills and the scrub would silently
+        // verify nothing — worse than the honest per-object fallback. Advisory, not a refusal: a gateway
+        // could grow the feature, and the store still degrades safely (an empty listing) if it has not.
+        if let (Some(prefix), Some(endpoint)) = (
+            self.storage.inventory_prefix.as_deref(),
+            self.storage.endpoint.as_deref(),
+        ) {
+            out.push(format!(
+                "storage.inventory_prefix ({prefix}) is set against a non-AWS endpoint ({endpoint}), which \
+                 likely publishes no S3 Inventory report. The integrity scrub will read an empty inventory \
+                 and verify nothing; unset it to fall back to the per-object HEAD path."
+            ));
         }
 
         out

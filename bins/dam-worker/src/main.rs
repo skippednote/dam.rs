@@ -139,7 +139,15 @@ async fn build_store(cfg: &Config) -> anyhow::Result<dam_store::S3Store> {
 
 async fn build_store_inner(cfg: &Config) -> anyhow::Result<dam_store::S3Store> {
     match cfg.storage.endpoint.as_deref() {
-        None => Ok(dam_store::S3Store::aws(&cfg.storage.bucket, &cfg.storage.region).await),
+        None => {
+            let store = dam_store::S3Store::aws(&cfg.storage.bucket, &cfg.storage.region).await;
+            // Inventory is AWS-only, and the scrub runs here — so this is the wiring that actually makes
+            // the merged inventory path fire. See the note in damd's build_store_inner.
+            Ok(match cfg.storage.inventory_prefix.as_deref() {
+                Some(prefix) => store.with_inventory_prefix(prefix),
+                None => store,
+            })
+        }
         Some(endpoint) => {
             let (Some(access), Some(secret)) = (
                 cfg.storage.access_key_id.as_ref(),

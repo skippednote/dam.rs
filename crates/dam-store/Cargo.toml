@@ -18,6 +18,7 @@ aws-smithy-types = { workspace = true }
 aws-smithy-http-client = { workspace = true }
 async-trait = { workspace = true }
 blake3 = { workspace = true }
+flate2 = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
 tokio = { workspace = true }

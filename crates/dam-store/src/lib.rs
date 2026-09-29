@@ -28,6 +28,7 @@
 pub mod conformance;
 pub mod content;
 pub mod fake;
+mod inventory;
 pub mod key;
 pub mod lifecycle;
 pub mod multipart;
