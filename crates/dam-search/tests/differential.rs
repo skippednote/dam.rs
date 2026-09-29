@@ -277,6 +277,14 @@ async fn both_back_ends_return_identical_sets_for_every_shared_query_shape() {
         ("all", Query::All),
         ("text", Query::Text("beach".to_owned())),
         (
+            // A punctuated word as free text. The blob indexes `beach-holiday.jpg` as the tokens `beach` and
+            // `holiday`; SQL matches the whole hyphenated word by substring. Both back ends must find it, which
+            // they only do once the query is analysed the way the blob is — a single un-analysed `beach-holiday`
+            // term matches nothing in Tantivy and this shape diverges from SQL.
+            "text punctuated word",
+            Query::Text("beach-holiday".to_owned()),
+        ),
+        (
             "equals text",
             Query::Field {
                 key: "brand".to_owned(),

@@ -229,24 +229,46 @@ fn render_query(query: &Query, schema: &IndexSchema) -> Result<Box<dyn TantivyQu
 
 /// Free text over the concatenated blob.
 ///
-/// A multi-word input becomes a phrase query, because the shorthand only produces a multi-word
-/// [`Query::Text`] from a quoted phrase — an unquoted `beach holiday` arrives as two conjoined terms.
+/// The query is run through the **same `default` analyser the blob is indexed with**, not split on
+/// whitespace and lowercased by hand. That is the difference between finding `DSC_0043` and not: the analyser
+/// indexes that filename as the tokens `dsc` and `0043`, so a single un-analysed term `dsc_0043` matches
+/// nothing, while the analysed form is a phrase of those two tokens and matches. A single whitespace word
+/// therefore still yields one term when it holds no punctuation (unchanged for `beach`), and a phrase — a
+/// quoted input, or one punctuated word — becomes a phrase query over the tokens it analyses to.
 fn render_text(text: &str, schema: &IndexSchema) -> Box<dyn TantivyQuery> {
-    let words: Vec<&str> = text.split_whitespace().collect();
-    match words.as_slice() {
+    let tokens = analyse_default(text);
+    match tokens.as_slice() {
         [] => Box::new(AllQuery),
         [single] => Box::new(TermQuery::new(
-            Term::from_field_text(schema.text(), &single.to_lowercase()),
+            Term::from_field_text(schema.text(), single),
             IndexRecordOption::WithFreqs,
         )),
         many => {
             let terms: Vec<Term> = many
                 .iter()
-                .map(|word| Term::from_field_text(schema.text(), &word.to_lowercase()))
+                .map(|token| Term::from_field_text(schema.text(), token))
                 .collect();
             Box::new(PhraseQuery::new(terms))
         }
     }
+}
+
+/// Tokenises `text` with Tantivy's built-in `default` analyser — the one [`crate::schema`] indexes the text
+/// blob with — so a query's terms are spelled the way the index holds them (split on non-alphanumerics,
+/// lowercased). Sharing the analyser is the point: a hand-rolled split diverges from the index on exactly the
+/// punctuation cases that matter, which is how `DSC_0043` came to miss.
+fn analyse_default(text: &str) -> Vec<String> {
+    let Some(mut analyser) = tantivy::tokenizer::TokenizerManager::default().get("default") else {
+        // Unreachable — the built-in `default` tokeniser is always registered — but fall back to the old
+        // whitespace-and-lowercase split rather than panic, so a query is never lost to an impossible case.
+        return text.split_whitespace().map(str::to_lowercase).collect();
+    };
+    let mut stream = analyser.token_stream(text);
+    let mut tokens = Vec::new();
+    while stream.advance() {
+        tokens.push(stream.token().text.clone());
+    }
+    tokens
 }
 
 fn render_field(key: &str, op: &Comparison, schema: &IndexSchema) -> Result<Box<dyn TantivyQuery>> {
