@@ -92,7 +92,10 @@ pub async fn save(pool: &sqlx::PgPool, spec: &SaveSpec<'_>) -> Result<SavedSearc
     .execute(pool)
     .await?;
 
-    load(pool, id).await?.ok_or_else(|| {
+    // `load` reads through a connection now that the portal path resolves its own tenant; this caller still
+    // holds a pool, so it borrows one for the read-back.
+    let mut conn = pool.acquire().await?;
+    load(&mut conn, id).await?.ok_or_else(|| {
         Error::Inconsistent(format!(
             "saved search {id} vanished immediately after being saved"
         ))
@@ -100,14 +103,14 @@ pub async fn save(pool: &sqlx::PgPool, spec: &SaveSpec<'_>) -> Result<SavedSearc
 }
 
 /// Loads a saved search.
-pub async fn load(pool: &sqlx::PgPool, id: Uuid) -> Result<Option<SavedSearch>, Error> {
+pub async fn load(conn: &mut sqlx::PgConnection, id: Uuid) -> Result<Option<SavedSearch>, Error> {
     let row = sqlx::query_as::<_, SavedRow>(
         "SELECT id, owner_id, name, query, is_smart_collection, shared, shared_with_roles, \
                 notify_path_id, result_count, counted_at, last_used_at \
          FROM saved_searches WHERE id = $1",
     )
     .bind(id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *conn)
     .await?;
     Ok(row.map(into_search))
 }

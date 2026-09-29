@@ -5,7 +5,7 @@
 # fresh CI runner fails with "'cargo-fmt' is not installed for the toolchain", which is
 # exactly how the lint job failed the first time it ran against this pin. Naming them
 # here fixes it in the one place the version already lives.
-rust = { version = "1.94.0", components = "rustfmt,clippy" }
+rust = { version = "1.98.1", components = "rustfmt,clippy" }
 node = "24"              # for the Svelte app in web/
 pnpm = "10"
 # Media tools, via mise's conda backend rather than Homebrew.
@@ -76,10 +76,6 @@ DAMRS_STORAGE__SECRET_ACCESS_KEY = "damrsdevsecret"
 # Where the per-tenant Tantivy indexes live locally. Under the working directory, not
 # /var/lib: a default that needs root to create is a default that fails on a first run.
 DAMRS_SEARCH__INDEX_ROOT = "./data/search"
-
-# Which tenant the delivery routes serve. Named rather than inferred, because a dev database that has
-# grown a second tenant makes the answer ambiguous and `damd` then refuses to start rather than guess.
-DAMRS_SERVER__DELIVERY_TENANT = "acme"
 
 # Where the API is reached from a browser. Set locally because the Svelte dev server is on another port, and a
 # root-relative delivery URL would resolve against *it* — a 404 from the wrong server.
@@ -241,8 +237,14 @@ description = "The bar: fmt, clippy, test — Postgres shared, SeaweedFS per har
 run = """
 set -eu
 PG=damrs-check-postgres
-cleanup() { docker rm -f "$PG" >/dev/null 2>&1 || true; }
-trap cleanup EXIT
+# `-v` is load-bearing. The container is started `--rm`, which removes its anonymous volume when it exits on
+# its own — but `docker rm -f` bypasses that, so without `-v` every forced cleanup leaves a multi-gigabyte
+# Postgres data volume behind, invisible in `docker ps` and attached to nothing. Eight of them accumulated
+# before anybody looked, and filled the disk.
+cleanup() { docker rm -fv "$PG" >/dev/null 2>&1 || true; }
+# EXIT alone is not enough: a POSIX shell does not run the EXIT trap when it is killed, so an interrupted or
+# timed-out run — which is how a long gate usually ends — left the container and its volume in place.
+trap cleanup EXIT INT TERM
 cleanup
 
 docker run -d --rm --name "$PG" -p 0:5432 \

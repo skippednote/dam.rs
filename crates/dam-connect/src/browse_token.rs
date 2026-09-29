@@ -41,7 +41,7 @@ use uuid::Uuid;
 ///
 /// Its own version, not the delivery token's: the two formats change for different reasons, and a shared
 /// number would mean adding a field to one invalidating outstanding tokens of the other.
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 
 /// The longest a browse token may be valid for.
 ///
@@ -53,6 +53,17 @@ pub const MAX_TTL: chrono::Duration = chrono::Duration::minutes(10);
 /// What a browse token says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrowseClaim {
+    /// Which library the connector belongs to (G22c).
+    ///
+    /// Carried because a connector id means nothing until the tenant is fixed — `connectors` is a tenant
+    /// table, so resolving one used to need a tenant the *process* had been configured with. That is what made
+    /// the connector surface single-tenant, and it is the same argument the delivery token's version 4 bump
+    /// made for naming a tenant beside an asset.
+    ///
+    /// Unverified when it is read for routing, and load-bearing for nothing: it selects the schema the
+    /// connector is looked up in, and the connector's own secret is what verifies the signature. Naming the
+    /// wrong tenant finds no connector; naming one that does not exist is the same flat refusal.
+    pub tenant_id: Uuid,
     /// Which connector is calling. Everything about what it may see is resolved from this, not carried here.
     pub connector_id: Uuid,
     pub expires_at: DateTime<Utc>,
@@ -105,9 +116,24 @@ pub fn sign(secret: &Secret<String>, claim: &BrowseClaim) -> Option<String> {
 /// signature that does not match.
 #[must_use]
 pub fn connector_of(token: &str) -> Option<Uuid> {
+    routing_claim(token).map(|claim| claim.connector_id)
+}
+
+/// The tenant a token names, read before its signature is checked (G22c).
+///
+/// Unverified, and used for exactly one thing: choosing the schema the connector is looked up in. The same
+/// shape and the same argument as `dam_core::signed_url::tenant_id_of` — the connector's secret is what
+/// verifies the token, and that secret cannot be found without first knowing where to look.
+#[must_use]
+pub fn tenant_of(token: &str) -> Option<Uuid> {
+    routing_claim(token).map(|claim| claim.tenant_id)
+}
+
+/// The claim as far as it can be read without a secret. See [`tenant_of`].
+fn routing_claim(token: &str) -> Option<BrowseClaim> {
     let encoder = base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let payload = encoder.decode(token.split_once('.')?.0).ok()?;
-    parse(&payload).ok().map(|claim| claim.connector_id)
+    parse(&payload).ok()
 }
 
 /// Verifies a token against every secret the connector currently has.
@@ -165,6 +191,9 @@ pub fn verify<'a>(
 fn canonical(claim: &BrowseClaim) -> Vec<u8> {
     let mut out = Vec::with_capacity(40);
     out.push(VERSION);
+    // Tenant before connector, for the reason `dam_core::signed_url` orders its fields the same way: a reader
+    // knows which library it is holding before it reads anything scoped to one.
+    push_field(&mut out, claim.tenant_id.as_bytes());
     push_field(&mut out, claim.connector_id.as_bytes());
     push_field(&mut out, &claim.expires_at.timestamp().to_be_bytes());
     out
@@ -182,6 +211,8 @@ fn parse(payload: &[u8]) -> Result<BrowseClaim, BrowseError> {
     if version != VERSION {
         return Err(BrowseError::WrongVersion);
     }
+    let tenant_id =
+        Uuid::from_slice(take_field(&mut cursor)?).map_err(|_| BrowseError::Malformed)?;
     let connector_id =
         Uuid::from_slice(take_field(&mut cursor)?).map_err(|_| BrowseError::Malformed)?;
     let seconds = i64::from_be_bytes(
@@ -196,6 +227,7 @@ fn parse(payload: &[u8]) -> Result<BrowseClaim, BrowseError> {
         return Err(BrowseError::Malformed);
     }
     Ok(BrowseClaim {
+        tenant_id,
         connector_id,
         expires_at,
     })

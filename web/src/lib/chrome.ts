@@ -6,12 +6,14 @@
  * either indent a page with no rail beside it, or put the application's navigation on a page meant for
  * somebody else's customers.
  *
- * Both addresses, which the browser suite caught once already: Q.14's named portals live under `/portal/` and
- * a share link under `/share/`. Adding the second route without adding it to the predicate put the whole app
- * shell on a page whose visitor has no account and nothing to navigate to.
+ * The public addresses, which the browser suite caught once already: Q.14's named portals live under
+ * `/portal/`, a share link under `/share/`, and `/tour` is the product and documentation front door. Adding a
+ * route without adding it to the predicate puts the whole operator shell on a page whose visitor has no account
+ * and nothing to navigate to.
  */
-const OUTSIDE = ['/share/', '/portal/'];
+const OUTSIDE = ['/share/', '/portal/', '/tour'];
 
-export function isPublicRoute(pathname: string): boolean {
-	return OUTSIDE.some((prefix) => pathname.startsWith(prefix));
+export function isPublicRoute(pathname: string, base = ''): boolean {
+	const appPath = base && pathname.startsWith(base) ? pathname.slice(base.length) || '/' : pathname;
+	return OUTSIDE.some((prefix) => appPath.startsWith(prefix));
 }

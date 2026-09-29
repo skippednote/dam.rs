@@ -82,6 +82,80 @@ async fn fixture() -> Fixture {
     }
 }
 
+/// Regression for the cross-tenant placement bug: `finalise::default_pool` must resolve the *uploading
+/// tenant's* hot pool, not merely the oldest `instant` pool in the deployment. Provisioning creates one pool
+/// per tenant, so the pre-fix `SELECT id FROM storage_pools WHERE latency_class='instant' ORDER BY created_at
+/// LIMIT 1` handed every tenant after the first the first-provisioned tenant's pool — a placement recorded
+/// against another tenant's pool, which then corrupts the pool-level KMS fallback and tiering price lookups.
+#[tokio::test]
+async fn a_placement_uses_the_uploading_tenants_own_pool_not_the_oldest() {
+    let f = fixture().await;
+
+    // A decoy tenant whose hot pool is OLDER than acme's. Under the bug, an acme upload would resolve THIS
+    // pool because the query sorted by created_at across every tenant.
+    let decoy_tenant: Uuid = sqlx::query_scalar(
+        "INSERT INTO dam_global.tenants \
+         (id, slug, schema_name, display_name, storage_prefix, status) \
+         VALUES (gen_random_uuid(), 'older', 't_older', 'Older', 'older/', 'active') RETURNING id",
+    )
+    .fetch_one(&f.global)
+    .await
+    .expect("decoy tenant");
+
+    sqlx::query(
+        "INSERT INTO dam_global.storage_pools \
+         (id, tenant_id, name, driver, bucket, credentials_ref, latency_class, created_at) \
+         VALUES (gen_random_uuid(), $1, 'hot', 's3', 'older-bucket', 'test', 'instant', \
+                 now() - interval '1 day')",
+    )
+    .bind(decoy_tenant)
+    .execute(&f.global)
+    .await
+    .expect("decoy pool");
+
+    let decoy_pool: Uuid =
+        sqlx::query_scalar("SELECT id FROM dam_global.storage_pools WHERE tenant_id = $1")
+            .bind(decoy_tenant)
+            .fetch_one(&f.global)
+            .await
+            .expect("decoy pool id");
+    let acme_pool: Uuid =
+        sqlx::query_scalar("SELECT id FROM dam_global.storage_pools WHERE tenant_id = $1")
+            .bind(f.tenant_id)
+            .fetch_one(&f.global)
+            .await
+            .expect("acme pool id");
+
+    let bytes = jpeg(320, 240);
+    stage(&f, "poolscope001", "scoped.jpg", &bytes).await;
+    let finalised = dam_pipeline::finalise::upload(
+        &f.global,
+        f.store.as_ref(),
+        &f.slug,
+        f.tenant_id,
+        "poolscope001",
+        None,
+    )
+    .await
+    .expect("finalise");
+
+    let pool_id: Uuid =
+        sqlx::query_scalar("SELECT pool_id FROM object_placements WHERE asset_id = $1")
+            .bind(finalised.asset_id)
+            .fetch_one(&f.tenant)
+            .await
+            .expect("placement pool");
+
+    assert_eq!(
+        pool_id, acme_pool,
+        "the placement must use acme's own hot pool",
+    );
+    assert_ne!(
+        pool_id, decoy_pool,
+        "and specifically not the oldest instant pool across all tenants (the cross-tenant bug)",
+    );
+}
+
 /// A real JPEG, so the probe and the renderer both have something to work with.
 fn jpeg(width: u32, height: u32) -> Vec<u8> {
     let mut img = RgbImage::new(width, height);
@@ -1689,6 +1763,7 @@ async fn the_whole_chain_runs_through_the_worker() {
     let dir = tempfile::tempdir().expect("tempdir");
     let context = dam_pipeline::worker::Context {
         // No hosted-model context: these suites are about the queue and the render stages.
+        sealing: None,
         ai: None,
         scanner: None,
         signing_identity: None,

@@ -106,7 +106,7 @@ async function connect(
 				return route.fulfill({
 					json: {
 						...order({ state: 'ready', decided_by: { id: 'p-ada', name: 'Ada', email: 'a@x' } }),
-						pickup_url: `https://dam.example.com/share/fresh-${recorder.issued}`
+						pickup_url: `https://dam.example.com/share/acme.fresh-${recorder.issued}`
 					}
 				});
 			}
@@ -125,7 +125,9 @@ async function connect(
 				json: {
 					...options.mine[0],
 					// Only an approval mints a pickup, and only that response carries it.
-					...(state === 'approved' ? { pickup_url: 'https://dam.example.com/share/minted' } : {})
+					...(state === 'approved'
+						? { pickup_url: 'https://dam.example.com/share/acme.minted' }
+						: {})
 				}
 			});
 		}
@@ -203,7 +205,7 @@ test('the pickup link is shown once, and re-issuing replaces it', async ({ page 
 
 	await page.getByRole('button', { name: 'Issue a new pickup link' }).first().click();
 	await expect(page.getByText('has a new pickup link')).toBeVisible();
-	await expect(page.getByText('https://dam.example.com/share/fresh-1')).toBeVisible();
+	await expect(page.getByText('https://dam.example.com/share/acme.fresh-1')).toBeVisible();
 	// Addressed: the recipients are named beside the link, because somebody has to send it. Matched on the
 	// sentence rather than the address alone — the queue row lists recipients too, and a bare address matches both.
 	await expect(page.getByText('Send this to agency@example.com')).toBeVisible();
@@ -211,8 +213,8 @@ test('the pickup link is shown once, and re-issuing replaces it', async ({ page 
 
 	// Re-issuing again replaces what is shown, rather than accumulating links.
 	await page.getByRole('button', { name: 'Issue a new pickup link' }).first().click();
-	await expect(page.getByText('https://dam.example.com/share/fresh-2')).toBeVisible();
-	await expect(page.getByText('https://dam.example.com/share/fresh-1')).toHaveCount(0);
+	await expect(page.getByText('https://dam.example.com/share/acme.fresh-2')).toBeVisible();
+	await expect(page.getByText('https://dam.example.com/share/acme.fresh-1')).toHaveCount(0);
 });
 
 test('a reader is not offered a re-issue', async ({ page }) => {

@@ -78,11 +78,8 @@ async fn fixture() -> Fixture {
     clock.set(now());
     let state = DeliveryState::new(
         pool.clone(),
-        pool.clone(),
         Arc::new(store.clone()) as Arc<dyn BlobStore>,
         Keyring::single("k1", Secret::new("the-server-signing-key".to_owned())),
-        tenant_id,
-        dam_core::TenantSlug::new(TENANT).expect("a slug"),
     )
     .with_clock(clock.clone())
     .with_connector_auth(sealing());
@@ -764,11 +761,8 @@ async fn without_connector_auth_a_connector_token_is_refused_rather_than_falling
 
     let without = DeliveryState::new(
         f.pool.clone(),
-        f.pool.clone(),
         Arc::new(f.store.clone()) as Arc<dyn BlobStore>,
         Keyring::single("k1", Secret::new("the-server-signing-key".to_owned())),
-        f.tenant_id,
-        dam_core::TenantSlug::new(TENANT).expect("a slug"),
     )
     .with_clock(f.clock.clone());
     let app = delivery::router(without);

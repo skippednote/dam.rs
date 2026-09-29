@@ -135,10 +135,25 @@ fn push_junction(
 /// This is the deliberately unsophisticated back end: real ranking is Tantivy's job (2.6), and SQL's role
 /// is to answer the same *set* so the two can be compared. Matching the set rather than the order is what
 /// makes the differential test in 2.6 meaningful.
+/// A free-text match across the filename and every text field.
+///
+/// The whole disjunction is wrapped in `COALESCE(..., false)`, and that is not defensive noise. Each field's
+/// clause is a `bool_or` over that field's values, and `bool_or` over zero non-null inputs is `NULL`, not
+/// `false` — so a field left unset on every asset contributes `NULL` to the OR. In a positive position that is
+/// invisible, because `true OR NULL` is `true`. Under negation it is fatal: `false OR NULL` is `NULL`,
+/// `NOT NULL` is `NULL`, and every row silently fails the filter.
+///
+/// The symptom was the facet rail emptying on any negated or quoted query while the grid beside it still showed
+/// results — the grid comes from the search index, this builds the rail. Found by comparing the two numbers on
+/// a library where three of five text fields were unset; a fixture with every field populated cannot reproduce
+/// it, which is why the tests passed.
+///
+/// "This field has no value" and "this field's value does not match" are the same answer to the question being
+/// asked, so collapsing `NULL` to `false` is the correct semantics rather than a patch over one.
 fn push_text(builder: &mut QueryBuilder<Postgres>, text: &str, planned: &Planned) {
     let pattern = format!("%{}%", escape_like(text));
 
-    builder.push("(assets.filename ILIKE ");
+    builder.push("COALESCE((assets.filename ILIKE ");
     builder.push_bind(pattern.clone());
     builder.push(" ESCAPE '\\'");
 
@@ -162,7 +177,7 @@ fn push_text(builder: &mut QueryBuilder<Postgres>, text: &str, planned: &Planned
         builder.push_bind(key.clone());
         builder.push(" ELSE '[]'::jsonb END)) AS candidates)");
     }
-    builder.push(")");
+    builder.push("), false)");
 }
 
 fn push_field(

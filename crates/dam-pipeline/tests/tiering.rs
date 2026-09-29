@@ -165,6 +165,7 @@ async fn each_pass_leaves_the_next_one_behind_it(f: &Fixture) {
         indexes: std::sync::Arc::new(dam_search::IndexPool::new(dam_search::PoolConfig::new(
             std::env::temp_dir().join("damrs-tiering-index"),
         ))),
+        sealing: None,
         ai: None,
         scanner: None,
         signing_identity: None,

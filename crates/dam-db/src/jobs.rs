@@ -372,6 +372,39 @@ pub async fn fail(pool: &PgPool, id: Uuid, error: &str) -> Result<(), Error> {
     Ok(())
 }
 
+/// Whether a job with this dedupe key has already run out of attempts and died.
+///
+/// The abandoned-upload sweep needs this. Its dedupe key stops a *second live* job while one is queued or
+/// running, but the unique index is `WHERE state IN ('queued', 'running')` — so once a job dies, nothing stops
+/// the sweep from enqueuing the same work again on its next pass. For a finalisation that fails permanently —
+/// an upload the client left incomplete, or one the pipeline refuses — that is an infinite five-minute loop.
+/// Asking whether a dead one already exists is what breaks it.
+///
+/// `dead`, not `failed`: a `failed` job is between retries and will run again on its own, so re-enqueuing it
+/// would be the caller fighting the queue. `dead` is the terminal state, and the only one that means "this
+/// exact work was tried to exhaustion and will not be retried unless somebody asks".
+///
+/// # Errors
+/// Any database failure.
+pub async fn has_dead(
+    pool: &PgPool,
+    tenant_id: Uuid,
+    kind: &str,
+    dedupe_key: &str,
+) -> Result<bool, Error> {
+    let found: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM dam_global.jobs \
+         WHERE tenant_id = $1 AND kind = $2 AND dedupe_key = $3 AND state = 'dead' \
+         LIMIT 1",
+    )
+    .bind(tenant_id)
+    .bind(kind)
+    .bind(dedupe_key)
+    .fetch_optional(pool)
+    .await?;
+    Ok(found.is_some())
+}
+
 /// Extends a lease. Only the holder may.
 ///
 /// The `locked_by` check is not paranoia: without it a worker that had its lease

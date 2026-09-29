@@ -1395,13 +1395,50 @@ facet click rewriting the query, a 422 landing next to the field it names, a gri
 row count rather than its rendered one. Keeping Docker out of the web gate is also what keeps it fast enough
 to run on every push. Reversible: yes.
 
-**The delivery tenant can be named in configuration, and is inferred only when unambiguous.** `damd` refused
-to start on a dev database that had grown a second tenant — correctly, since delivery resolves its tenant
-from configuration rather than from the signed claim, and guessing would mint URLs against the wrong tenant's
-objects. But "delete a tenant" is not an acceptable way past that, so `server.delivery_tenant` names it. The
-refusal stays for the unset-and-ambiguous case and now says which slugs it found and which variable to set.
-Naming it is also the right posture for a deployment that later grows a second tenant: the answer does not
-silently change under it. Reversible: yes, and it becomes unnecessary once 3.x puts the tenant in the claim.
+**Field-level encryption is deliberately not built (G10·3b).** `encryption_keys` has admitted a `field`
+purpose since `0002_enterprise.sql`, and it stays admitted — but nothing will fill it, and the reason is worth
+recording so it is not mistaken for an oversight.
+
+`asset_metadata.values` is read by five subsystems: `query_sql` (fourteen sites — text search, equality,
+ranges, LIKE, exists), `facets`, `portals`, `suggest`, and the search index builder. A column encrypted at
+rest is invisible to every one of them. So "encrypt this field" means "make this field impossible to search,
+facet, suggest or index by", which in a system whose value is findable metadata is not a feature with a cost —
+it is the removal of the feature.
+
+The two ways past it were both refused. Deterministic encryption would restore equality and leak equality
+patterns to exactly the adversary the feature is meant to stop, while still losing ranges, substring and
+faceting. An `encrypted` flag per field would work and would be honest, but it buys protection only against
+someone holding database read access — who, in every deployment shape this system supports, is already inside
+the volume encryption and the managed database's own.
+
+Reversible: yes. The purpose remains in the CHECK, so a future implementation needs no migration to the
+enum — only a decision that the searchability cost is worth paying.
+
+**Every public URL names its own tenant, and `server.delivery_tenant` is gone (G22c).** It existed because
+`/portal/{key}` and `/share/{token}` reach tenant tables while naming neither a tenant nor anything that
+resolves to one, so the process had to be told once at startup which library its public surface answered for.
+That made one `damd` serve one library's portals however many tenants its database held, and it hid a real
+bug: the *authenticated* download path was reading rights through the configured tenant's schema rather than
+the caller's.
+
+Three shapes were possible and they are not equivalent. A global key registry makes portal keys
+first-come-first-served across customers, so the second customer to want `press-kit` is told it is taken and
+never learns why. A tenant path segment or subdomain changes every portal URL anybody has already published.
+The third — encoding the tenant into the segment — keeps the key a per-tenant name, needs no data migration
+and leaves the route shape alone, and is what was adopted: `/portal/{tenant}.{key}`.
+
+The separator is `.` because a tenant slug is `^[a-z][a-z0-9_]{1,38}$` and cannot contain one, so splitting on
+the *first* dot is unambiguous and total — a key like `spring.2026` survives the round trip. It also means the
+format needs no version field to be replaceable: a slug must begin with a lowercase letter, so any future
+marker that does not is told apart by the same parse.
+
+The connector surface needed the same treatment, which the original entry did not anticipate: `browse_token`
+resolves a connector out of a tenant table, so it was pinned too. Its format is bumped to version 2 carrying
+the tenant, mirroring what the delivery token's version 4 did for the same reason.
+
+Reversible: no, not cleanly — the config key is deleted and the config refuses unknown fields, so a deployment
+still setting `DAMRS_SERVER__DELIVERY_TENANT` fails to start rather than ignoring it. That is deliberate: a
+silently ignored key is how a deployment keeps believing something it no longer does.
 
 **An internal preview goes through the D12 chokepoint and does not consult the rights verdict (A.7).** Adopted
 on your instruction — "we should see thumbnails" — and implemented as a `Purpose` **signed into the delivery

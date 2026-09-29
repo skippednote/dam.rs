@@ -189,7 +189,14 @@ pub async fn create(
     .await?;
     conn.commit().await?;
 
-    let portal_path = format!("/share/{}", created.token());
+    // The path carries the tenant, because the visitor URL has to resolve without a configured one (G22c).
+    // Built here rather than by the client: a client that concatenated the token itself would produce a URL
+    // that 404s, and it would do it silently.
+    // One spelling for every emitted public URL — see `PublicRef::qualify`. This path used to error on the
+    // impossible empty-token case; it now falls back like the others, which cannot differ in practice because
+    // a freshly created share always has a token.
+    let reference = dam_core::public_ref::PublicRef::qualify(&caller.tenant_slug, created.token());
+    let portal_path = format!("/share/{reference}");
     Ok((
         StatusCode::CREATED,
         Json(CreatedShare {
@@ -338,10 +345,16 @@ pub struct PortalItem {
 /// What the portal needs to say about the file: filename, mime, bytes, width, height.
 type AssetFacts = (String, String, i64, Option<i32>, Option<i32>);
 
+/// [`AssetFacts`] with the id that selected them, for the one query that fetches a whole pickup.
+type IdentifiedAssetFacts = (uuid::Uuid, String, String, i64, Option<i32>, Option<i32>);
+
 /// Resolves a share for viewing. Does not consume a download.
 #[utoipa::path(
     post,
     path = "/share/{token}",
+    params(
+        ("token" = String, Path, description = "The share's address as `{tenant}.{token}` — the segment names its own tenant, so one deployment serves every library's public pages"),
+    ),
     request_body = PortalRequest,
     responses(
         (status = 200, body = PortalView),
@@ -356,7 +369,13 @@ pub async fn portal(
     Json(request): Json<PortalRequest>,
 ) -> Result<Json<PortalView>, Failure> {
     let now = state.delivery.now();
-    let share = resolve_for_portal(&state, &token, request.passcode.as_deref(), now).await?;
+    let reference = visitor_reference(&token)?;
+    let tenant_id = visitor_tenant_id(&state, &reference).await?;
+    let share = resolve_for_portal(&state, &reference, request.passcode.as_deref(), now).await?;
+    // A fresh connection for the reads below. `resolve_for_portal` released its own before the passcode
+    // check, so nothing is held across that ~100ms of CPU.
+    let mut tenant = visitor_conn(&state, &reference).await?;
+    let conn = tenant.executor();
     let asset_id = share.target_id.ok_or_else(|| {
         // A collection or search share. Those still need their own view; an order pickup is handled by
         // `portal_set` below, which is a *different route* because the two answers have different shapes and one
@@ -380,7 +399,7 @@ pub async fn portal(
          WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind(asset_id)
-    .fetch_optional(state.delivery.pool())
+    .fetch_optional(&mut *conn)
     .await
     .map_err(dam_db::Error::from)?;
     let Some((filename, mime, bytes, width, height)) = row else {
@@ -393,6 +412,10 @@ pub async fn portal(
     // states, not an error: the share's creator may not have had the licence they thought.
     let (preview_url, preview_unavailable) = match delivery::issue_for_share(
         &state.delivery,
+        delivery::Scope {
+            tenant_id,
+            slug: reference.tenant(),
+        },
         asset_id,
         "web-2048",
         &portal_usage(),
@@ -437,6 +460,9 @@ pub async fn portal(
 #[utoipa::path(
     post,
     path = "/share/{token}/set",
+    params(
+        ("token" = String, Path, description = "The share's address as `{tenant}.{token}` — the segment names its own tenant, so one deployment serves every library's public pages"),
+    ),
     request_body = PortalRequest,
     responses(
         (status = 200, body = PortalSetView),
@@ -451,7 +477,13 @@ pub async fn portal_set(
     Json(request): Json<PortalRequest>,
 ) -> Result<Json<PortalSetView>, Failure> {
     let now = state.delivery.now();
-    let share = resolve_for_portal(&state, &token, request.passcode.as_deref(), now).await?;
+    let reference = visitor_reference(&token)?;
+    let tenant_id = visitor_tenant_id(&state, &reference).await?;
+    let share = resolve_for_portal(&state, &reference, request.passcode.as_deref(), now).await?;
+    // A fresh connection for the reads below. `resolve_for_portal` released its own before the passcode
+    // check, so nothing is held across that ~100ms of CPU.
+    let mut tenant = visitor_conn(&state, &reference).await?;
+    let conn = tenant.executor();
     let order_id = match (share.kind.as_str(), share.target_id) {
         ("order", Some(id)) => id,
         // The same flat answer a dead token gets. A recipient of an asset share learns nothing about what other
@@ -465,15 +497,9 @@ pub async fn portal_set(
     };
 
     // The delivery pool, not a `TenantConn`: the portal serves exactly one tenant and that pool is already
-    // pinned to its schema — the same reason every other read in this module uses it. A `TenantConn` here would
-    // need a slug this state does not carry, for no gain.
-    let mut conn = state
-        .delivery
-        .pool()
-        .acquire()
-        .await
-        .map_err(dam_db::Error::from)?;
-    let order = dam_db::orders::for_share(&mut conn, share.id).await?;
+    // The visitor's own tenant connection, resolved from the URL segment (G22c). This used to acquire from the
+    // pinned delivery pool, which is what made the public surface single-tenant.
+    let order = dam_db::orders::for_share(&mut *conn, share.id).await?;
     let Some(order) = order.filter(|order| order.id == order_id) else {
         // The share names an order that is gone. Flat 404: the recipient learns the link no longer works, not
         // what used to be behind it.
@@ -486,15 +512,31 @@ pub async fn portal_set(
     // A preview per item, each rights-checked on its own. An order of forty where two are unlicensed is a pickup
     // of thirty-eight; collapsing that into one refusal would deny the recipient what they were entitled to
     // because of somebody else's paperwork.
+    // The facts for the whole pickup in one query, before the signing below. Two reasons, and both matter:
+    // `issue_for_share` opens a tenant transaction of its own, so holding this one across the loop makes two
+    // transactions from the same pool contend — a deadlock on a small pool, not a slowdown. And a query per
+    // item is a round trip per item for something one `= ANY` answers, which is the rule the grid already
+    // follows.
+    let ordered: Vec<uuid::Uuid> = order.items.iter().map(|item| item.asset_id).collect();
+    let facts_rows: Vec<IdentifiedAssetFacts> = sqlx::query_as(
+        "SELECT id, filename, mime, bytes, width, height FROM assets \
+             WHERE id = ANY($1) AND deleted_at IS NULL",
+    )
+    .bind(&ordered)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(dam_db::Error::from)?;
+    let facts_by_id: std::collections::HashMap<uuid::Uuid, AssetFacts> = facts_rows
+        .into_iter()
+        .map(|(id, filename, mime, bytes, width, height)| {
+            (id, (filename, mime, bytes, width, height))
+        })
+        .collect();
+    tenant.commit().await?;
+
     let mut items = Vec::with_capacity(order.items.len());
     for item in &order.items {
-        let facts: Option<AssetFacts> = sqlx::query_as(
-            "SELECT filename, mime, bytes, width, height FROM assets              WHERE id = $1 AND deleted_at IS NULL",
-        )
-        .bind(item.asset_id)
-        .fetch_optional(state.delivery.pool())
-        .await
-        .map_err(dam_db::Error::from)?;
+        let facts: Option<AssetFacts> = facts_by_id.get(&item.asset_id).cloned();
 
         let (mime, bytes) = match &facts {
             Some((_, mime, bytes, _, _)) => (Some(mime.clone()), Some(*bytes)),
@@ -507,6 +549,10 @@ pub async fn portal_set(
         } else {
             match delivery::issue_for_share(
                 &state.delivery,
+                delivery::Scope {
+                    tenant_id,
+                    slug: reference.tenant(),
+                },
                 item.asset_id,
                 "web-2048",
                 &portal_usage(),
@@ -562,6 +608,9 @@ pub struct PortalDownload {
 #[utoipa::path(
     post,
     path = "/share/{token}/download",
+    params(
+        ("token" = String, Path, description = "The share's address as `{tenant}.{token}` — the segment names its own tenant, so one deployment serves every library's public pages"),
+    ),
     request_body = PortalRequest,
     responses(
         (status = 200, body = PortalDownload),
@@ -577,7 +626,11 @@ pub async fn download(
     Json(request): Json<PortalRequest>,
 ) -> Result<Json<PortalDownload>, Failure> {
     let now = state.delivery.now();
-    let share = resolve_for_portal(&state, &token, request.passcode.as_deref(), now).await?;
+    let reference = visitor_reference(&token)?;
+    let tenant_id = visitor_tenant_id(&state, &reference).await?;
+    // `resolve_for_portal` is self-contained and holds no connection across its passcode check, so the signing
+    // below cannot contend with a transaction held open here.
+    let share = resolve_for_portal(&state, &reference, request.passcode.as_deref(), now).await?;
     let asset_id = share.target_id.ok_or(Failure::Portal(
         StatusCode::NOT_FOUND,
         "this link shares something this portal cannot download yet".to_owned(),
@@ -592,6 +645,10 @@ pub async fn download(
     };
     let minted = delivery::issue_for_share(
         &state.delivery,
+        delivery::Scope {
+            tenant_id,
+            slug: reference.tenant(),
+        },
         asset_id,
         transform,
         &portal_usage(),
@@ -613,8 +670,13 @@ pub async fn download(
         _ => Failure::Internal,
     })?;
 
-    let count = shares::consume_download(state.delivery.pool(), share.id, now).await?;
+    // A second, short transaction for the writes. The first ended before signing so the two could not
+    // contend; this one lives only as long as the statements that must not be lost.
+    let mut spending = visitor_conn(&state, &reference).await?;
+    let conn = spending.executor();
+    let count = shares::consume_download(&mut *conn, share.id, now).await?;
 
+    spending.commit().await?;
     Ok(Json(PortalDownload {
         url: state.delivery.url_for(&minted),
         downloads_remaining: share.max_downloads.map(|max| (max - count).max(0)),
@@ -633,6 +695,9 @@ pub async fn download(
 #[utoipa::path(
     post,
     path = "/share/{token}/items/{asset_id}/download",
+    params(
+        ("token" = String, Path, description = "The share's address as `{tenant}.{token}` — the segment names its own tenant, so one deployment serves every library's public pages"),
+    ),
     request_body = PortalRequest,
     responses(
         (status = 200, body = PortalDownload),
@@ -648,7 +713,11 @@ pub async fn download_item(
     Json(request): Json<PortalRequest>,
 ) -> Result<Json<PortalDownload>, Failure> {
     let now = state.delivery.now();
-    let share = resolve_for_portal(&state, &token, request.passcode.as_deref(), now).await?;
+    let reference = visitor_reference(&token)?;
+    let tenant_id = visitor_tenant_id(&state, &reference).await?;
+    // `resolve_for_portal` is self-contained and holds no connection across its passcode check, so the signing
+    // below cannot contend with a transaction held open here.
+    let share = resolve_for_portal(&state, &reference, request.passcode.as_deref(), now).await?;
     if share.kind != "order" {
         return Err(Failure::Portal(
             StatusCode::NOT_FOUND,
@@ -656,13 +725,11 @@ pub async fn download_item(
         ));
     }
 
-    let mut conn = state
-        .delivery
-        .pool()
-        .acquire()
-        .await
-        .map_err(dam_db::Error::from)?;
-    let order = dam_db::orders::for_share(&mut conn, share.id).await?;
+    // The pickup's own reads and its ledger row, in one transaction that ends before the signing below —
+    // `issue_for_share` opens a tenant transaction of its own and the two must not overlap.
+    let mut reading = visitor_conn(&state, &reference).await?;
+    let conn = reading.executor();
+    let order = dam_db::orders::for_share(&mut *conn, share.id).await?;
     let Some(order) = order else {
         return Err(Failure::Portal(
             StatusCode::NOT_FOUND,
@@ -700,7 +767,7 @@ pub async fn download_item(
 
     // Rights first, then the ledger, then the count: a refusal must spend neither one of the recipient's
     // downloads nor a line in the ledger, and an unrecorded download would make a cap under-count.
-    let evaluation = dam_db::rights::evaluate(state.delivery.pool(), asset_id, &usage, now).await?;
+    let evaluation = dam_db::rights::evaluate_on(&mut *conn, asset_id, &usage, now).await?;
     if !evaluation.permits_distribution() {
         return Err(Failure::Portal(
             StatusCode::FORBIDDEN,
@@ -709,7 +776,7 @@ pub async fn download_item(
     }
 
     dam_db::usage::record_download(
-        &mut conn,
+        &mut *conn,
         &dam_db::usage::NewDownload {
             asset_id,
             channel: usage.channel.clone(),
@@ -721,8 +788,14 @@ pub async fn download_item(
     )
     .await?;
 
+    reading.commit().await?;
+
     let minted = delivery::issue_for_share(
         &state.delivery,
+        delivery::Scope {
+            tenant_id,
+            slug: reference.tenant(),
+        },
         asset_id,
         &transform,
         &usage,
@@ -744,25 +817,84 @@ pub async fn download_item(
         _ => Failure::Internal,
     })?;
 
-    let count = shares::consume_download(state.delivery.pool(), share.id, now).await?;
+    // A second, short transaction for the writes. The first ended before signing so the two could not
+    // contend; this one lives only as long as the statements that must not be lost.
+    let mut spending = visitor_conn(&state, &reference).await?;
+    let conn = spending.executor();
+    let count = shares::consume_download(&mut *conn, share.id, now).await?;
     // The order has been collected. Idempotent, so a recipient fetching a second file is not a second collection.
-    dam_db::orders::mark_collected(&mut conn, order.id).await?;
+    dam_db::orders::mark_collected(&mut *conn, order.id).await?;
 
+    spending.commit().await?;
     Ok(Json(PortalDownload {
         url: state.delivery.url_for(&minted),
         downloads_remaining: share.max_downloads.map(|max| (max - count).max(0)),
     }))
 }
 
+/// The tenant a visitor URL names, or the flat refusal every dead link gets (G22c).
+///
+/// A bare token is refused rather than resolved against a configured tenant. The fallback is exactly what kept
+/// `server.delivery_tenant` alive, and it would answer a URL that named nobody with somebody's library.
+fn visitor_reference(segment: &str) -> Result<dam_core::public_ref::PublicRef, Failure> {
+    dam_core::public_ref::PublicRef::parse(segment)
+        .map_err(|_| shares::ShareRefusal::NotFound.into())
+}
+
+/// A connection scoped to the tenant the URL named.
+///
+/// A tenant that does not exist gets the same answer as a token that does not: naming a tenant is not a way to
+/// enumerate them.
+async fn visitor_conn<'p>(
+    state: &'p ShareState,
+    reference: &dam_core::public_ref::PublicRef,
+) -> Result<dam_db::TenantConn<'p>, Failure> {
+    dam_db::TenantConn::begin(&state.global, reference.tenant())
+        .await
+        .map_err(|_| shares::ShareRefusal::NotFound.into())
+}
+
+/// The tenant's id, for the delivery claims this surface mints.
+///
+/// A signed claim carries the tenant as an id, and the URL names it as a slug, so one of the two has to be
+/// resolved. Done once per request beside the connection rather than per issued URL — a portal page mints one
+/// per item.
+async fn visitor_tenant_id(
+    state: &ShareState,
+    reference: &dam_core::public_ref::PublicRef,
+) -> Result<uuid::Uuid, Failure> {
+    dam_db::provision::id_of(&state.global, reference.tenant())
+        .await
+        .map_err(|_| Failure::from(shares::ShareRefusal::NotFound))?
+        .ok_or_else(|| shares::ShareRefusal::NotFound.into())
+}
+
 /// Resolve + passcode + the EULA fail-closed gate, shared by both portal routes.
 async fn resolve_for_portal(
     state: &ShareState,
-    token: &str,
+    reference: &dam_core::public_ref::PublicRef,
     passcode: Option<&str>,
     now: DateTime<Utc>,
 ) -> Result<shares::Share, Failure> {
-    let share = shares::resolve(state.delivery.pool(), token, now).await?;
-    shares::check_passcode(state.delivery.pool(), share.id, passcode).await?;
+    // Self-contained, and holds no connection during the passcode check. The share resolve and the gate read
+    // run on a short-lived connection that is released before the argon2 verification — see `PasscodeGate`.
+    // A handful of concurrent wrong-passcode guesses used to pin one pooled connection each, idle in a
+    // transaction, for ~100ms apiece; on a sixteen-connection pool that starves unrelated requests.
+    let (share, gate) = {
+        let mut tenant = visitor_conn(state, reference).await?;
+        let conn = tenant.executor();
+        let share = shares::resolve(&mut *conn, reference.rest(), now).await?;
+        let gate = shares::passcode_gate(&mut *conn, share.id).await?;
+        tenant.commit().await?;
+        (share, gate)
+    };
+
+    // The argon2 work off the runtime, holding nothing. `spawn_blocking` because ~100ms of CPU on a runtime
+    // worker starves every task multiplexed onto that thread.
+    let presented = passcode.map(ToOwned::to_owned);
+    tokio::task::spawn_blocking(move || gate.verify(presented.as_deref()))
+        .await
+        .map_err(|_| Failure::Internal)??;
 
     if share.requires_eula {
         // Fail closed: the flag exists, the acceptance machinery does not, and enforcing nothing while the

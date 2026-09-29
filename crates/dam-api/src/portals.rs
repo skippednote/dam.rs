@@ -335,11 +335,11 @@ pub async fn create(
     let public_url = created
         .portal
         .is_public
-        .then(|| self::public_url(&state, &created.portal.key));
+        .then(|| self::public_url(&state, &caller.tenant_slug, &created.portal.key));
     Ok((
         StatusCode::CREATED,
         Json(CreatedPortal {
-            url: token_url(&state, &created.token),
+            url: token_url(&state, &caller.tenant_slug, &created.token),
             public_url,
             portal: PortalView::of(created.portal, true),
         }),
@@ -354,13 +354,12 @@ pub async fn create(
 /// and download. Scoping to the *author's* groups was the alternative and it is worse: the portal's contents
 /// would then change when somebody edited a role.
 async fn published_query(
-    state: &PortalState,
+    conn: &mut sqlx::PgConnection,
     saved_search_id: Uuid,
 ) -> Result<dam_core::query::Planned, VisitorFailure> {
-    // The delivery pool, pinned to the delivery tenant's schema — the same pool every other read on this path
-    // uses, because a portal token arrives with no tenant attached.
-    let pool = state.delivery.pool();
-    let saved = dam_db::saved_searches::load(pool, saved_search_id)
+    // The visitor's own tenant connection, resolved from the URL. This used to be the pinned delivery pool,
+    // which is what made one process serve one library's public surface.
+    let saved = dam_db::saved_searches::load(&mut *conn, saved_search_id)
         .await?
         .ok_or_else(|| {
             VisitorFailure::Portal(
@@ -368,8 +367,7 @@ async fn published_query(
                 "this portal's saved search no longer exists".to_owned(),
             )
         })?;
-    let defs =
-        dam_db::fields::load(&mut *pool.acquire().await.map_err(dam_db::Error::from)?).await?;
+    let defs = dam_db::fields::load(&mut *conn).await?;
     Ok(dam_db::saved_searches::plan(&saved, widest(), &defs)?)
 }
 
@@ -526,7 +524,10 @@ pub async fn retire(
 #[utoipa::path(
     get,
     path = "/portal/{key}",
-    params(VisitParams),
+    params(
+        ("key" = String, Path, description = "The portal's address as `{tenant}.{key}` — the segment names its own tenant, so one deployment serves every library's public pages"),
+        VisitParams,
+    ),
     responses(
         (status = 200, body = PortalPage),
         (status = 401, description = "A passcode is required or wrong"),
@@ -536,24 +537,48 @@ pub async fn retire(
 )]
 pub async fn by_key(
     State(state): State<Arc<PortalState>>,
-    Path(key): Path<String>,
+    Path(reference): Path<String>,
     Query(params): Query<VisitParams>,
 ) -> Result<Json<PortalPage>, VisitorFailure> {
-    let mut conn = state
-        .delivery
-        .pool()
-        .acquire()
+    // The segment names its own tenant (G22c). A bare key is refused rather than falling back to a configured
+    // tenant, because a fallback is what kept `server.delivery_tenant` alive — and it would silently serve one
+    // customer's portal to a URL that named nobody.
+    let reference = dam_core::public_ref::PublicRef::parse(&reference).map_err(|_| {
+        VisitorFailure::Portal(
+            StatusCode::NOT_FOUND,
+            "there is no portal at that address".to_owned(),
+        )
+    })?;
+    let tenant_id = dam_db::provision::id_of(&state.global, reference.tenant())
         .await
-        .map_err(dam_db::Error::from)?;
+        .ok()
+        .flatten()
+        .ok_or_else(|| {
+            VisitorFailure::Portal(
+                StatusCode::NOT_FOUND,
+                "there is no portal at that address".to_owned(),
+            )
+        })?;
+    let mut tenant = dam_db::TenantConn::begin(&state.global, reference.tenant())
+        .await
+        .map_err(|_| {
+            // A tenant that does not exist and a portal that does not exist are the same answer: naming a
+            // tenant is not a way to find out which ones there are.
+            VisitorFailure::Portal(
+                StatusCode::NOT_FOUND,
+                "there is no portal at that address".to_owned(),
+            )
+        })?;
+    let conn = tenant.executor();
     // Public and live only — the narrow lookup, so a private portal is not even a 403 by name.
-    let portal = portals::by_public_key(&mut conn, &key).await?;
+    let portal = portals::by_public_key(&mut *conn, reference.rest()).await?;
     let Some(portal) = portal else {
         return Err(VisitorFailure::Portal(
             StatusCode::NOT_FOUND,
             "there is no portal at that address".to_owned(),
         ));
     };
-    let Some(share_id) = portals::share_of(&mut conn, portal.id).await? else {
+    let Some(share_id) = portals::share_of(&mut *conn, portal.id).await? else {
         // Public, live, and its link was revoked by hand. The same flat answer: the visitor learns the address
         // does not work, not that it used to.
         return Err(VisitorFailure::Portal(
@@ -561,12 +586,36 @@ pub async fn by_key(
             "there is no portal at that address".to_owned(),
         ));
     };
+    let now = state.delivery.now();
+    let share =
+        dam_db::shares::by_id(&mut *conn, share_id)
+            .await?
+            .ok_or(VisitorFailure::Portal(
+                StatusCode::NOT_FOUND,
+                "there is no portal at that address".to_owned(),
+            ))?;
+    if !share.is_live(now) {
+        // The share's own vocabulary — expired, revoked, exhausted — through the same refusal type the share
+        // portal uses, so a revoked portal and a revoked asset link read alike. A flat "not found" here would
+        // lose the one thing the recipient can act on: whether to ask for a fresh link.
+        return Err(VisitorFailure::from(
+            dam_db::shares::ShareRefusal::from_share(&share, now),
+        ));
+    }
+    // Release the connection before the passcode check, so the argon2 work holds nothing.
+    let gate = dam_db::shares::passcode_gate(&mut *conn, share.id).await?;
+    tenant.commit().await?;
+    verify_gate(gate, params.passcode.as_deref()).await?;
 
+    // `render` opens and releases its own connection, so nothing is held across its per-item signing.
     render(
         &state,
+        delivery::Scope {
+            tenant_id,
+            slug: reference.tenant(),
+        },
         portal,
-        share_id,
-        params.passcode.as_deref(),
+        share,
         params.q.as_deref(),
     )
     .await
@@ -586,11 +635,22 @@ pub async fn by_key(
 )]
 pub async fn by_token(
     State(state): State<Arc<PortalState>>,
-    Path(token): Path<String>,
+    Path(reference): Path<String>,
     Json(request): Json<VisitRequest>,
 ) -> Result<Json<PortalPage>, VisitorFailure> {
     let now = state.delivery.now();
-    let share = dam_db::shares::resolve(state.delivery.pool(), &token, now).await?;
+    let reference = dam_core::public_ref::PublicRef::parse(&reference)
+        .map_err(|_| dam_db::shares::ShareRefusal::NotFound)?;
+    let tenant_id = dam_db::provision::id_of(&state.global, reference.tenant())
+        .await
+        .ok()
+        .flatten()
+        .ok_or(dam_db::shares::ShareRefusal::NotFound)?;
+    let mut tenant = dam_db::TenantConn::begin(&state.global, reference.tenant())
+        .await
+        .map_err(|_| dam_db::shares::ShareRefusal::NotFound)?;
+    let conn = tenant.executor();
+    let share = dam_db::shares::resolve(&mut *conn, reference.rest(), now).await?;
     let portal_id = match (share.kind.as_str(), share.target_id) {
         ("portal", Some(id)) => id,
         // The same flat answer a dead token gets: the holder of an asset link learns nothing about what other
@@ -603,25 +663,27 @@ pub async fn by_token(
         }
     };
 
-    let mut conn = state
-        .delivery
-        .pool()
-        .acquire()
-        .await
-        .map_err(dam_db::Error::from)?;
-    let portal = portals::read(&mut conn, portal_id).await?;
+    let portal = portals::read(&mut *conn, portal_id).await?;
     let Some(portal) = portal.filter(Portal::is_live) else {
         return Err(VisitorFailure::Portal(
             StatusCode::NOT_FOUND,
             "this portal is no longer available".to_owned(),
         ));
     };
+    // The gate read completes the reads; release the connection before verifying, so argon2 holds nothing.
+    let gate = dam_db::shares::passcode_gate(&mut *conn, share.id).await?;
+    tenant.commit().await?;
+    verify_gate(gate, request.passcode.as_deref()).await?;
 
+    // `render` opens and releases its own connection, so nothing is held across its per-item signing.
     render(
         &state,
+        delivery::Scope {
+            tenant_id,
+            slug: reference.tenant(),
+        },
         portal,
-        share.id,
-        request.passcode.as_deref(),
+        share,
         request.q.as_deref(),
     )
     .await
@@ -631,29 +693,47 @@ pub async fn by_token(
 ///
 /// Both routes end here, which is the point: the slug and the token are two addresses for one page, and the
 /// checks — passcode, expiry, cap, revocation — happen once, in the share machinery, whichever address was used.
+/// Verifies a passcode gate off the async runtime, holding no connection.
+///
+/// The argon2 work is ~100ms of CPU. On a runtime worker it starves every task that thread multiplexes, and
+/// on a pooled connection it starves the pool — so the caller reads the gate, releases its connection, and
+/// hands the gate here. See `dam_db::shares::PasscodeGate`.
+async fn verify_gate(
+    gate: dam_db::shares::PasscodeGate,
+    passcode: Option<&str>,
+) -> Result<(), VisitorFailure> {
+    let presented = passcode.map(ToOwned::to_owned);
+    tokio::task::spawn_blocking(move || gate.verify(presented.as_deref()))
+        .await
+        .map_err(|_| VisitorFailure::Internal)?
+        .map_err(VisitorFailure::from)
+}
+
 async fn render(
     state: &PortalState,
+    scope: delivery::Scope<'_>,
     portal: Portal,
-    share_id: Uuid,
-    passcode: Option<&str>,
+    share: dam_db::shares::Share,
     query: Option<&str>,
 ) -> Result<Json<PortalPage>, VisitorFailure> {
+    // The share is already resolved, live-checked and passcode-verified by the caller — see `gate_portal`.
+    //
+    // This function opens its own connection for the member reads and releases it *before* the per-item
+    // signing below. Signing calls `issue_for_share`, which opens a tenant transaction of its own, so holding
+    // this connection across the loop would mean two transactions from the same pool per portal view — and N
+    // concurrent views each holding one while waiting for a second is the classic pool deadlock, the same
+    // shape a members test hit earlier. The reads finish, the connection is returned, then the signing runs
+    // holding nothing of this pool.
     let now = state.delivery.now();
-    let share = dam_db::shares::by_id(state.delivery.pool(), share_id)
-        .await?
-        .ok_or(VisitorFailure::Portal(
-            StatusCode::NOT_FOUND,
-            "there is no portal at that address".to_owned(),
-        ))?;
-    if !share.is_live(now) {
-        // The share's own vocabulary, through the same refusal type the share portal uses, so a revoked portal
-        // and a revoked asset link read alike.
-        return Err(VisitorFailure::from(
-            dam_db::shares::ShareRefusal::from_share(&share, now),
-        ));
-    }
-    dam_db::shares::check_passcode(state.delivery.pool(), share.id, passcode).await?;
-
+    let mut tenant = dam_db::TenantConn::begin(&state.global, scope.slug)
+        .await
+        .map_err(|_| {
+            VisitorFailure::Portal(
+                StatusCode::NOT_FOUND,
+                "there is no portal at that address".to_owned(),
+            )
+        })?;
+    let conn = tenant.executor();
     let searching = portal
         .allow_search
         .then(|| query.unwrap_or("").trim())
@@ -670,7 +750,7 @@ async fn render(
     // assets somebody published, which is what makes them safe to point at the public internet at all — see
     // the module note and `MemberSource`.
     let planned = match &portal.source {
-        Source::SavedSearch(id) => Some(published_query(state, *id).await?),
+        Source::SavedSearch(id) => Some(published_query(&mut *conn, *id).await?),
         _ => None,
     };
     let source = match (&portal.source, planned.as_ref()) {
@@ -687,17 +767,11 @@ async fn render(
         }
     };
 
-    let rows = dam_db::portals::members(
-        state.delivery.pool(),
-        source,
-        searching,
-        media_class,
-        MAX_ITEMS,
-    )
-    .await?;
-    let total =
-        dam_db::portals::member_count(state.delivery.pool(), source, searching, media_class)
-            .await?;
+    let rows =
+        dam_db::portals::members(&mut *conn, source, searching, media_class, MAX_ITEMS).await?;
+    let total = dam_db::portals::member_count(&mut *conn, source, searching, media_class).await?;
+    // Every read is done; return the connection to the pool before signing, which opens its own transactions.
+    tenant.commit().await?;
 
     let mut items = Vec::with_capacity(rows.len());
     for row in &rows {
@@ -705,6 +779,7 @@ async fn render(
         // of forty where two are unlicensed is a portal of thirty-eight, and the two are still named.
         let (preview_url, preview_unavailable) = match delivery::issue_for_share(
             &state.delivery,
+            scope,
             row.asset_id,
             "web-2048",
             &portal_usage(),
@@ -738,6 +813,7 @@ async fn render(
     let logo_url = match portal.logo_asset_id {
         Some(asset_id) => match delivery::issue_for_share(
             &state.delivery,
+            scope,
             asset_id,
             "web-2048",
             &portal_usage(),
@@ -782,19 +858,30 @@ fn portal_usage() -> Usage {
 }
 
 /// The URL a token reaches the portal at.
-fn token_url(state: &PortalState, token: &str) -> String {
+fn token_url(state: &PortalState, tenant: &dam_core::TenantSlug, token: &str) -> String {
+    let reference = qualified(tenant, token);
     match state.delivery.public_origin() {
-        Some(origin) => format!("{origin}/share/{token}"),
-        None => format!("/share/{token}"),
+        Some(origin) => format!("{origin}/share/{reference}"),
+        None => format!("/share/{reference}"),
     }
 }
 
 /// The URL a public portal answers at.
-fn public_url(state: &PortalState, key: &str) -> String {
+fn public_url(state: &PortalState, tenant: &dam_core::TenantSlug, key: &str) -> String {
+    let reference = qualified(tenant, key);
     match state.delivery.public_origin() {
-        Some(origin) => format!("{origin}/portal/{key}"),
-        None => format!("/portal/{key}"),
+        Some(origin) => format!("{origin}/portal/{reference}"),
+        None => format!("/portal/{reference}"),
     }
+}
+
+/// A public segment with its tenant attached (G22c).
+///
+/// Every visitor URL this module emits goes through here, so there is one place that decides what a public
+/// address looks like. A key is never empty — the schema refuses it — so the fallback is unreachable; it exists
+/// to keep the two callers total rather than to handle a case that can happen.
+fn qualified(tenant: &dam_core::TenantSlug, rest: &str) -> String {
+    dam_core::public_ref::PublicRef::qualify(tenant, rest)
 }
 
 /// Turns a store refusal into an HTTP one.

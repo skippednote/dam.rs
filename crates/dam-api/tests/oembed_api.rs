@@ -41,6 +41,8 @@ fn sealing() -> SealingKeyring {
 }
 
 struct Fixture {
+    /// The tenant, because a browse token names one since G22c.
+    tenant_id: Uuid,
     _pg: PostgresHarness,
     pool: PgPool,
     group: Uuid,
@@ -164,16 +166,14 @@ async fn fixture() -> Fixture {
     let delivery = Arc::new(
         dam_api::delivery::DeliveryState::new(
             pool.clone(),
-            pool.clone(),
             Arc::new(dam_store::FakeS3Store::with_test_clock().0),
             Keyring::single("k1", Secret::new("a-signing-key".to_owned())),
-            tenant_id,
-            dam_core::TenantSlug::new("acme").expect("a slug"),
         )
         .with_public_url(Some(ORIGIN.to_owned())),
     );
 
     Fixture {
+        tenant_id,
         _pg: pg,
         pool: pool.clone(),
         group,
@@ -181,10 +181,7 @@ async fn fixture() -> Fixture {
             browse: Arc::new(BrowseState {
                 search,
                 global: pool.clone(),
-                connectors: Some(ConnectorAuth {
-                    sealing: sealing(),
-                    tenant_slug: dam_core::TenantSlug::new(TENANT).expect("slug"),
-                }),
+                connectors: Some(ConnectorAuth { sealing: sealing() }),
             }),
             delivery: Some(delivery),
             public_url: Some(ORIGIN.to_owned()),
@@ -313,6 +310,7 @@ fn token(f: &Fixture) -> String {
     browse_token::sign(
         &Secret::new(f.secret.clone()),
         &BrowseClaim {
+            tenant_id: f.tenant_id,
             connector_id: f.connector_id,
             expires_at: chrono::Utc::now() + chrono::Duration::minutes(5),
         },
@@ -506,6 +504,7 @@ async fn it_needs_a_credential_and_takes_either_of_the_two(f: &Fixture) {
     let forged = browse_token::sign(
         &Secret::new("not-the-secret".to_owned()),
         &BrowseClaim {
+            tenant_id: f.tenant_id,
             connector_id: f.connector_id,
             expires_at: chrono::Utc::now() + chrono::Duration::minutes(5),
         },

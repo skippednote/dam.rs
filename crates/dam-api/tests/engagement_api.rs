@@ -89,24 +89,17 @@ async fn fixture() -> Fixture {
     let indexes = std::sync::Arc::new(IndexPool::new(PoolConfig::new(index_dir.path())));
     // A signer on both, because "the grid and the search results agree" turned out to include the *picture*,
     // and with no keyring neither side can mint one — so the disagreement was unassertable here.
-    let tenant_id: Uuid =
-        sqlx::query_scalar("SELECT id FROM dam_global.tenants WHERE slug = 'acme'")
-            .fetch_one(&global)
-            .await
-            .expect("tenant id");
     let delivery = std::sync::Arc::new(dam_api::delivery::DeliveryState::new(
-        acme.clone(),
         acme.clone(),
         std::sync::Arc::new(dam_store::FakeS3Store::with_test_clock().0),
         dam_core::signed_url::Keyring::single(
             "k1",
             dam_core::Secret::new("a-signing-key".to_owned()),
         ),
-        tenant_id,
-        dam_core::TenantSlug::new("acme").expect("a slug"),
     ));
     let app = router(EngagementState {
         global: global.clone(),
+        delivery: Some(std::sync::Arc::clone(&delivery)),
     })
     .merge(dam_api::search::router(dam_api::search::SearchState {
         global: global.clone(),
@@ -318,6 +311,116 @@ async fn the_engagement_http_contract_holds() {
     favourites_first_puts_them_first_and_leaves_the_rest_alone(&f).await;
     a_ranked_search_result_carries_engagement_too(&f, visible).await;
     a_private_list_is_ordered_by_when_the_caller_added_each_one(&f).await;
+    the_private_lists_carry_the_same_thumbnail_the_grid_does(&f, visible).await;
+    the_rail_counts_what_the_grid_shows_for_every_syntax(&f).await;
+}
+
+/// The rail and the grid must be the same answer, for every query syntax.
+///
+/// Two bugs lived here, both invisible to a facet suite that only ever asked empty queries.
+///
+/// The first was three-valued logic: each text field's clause is a `bool_or`, which is `NULL` over an unset
+/// field, so `NOT (false OR NULL)` dropped every row and the rail went empty on any negated query.
+///
+/// The second was deeper and is why this test is here rather than in the SQL suite. The grid comes from the
+/// search index; the rail was rendering the same query string to SQL a second time. `"hyphen split"` matches
+/// `hyphen-split.jpg` in the index because it tokenises on the hyphen, and cannot match
+/// `ILIKE '%hyphen split%'`. No amount of care in the SQL closes that — the two are different engines — so
+/// the rail now counts the ids the index chose.
+///
+/// Asserted as equality between the two endpoints rather than against fixed numbers: the property is that
+/// they agree, and a test pinning counts would keep passing if both drifted together.
+async fn the_rail_counts_what_the_grid_shows_for_every_syntax(f: &Fixture) {
+    // A hyphen in the name is the whole point of the phrase case: it is what the index splits and a substring
+    // match cannot. `bare` carries no metadata at all, which is the unset-field case the negation bug needed.
+    let _split = asset(f, "hyphen-split", true).await;
+    let _other = asset(f, "plainname", true).await;
+    let _bare = asset(f, "rail-bare", true).await;
+
+    let defs = dam_db::fields::load(&mut *f.acme.acquire().await.expect("conn"))
+        .await
+        .expect("defs");
+    let schema = dam_search::IndexSchema::new(defs);
+    let slug = dam_core::TenantSlug::new("acme").expect("slug");
+    dam_search::reindex::tenant(&f.acme, &f.indexes, &slug, &schema, 500)
+        .await
+        .expect("reindex");
+
+    for query in [
+        "hyphen",            // a plain term: the case that always worked
+        "-hyphen",           // negation: the NULL bug
+        "\"hyphen split\"",  // a phrase over a hyphen: the tokenisation bug
+        "plainname -hyphen", // both at once
+    ] {
+        let encoded = encode(query);
+        let (status, results) = call(f, "GET", &format!("/search?q={encoded}"), &f.key, None).await;
+        assert_eq!(status, StatusCode::OK, "{query}: {results}");
+        let total = results["total"].as_i64().expect("total");
+
+        let (status, rail) = call(
+            f,
+            "GET",
+            &format!("/search/facets?q={encoded}"),
+            &f.key,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{query}: {rail}");
+
+        // `status` is a built-in facet every library has, and every asset here is active — so its buckets
+        // must sum to exactly the number of results the grid is showing.
+        let counted: i64 = rail
+            .as_array()
+            .expect("array")
+            .iter()
+            .find(|facet| facet["key"] == json!("status"))
+            .unwrap_or_else(|| panic!("{query}: no status facet in {rail}"))["buckets"]
+            .as_array()
+            .expect("buckets")
+            .iter()
+            .filter_map(|bucket| bucket["count"].as_i64())
+            .sum();
+
+        assert_eq!(
+            counted, total,
+            "the rail and the grid disagree for {query:?}: grid {total}, rail {counted} \u{2014} {rail}"
+        );
+    }
+}
+
+/// The same asset must draw the same picture in the grid, in search, and in the private lists.
+///
+/// The third occurrence of one bug. `/assets` filled `thumbnail_url`, `/search` did not, and that was fixed;
+/// `/favourites` and `/watches` still did not, because `EngagementState` was the one state built without a
+/// keyring — so an asset had a thumbnail until you starred it, and then rendered "Preview processing" for ever
+/// on a page whose whole purpose is the ones you cared about most.
+///
+/// Asserted as *equality with the grid* rather than as "is present", because presence is what the two earlier
+/// versions of this bug already satisfied on the paths that worked. The failure was always disagreement
+/// between endpoints about the same asset, so that is what this pins.
+async fn the_private_lists_carry_the_same_thumbnail_the_grid_does(f: &Fixture, visible: Uuid) {
+    let (_, panel) = call(f, "GET", &format!("/assets/{visible}"), &f.key, None).await;
+    let from_panel = panel["thumbnail_url"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the browse path must fill it first: {panel}"))
+        .to_owned();
+
+    // Already favourited and watched by the toggle case above, so both lists contain it.
+    for path in ["/favourites", "/watches"] {
+        let (_, body) = call(f, "GET", path, &f.key, None).await;
+        let found = body["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .find(|item| item["id"] == json!(visible.to_string()))
+            .unwrap_or_else(|| panic!("{path} is missing the asset: {body}"))
+            .clone();
+        assert_eq!(
+            found["thumbnail_url"].as_str(),
+            Some(from_panel.as_str()),
+            "{path} must carry the same thumbnail URL the grid does: {found}"
+        );
+    }
 }
 
 async fn a_private_list_is_ordered_by_when_the_caller_added_each_one(f: &Fixture) {

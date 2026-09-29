@@ -803,6 +803,7 @@ fn context(f: &Fixture, transport: Arc<Recorded>) -> dam_pipeline::worker::Conte
         indexes: Arc::new(dam_search::IndexPool::new(dam_search::PoolConfig::new(
             std::path::Path::new("/tmp/damrs-backfill-chain"),
         ))),
+        sealing: None,
         ai: Some(ai(transport)),
         worker: "backfill-chain-test".to_owned(),
         // No webhook subscriptions in these fixtures, so nothing is ever dispatched. A default client

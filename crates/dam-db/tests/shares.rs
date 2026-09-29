@@ -52,10 +52,16 @@ fn spec<'a>() -> ShareSpec<'a> {
 // ─── the token ──────────────────────────────────────────────────────────────
 
 async fn a_share_resolves_by_its_token(pool: &PgPool) {
-    let created = shares::create(pool, &spec()).await.expect("create");
-    let resolved = shares::resolve(pool, created.token(), now())
+    let created = shares::create(&mut pool.acquire().await.expect("conn"), &spec())
         .await
-        .expect("resolve");
+        .expect("create");
+    let resolved = shares::resolve(
+        &mut pool.acquire().await.expect("conn"),
+        created.token(),
+        now(),
+    )
+    .await
+    .expect("resolve");
     assert_eq!(resolved.id, created.id);
     assert!(resolved.is_live(now()));
 }
@@ -64,7 +70,9 @@ async fn the_plaintext_token_is_never_stored(pool: &PgPool) {
     // A share token in the database is every live share link in the database. Storing a digest means a leak
     // does not hand them over — the same reasoning as `auth::ApiKey`, and the reason this column named
     // `token` holds a hash.
-    let created = shares::create(pool, &spec()).await.expect("create");
+    let created = shares::create(&mut pool.acquire().await.expect("conn"), &spec())
+        .await
+        .expect("create");
     let stored: Option<String> = sqlx::query_scalar("SELECT token FROM share_links WHERE id = $1")
         .bind(created.id)
         .fetch_optional(pool)
@@ -77,14 +85,18 @@ async fn the_plaintext_token_is_never_stored(pool: &PgPool) {
 
 async fn an_unknown_token_is_not_found(pool: &PgPool) {
     assert_eq!(
-        shares::resolve(pool, "deadbeef", now()).await.unwrap_err(),
+        shares::resolve(&mut pool.acquire().await.expect("conn"), "deadbeef", now())
+            .await
+            .unwrap_err(),
         ShareRefusal::NotFound
     );
 }
 
 async fn the_debug_impl_does_not_print_the_token(pool: &PgPool) {
     // A share token in a log is a share link that has to be revoked.
-    let created = shares::create(pool, &spec()).await.expect("create");
+    let created = shares::create(&mut pool.acquire().await.expect("conn"), &spec())
+        .await
+        .expect("create");
     let rendered = format!("{created:?}");
     assert!(!rendered.contains(created.token()), "got {rendered}");
     assert!(rendered.contains("REDACTED"));
@@ -97,7 +109,7 @@ async fn an_expired_share_is_refused_and_says_so(pool: &PgPool) {
     // "not found" goes and checks the URL. The token is 256 random bits so nobody can enumerate one, and the
     // recipient is the person who needs the answer.
     let created = shares::create(
-        pool,
+        &mut pool.acquire().await.expect("conn"),
         &ShareSpec {
             expires_at: Some(now() - Duration::seconds(1)),
             ..spec()
@@ -106,9 +118,13 @@ async fn an_expired_share_is_refused_and_says_so(pool: &PgPool) {
     .await
     .expect("create");
     assert_eq!(
-        shares::resolve(pool, created.token(), now())
-            .await
-            .unwrap_err(),
+        shares::resolve(
+            &mut pool.acquire().await.expect("conn"),
+            created.token(),
+            now()
+        )
+        .await
+        .unwrap_err(),
         ShareRefusal::Expired
     );
 }
@@ -123,7 +139,7 @@ async fn an_expired_share_cannot_have_a_download_consumed(pool: &PgPool) {
     // downloads both pass a separate check and both succeed on the last one. So the condition is duplicated,
     // and a duplicated condition needs its own test.
     let live = shares::create(
-        pool,
+        &mut pool.acquire().await.expect("conn"),
         &ShareSpec {
             expires_at: Some(now() + Duration::hours(1)),
             max_downloads: Some(3),
@@ -133,14 +149,14 @@ async fn an_expired_share_cannot_have_a_download_consumed(pool: &PgPool) {
     .await
     .expect("create");
     assert_eq!(
-        shares::consume_download(pool, live.id, now())
+        shares::consume_download(&mut pool.acquire().await.expect("conn"), live.id, now())
             .await
             .expect("a live share spends a download"),
         1
     );
 
     let expired = shares::create(
-        pool,
+        &mut pool.acquire().await.expect("conn"),
         &ShareSpec {
             expires_at: Some(now() - Duration::seconds(1)),
             max_downloads: Some(3),
@@ -150,7 +166,7 @@ async fn an_expired_share_cannot_have_a_download_consumed(pool: &PgPool) {
     .await
     .expect("create");
     assert_eq!(
-        shares::consume_download(pool, expired.id, now())
+        shares::consume_download(&mut pool.acquire().await.expect("conn"), expired.id, now())
             .await
             .unwrap_err(),
         ShareRefusal::Exhausted,
@@ -171,7 +187,7 @@ async fn a_revoked_share_is_refused_before_expiry_is_even_considered(pool: &PgPo
     // Revocation is the most absolute reason, and the one a recipient most needs stated plainly. A share that
     // is both revoked and expired should say revoked.
     let created = shares::create(
-        pool,
+        &mut pool.acquire().await.expect("conn"),
         &ShareSpec {
             expires_at: Some(now() - Duration::days(1)),
             ..spec()
@@ -180,29 +196,35 @@ async fn a_revoked_share_is_refused_before_expiry_is_even_considered(pool: &PgPo
     .await
     .expect("create");
     assert!(
-        shares::revoke(pool, created.id, now())
+        shares::revoke(&mut pool.acquire().await.expect("conn"), created.id, now())
             .await
             .expect("revoke"),
         "the first revoke reports that it acted"
     );
     assert_eq!(
-        shares::resolve(pool, created.token(), now())
-            .await
-            .unwrap_err(),
+        shares::resolve(
+            &mut pool.acquire().await.expect("conn"),
+            created.token(),
+            now()
+        )
+        .await
+        .unwrap_err(),
         ShareRefusal::Revoked
     );
 }
 
 async fn revoking_twice_reports_only_the_first(pool: &PgPool) {
     // So an audit entry is written once rather than on every retry.
-    let created = shares::create(pool, &spec()).await.expect("create");
+    let created = shares::create(&mut pool.acquire().await.expect("conn"), &spec())
+        .await
+        .expect("create");
     assert!(
-        shares::revoke(pool, created.id, now())
+        shares::revoke(&mut pool.acquire().await.expect("conn"), created.id, now())
             .await
             .expect("first")
     );
     assert!(
-        !shares::revoke(pool, created.id, now())
+        !shares::revoke(&mut pool.acquire().await.expect("conn"), created.id, now())
             .await
             .expect("second"),
         "a repeat revoke must be idempotent and say it did nothing"
@@ -211,7 +233,7 @@ async fn revoking_twice_reports_only_the_first(pool: &PgPool) {
 
 async fn a_download_limit_is_enforced_and_reported(pool: &PgPool) {
     let created = shares::create(
-        pool,
+        &mut pool.acquire().await.expect("conn"),
         &ShareSpec {
             max_downloads: Some(2),
             ..spec()
@@ -221,19 +243,19 @@ async fn a_download_limit_is_enforced_and_reported(pool: &PgPool) {
     .expect("create");
 
     assert_eq!(
-        shares::consume_download(pool, created.id, now())
+        shares::consume_download(&mut pool.acquire().await.expect("conn"), created.id, now())
             .await
             .expect("first"),
         1
     );
     assert_eq!(
-        shares::consume_download(pool, created.id, now())
+        shares::consume_download(&mut pool.acquire().await.expect("conn"), created.id, now())
             .await
             .expect("second"),
         2
     );
     assert_eq!(
-        shares::consume_download(pool, created.id, now())
+        shares::consume_download(&mut pool.acquire().await.expect("conn"), created.id, now())
             .await
             .unwrap_err(),
         ShareRefusal::Exhausted
@@ -241,9 +263,13 @@ async fn a_download_limit_is_enforced_and_reported(pool: &PgPool) {
     // And resolving now reports the same thing, so a caller that never calls `consume_download` still cannot
     // present an exhausted link as usable.
     assert_eq!(
-        shares::resolve(pool, created.token(), now())
-            .await
-            .unwrap_err(),
+        shares::resolve(
+            &mut pool.acquire().await.expect("conn"),
+            created.token(),
+            now()
+        )
+        .await
+        .unwrap_err(),
         ShareRefusal::Exhausted
     );
 }
@@ -253,7 +279,7 @@ async fn concurrent_downloads_cannot_both_take_the_last_slot(pool: &PgPool) {
     // and both proceed — the asset goes out twice from a link that said once. The check and the increment are
     // one statement, so exactly one of these can win.
     let created = shares::create(
-        pool,
+        &mut pool.acquire().await.expect("conn"),
         &ShareSpec {
             max_downloads: Some(1),
             ..spec()
@@ -267,7 +293,9 @@ async fn concurrent_downloads_cannot_both_take_the_last_slot(pool: &PgPool) {
         let pool = pool.clone();
         let id = created.id;
         handles.push(tokio::spawn(async move {
-            shares::consume_download(&pool, id, now()).await
+            // A connection each, which is what makes this a real race: eight tasks contending on the same row.
+            let mut conn = pool.acquire().await.expect("conn");
+            shares::consume_download(&mut conn, id, now()).await
         }));
     }
     let mut granted = 0;
@@ -292,12 +320,14 @@ async fn concurrent_downloads_cannot_both_take_the_last_slot(pool: &PgPool) {
 async fn consuming_a_revoked_share_is_refused(pool: &PgPool) {
     // The revocation check is in the same statement as the limit, so a share revoked between resolve and
     // download cannot slip one through.
-    let created = shares::create(pool, &spec()).await.expect("create");
-    shares::revoke(pool, created.id, now())
+    let created = shares::create(&mut pool.acquire().await.expect("conn"), &spec())
+        .await
+        .expect("create");
+    shares::revoke(&mut pool.acquire().await.expect("conn"), created.id, now())
         .await
         .expect("revoke");
     assert_eq!(
-        shares::consume_download(pool, created.id, now())
+        shares::consume_download(&mut pool.acquire().await.expect("conn"), created.id, now())
             .await
             .unwrap_err(),
         ShareRefusal::Exhausted
@@ -307,18 +337,20 @@ async fn consuming_a_revoked_share_is_refused(pool: &PgPool) {
 async fn is_live_answers_what_delivery_needs(pool: &PgPool) {
     // What the delivery path calls per request for a share-issued URL. It has to be cheap and it has to be
     // exact, because it is the thing standing between a revoked share and an outstanding download URL.
-    let created = shares::create(pool, &spec()).await.expect("create");
+    let created = shares::create(&mut pool.acquire().await.expect("conn"), &spec())
+        .await
+        .expect("create");
     assert!(
-        shares::is_live(pool, created.id, now())
+        shares::is_live(&mut pool.acquire().await.expect("conn"), created.id, now())
             .await
             .expect("live")
     );
 
-    shares::revoke(pool, created.id, now())
+    shares::revoke(&mut pool.acquire().await.expect("conn"), created.id, now())
         .await
         .expect("revoke");
     assert!(
-        !shares::is_live(pool, created.id, now())
+        !shares::is_live(&mut pool.acquire().await.expect("conn"), created.id, now())
             .await
             .expect("live"),
         "a revoked share must report dead immediately"
@@ -327,9 +359,13 @@ async fn is_live_answers_what_delivery_needs(pool: &PgPool) {
     // An unknown id is not live, rather than an error: it races a deletion, and a delivery must refuse rather
     // than fail.
     assert!(
-        !shares::is_live(pool, Uuid::new_v4(), now())
-            .await
-            .expect("live")
+        !shares::is_live(
+            &mut pool.acquire().await.expect("conn"),
+            Uuid::new_v4(),
+            now()
+        )
+        .await
+        .expect("live")
     );
 }
 
@@ -337,7 +373,7 @@ async fn is_live_answers_what_delivery_needs(pool: &PgPool) {
 
 async fn a_passcode_is_required_when_one_was_set(pool: &PgPool) {
     let created = shares::create(
-        pool,
+        &mut pool.acquire().await.expect("conn"),
         &ShareSpec {
             passcode: Some("spring2026"),
             ..spec()
@@ -346,32 +382,46 @@ async fn a_passcode_is_required_when_one_was_set(pool: &PgPool) {
     .await
     .expect("create");
 
-    let resolved = shares::resolve(pool, created.token(), now())
-        .await
-        .expect("resolve");
+    let resolved = shares::resolve(
+        &mut pool.acquire().await.expect("conn"),
+        created.token(),
+        now(),
+    )
+    .await
+    .expect("resolve");
     assert!(resolved.has_passcode);
 
     // Missing and wrong are different answers: one says look in the email, the other says re-read it.
     assert_eq!(
-        shares::check_passcode(pool, created.id, None)
+        shares::check_passcode(&mut pool.acquire().await.expect("conn"), created.id, None)
             .await
             .unwrap_err(),
         ShareRefusal::PasscodeRequired
     );
     assert_eq!(
-        shares::check_passcode(pool, created.id, Some("summer2026"))
-            .await
-            .unwrap_err(),
+        shares::check_passcode(
+            &mut pool.acquire().await.expect("conn"),
+            created.id,
+            Some("summer2026")
+        )
+        .await
+        .unwrap_err(),
         ShareRefusal::PasscodeWrong
     );
-    shares::check_passcode(pool, created.id, Some("spring2026"))
-        .await
-        .expect("the right passcode");
+    shares::check_passcode(
+        &mut pool.acquire().await.expect("conn"),
+        created.id,
+        Some("spring2026"),
+    )
+    .await
+    .expect("the right passcode");
 }
 
 async fn a_share_without_a_passcode_accepts_none(pool: &PgPool) {
-    let created = shares::create(pool, &spec()).await.expect("create");
-    shares::check_passcode(pool, created.id, None)
+    let created = shares::create(&mut pool.acquire().await.expect("conn"), &spec())
+        .await
+        .expect("create");
+    shares::check_passcode(&mut pool.acquire().await.expect("conn"), created.id, None)
         .await
         .expect("no passcode set, so none required");
 }
@@ -382,7 +432,7 @@ async fn the_passcode_is_stored_as_an_argon2_hash_not_a_fast_digest(pool: &PgPoo
     // expensive. The token gets the opposite treatment for the opposite reason: 256 random bits have no
     // dictionary, and argon2 would add ~100 ms to every share view for nothing.
     let created = shares::create(
-        pool,
+        &mut pool.acquire().await.expect("conn"),
         &ShareSpec {
             passcode: Some("spring2026"),
             ..spec()
@@ -407,7 +457,7 @@ async fn the_passcode_is_stored_as_an_argon2_hash_not_a_fast_digest(pool: &PgPoo
     // Salted, so two shares with the same passcode do not share a digest — otherwise a leak reveals which
     // links share a passcode, and cracking one cracks them all.
     let other = shares::create(
-        pool,
+        &mut pool.acquire().await.expect("conn"),
         &ShareSpec {
             passcode: Some("spring2026"),
             ..spec()

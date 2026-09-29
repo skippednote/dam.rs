@@ -419,7 +419,7 @@ pub async fn upload(
          ON CONFLICT (object_key, pool_id) DO NOTHING",
     )
     .bind(original.as_str())
-    .bind(default_pool(global).await?)
+    .bind(default_pool(global, tenant_id).await?)
     .bind(asset_id)
     .bind(i64::try_from(size).unwrap_or(i64::MAX))
     .bind(&content_hash)
@@ -492,12 +492,15 @@ pub async fn upload(
 ///
 /// The tenant's default hot pool. Resolved rather than hard-coded because `object_placements` is keyed
 /// `(object_key, pool_id)` and a placement recorded against the wrong pool would make the lifecycle engine
-/// reason about an object that is not where it thinks.
-async fn default_pool(global: &sqlx::PgPool) -> Result<Uuid> {
+/// reason about an object that is not where it thinks. Scoped to `tenant_id`: provisioning creates one hot
+/// pool per tenant, so an unscoped `ORDER BY created_at LIMIT 1` would hand every tenant after the first the
+/// first-provisioned tenant's pool — a cross-tenant placement, and a broken pool-level KMS/price lookup.
+async fn default_pool(global: &sqlx::PgPool, tenant_id: Uuid) -> Result<Uuid> {
     let id: Option<Uuid> = sqlx::query_scalar(
         "SELECT id FROM dam_global.storage_pools \
-         WHERE latency_class = 'instant' ORDER BY created_at LIMIT 1",
+         WHERE tenant_id = $1 AND latency_class = 'instant' ORDER BY created_at LIMIT 1",
     )
+    .bind(tenant_id)
     .fetch_optional(global)
     .await
     .map_err(dam_db::Error::from)?;

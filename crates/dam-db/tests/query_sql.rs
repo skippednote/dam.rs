@@ -720,6 +720,68 @@ async fn the_sql_renderer_invariants_hold() {
     a_free_text_search_reaches_array_values(&pool).await;
     a_filename_clause_matches_names_case_insensitively(&pool).await;
     a_wildcard_in_a_filename_stays_a_literal_character(&pool).await;
+    negated_text_matches_assets_whose_fields_are_unset(&pool).await;
+}
+
+/// A negated text search must return the assets that do not match, including ones with nothing to match on.
+///
+/// The bug this pins returned *nothing at all*. Each text field's clause is a `bool_or` over that field's
+/// values, and `bool_or` over zero non-null inputs is `NULL` rather than `false` — so a field left unset
+/// contributes `NULL` to the disjunction. Positively that is invisible (`true OR NULL` is `true`); negated it
+/// is fatal (`NOT (false OR NULL)` is `NULL`, and the row fails the filter).
+///
+/// The assets here deliberately leave most fields unset, because that is the only condition under which the
+/// bug appears. It survived a full facet suite for exactly that reason: every fixture asset had every field
+/// populated, so the disjunction never went three-valued and negation looked correct.
+///
+/// It surfaced in production shape as the facet rail emptying on any negated query while the grid beside it,
+/// answered by the search index rather than by this SQL, still showed results.
+async fn negated_text_matches_assets_whose_fields_are_unset(pool: &PgPool) {
+    // One asset that matches, and two that do not — one with an unrelated value, one with no values at all.
+    // Neither of the latter two sets `colours`, so that field is `NULL` for every row here.
+    let beach = asset_with(pool, "neg-beach", serde_json::json!({"brand": "beach hut"})).await;
+    let forest = asset_with(pool, "neg-forest", serde_json::json!({"brand": "forest"})).await;
+    let bare = asset_with(pool, "neg-bare", serde_json::json!({})).await;
+
+    let positive = plan(Query::Text("beach".to_owned()), admin_access());
+    let matched = run(pool, &positive).await;
+    assert!(
+        matched.contains(&beach),
+        "the positive query must find the matching asset"
+    );
+    assert!(
+        !matched.contains(&forest) && !matched.contains(&bare),
+        "the positive query must not find the others"
+    );
+
+    let negated = plan(
+        Query::Not(Box::new(Query::Text("beach".to_owned()))),
+        admin_access(),
+    );
+    let excluded = run(pool, &negated).await;
+    assert!(
+        excluded.contains(&forest),
+        "an asset with a non-matching value must survive negation: {excluded:?}"
+    );
+    assert!(
+        excluded.contains(&bare),
+        "an asset with no values at all must survive negation — this is the NULL case: {excluded:?}"
+    );
+    assert!(
+        !excluded.contains(&beach),
+        "the matching asset must not survive negation: {excluded:?}"
+    );
+
+    // The complement is exact, which is the property a facet rail depends on: the counts either side of a
+    // negation must add up to the set being filtered.
+    let total = count(pool, &plan(Query::All, admin_access())).await;
+    let positives = count(pool, &positive).await;
+    let negatives = count(pool, &negated).await;
+    assert_eq!(
+        positives + negatives,
+        total,
+        "a query and its negation must partition the library exactly"
+    );
 }
 
 /// Q.16: the filename clause, over the column rather than the index.

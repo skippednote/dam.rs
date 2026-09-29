@@ -74,15 +74,7 @@ async fn fixture() -> Fixture {
     // the *future* in real time, and the expiry case passed a 302 while claiming to test a 404.
     let clock = Arc::new(dam_core::TestClock::new());
     clock.set(now());
-    let state = DeliveryState::new(
-        pool.clone(),
-        pool.clone(),
-        store,
-        keyring,
-        tenant_id,
-        dam_core::TenantSlug::new("acme").expect("a slug"),
-    )
-    .with_clock(clock.clone());
+    let state = DeliveryState::new(pool.clone(), store, keyring).with_clock(clock.clone());
     let app = delivery::router(state.clone());
 
     Fixture {
@@ -960,7 +952,7 @@ async fn revoking_a_share_stops_a_url_it_already_issued(f: &Fixture) {
     licence(f, id, None).await;
 
     let share = dam_db::shares::create(
-        &f.pool,
+        &mut f.pool.acquire().await.expect("conn"),
         &dam_db::shares::ShareSpec {
             kind: "asset",
             target_id: Some(id),
@@ -978,6 +970,10 @@ async fn revoking_a_share_stops_a_url_it_already_issued(f: &Fixture) {
 
     let token = delivery::issue_for_share(
         &f.state,
+        delivery::Scope {
+            tenant_id: TENANT,
+            slug: &dam_core::TenantSlug::new("acme").expect("a slug"),
+        },
         id,
         "web-2048",
         &web(),
@@ -996,7 +992,7 @@ async fn revoking_a_share_stops_a_url_it_already_issued(f: &Fixture) {
         "the URL works while the share is live"
     );
 
-    dam_db::shares::revoke(&f.pool, share.id, now())
+    dam_db::shares::revoke(&mut f.pool.acquire().await.expect("conn"), share.id, now())
         .await
         .expect("revoke");
 
@@ -1015,7 +1011,7 @@ async fn an_exhausted_share_stops_its_issued_urls_too(f: &Fixture) {
     licence(f, id, None).await;
 
     let share = dam_db::shares::create(
-        &f.pool,
+        &mut f.pool.acquire().await.expect("conn"),
         &dam_db::shares::ShareSpec {
             kind: "asset",
             target_id: Some(id),
@@ -1033,6 +1029,10 @@ async fn an_exhausted_share_stops_its_issued_urls_too(f: &Fixture) {
 
     let token = delivery::issue_for_share(
         &f.state,
+        delivery::Scope {
+            tenant_id: TENANT,
+            slug: &dam_core::TenantSlug::new("acme").expect("a slug"),
+        },
         id,
         "web-2048",
         &web(),
@@ -1045,7 +1045,7 @@ async fn an_exhausted_share_stops_its_issued_urls_too(f: &Fixture) {
     .expect("issue");
     assert_eq!(get(&f.app, &token).await.status(), StatusCode::FOUND);
 
-    dam_db::shares::consume_download(&f.pool, share.id, now())
+    dam_db::shares::consume_download(&mut f.pool.acquire().await.expect("conn"), share.id, now())
         .await
         .expect("spend the one download");
 
@@ -1068,7 +1068,7 @@ async fn an_expired_share_stops_its_issued_urls_too(f: &Fixture) {
     licence(f, id, None).await;
 
     let share = dam_db::shares::create(
-        &f.pool,
+        &mut f.pool.acquire().await.expect("conn"),
         &dam_db::shares::ShareSpec {
             kind: "asset",
             target_id: Some(id),
@@ -1087,6 +1087,10 @@ async fn an_expired_share_stops_its_issued_urls_too(f: &Fixture) {
 
     let token = delivery::issue_for_share(
         &f.state,
+        delivery::Scope {
+            tenant_id: TENANT,
+            slug: &dam_core::TenantSlug::new("acme").expect("a slug"),
+        },
         id,
         "web-2048",
         &web(),
@@ -1460,7 +1464,7 @@ async fn a_token_for_another_tenant_is_refused_however_valid_it_is(f: &Fixture) 
 /// refuses the token for a reason that has nothing to do with what a test is asserting.
 async fn live_share(f: &Fixture, asset_id: Uuid) -> Uuid {
     dam_db::shares::create(
-        &f.pool,
+        &mut f.pool.acquire().await.expect("conn"),
         &dam_db::shares::ShareSpec {
             kind: "asset",
             target_id: Some(asset_id),

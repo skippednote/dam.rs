@@ -445,7 +445,7 @@ pub struct Member {
 /// versions of one photograph, or a model release beside the photograph it belongs to, is a portal nobody would
 /// send to a client.
 pub async fn members(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     source: MemberSource<'_>,
     search: Option<&str>,
     media_class: Option<&str>,
@@ -466,7 +466,8 @@ pub async fn members(
         _ => " ORDER BY assets.published_at DESC, assets.id LIMIT ",
     });
     builder.push_bind(limit);
-    let rows: Vec<(Uuid, String, String, i64)> = builder.build_query_as().fetch_all(pool).await?;
+    let rows: Vec<(Uuid, String, String, i64)> =
+        builder.build_query_as().fetch_all(&mut *conn).await?;
     Ok(rows
         .into_iter()
         .map(|(asset_id, filename, mime, bytes)| Member {
@@ -484,13 +485,13 @@ pub async fn members(
 /// from a different query is how a portal tells a visitor there are two hundred assets and shows them twelve for
 /// a different reason than the cap.
 pub async fn member_count(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     source: MemberSource<'_>,
     search: Option<&str>,
     media_class: Option<&str>,
 ) -> Result<i64, Error> {
     let mut builder = member_query("SELECT count(*)", source, search, media_class)?;
-    Ok(builder.build_query_scalar().fetch_one(pool).await?)
+    Ok(builder.build_query_scalar().fetch_one(&mut *conn).await?)
 }
 
 /// Where a portal's set comes from, as the reader needs it (Q.14).

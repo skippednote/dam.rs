@@ -111,6 +111,48 @@ fn a_store_carries_the_key_it_was_given_and_nothing_by_default() {
     );
 }
 
+/// Deriving a store for one tenant's write (G10·3b).
+///
+/// The property that matters is the *clearing* case. A caller resolves "this tenant has no key of its own"
+/// and derives a store for it; if `None` kept whatever key the process store already had, that tenant's
+/// object would be encrypted under another tenant's key — the exact failure per-tenant keys exist to prevent,
+/// and one that reports success.
+#[test]
+fn a_derived_store_takes_the_key_it_is_given_and_clears_it_when_given_none() {
+    let process = S3Store::seaweedfs("http://127.0.0.1:1", "bucket", "key", "secret")
+        .with_sse_kms("arn:deployment-key");
+
+    let tenants = process.writing_under(Some(KEY));
+    assert_eq!(tenants.sse_kms_key_id(), Some(KEY));
+    assert_eq!(
+        process.sse_kms_key_id(),
+        Some("arn:deployment-key"),
+        "deriving must not mutate the store it came from — it is shared by every other request"
+    );
+
+    let none = process.writing_under(None);
+    assert_eq!(
+        none.sse_kms_key_id(),
+        None,
+        "None must clear, not keep: keeping would write one tenant's object under another's key"
+    );
+
+    // The same normalisation the builder applies, for the same reason.
+    for blank in ["", "   ", "\t"] {
+        assert_eq!(
+            process.writing_under(Some(blank)).sse_kms_key_id(),
+            None,
+            "{blank:?} should mean no key"
+        );
+    }
+    assert_eq!(
+        process
+            .writing_under(Some("  arn:spaced  "))
+            .sse_kms_key_id(),
+        Some("arn:spaced")
+    );
+}
+
 #[tokio::test]
 async fn a_presigned_put_carries_the_encryption_choice_into_the_signature() {
     // The path that cannot be enforced from here, so it is worth seeing exactly what it does offer. The

@@ -124,9 +124,11 @@ pub struct ShareSpec<'a> {
 }
 
 /// Creates a share link and returns its one-time token.
-pub async fn create(pool: &sqlx::PgPool, spec: &ShareSpec<'_>) -> Result<NewShare, Error> {
-    let mut conn = pool.acquire().await?;
-    create_on(&mut conn, spec).await
+pub async fn create(
+    conn: &mut sqlx::PgConnection,
+    spec: &ShareSpec<'_>,
+) -> Result<NewShare, Error> {
+    create_on(&mut *conn, spec).await
 }
 
 /// The same creation, on a connection the caller has already scoped — see `bulk::create_on` for why.
@@ -171,11 +173,11 @@ pub async fn create_on(
 /// The passcode is separate because the two answers are different: a live link with a wrong passcode should
 /// prompt again, while a revoked one should not prompt at all.
 pub async fn resolve(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     token: &str,
     now: DateTime<Utc>,
 ) -> Result<Share, ShareRefusal> {
-    let share = load_by_token(pool, token)
+    let share = load_by_token(&mut *conn, token)
         .await
         .map_err(|_| ShareRefusal::NotFound)?
         .ok_or(ShareRefusal::NotFound)?;
@@ -201,29 +203,82 @@ pub async fn resolve(
 /// Verified in constant time by argon2's own comparison. A wrong passcode and a missing hash are different
 /// refusals: "a passcode is required" tells a recipient to look for one in the email, and "that passcode is
 /// not correct" tells them to re-read it.
-pub async fn check_passcode(
-    pool: &sqlx::PgPool,
+/// Whether a share is passcode-protected, and the hash if so — read, but not yet verified.
+///
+/// Split from the verification on purpose. Verifying an argon2 hash is deliberately ~100ms of CPU (that is
+/// what makes a leaked digest expensive to crack), and doing it while holding this connection would pin the
+/// connection idle-in-transaction for that whole time. A handful of concurrent wrong-passcode guesses would
+/// then exhaust the pool and starve every unrelated request. So the read hands back a [`PasscodeGate`] and the
+/// caller releases the connection before it calls [`PasscodeGate::verify`] — off the async runtime, holding
+/// nothing.
+#[derive(Debug, Clone)]
+pub enum PasscodeGate {
+    /// No passcode. Anyone with the link may enter.
+    Open,
+    /// A passcode is required; this is its stored hash.
+    Sealed(String),
+}
+
+/// Reads the passcode gate for a share, or the flat refusal a dead share gets.
+///
+/// # Errors
+/// [`ShareRefusal::NotFound`] if the share does not exist, or on a database failure — the same answer either
+/// way, because a visitor learns only that the link does not work.
+pub async fn passcode_gate(
+    conn: &mut sqlx::PgConnection,
     share_id: Uuid,
-    presented: Option<&str>,
-) -> Result<(), ShareRefusal> {
+) -> Result<PasscodeGate, ShareRefusal> {
     let stored: Option<Option<String>> =
         sqlx::query_scalar("SELECT passcode_hash FROM share_links WHERE id = $1")
             .bind(share_id)
-            .fetch_optional(pool)
+            .fetch_optional(&mut *conn)
             .await
             .map_err(|_| ShareRefusal::NotFound)?;
-    let stored = stored.ok_or(ShareRefusal::NotFound)?;
+    match stored.ok_or(ShareRefusal::NotFound)? {
+        None => Ok(PasscodeGate::Open),
+        Some(hash) => Ok(PasscodeGate::Sealed(hash)),
+    }
+}
 
-    match (stored, presented) {
-        (None, _) => Ok(()),
-        (Some(_), None) => Err(ShareRefusal::PasscodeRequired),
-        (Some(hash), Some(presented)) => {
-            let parsed = PasswordHash::new(&hash).map_err(|_| ShareRefusal::PasscodeWrong)?;
-            Argon2::default()
-                .verify_password(presented.as_bytes(), &parsed)
-                .map_err(|_| ShareRefusal::PasscodeWrong)
+impl PasscodeGate {
+    /// Checks a presented passcode against the gate.
+    ///
+    /// Synchronous and holds no connection: the argon2 work belongs on a blocking thread with nothing else in
+    /// hand — see the type's own docs. `spawn_blocking` this; do not `.await` it on a runtime worker, because
+    /// ~100ms of CPU on a runtime thread starves every task that thread was multiplexing.
+    ///
+    /// # Errors
+    /// [`ShareRefusal::PasscodeRequired`] when the gate is sealed and nothing was presented,
+    /// [`ShareRefusal::PasscodeWrong`] when the presented value does not match.
+    pub fn verify(&self, presented: Option<&str>) -> Result<(), ShareRefusal> {
+        match (self, presented) {
+            (Self::Open, _) => Ok(()),
+            (Self::Sealed(_), None) => Err(ShareRefusal::PasscodeRequired),
+            (Self::Sealed(hash), Some(presented)) => {
+                let parsed = PasswordHash::new(hash).map_err(|_| ShareRefusal::PasscodeWrong)?;
+                Argon2::default()
+                    .verify_password(presented.as_bytes(), &parsed)
+                    .map_err(|_| ShareRefusal::PasscodeWrong)
+            }
         }
     }
+}
+
+/// Reads and verifies in one call, on the connection.
+///
+/// The straight-line form, kept for callers that are not on a hot path and hold no long transaction — the
+/// tests, and any single-shot check. A request handler serving the public internet should use
+/// [`passcode_gate`] and [`PasscodeGate::verify`] instead, so the argon2 work does not hold a pooled
+/// connection. See [`PasscodeGate`].
+///
+/// # Errors
+/// As [`passcode_gate`] and [`PasscodeGate::verify`].
+pub async fn check_passcode(
+    conn: &mut sqlx::PgConnection,
+    share_id: Uuid,
+    presented: Option<&str>,
+) -> Result<(), ShareRefusal> {
+    passcode_gate(&mut *conn, share_id).await?.verify(presented)
 }
 
 /// Consumes one download against the limit, atomically.
@@ -236,7 +291,7 @@ pub async fn check_passcode(
 /// gives — so a caller that forgets this still cannot exceed the limit by more than the requests already in
 /// flight when it checked.
 pub async fn consume_download(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     share_id: Uuid,
     now: DateTime<Utc>,
 ) -> Result<i32, ShareRefusal> {
@@ -249,7 +304,7 @@ pub async fn consume_download(
     )
     .bind(share_id)
     .bind(now)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *conn)
     .await
     .map_err(|_| ShareRefusal::NotFound)?;
 
@@ -261,12 +316,11 @@ pub async fn consume_download(
 /// Returns whether this call was the one that revoked it, so an audit entry is written once rather than on
 /// every retry.
 pub async fn revoke(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     share_id: Uuid,
     now: DateTime<Utc>,
 ) -> Result<bool, Error> {
-    let mut conn = pool.acquire().await?;
-    revoke_on(&mut conn, share_id, now).await
+    revoke_on(&mut *conn, share_id, now).await
 }
 
 /// The same revocation, on a scoped connection.
@@ -370,12 +424,11 @@ pub async fn list_on(conn: &mut sqlx::PgConnection, limit: i64) -> Result<Vec<Li
 /// lookup, because it runs before every download and the alternative is revocation that takes effect
 /// eventually.
 pub async fn is_live(
-    pool: &sqlx::PgPool,
+    conn: &mut sqlx::PgConnection,
     share_id: Uuid,
     now: DateTime<Utc>,
 ) -> Result<bool, Error> {
-    let mut conn = pool.acquire().await?;
-    is_live_on(&mut conn, share_id, now).await
+    is_live_on(&mut *conn, share_id, now).await
 }
 
 /// [`is_live`], against a caller's connection.
@@ -407,7 +460,7 @@ pub async fn is_live_on(
 /// for instance — and still has to ask the share machinery whether it is usable. Returning the row rather than a
 /// verdict is deliberate: the caller then runs the same `is_live` and `check_passcode` pair every other path
 /// runs, instead of a second copy of those rules.
-pub async fn by_id(pool: &sqlx::PgPool, id: Uuid) -> Result<Option<Share>, Error> {
+pub async fn by_id(conn: &mut sqlx::PgConnection, id: Uuid) -> Result<Option<Share>, Error> {
     let row = sqlx::query_as::<
         _,
         (
@@ -428,7 +481,7 @@ pub async fn by_id(pool: &sqlx::PgPool, id: Uuid) -> Result<Option<Share>, Error
          FROM share_links WHERE id = $1",
     )
     .bind(id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *conn)
     .await?;
 
     Ok(row.map(
@@ -483,7 +536,7 @@ impl ShareRefusal {
 }
 
 /// Loads a share by its presented token.
-async fn load_by_token(pool: &sqlx::PgPool, token: &str) -> Result<Option<Share>, Error> {
+async fn load_by_token(conn: &mut sqlx::PgConnection, token: &str) -> Result<Option<Share>, Error> {
     let row = sqlx::query_as::<
         _,
         (
@@ -505,7 +558,7 @@ async fn load_by_token(pool: &sqlx::PgPool, token: &str) -> Result<Option<Share>
     )
     // The digest, never the token — so the plaintext appears in no statement, query log or error.
     .bind(token_digest(token))
-    .fetch_optional(pool)
+    .fetch_optional(&mut *conn)
     .await?;
 
     Ok(row.map(

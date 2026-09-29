@@ -58,6 +58,10 @@ async fn main() -> anyhow::Result<()> {
         store,
         indexes,
         ai: Some(ai),
+        // The deployment's sealing keyring, for opening what a tenant sealed — today its own C2PA signing
+        // key (G10·3b). Separate from the AI context's copy because signing must not depend on whether a
+        // model was configured.
+        sealing: Some(cfg.sealing_keyring()),
         http: webhook_client().context("building the webhook http client")?,
         // Built from configuration here rather than inside the pipeline, like the store. `None` when no
         // `clamd` is configured, which scans nothing — see `security.clamd_address`.

@@ -8,6 +8,14 @@ export default defineConfig({
 	plugins: [
 		tailwindcss(),
 		sveltekit({
+			paths: {
+				// The public tour is exported under skippednote.github.io/dam.rs. Root-absolute paths keep
+				// directory-index URLs such as /tour/docs/operations/ from shifting assets and links
+				// one segment deeper when GitHub Pages appends the trailing slash. The ordinary app
+				// keeps SvelteKit's portable relative paths; this override belongs only to build:pages.
+				base: process.env.DAMRS_PAGES_BUILD === '1' ? '/dam.rs' : '',
+				relative: process.env.DAMRS_PAGES_BUILD !== '1'
+			},
 			compilerOptions: {
 				// Force runes mode for the project, except for libraries. Can be removed in svelte 6.
 				runes: ({ filename }) =>

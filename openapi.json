@@ -3568,6 +3568,41 @@
         }
       }
     },
+    "/d/{token}": {
+      "get": {
+        "tags": [
+          "delivery"
+        ],
+        "summary": "Redeems a signed delivery token for the bytes it names.",
+        "description": "The one route in the system that yields asset bytes, and the only one that is unauthenticated in the\nordinary sense: the token *is* the credential. It is documented for that reason rather than despite it —\nan integrator has to be able to look up what a signed URL does, and \"not in the contract\" reads as\n\"not supported\" to anyone building against it.\n\nThe signature is permission to *attempt*. Rights are evaluated here, at redemption, so a URL minted while\na licence was valid stops working when it lapses.",
+        "operationId": "deliver",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "description": "The signed delivery token",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to the bytes"
+          },
+          "403": {
+            "description": "Rights refuse this delivery"
+          },
+          "404": {
+            "description": "The token is malformed, expired, unverifiable, or names nothing deliverable"
+          },
+          "409": {
+            "description": "The original is in cold storage; a restore is in flight"
+          }
+        }
+      }
+    },
     "/dashboard": {
       "get": {
         "tags": [
@@ -4431,6 +4466,38 @@
         }
       }
     },
+    "/orders/{id}/metadata.csv": {
+      "get": {
+        "tags": [
+          "orders"
+        ],
+        "summary": "The order's assets as a CSV, for the requester or an approver.",
+        "description": "**Authenticated only, and deliberately not part of the pickup.** An export of descriptive metadata to an\nexternal recipient is a disclosure decision nobody has made: `field_defs` has no notion of which fields an\noutsider may see, so the honest options were to invent one or to keep the export inside the tenant. This is the\nsecond. Somebody signed in exporting metadata they can already read is not a disclosure at all; the portal case\nis written up in NEEDS-REVIEW.md.\n\nRead scope, and the same audience as the order itself: its requester, or anybody who may decide.",
+        "operationId": "metadata_csv",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "text/csv",
+            "content": {
+              "text/csv": {}
+            }
+          },
+          "404": {
+            "description": "No such order, or not one this caller may read"
+          }
+        }
+      }
+    },
     "/orders/{id}/reject": {
       "post": {
         "tags": [
@@ -4512,6 +4579,15 @@
         "operationId": "by_key",
         "parameters": [
           {
+            "name": "key",
+            "in": "path",
+            "description": "The portal's address as `{tenant}.{key}` — the segment names its own tenant, so one deployment serves every library's public pages",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "q",
             "in": "query",
             "required": false,
@@ -4531,14 +4607,6 @@
                 "string",
                 "null"
               ]
-            }
-          },
-          {
-            "name": "key",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
             }
           }
         ],
@@ -5969,6 +6037,7 @@
           {
             "name": "token",
             "in": "path",
+            "description": "The share's address as `{tenant}.{token}` — the segment names its own tenant, so one deployment serves every library's public pages",
             "required": true,
             "schema": {
               "type": "string"
@@ -6016,6 +6085,7 @@
           {
             "name": "token",
             "in": "path",
+            "description": "The share's address as `{tenant}.{token}` — the segment names its own tenant, so one deployment serves every library's public pages",
             "required": true,
             "schema": {
               "type": "string"
@@ -6067,6 +6137,7 @@
           {
             "name": "token",
             "in": "path",
+            "description": "The share's address as `{tenant}.{token}` — the segment names its own tenant, so one deployment serves every library's public pages",
             "required": true,
             "schema": {
               "type": "string"
@@ -6174,6 +6245,7 @@
           {
             "name": "token",
             "in": "path",
+            "description": "The share's address as `{tenant}.{token}` — the segment names its own tenant, so one deployment serves every library's public pages",
             "required": true,
             "schema": {
               "type": "string"
@@ -6439,6 +6511,242 @@
           },
           "422": {
             "description": "The defaults do not validate"
+          }
+        }
+      }
+    },
+    "/uploads": {
+      "post": {
+        "tags": [
+          "uploads"
+        ],
+        "summary": "Opens a resumable upload session (TUS 1.0.0).",
+        "operationId": "create",
+        "parameters": [
+          {
+            "name": "Tus-Resumable",
+            "in": "header",
+            "description": "Must be 1.0.0",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Upload-Length",
+            "in": "header",
+            "description": "Total size in bytes. Omit only with Upload-Defer-Length: 1",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "Upload-Defer-Length",
+            "in": "header",
+            "description": "\"1\" when the size is not yet known",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Upload-Metadata",
+            "in": "header",
+            "description": "TUS metadata: comma-separated `key base64value` pairs, e.g. `filename <base64>`",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Session created. `Location` carries the upload URL"
+          },
+          "400": {
+            "description": "A required header is missing or unparseable"
+          },
+          "412": {
+            "description": "Tus-Resumable is absent or names another version"
+          },
+          "413": {
+            "description": "Upload-Length exceeds the configured maximum"
+          }
+        }
+      }
+    },
+    "/uploads/presign": {
+      "post": {
+        "tags": [
+          "uploads"
+        ],
+        "summary": "Issues a presigned `PUT` for a direct-to-S3 upload.",
+        "description": "The alternative to TUS, and the right one for a 3 MB photograph: the bytes go straight to the bucket\nand never traverse this process, which is the difference between a stateless API server and one\nsized for its customers' bandwidth.\n\nWhat it costs is the validation that a proxied upload gets for free. A presigned PUT hands out a URL\nand steps out of the way, so the server sees neither the bytes nor their length — the client can\nupload anything, of any size, whatever it declared here. That is why `dam_media::ingest` re-sniffs\nand re-measures the object after the fact, and why this endpoint records a session rather than\ntrusting the response: the session's declared length is the cross-check that finalisation compares\nagainst, and a key with no session behind it is an object nothing will ever adopt.\nIssues a presigned `PUT` for a direct-to-store upload.\n\nTakes no request body. The size and metadata arrive as TUS headers, because this shares the version gate\nand the session bookkeeping with the resumable path even though a single PUT is not itself a TUS operation.",
+        "operationId": "presign",
+        "parameters": [
+          {
+            "name": "Tus-Resumable",
+            "in": "header",
+            "description": "Must be 1.0.0",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Upload-Length",
+            "in": "header",
+            "description": "Total size in bytes. Required here: a single PUT cannot defer it",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "Upload-Metadata",
+            "in": "header",
+            "description": "TUS metadata: comma-separated `key base64value` pairs",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "A presigned PUT, the upload id, its expiry and the staging key"
+          },
+          "400": {
+            "description": "Upload-Length is missing or unparseable"
+          },
+          "412": {
+            "description": "Tus-Resumable is absent or names another version"
+          },
+          "413": {
+            "description": "Upload-Length exceeds the configured maximum"
+          }
+        }
+      }
+    },
+    "/uploads/{upload_id}": {
+      "head": {
+        "tags": [
+          "uploads"
+        ],
+        "summary": "How many bytes of a session have arrived, so a client can resume.",
+        "operationId": "head_upload",
+        "parameters": [
+          {
+            "name": "upload_id",
+            "in": "path",
+            "description": "The session id from the create response's Location",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Tus-Resumable",
+            "in": "header",
+            "description": "Must be 1.0.0",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`Upload-Offset` carries the bytes stored so far"
+          },
+          "404": {
+            "description": "No such session, or not one this key may see"
+          },
+          "412": {
+            "description": "Tus-Resumable is absent or names another version"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "uploads"
+        ],
+        "summary": "Appends a chunk at a byte offset.",
+        "operationId": "patch_upload",
+        "parameters": [
+          {
+            "name": "upload_id",
+            "in": "path",
+            "description": "The session id from the create response's Location",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Tus-Resumable",
+            "in": "header",
+            "description": "Must be 1.0.0",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Upload-Offset",
+            "in": "header",
+            "description": "Where these bytes begin. Must equal the server's current offset",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Raw bytes",
+          "content": {
+            "application/offset+octet-stream": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Appended. `Upload-Offset` carries the new offset"
+          },
+          "404": {
+            "description": "No such session, or not one this key may see"
+          },
+          "409": {
+            "description": "Upload-Offset does not match the server's offset"
+          },
+          "412": {
+            "description": "Tus-Resumable is absent or names another version"
+          },
+          "415": {
+            "description": "Content-Type is not application/offset+octet-stream"
           }
         }
       }

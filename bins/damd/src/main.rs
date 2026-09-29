@@ -3,7 +3,7 @@
 #![forbid(unsafe_code)]
 
 use anyhow::{Context, bail};
-use dam_core::{Config, Secret, TenantSlug};
+use dam_core::{Config, Secret};
 use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 use std::time::Duration;
@@ -43,23 +43,6 @@ async fn main() -> anyhow::Result<()> {
             .with_writer_memory_bytes(cfg.search.writer_memory_mib * 1024 * 1024),
     ));
 
-    // Delivery resolves its tenant from configuration for now rather than from the token. Recorded here
-    // rather than hidden: a single-tenant deployment is the shape this serves, and 3.x makes the tenant part
-    // of the signed claim so one process can deliver for many.
-    let (delivery_tenant, delivery_slug) =
-        delivery_tenant(&global, cfg.server.delivery_tenant.as_deref()).await?;
-
-    // Pinned to the delivery tenant's schema. The delivery route reads `assets`, `derivatives`, the rights
-    // tables and `share_links` unqualified, so the global pool resolves none of them — it failed with
-    // `relation "derivatives" does not exist` the first time there was a real derivative to serve.
-    let delivery_pool = dam_db::tenant_conn::single_tenant_pool(
-        cfg.database.url.expose(),
-        &delivery_slug,
-        cfg.database.max_connections.min(8),
-    )
-    .await
-    .context("connecting to the delivery tenant's schema")?;
-
     // Cloned before the closure below takes it: the public origin is also what the delivery URLs use, and the
     // MCP transport validates `Host` against it.
     let public_url = cfg.server.public_url.clone();
@@ -67,7 +50,6 @@ async fn main() -> anyhow::Result<()> {
         &cfg,
         dam_api::app::AppDeps {
             global,
-            delivery_pool,
             store: Arc::clone(&store) as Arc<dyn dam_store::ResumableStore>,
             delivery_store: store as Arc<dyn dam_store::BlobStore>,
             indexes,
@@ -75,8 +57,6 @@ async fn main() -> anyhow::Result<()> {
                 SIGNING_KEY_ID,
                 Secret::new(cfg.server.url_signing_key.expose().to_owned()),
             ),
-            delivery_tenant,
-            delivery_tenant_slug: delivery_slug.clone(),
             // The real thing, here and only here: every test drives a recorded transport instead. A failure to
             // build it is a TLS stack that cannot initialise, which is a reason not to start rather than a
             // surprise on the first enrichment.
@@ -166,61 +146,6 @@ async fn build_store_inner(cfg: &Config) -> anyhow::Result<dam_store::S3Store> {
                 secret.expose(),
             ))
         }
-    }
-}
-
-/// The tenant the delivery routes serve.
-///
-/// Named in configuration when there is one to name, and inferred only when the answer is unambiguous. A
-/// deployment with several tenants and a delivery path that silently picked the first would serve one
-/// tenant's derivatives under another's URLs — the worst available failure, and one that would read as a
-/// caching bug rather than a cross-tenant read.
-async fn delivery_tenant(
-    global: &sqlx::PgPool,
-    configured: Option<&str>,
-) -> anyhow::Result<(uuid::Uuid, TenantSlug)> {
-    if let Some(slug) = configured {
-        let slug = TenantSlug::new(slug).context("server.delivery_tenant")?;
-        let id: Option<uuid::Uuid> = sqlx::query_scalar(
-            "SELECT id FROM dam_global.tenants WHERE slug = $1 AND status = 'active'",
-        )
-        .bind(slug.as_str())
-        .fetch_optional(global)
-        .await
-        .context("looking up the delivery tenant")?;
-
-        return id.map(|id| (id, slug.clone())).ok_or_else(|| {
-            anyhow::anyhow!("server.delivery_tenant names {slug}, which is not an active tenant")
-        });
-    }
-
-    let slugs: Vec<String> = sqlx::query_scalar(
-        "SELECT slug FROM dam_global.tenants WHERE status = 'active' ORDER BY slug",
-    )
-    .fetch_all(global)
-    .await
-    .context("listing tenants")?;
-
-    match slugs.as_slice() {
-        [only] => {
-            let slug = TenantSlug::new(only).context("stored tenant slug")?;
-            let id: uuid::Uuid =
-                sqlx::query_scalar("SELECT id FROM dam_global.tenants WHERE slug = $1")
-                    .bind(slug.as_str())
-                    .fetch_one(global)
-                    .await
-                    .context("resolving the only tenant")?;
-            Ok((id, slug))
-        }
-        [] => bail!("no active tenant; run `damctl provision-tenant --slug <slug>` first"),
-        many => bail!(
-            "{} active tenants ({}), and the delivery path resolves its tenant from configuration rather \
-             than from the signed token (3.x). Serving several from one process would mint URLs for the \
-             wrong tenant's objects, so this refuses rather than guessing — set \
-             DAMRS_SERVER__DELIVERY_TENANT (or server.delivery_tenant) to the slug this process serves.",
-            many.len(),
-            many.join(", ")
-        ),
     }
 }
 

@@ -18,6 +18,7 @@ pub mod error;
 pub mod eval;
 pub mod fields;
 pub mod policy;
+pub mod public_ref;
 pub mod query;
 pub mod restore;
 pub mod rights;

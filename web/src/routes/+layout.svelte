@@ -1,6 +1,7 @@
 <script lang="ts">
 	import './layout.css';
 	import { page } from '$app/state';
+	import { base } from '$app/paths';
 	import { isPublicRoute } from '$lib/chrome';
 	import SkipLink from '$lib/components/a11y/SkipLink.svelte';
 	import Nav from '$lib/components/shell/Nav.svelte';
@@ -12,7 +13,7 @@
 	// `doc-has-title` (WCAG 2.4.2) — which is how this was found: the SvelteKit scaffold ships
 	// without a title, so every page would be announced by its URL.
 	const title = $derived(page.data.title ? `${page.data.title} · dam.rs` : 'dam.rs');
-	const portal = $derived(isPublicRoute(page.url.pathname));
+	const portal = $derived(isPublicRoute(page.url.pathname, base));
 </script>
 
 <svelte:head>

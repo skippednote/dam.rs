@@ -48,6 +48,17 @@ use utoipa::OpenApi;
         crate::orders::approve,
         crate::orders::reject,
         crate::orders::cancel,
+        crate::orders::metadata_csv,
+        // The ingest path and the delivery chokepoint. Absent from this list until a review noticed that the
+        // primary way bytes enter the system was outside the contract the frontend's types are generated from,
+        // so a client author working from `openapi.json` could not discover how to upload a file. TUS is an
+        // awkward fit for OpenAPI — the interface is headers, not a body — which is the likeliest reason they
+        // were skipped, and is a reason to describe them carefully rather than to omit them.
+        crate::tus::create,
+        crate::tus::presign,
+        crate::tus::head_upload,
+        crate::tus::patch_upload,
+        crate::delivery::deliver,
         crate::downloads::download,
         crate::downloads::ledger,
         crate::downloads::options,

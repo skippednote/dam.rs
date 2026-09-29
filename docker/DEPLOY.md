@@ -99,6 +99,42 @@ everything else a pool needs, but `damd` builds one store from `storage.*` and n
 there is nowhere to hang a per-tenant key until per-pool store resolution exists. This is one key for the
 deployment, which is worth having on its own and is not the same promise.
 
+## A lifecycle rule on `*/staging/`, and why its expiry is not arbitrary
+
+Uploads in flight live under `<tenant>/staging/`. `damrs` reclaims them itself — the worker sweeps expired
+sessions every five minutes — so this rule is a safety net beneath that, not the mechanism. It catches what the
+sweep cannot: parts orphaned by a multipart upload whose session row was lost, and anything written while the
+worker was down for longer than it took the operator to notice.
+
+```json
+{
+  "Rules": [
+    {
+      "ID": "damrs-staging-expiry",
+      "Status": "Enabled",
+      "Filter": { "Prefix": "" },
+      "Expiration": { "Days": 7 },
+      "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 7 }
+    }
+  ]
+}
+```
+
+S3 lifecycle filters match a prefix from the start of the key, and the tenant comes first, so a single rule
+cannot say "any tenant, then `staging/`". Two options, and the second is the one to prefer: apply the rule per
+tenant prefix (`<tenant>/staging/`), or put staging in its own bucket. The dev compose file uses neither
+because it reaps eagerly and nothing survives long enough to matter.
+
+**Seven days, and not less.** An upload session expires after 24 hours, and the sweep that *rescues* it — a
+client that uploaded successfully and never called back — runs only after that expiry. A lifecycle rule shorter
+than the session lifetime plus a generous margin would delete the object before the sweep looked at it, which
+converts a recoverable upload into a silently lost one. That is the exact failure the sweep exists to prevent,
+so the rule must not reintroduce it. If you shorten the session expiry, shorten this only in step with it.
+
+**`AbortIncompleteMultipartUpload` is the half that costs money.** Orphaned parts are billed until they are
+aborted and are invisible in a bucket listing, so a bucket can accumulate storage nobody can see. The reaper
+aborts the uploads it knows about; this covers the ones it does not.
+
 ## Two things that will bite, both found by doing this
 
 **The signing endpoint is the client's endpoint.** A delivery URL is a `302` to a presigned S3 URL, and the

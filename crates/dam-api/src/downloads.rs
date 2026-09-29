@@ -419,7 +419,13 @@ pub async fn issue(
     // `evaluate` rather than `effective`: the cached form returns a verdict and nothing else, and re-deriving
     // which licence permitted this from the verdict would be a second answer to a question the evaluator
     // already answers.
-    let evaluation = dam_db::rights::evaluate(delivery.pool(), asset_id, &usage, now).await?;
+    // The caller's own tenant, not the pinned delivery pool. This path is authenticated — it has a caller with
+    // a tenant — so reading rights through the delivery tenant's schema was wrong on any deployment where the
+    // two differ, and is what `server.delivery_tenant` let go unnoticed (G22c).
+    let mut rights_conn = dam_db::TenantConn::begin(&state.global, &caller.tenant_slug).await?;
+    let evaluation =
+        dam_db::rights::evaluate_on(rights_conn.executor(), asset_id, &usage, now).await?;
+    rights_conn.commit().await?;
     if !evaluation.permits_distribution() {
         return Err(Failure::Forbidden(format!(
             "rights refuse this download ({}){}",

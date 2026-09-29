@@ -35,14 +35,14 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M6** Workflow/proofing, annotations, analytics | **done** — annotations (M6a), proofing (M6b), analytics (M6c) |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | G19 **done**; G7 **done** (crosswalk, dry run, filesystem source, transfer); G10 **done** (audit chain, user administration, SCIM, BYOK) |
 
-**Next up, in order:** G7, G10 and M3d·5 are complete. What remains is decisions rather than build work: G22c (the public URL space), G10·3b (per-tenant keys), the AWS-native items 1 and 2, and M4b's model-distribution question.
+**Next up, in order:** G7, G10, M3d·5, G22c (the public URL space) and G10·3b (per-tenant keys) are all complete, as is C2PA (task 1.9 — verify/preserve/re-sign on ingest and derivation — with the per-tenant signing identities that answer its parked certificate question, wired into the worker per job). What remains, in this order: the **AWS-native items** — locked sub-order **4 S3 Inventory → 3 S3 Batch bulk restore → 2 Intelligent-Tiering** (Inventory first: costed at ~a day, no decision; Intelligent-Tiering last, gated on the noncurrent-version decision — `object_placements` has no `version_id`; item 1 is closed); then a **management surface for `signing_identities`** — the repo and pipeline are wired but no API/CLI installs a tenant's certificate, so mirror `POST /ai/credentials`; then wiring the **per-tenant blob key to asset writes** — the BYOK gap G10·3b left open, where `finalise`/`derive` still `put` under the process key. M4b's model-distribution question stays parked.
 M4b (local models) is parked on a distribution decision — see the M4 section.
 
 **`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
 note carried; `DECISIONS.md` records what was chosen. Two of them needed code: a portal may now be backed by a
 live query because publication became a per-asset act (Q.14 above), and a namespace wildcard in a permission
 string is expanded, which fixed a seeded `admin` role that conferred nothing unless its holder also carried the
-tenant-admin flag. C2PA (task 1.9) is unblocked and still unbuilt.
+tenant-admin flag. C2PA (task 1.9) is built — verify/preserve/re-sign on ingest and derivation, with per-tenant signing identities wired into the worker; only a management API for those identities remains (mirror `POST /ai/credentials`).
 M5 is complete. M5a and M5b are done and verified against the running stack: both
 hosted clients reach their real vendor endpoints, and a full enrichment ran end to end through the worker against
 a local OpenAI-compatible endpoint — values written with provenance, a disclosure row, tags suggested, 0.75¢
@@ -1519,20 +1519,45 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   `ConnectorAuth` lost its configured slug, which is dead once the slug comes per request and was the
   thing limiting a process to one tenant's connectors.
 
-- [ ] **G22c Give the public visitor URLs a tenant, and then delete `server.delivery_tenant`.** The half
-  G22b did not reach, and the reason it exists at all — which the old entry did not capture.
+- [x] **G22c Give the public visitor URLs a tenant, and then delete `server.delivery_tenant`.** Done, with
+  the encoded-tenant shape: `/portal/{tenant}.{key}` and `/share/{tenant}.{token}`. Chosen over a global key
+  registry (which makes portal keys first-come-first-served across customers) and over a path segment or
+  subdomain (which changes every published URL). No data migration; the route shape is unchanged.
 
-  `/p/{key}` names a portal and `/s/{token}` names a share. `portals` and `share_links` are **tenant
-  tables**, and neither URL carries a tenant, so the process has to already know which library to look
-  in. That is why `delivery_tenant` survives: not for the token path, which now resolves itself, but for
-  the eighteen `.pool()` reads on the visitor surface.
+  `dam_core::public_ref` holds the parse and the rendering. The separator is `.` because a slug is
+  `^[a-z][a-z0-9_]{1,38}$` and cannot contain one, so splitting on the *first* dot is total — `spring.2026`
+  survives as a key — and a future scheme is distinguishable by the same parse, since a slug must start with a
+  lowercase letter. 7 unit cases.
 
-  **This is a decision about the public URL space rather than a refactor**, which is why it is its own
-  item. Three shapes, and they are not equivalent: a globally unique key registry in `dam_global` (one
-  lookup, but portal keys stop being per-tenant names and two customers can collide); a tenant in the
-  path or a subdomain (no collision, but every published portal URL changes); or keys that carry an
-  encoded tenant (no migration, longer URLs, and a format to version). Pick one before writing code —
-  the current single-tenant behaviour is correct and documented, so there is no pressure to pick fast.
+  **The scope was larger than this entry predicted, in two directions.**
+
+  *The connector surface was pinned too.* `browse.rs` opens a `TenantConn` from the configured slug to resolve
+  a connector, because `connectors` is a tenant table — so the eighteen visitor reads were not the whole of
+  it. `browse_token` is bumped to **version 2** carrying `tenant_id`, with `tenant_of()` mirroring
+  `signed_url::tenant_id_of`. No PHP signer exists yet, so no cross-language fixture needed re-pinning.
+
+  *`DeliveryState` stopped knowing a tenant at all.* `tenant_id`, `tenant_slug`, the pinned `pool()` and the
+  `delivery_pool` are gone, and `issue_for_share` takes a `Scope` from the caller — so a visitor URL is signed
+  against the tenant it named rather than the process's own. `new()` went from six arguments to three.
+
+  **Three findings, and only the first was in the plan.**
+
+  1. **The authenticated download path read rights through the *delivery* tenant's schema.** `downloads::issue`
+     has a caller with a tenant and used `delivery.pool()` anyway. Wrong on any deployment where the two
+     differ, and invisible while there was only ever one. Now reads through the caller's own tenant.
+  2. **`TenantConn` is a transaction, and a dropped one rolls back.** Replacing pool reads with a `TenantConn`
+     put every visitor write — the spent download, the ledger row, the cached rights verdict — inside a
+     transaction nothing committed. The download-limit case caught it: the limit never decremented.
+  3. **Committing *after* signing deadlocks.** `issue_for_share` opens a tenant transaction of its own, so
+     holding one across it makes two transactions from the same pool contend; on a small pool the suite hung
+     rather than failed. Each handler now ends its read transaction before signing and opens a second short
+     one for the writes — which is what the pinned pool did implicitly, being autocommit-per-statement. The
+     order pickup's per-item asset read was hoisted into one `= ANY` query on the way past.
+
+  **Migration note.** The config refuses unknown fields, so a deployment still setting
+  `DAMRS_SERVER__DELIVERY_TENANT` now **fails to start** with `unknown field: found delivery_tenant`. That is
+  the intended behaviour — a silently ignored key is how a deployment keeps believing something it no longer
+  does — but it means removing the variable is part of the upgrade rather than optional.
 
 - [x] **G7·2 Source connectors and transfer.** `damctl import transfer` streams a folder of files into the
   library through the ordinary upload path. `dam_pipeline::source` holds the `Source` trait and the filesystem
@@ -2296,70 +2321,97 @@ API that does not exist yet is a module written twice.
   contact damrs at all, because a site clearing its search index has not asked to empty somebody's asset
   library.
 
-- [ ] **G10·3b Per-tenant keys, and a table that has never been read.** *Found 2026-08-28 while checking
-  whether the AWS-native list's SSE-KMS item was stale. It was half stale, and the other half is larger than
-  the list suggested.*
+- [x] **G10·3b Per-tenant keys, and a table that has never been read.** Done, at four-purpose scope —
+  `dam_global.encryption_keys` now has a reader, a writer and tests, having had none since
+  `0002_enterprise.sql`.
 
-  `dam_global.encryption_keys` has existed since migration `0002_enterprise.sql` — `tenant_id`, `purpose`
-  with a CHECK of `blob`, `c2pa_signing`, `field`, `backup`, a `provider` CHECK across five KMS vendors,
-  `key_ref` commented "ARN or URI; never key material", `customer_managed`, a `state` lifecycle including
-  `rotating` and `revoked`, plus a unique partial index on the active key per tenant and purpose. Nothing
-  reads or writes it. Searched across Rust, SQL, TypeScript, Svelte and Markdown: the only three hits are the
-  `CREATE TABLE` and its two indexes.
+  **The resolution layer.** `dam_db::encryption_keys` — `Purpose`/`Provider`/`State` matching the CHECKs,
+  `resolve`, `for_tenant`, `activate` (which retires the previous key in the same transaction, since the
+  partial unique index refuses two active rows) and `revoke`. Seven properties.
 
-  The same shape as `audit_log`'s hash columns and `assets.legal_hold` before G10·1 — a schema that describes
-  a capability the code does not have. Recording it here rather than fixing it silently, because the fix is a
-  decision rather than a refactor.
+  *Resolution falls back rather than refusing, which is the opposite of this codebase's usual direction and is
+  therefore documented at the module.* A missing key is not a permission that might wrongly be granted — it is
+  a stronger key that might wrongly be skipped. Refusing would stop every correctly-encrypting deployment from
+  writing the moment this empty table went live, which is every deployment at the moment of upgrade.
 
-  **What exists today, for each of the four purposes the table anticipates.** All four are process-wide
-  configuration or absent:
+  **`blob` — resolution complete, asset writes NOT yet keyed.** *Corrected 2026-09-01 after review.* Migration
+  0007 adds `kms_key_ref` to `storage_pools`; `key_for_write` resolves the tenant's own active key, else the
+  pool's, else the deployment's `storage.sse_kms_key_id`; and `S3Store::writing_under` derives a per-tenant
+  store as a cheap clone. **But that derivation is called only from `damctl backup`.** The asset write path —
+  `finalise` and `derive` — holds an `Arc<dyn ResumableStore>` (the process store) and calls `store.put`
+  without ever deriving a tenant store, so an *asset object* is still encrypted with the process-wide key, not
+  the tenant's. The earlier entry claimed this was done; it was not. What is done is the resolution layer, the
+  `storage_pools` column, and the clearing semantics (tested: `None` must clear, not keep). Wiring the asset
+  writes needs the tenant store threaded to those two `put` sites, which is the "resolve at each write" shape
+  the G10·3b decision weighed — a `BlobStore`-trait method or a concrete-store thread through the pipeline
+  context. Left open, and flagged, rather than claimed.
 
-  | Purpose | Today |
-  |---|---|
-  | `blob` | `storage.sse_kms_key_id`, one key for the deployment (G10·3) |
-  | `c2pa_signing` | `security.signing_cert_pem` / `signing_key_pem`, one identity for the deployment |
-  | `field` | not implemented |
-  | `backup` | relies on the bucket's and the managed database's own encryption |
+  **`backup`.** No change to `dam-backup` at all: a dump is an object, so `damctl backup` derives the store
+  with the tenant's `backup` key and passes it in. Falling back is loudest here — refusing to back up because a
+  key is missing turns a key-management gap into a data-loss one.
 
-  So "BYOK" is true of a single-tenant deployment and of a dedicated one, and not of a shared one — which is
-  worth being exact about, because it is an RFP pass/fail question and the honest answer differs by
-  deployment shape. G10·3 never claimed otherwise; the AWS-native list did, by listing per-tenant keys as
-  though the whole item were outstanding.
+  **`c2pa_signing`.** Migration 0039 adds `signing_identities` to the *tenant* schema, mirroring
+  `ai_credentials`: the certificate stored plainly (public by construction — every verifier receives it) and
+  the private key sealed, bound to `{tenant}:signing:{id}`. It is not in `encryption_keys` because that
+  table's `key_ref` is documented as never holding key material and a sealed PEM is material; that purpose
+  remains the right home for the KMS-held shape, and the two are alternatives. `dam_pipeline::signing`
+  resolves per job rather than caching — a rotation must take effect on the next derivative, not the next
+  worker restart. Resolution is a three-way enum rather than an `Option` on purpose: "has none" and "has one
+  and it is broken" must not both collapse to "use the deployment's", because the second would sign one
+  customer's assets under another's certificate while the operator believed otherwise.
 
-  **The decision, because it is not a refactor.** `build_store` returns one `S3Store` for the process and
-  G10·3's applicator puts the key on it once, deliberately, so that a write path added later cannot miss it.
-  A per-tenant key breaks that: the key is no longer a property of the process. Three shapes, and they are
-  not equivalent.
+  **`field` is deliberately not built.** `asset_metadata.values` is read by `query_sql` (fourteen sites),
+  `facets`, `portals`, `suggest` and the search index builder; an encrypted column is invisible to all five,
+  so "encrypt this field" means "make this field unfindable". Recorded in DECISIONS.md with why both escape
+  hatches were refused. The purpose stays in the CHECK, so a future implementation needs no enum migration.
 
-  1. **A store per tenant, cached.** Smallest change to the write paths — they keep taking a store — and it
-     keeps G10·3's guarantee that the key is applied in one place. Costs a client per active tenant, and the
-     cache needs invalidating when a key rotates or is revoked, which is the part that will be got wrong.
-  2. **Resolve the key at each write.** No cache and no lifetime question, and it is the only shape where a
-     revocation takes effect on the next write rather than on the next cache eviction. But it reopens exactly
-     what G10·3 closed: seven call sites that create an object, each of which must not forget, and the
-     source-reading test that guards them would need to guard a threaded parameter instead of one applicator.
-  3. **A pool per tenant in `storage_pools`.** The table already carries `tenant_id`, `bucket`, `endpoint` and
-     `credentials_ref` per pool, so a `kms_key_ref` beside them would follow the grain of the schema and need
-     no new resolution path — the pool is already looked up per placement. Least new machinery; but it ties a
-     key to a pool rather than to a tenant, and `encryption_keys` was designed for the other three purposes
-     too, which have no pool.
+  **Two findings.**
 
-  Shape 3 is the smallest honest step for `blob` alone and does not answer `c2pa_signing`, `field` or
-  `backup`. Whether those are wanted at all is the prior question — a per-tenant signing identity in
-  particular has consequences well beyond storage, since it is what a consumer verifies a C2PA claim against.
+  1. **The entry's premise about `storage_pools` was wrong.** It said the pool "is already looked up per
+     placement", which is why the column shape was billed as needing no new resolution path. `storage_pools`
+     is read in production for exactly two things — a default pool *id* in `finalise`, retrieval *prices* in
+     `tiering`. Nothing resolves a pool row to a store: `PoolRegistry` and `PoolSpec` are fully implemented and
+     constructed **only in tests**. That is a third instance of the same pattern this entry describes. The key
+     therefore still had to be threaded, which is what `writing_under` does.
+  2. **A test caught an API flaw before it shipped.** `activate` generated the row id internally, but the id
+     is part of the associated data — so a caller could not seal against it. `ai_credentials::NewCredential`
+     already documents exactly this and takes the id from the caller; this now matches. Left alone it would
+     have forced a seal-then-update, and a failure between the two leaves a row whose ciphertext is bound to
+     an id it does not have.
 
-  **Not started, and no pressure to start.** A single-key deployment is correctly implemented, tested and
-  documented, and the gap is a capability the schema promises rather than a defect in what runs.
+  **Migration guards.** Five fired and all were updated with their reasoning: embedded migration counts, the
+  tenant table count, the index count, the check-constraint count, and `provision.rs`'s deliberately
+  duplicated table count — which exists so a provisioned tenant and a migrated one cannot diverge.
 
 - [ ] **3.x AWS-native features to rely on instead of building.** *Raised 2026-08-18; needs a decision on
   items 1 and 2 because they change architecture.* Every item is AWS-only while D1 says S3-compatible, so
   each belongs behind `dam_store::Capabilities` with a fallback — the pattern already exists, and the
   conformance suite already refuses an operation a driver claims but does not implement.
-  1. **S3 Event Notifications for presigned-upload finalisation.** *This closes a real gap in 1.6.* The
-     presigned path records a session and hands out a URL; **nothing detects that the client finished.** A
-     client that uploads and then crashes before calling back leaves the object in staging until the reaper
-     deletes it — a silently lost upload. An event → queue → worker finalises regardless of the client.
-     MinIO supports bucket notifications; SeaweedFS partially.
+  1. ~~**S3 Event Notifications for presigned-upload finalisation.**~~ **Closed, without the events.** The gap
+     was real and worse than the entry said: the reaper did not merely leave the object, it *deleted* it —
+     terminating an expired session removes the staging object, so a client that uploaded successfully and
+     then closed the tab had its file thrown away, having been told it succeeded at every step.
+
+     `dam_pipeline::abandoned` sweeps expired sessions and asks the store whether the object is actually
+     there. Present with bytes: enqueue the ordinary `finalise_upload` rather than reclaiming, so nothing here
+     becomes a second ingest path. Absent, or zero-byte: reclaimed as before. Unanswerable: left for the next
+     pass, because guessing "absent" on a transient error deletes a real upload.
+
+     **`head` rather than notifications, and deliberately.** Events are the better trigger where they exist,
+     but D1 says S3-compatible — MinIO supports bucket notifications and SeaweedFS only partially, so an
+     events-only fix closes this on AWS and leaves it open everywhere else. `head` is on the `BlobStore` trait,
+     so this works on every driver today with no configuration. An event path can be added later as the faster
+     trigger for the same finalisation; this stays as the floor beneath it, which is what a correctness
+     guarantee needs.
+
+     **Two things found on the way.** `uploads::reap` had no production caller at all — a fourth instance of
+     machinery describing a capability nothing used, so expired sessions accumulated forever and the deletion
+     bug had simply never fired. And an early draft of the sweep reclaimed *by position* after checking *by
+     name*, which would have deleted a finished upload's object because a different session was due first;
+     `uploads::reap_one` exists to make that impossible, and a test pins it.
+
+     The sweep runs beside the metering repair rather than as a job kind, for the reason that repair exists:
+     the thing that forgets to enqueue a repair is the same class of bug the repair is for.
   2. **Intelligent-Tiering for originals.** §19 lists access-pattern prediction as an unknown sitting on the
      lifecycle engine. Intelligent-Tiering does access-based movement with no retrieval fee between the
      frequent and infrequent tiers. Our engine's value is the **policy** — never tier the master proxy (D5),
@@ -2367,11 +2419,22 @@ API that does not exist yet is a module written twice.
      Intelligent-Tiering, policy stays ours.
   3. **S3 Batch Operations for 3.4's bulk restore.** Manifest-driven, with retries, throttling and a
      completion report. Better than a job loop. Does **not** help 2.10, which is database-side.
-  4. **S3 Inventory instead of LIST for reconciliation** — a daily manifest rather than paginated LIST.
+  4. **S3 Inventory for reconciliation.** *Re-costed 2026-09-01: not the cheap item this list implied.* The
+     entry says "instead of LIST", but nothing reconciles by LIST — the integrity scrub asks `head` per
+     placement, which at four hundred thousand assets is four hundred thousand round trips. Inventory would
+     replace those with one manifest read carrying key, size, storage class and checksum, which is the right
+     shape and a large win. It is also a manifest reader (CSV/ORC/Parquet), a `Capabilities` flag and a
+     fallback to the current per-object path, because SeaweedFS has no Inventory — so it is a day's work
+     rather than a configuration change, and it is an optimisation rather than a correctness fix.
   5. **SSE-KMS for BYOK (G10).** *The wiring landed under G10·3; only the per-tenant half is open —* see
      **G10·3b** just above, which is where that now lives rather than in this list.
-  6. **A lifecycle rule on `*/staging/`** as a safety net beneath the reaper. Prefix-based, so it maps onto
-     `Key::is_tier_exempt`'s existing scheme.
+  6. ~~**A lifecycle rule on `*/staging/`**~~ **Done — documented in `docker/DEPLOY.md`**, which is where it
+     belongs: it is bucket configuration, not code. Two things the writing turned up. S3 lifecycle filters
+     match from the *start* of a key and the tenant comes first, so one rule cannot express "any tenant, then
+     `staging/`" — it is per-tenant prefixes or a separate bucket. And the expiry is now constrained from
+     below: a session lives 24 hours and the sweep that *rescues* an abandoned upload runs only after that, so
+     a rule shorter than the session lifetime would delete the object before the sweep saw it and turn a
+     recoverable upload into a lost one. Seven days, and not less.
   7. **CloudFront in front of derivatives — not replacing the chokepoint.** CloudFront signed URLs cannot
      consult live database state, and D12 requires rights evaluated at delivery. It fronts the presigned URL
      we redirect to.

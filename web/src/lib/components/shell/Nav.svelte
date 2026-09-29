@@ -20,7 +20,7 @@
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { isPublicRoute } from '$lib/chrome';
-	import { resolve } from '$app/paths';
+	import { base, resolve } from '$app/paths';
 	import { branding } from '$lib/api/branding.svelte';
 	import { session } from '$lib/api/session.svelte';
 	import brandMark from '$lib/assets/damrs-mark.svg';
@@ -151,7 +151,7 @@
 	// A portal has no nav: its visitor is an external recipient with no account, and an app chrome saying
 	// "Not connected" invites them to try to connect to something that was never theirs. `isPublicRoute` is
 	// shared with the layout, which drops the rail's margin on the same routes.
-	const portal = $derived(isPublicRoute(page.url.pathname));
+	const portal = $derived(isPublicRoute(page.url.pathname, base));
 </script>
 
 {#if !portal}

@@ -100,11 +100,8 @@ async fn fixture() -> Fixture {
 
     let delivery = Arc::new(dam_api::delivery::DeliveryState::new(
         acme.clone(),
-        acme.clone(),
         Arc::new(dam_store::FakeS3Store::with_test_clock().0),
         Keyring::single("k1", Secret::new("a-signing-key".to_owned())),
-        tenant_id,
-        dam_core::TenantSlug::new("acme").expect("a slug"),
     ));
     let app = router(PortalState {
         global: global.clone(),
@@ -247,7 +244,7 @@ async fn a_portal_is_created_with_one_readable_token_and_a_public_address() {
         created["public_url"]
             .as_str()
             .expect("public")
-            .ends_with("/portal/press-kit")
+            .ends_with("/portal/acme.press-kit")
     );
 
     // Stored as a digest, so the response is the only copy of the token.
@@ -284,7 +281,7 @@ async fn a_private_portal_has_no_public_address() {
     assert!(created["public_url"].is_null(), "{created}");
 
     // And the slug does not resolve — not a 403, which would confirm the name.
-    let (status, body) = call(&f, "GET", "/portal/press-kit", None, None).await;
+    let (status, body) = call(&f, "GET", "/portal/acme.press-kit", None, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(
         body["reason"]
@@ -317,7 +314,7 @@ async fn a_private_portal_has_no_public_address() {
 async fn a_portal_shows_its_collection_and_nothing_else() {
     let f = fixture().await;
     create(&f, json!({})).await;
-    let (status, page) = call(&f, "GET", "/portal/press-kit", None, None).await;
+    let (status, page) = call(&f, "GET", "/portal/acme.press-kit", None, None).await;
     assert_eq!(status, StatusCode::OK, "{page}");
 
     assert_eq!(
@@ -392,7 +389,7 @@ async fn a_portal_shows_neither_old_versions_nor_paperwork() {
     }
 
     create(&f, json!({})).await;
-    let (status, page) = call(&f, "GET", "/portal/press-kit", None, None).await;
+    let (status, page) = call(&f, "GET", "/portal/acme.press-kit", None, None).await;
     assert_eq!(status, StatusCode::OK, "{page}");
     // Four members, two rows: the count and the list agree, which is the other half of this — a total of four
     // over a list of two is how a portal tells a visitor something is missing.
@@ -413,7 +410,7 @@ async fn a_video_portal_shows_only_video() {
     // full of photographs is a video portal in name only.
     let f = fixture().await;
     create(&f, json!({"kind": "video"})).await;
-    let (status, page) = call(&f, "GET", "/portal/press-kit", None, None).await;
+    let (status, page) = call(&f, "GET", "/portal/acme.press-kit", None, None).await;
     assert_eq!(status, StatusCode::OK, "{page}");
     assert_eq!(page["kind"], "video");
     assert_eq!(page["total"], 1);
@@ -425,19 +422,19 @@ async fn searching_inside_a_portal_narrows_and_cannot_reach_outside_it() {
     let f = fixture().await;
     create(&f, json!({})).await;
 
-    let (_, page) = call(&f, "GET", "/portal/press-kit?q=harbour", None, None).await;
+    let (_, page) = call(&f, "GET", "/portal/acme.press-kit?q=harbour", None, None).await;
     assert_eq!(page["total"], 1);
     assert_eq!(page["items"][0]["asset_id"], f.photo.to_string());
     assert_eq!(page["query"], "harbour");
 
     // The asset outside the collection is not reachable by naming it: the set is the outer bound.
-    let (_, page) = call(&f, "GET", "/portal/press-kit?q=boardroom", None, None).await;
+    let (_, page) = call(&f, "GET", "/portal/acme.press-kit?q=boardroom", None, None).await;
     assert_eq!(page["total"], 0, "{page}");
     assert_eq!(page["items"].as_array().expect("items").len(), 0);
 
     // And a portal with searching off ignores the term rather than half-applying it.
     create(&f, json!({"key": "closed", "allow_search": false})).await;
-    let (_, page) = call(&f, "GET", "/portal/closed?q=harbour", None, None).await;
+    let (_, page) = call(&f, "GET", "/portal/acme.closed?q=harbour", None, None).await;
     assert_eq!(page["total"], 2);
     assert!(page["query"].is_null(), "{page}");
 }
@@ -447,18 +444,25 @@ async fn a_passcode_is_required_before_anything_is_listed() {
     let f = fixture().await;
     create(&f, json!({"passcode": "open sesame"})).await;
 
-    let (status, body) = call(&f, "GET", "/portal/press-kit", None, None).await;
+    let (status, body) = call(&f, "GET", "/portal/acme.press-kit", None, None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
     // Nothing about the set leaked into the refusal.
     assert!(!body.to_string().contains("harbour"), "{body}");
 
-    let (status, body) = call(&f, "GET", "/portal/press-kit?passcode=wrong", None, None).await;
+    let (status, body) = call(
+        &f,
+        "GET",
+        "/portal/acme.press-kit?passcode=wrong",
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
 
     let (status, page) = call(
         &f,
         "GET",
-        "/portal/press-kit?passcode=open%20sesame",
+        "/portal/acme.press-kit?passcode=open%20sesame",
         None,
         None,
     )
@@ -479,7 +483,7 @@ async fn retiring_a_portal_stops_both_addresses() {
 
     // The slug, and the token: both dead, because retiring one half and leaving the other live is the failure
     // this pairing exists to prevent.
-    let (status, _) = call(&f, "GET", "/portal/press-kit", None, None).await;
+    let (status, _) = call(&f, "GET", "/portal/acme.press-kit", None, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     let (status, body) = call(
         &f,
@@ -575,7 +579,7 @@ async fn presentation_can_change_and_the_set_cannot() {
     assert_eq!(updated["collection_id"], f.collection.to_string());
 
     // Made private, so the slug stops resolving — the same column, taking effect immediately.
-    let (status, _) = call(&f, "GET", "/portal/press-kit", None, None).await;
+    let (status, _) = call(&f, "GET", "/portal/acme.press-kit", None, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -672,7 +676,7 @@ async fn a_live_query_portal_publishes_only_what_somebody_published() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
 
-    let (status, page) = call(&f, "GET", "/portal/press-kit", None, None).await;
+    let (status, page) = call(&f, "GET", "/portal/acme.press-kit", None, None).await;
     assert_eq!(status, StatusCode::OK, "{page}");
     assert_eq!(
         page["total"], 1,
@@ -687,7 +691,7 @@ async fn a_live_query_portal_publishes_only_what_somebody_published() {
         .execute(&f.acme)
         .await
         .expect("publish");
-    let (_, page) = call(&f, "GET", "/portal/press-kit", None, None).await;
+    let (_, page) = call(&f, "GET", "/portal/acme.press-kit", None, None).await;
     assert_eq!(page["total"], 2, "{page}");
 
     // And unpublishing removes it again.
@@ -696,7 +700,7 @@ async fn a_live_query_portal_publishes_only_what_somebody_published() {
         .execute(&f.acme)
         .await
         .expect("unpublish");
-    let (_, page) = call(&f, "GET", "/portal/press-kit", None, None).await;
+    let (_, page) = call(&f, "GET", "/portal/acme.press-kit", None, None).await;
     assert_eq!(page["total"], 1, "{page}");
 }
 
@@ -725,7 +729,7 @@ async fn a_media_class_portal_is_every_published_asset_of_that_class() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
 
-    let (status, page) = call(&f, "GET", "/portal/press-kit", None, None).await;
+    let (status, page) = call(&f, "GET", "/portal/acme.press-kit", None, None).await;
     assert_eq!(status, StatusCode::OK, "{page}");
     assert_eq!(
         page["total"], 1,
@@ -826,7 +830,7 @@ async fn an_expired_portal_says_so_in_the_share_machinery_s_words() {
 
     // Both addresses, one vocabulary: a portal is a share, and a visitor learns "expired" rather than
     // "not found" because a token is 256 random bits and the holder is the person it was sent to.
-    let (status, body) = call(&f, "GET", "/portal/press-kit", None, None).await;
+    let (status, body) = call(&f, "GET", "/portal/acme.press-kit", None, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
     assert!(
         body["reason"].as_str().expect("reason").contains("expired"),
@@ -872,7 +876,7 @@ async fn an_asset_link_is_not_a_portal() {
     let (status, body) = call(
         &f,
         "POST",
-        &format!("/share/{}/portal", share.token()),
+        &format!("/share/acme.{}/portal", share.token()),
         None,
         Some(json!({})),
     )

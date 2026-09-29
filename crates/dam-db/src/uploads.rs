@@ -272,7 +272,10 @@ where
 ///
 /// Only `active` rows: a completed session's bytes were promoted to a content-addressed key and
 /// there is nothing to reclaim, and a terminated one has already been cleaned.
-pub async fn reapable(pool: &PgPool, limit: i64) -> Result<Vec<ResumableSession>, Error> {
+pub async fn reapable(
+    conn: &mut sqlx::PgConnection,
+    limit: i64,
+) -> Result<Vec<ResumableSession>, Error> {
     let rows = sqlx::query(
         "SELECT tenant_id, upload_id, status, offset_bytes, declared_length, \
                 backend_upload_id, part_count, tail_bytes, parts \
@@ -282,7 +285,7 @@ pub async fn reapable(pool: &PgPool, limit: i64) -> Result<Vec<ResumableSession>
          LIMIT $1",
     )
     .bind(limit)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
 
     // Each row carries its own tenant, which is what lets the reaper rebuild the staging key
@@ -296,37 +299,59 @@ pub async fn reapable(pool: &PgPool, limit: i64) -> Result<Vec<ResumableSession>
 /// still `active` and repeats a cleanup that is idempotent — whereas marking the row first would
 /// orphan the parts permanently, with nothing left pointing at them.
 pub async fn reap<S: ResumableStore + ?Sized>(
-    pool: &PgPool,
+    conn: &mut sqlx::PgConnection,
     store: &S,
     limit: i64,
 ) -> Result<u64, Error> {
-    let due = reapable(pool, limit).await?;
+    let due = reapable(&mut *conn, limit).await?;
     let mut reaped = 0u64;
 
-    for mut session in due {
-        if let Err(e) = dam_store::resumable::terminate(store, &mut session).await {
-            // One stuck upload must not stop the batch: the next pass retries it, and a reaper
-            // that aborts on the first failure stops reclaiming anything at all.
-            tracing::warn!(
-                upload_id = %session.id,
-                error = %e,
-                "could not reclaim storage for an expired upload; leaving it for the next pass"
-            );
-            continue;
-        }
-
-        sqlx::query(
-            "UPDATE upload_sessions SET status = 'terminated', updated_at = now(), \
-                    backend_upload_id = NULL, part_count = 0, tail_bytes = 0, \
-                    parts = '[]'::jsonb \
-             WHERE upload_id = $1 AND status = 'active'",
-        )
-        .bind(&session.id)
-        .execute(pool)
-        .await?;
-        reaped += 1;
+    for session in due {
+        reaped += u64::from(reap_one(&mut *conn, store, session).await?);
     }
     Ok(reaped)
+}
+
+/// Reclaims one named session, returning whether it was.
+///
+/// Split out of [`reap`] so a caller that has already decided *which* session to reclaim can say so. The
+/// abandoned-upload sweep needs exactly that: it checks one session's object and must then act on that
+/// session, not on whichever happens to be oldest — reaping by position after checking by name would delete
+/// an upload whose bytes are present because a different one's were not.
+///
+/// Storage first, then the row, for [`reap`]'s reason: a crash between the two leaves the row `active` and the
+/// next pass repeats an idempotent cleanup, whereas marking first would orphan the parts with nothing
+/// pointing at them.
+///
+/// # Errors
+/// A database failure. A *store* failure is reported as `false` rather than an error, because one stuck
+/// upload must not stop a batch.
+pub async fn reap_one<S: ResumableStore + ?Sized>(
+    conn: &mut sqlx::PgConnection,
+    store: &S,
+    mut session: ResumableSession,
+) -> Result<bool, Error> {
+    if let Err(e) = dam_store::resumable::terminate(store, &mut session).await {
+        // One stuck upload must not stop the batch: the next pass retries it, and a reaper
+        // that aborts on the first failure stops reclaiming anything at all.
+        tracing::warn!(
+            upload_id = %session.id,
+            error = %e,
+            "could not reclaim storage for an expired upload; leaving it for the next pass"
+        );
+        return Ok(false);
+    }
+
+    let done = sqlx::query(
+        "UPDATE upload_sessions SET status = 'terminated', updated_at = now(), \
+                backend_upload_id = NULL, part_count = 0, tail_bytes = 0, \
+                parts = '[]'::jsonb \
+         WHERE upload_id = $1 AND status = 'active'",
+    )
+    .bind(&session.id)
+    .execute(&mut *conn)
+    .await?;
+    Ok(done.rows_affected() == 1)
 }
 
 /// Ages a session's expiry by `hours`, for tests only.

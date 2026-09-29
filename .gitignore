@@ -3,6 +3,7 @@
 /web/node_modules
 /web/.svelte-kit
 /web/build
+/web/pages-dist
 .env
 .env.local
 *.log

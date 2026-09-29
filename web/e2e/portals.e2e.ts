@@ -108,7 +108,7 @@ test("the portal is the tenant's page, and lists what was published", async ({ p
 				'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%228%22 height=%228%22%3E%3C/svg%3E'
 		})
 	});
-	await page.goto('/portal/press-kit');
+	await page.goto('/portal/acme.press-kit');
 
 	await expect(page.getByRole('heading', { name: 'Acme press kit' })).toBeVisible();
 	await expect(page.getByText('Everything a journalist needs.')).toBeVisible();
@@ -150,7 +150,7 @@ test('an asset whose bytes cannot be handed over is named with the reason', asyn
 			]
 		})
 	});
-	await page.goto('/portal/press-kit');
+	await page.goto('/portal/acme.press-kit');
 
 	// Listed, not hidden: the sender needs to know that something they published cannot be released.
 	await expect(page.getByText('unlicensed.jpg')).toBeVisible();
@@ -159,7 +159,7 @@ test('an asset whose bytes cannot be handed over is named with the reason', asyn
 
 test('a passcode prompt is a prompt, not an error', async ({ page }) => {
 	const recorder = await connect(page, { status: 401, reason: 'a passcode is required' });
-	await page.goto('/portal/press-kit');
+	await page.goto('/portal/acme.press-kit');
 
 	await expect(page.getByRole('heading', { name: 'This portal needs a passcode' })).toBeVisible();
 	// Nothing is wrong yet, so nothing is claimed to be.
@@ -174,7 +174,7 @@ test('a passcode prompt is a prompt, not an error', async ({ page }) => {
 
 test('search narrows what was given and says when nothing matches', async ({ page }) => {
 	const recorder = await connect(page);
-	await page.goto('/portal/press-kit');
+	await page.goto('/portal/acme.press-kit');
 	await expect(page.getByRole('listitem')).toHaveCount(2);
 
 	await page.getByLabel('Search this portal').fill('harbour');
@@ -190,14 +190,14 @@ test('search narrows what was given and says when nothing matches', async ({ pag
 
 test('a portal with searching off offers no search box', async ({ page }) => {
 	await connect(page, { view: portal({ allow_search: false }) });
-	await page.goto('/portal/press-kit');
+	await page.goto('/portal/acme.press-kit');
 	await expect(page.getByRole('heading', { name: 'Acme press kit' })).toBeVisible();
 	await expect(page.getByLabel('Search this portal')).toBeHidden();
 });
 
 test('a dead portal says so in the words the server chose', async ({ page }) => {
 	await connect(page, { status: 404, reason: 'this share link has expired' });
-	await page.goto('/portal/press-kit');
+	await page.goto('/portal/acme.press-kit');
 	await expect(page.getByRole('heading', { name: 'This portal is not available' })).toBeVisible();
 	// "Expired" tells a visitor to ask for a new link; "not found" would send them to re-type a correct URL.
 	await expect(page.getByRole('alert')).toContainText('expired');
@@ -205,7 +205,7 @@ test('a dead portal says so in the words the server chose', async ({ page }) => 
 
 test('a capped portal shows what is beyond the page', async ({ page }) => {
 	await connect(page, { view: portal({ total: 300 }) });
-	await page.goto('/portal/press-kit');
+	await page.goto('/portal/acme.press-kit');
 	await expect(page.getByText('300 assets')).toBeVisible();
 	await expect(page.getByText('Showing the first 2 of 300')).toBeVisible();
 });
@@ -224,7 +224,7 @@ for (const theme of ['light', 'dark'] as const) {
 			})
 		});
 		await page.emulateMedia({ colorScheme: theme });
-		await page.goto('/portal/press-kit');
+		await page.goto('/portal/acme.press-kit');
 		await expect(page.getByRole('heading', { name: 'Acme press kit' })).toBeVisible();
 
 		const results = await new AxeBuilder({ page }).withTags(WCAG_21_AA).analyze();

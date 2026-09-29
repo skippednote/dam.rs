@@ -85,7 +85,11 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             // find they agreed to four hundred — and the reviewers are a separate table because a verdict is
             // per person, not per asset. 0037 added no table: an annotation is five columns on
             // `asset_comments`, since a thread mixes annotations and plain remarks freely.
-            80,
+            //
+            // 81 since 0039: `signing_identities`. A tenant's own C2PA certificate and its sealed private key,
+            // in the tenant schema rather than in `dam_global.encryption_keys` — that table's `key_ref` is
+            // documented as never holding key material, and a sealed PEM is material. See G10·3b.
+            81,
         ),
         (
             "view count",
@@ -151,7 +155,11 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             // rounds an asset is in, and "what is waiting for me". The last is the only one that starts from a
             // person rather than a round, which is why it is a partial index on the reviewer rather than a
             // second use of the primary key.
-            277,
+            //
+            // 280 since 0039: three for `signing_identities`. Its primary key, the partial unique index that
+            // makes "one identity signs at a time" a database rule rather than a convention, and the sealing
+            // key id — which is how a re-seal finds every row a retired sealing key still covers.
+            280,
         ),
         (
             "check constraints",
@@ -219,7 +227,12 @@ async fn tenant_migrations_apply_to_a_named_schema() {
             // a cancelled round is closed, and a decision has a moment while a pending reviewer has not. Those
             // last two are stated as constraints because either column alone would let the row disagree with
             // itself about whether the round is over.
-            150,
+            //
+            // 153 since 0039: a signing identity's three. A bound on the label, and two that make the columns
+            // say what they are: the certificate must look like one, and the sealed key must carry a version
+            // prefix — which is what stops a caller that forgot to seal from writing a private key in the
+            // clear and having it accepted.
+            153,
         ),
         (
             "hnsw indexes",
