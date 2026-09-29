@@ -205,6 +205,20 @@ impl ObjectState {
     }
 }
 
+/// One row of an object inventory: a key and the metadata a reconciliation needs, read from the backend's
+/// scheduled manifest rather than by heading the object.
+///
+/// The fields a pass compares against `object_placements`: `size`, and `checksum` where the backend records
+/// one. `storage_class` rides along because a manifest reports it for free and a placement in the wrong tier
+/// is worth knowing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InventoryEntry {
+    pub key: String,
+    pub size: u64,
+    pub storage_class: StorageClass,
+    pub checksum: Option<String>,
+}
+
 /// The result of a successful `PUT`.
 #[derive(Debug, Clone)]
 pub struct Placement {
@@ -240,6 +254,10 @@ pub struct Capabilities {
     pub ranged_get: bool,
     /// Returns a server-side checksum on head, so the scrub need not download.
     pub server_checksums: bool,
+    /// Publishes an object inventory — a scheduled manifest of every key with its size, storage class and
+    /// checksum — that reconciliation can read in one pass instead of a `head` per placement. AWS S3 does;
+    /// SeaweedFS does not, which is why this is a capability with a per-object fallback rather than assumed.
+    pub object_inventory: bool,
 }
 
 impl Capabilities {
@@ -253,6 +271,7 @@ impl Capabilities {
             presigned_urls: false,
             ranged_get: false,
             server_checksums: false,
+            object_inventory: false,
         }
     }
 
@@ -266,6 +285,7 @@ impl Capabilities {
             presigned_urls: true,
             ranged_get: true,
             server_checksums: true,
+            object_inventory: true,
         }
     }
 }
@@ -297,6 +317,20 @@ pub trait BlobStore: Send + Sync {
     /// Keys under a prefix, lexicographically. Used by the integrity scrub and by the
     /// import reconciler.
     async fn list(&self, prefix: &str, limit: usize) -> Result<Vec<Key>>;
+
+    /// The object inventory: every key the store holds, with size, storage class and checksum, read from the
+    /// backend's scheduled manifest in one pass rather than by heading each object.
+    ///
+    /// Only meaningful when [`Capabilities::object_inventory`] is set. The default refuses rather than
+    /// returning an empty inventory, because a reconciliation reading empty as "the store holds nothing"
+    /// would call every placement missing — the loudest possible wrong answer. A caller checks the capability
+    /// and falls back to per-object `head` when it is absent.
+    async fn inventory(&self) -> Result<Vec<InventoryEntry>> {
+        Err(Error::Unsupported {
+            driver: "this store",
+            capability: "object inventory",
+        })
+    }
 
     /// Moves an object between storage classes.
     async fn transition(&self, key: &Key, to: StorageClass) -> Result<()>;

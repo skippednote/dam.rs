@@ -6,12 +6,17 @@
 //! shapes, plus the two that decide whether the report is worth reading: a store that cannot be
 //! reached must not be recorded as loss, and a placement that gets fixed must be able to come back.
 
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::too_many_arguments
+)]
 
 use dam_core::{StorageClass, TenantSlug};
 use dam_db::{integrity, migrate, testing::PostgresHarness};
 use dam_store::testing::SeaweedfsHarness;
-use dam_store::{BlobStore, Key, ResumableStore};
+use dam_store::{BlobStore, FakeS3Store, Key, ResumableStore};
 use sqlx::PgPool;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -406,4 +411,153 @@ async fn the_standing_report_counts_what_the_passes_found(f: &Fixture) {
         "the list an operator reads, not just the count"
     );
     assert_eq!(findings[0].state, dam_core::PlacementState::Corrupt);
+}
+
+/// The inventory path reaches the same verdicts as the per-`head` path, read from one manifest.
+///
+/// SeaweedFS publishes no inventory, so this drives a `FakeS3Store` that does. Four placements — one sound,
+/// one lying about its size, one lying about its checksum, one whose key the store never held — and the pass
+/// must sort them into verified, corrupt (twice) and missing without a single `head`.
+#[tokio::test]
+async fn the_scrub_reads_the_inventory_when_the_store_publishes_one() {
+    let pg = PostgresHarness::start().await.expect("postgres");
+    let url = pg.url();
+    migrate::global(&url).await.expect("global");
+    migrate::tenant(&url, "t_acme").await.expect("tenant");
+    let global = pg.pool().clone();
+    let tenant = pg.pool_for_schema("t_acme").await.expect("tenant pool");
+
+    let store = FakeS3Store::with_test_clock().0.publishing_inventory();
+    assert!(
+        store.capabilities().object_inventory,
+        "the fake must claim the inventory for this path to run"
+    );
+
+    let tenant_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO dam_global.tenants \
+         (id, slug, schema_name, display_name, storage_prefix, status) \
+         VALUES (gen_random_uuid(), 'acme', 't_acme', 'Acme', 'acme/', 'active') RETURNING id",
+    )
+    .fetch_one(&global)
+    .await
+    .expect("tenant row");
+    let pool_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO dam_global.storage_pools \
+         (id, tenant_id, name, driver, bucket, credentials_ref, latency_class) \
+         VALUES (gen_random_uuid(), $1, 'hot', 's3', 'bucket', 'test', 'instant') RETURNING id",
+    )
+    .bind(tenant_id)
+    .fetch_one(&global)
+    .await
+    .expect("storage pool");
+
+    // Puts bytes in the store (when `body` is Some) and a placement that claims `recorded` bytes and, when
+    // given, a `checksum` the manifest will disagree with.
+    async fn seed(
+        store: &FakeS3Store,
+        tenant: &PgPool,
+        tenant_id: Uuid,
+        pool_id: Uuid,
+        hash: &str,
+        body: Option<&[u8]>,
+        recorded: i64,
+        remote_checksum: Option<&str>,
+    ) {
+        let key = Key::original(tenant_id, hash).expect("key");
+        if let Some(bytes) = body {
+            store
+                .put(
+                    &key,
+                    bytes::Bytes::from(bytes.to_vec()),
+                    StorageClass::Standard,
+                )
+                .await
+                .expect("put");
+        }
+        let asset_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO assets (id, content_hash, filename, mime, bytes, version_group_id) \
+             VALUES (gen_random_uuid(), $1, $2, 'application/octet-stream', $3, gen_random_uuid()) \
+             RETURNING id",
+        )
+        .bind(hash)
+        .bind(format!("{hash}.bin"))
+        .bind(recorded)
+        .fetch_one(tenant)
+        .await
+        .expect("asset");
+        sqlx::query(
+            "INSERT INTO object_placements \
+               (object_key, pool_id, asset_id, size_bytes, checksum, remote_checksum, storage_class, state) \
+             VALUES ($1, $2, $3, $4, $5, $6, 'STANDARD', 'present')",
+        )
+        .bind(key.as_str())
+        .bind(pool_id)
+        .bind(asset_id)
+        .bind(recorded)
+        // `checksum` is the content hash and is NOT NULL; `remote_checksum` is what the scrub compares and is
+        // left NULL unless a case wants a mismatch.
+        .bind(hash)
+        .bind(remote_checksum)
+        .execute(tenant)
+        .await
+        .expect("placement");
+    }
+
+    let sound = std::iter::repeat_n("a1".to_owned(), 32).collect::<String>();
+    let wrong_size = std::iter::repeat_n("b2".to_owned(), 32).collect::<String>();
+    let wrong_sum = std::iter::repeat_n("c3".to_owned(), 32).collect::<String>();
+    let gone = std::iter::repeat_n("d4".to_owned(), 32).collect::<String>();
+
+    seed(
+        &store,
+        &tenant,
+        tenant_id,
+        pool_id,
+        &sound,
+        Some(b"sound bytes"),
+        11,
+        None,
+    )
+    .await;
+    seed(
+        &store,
+        &tenant,
+        tenant_id,
+        pool_id,
+        &wrong_size,
+        Some(b"short"),
+        999,
+        None,
+    )
+    .await;
+    // Present at the right size but the row records a checksum the manifest's blake3 will never match.
+    let bogus = std::iter::repeat_n("ff".to_owned(), 32).collect::<String>();
+    seed(
+        &store,
+        &tenant,
+        tenant_id,
+        pool_id,
+        &wrong_sum,
+        Some(b"right size"),
+        10,
+        Some(&bogus),
+    )
+    .await;
+    seed(&store, &tenant, tenant_id, pool_id, &gone, None, 42, None).await;
+
+    let scrubbed = dam_pipeline::integrity::scrub(
+        &global,
+        &store,
+        &TenantSlug::new("acme").expect("slug"),
+        chrono::Utc::now(),
+    )
+    .await
+    .expect("scrub");
+
+    assert_eq!(scrubbed.verified, 1, "the sound placement: {scrubbed:?}");
+    assert_eq!(scrubbed.corrupt, 2, "size and checksum liars: {scrubbed:?}");
+    assert_eq!(
+        scrubbed.missing, 1,
+        "the key the store never held: {scrubbed:?}"
+    );
 }
