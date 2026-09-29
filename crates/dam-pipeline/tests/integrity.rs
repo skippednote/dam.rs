@@ -461,7 +461,7 @@ async fn the_scrub_reads_the_inventory_when_the_store_publishes_one() {
         hash: &str,
         body: Option<&[u8]>,
         recorded: i64,
-        checksum: Option<&str>,
+        remote_checksum: Option<&str>,
     ) {
         let key = Key::original(tenant_id, hash).expect("key");
         if let Some(bytes) = body {
@@ -487,14 +487,17 @@ async fn the_scrub_reads_the_inventory_when_the_store_publishes_one() {
         .expect("asset");
         sqlx::query(
             "INSERT INTO object_placements \
-               (object_key, pool_id, asset_id, size_bytes, checksum, storage_class, state) \
-             VALUES ($1, $2, $3, $4, $5, 'STANDARD', 'present')",
+               (object_key, pool_id, asset_id, size_bytes, checksum, remote_checksum, storage_class, state) \
+             VALUES ($1, $2, $3, $4, $5, $6, 'STANDARD', 'present')",
         )
         .bind(key.as_str())
         .bind(pool_id)
         .bind(asset_id)
         .bind(recorded)
-        .bind(checksum)
+        // `checksum` is the content hash and is NOT NULL; `remote_checksum` is what the scrub compares and is
+        // left NULL unless a case wants a mismatch.
+        .bind(hash)
+        .bind(remote_checksum)
         .execute(tenant)
         .await
         .expect("placement");
