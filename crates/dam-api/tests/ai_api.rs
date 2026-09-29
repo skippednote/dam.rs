@@ -1236,6 +1236,69 @@ async fn a_backfill_queues_one_slice_and_counts_the_work() {
     assert_eq!(view["running"], true);
 }
 
+#[tokio::test]
+async fn a_backfill_refuses_a_non_anthropic_default_and_says_what_to_do_instead() {
+    // The batch path is Anthropic-only. With an openai_compatible default the old handler queued a job the
+    // worker silently skipped ("backfill submitted nothing"); now the caller is told, and pointed at
+    // per-asset enrichment, and no job is queued.
+    let f = fixture().await;
+    json_call(
+        &f,
+        "POST",
+        "/ai/credentials",
+        &f.key,
+        Some(json!({
+            "provider": "openai_compatible",
+            "label": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "default_model": "gpt-5-mini",
+            "api_key": "sk-test-only",
+            "make_default": true,
+        })),
+    )
+    .await;
+    json_call(
+        &f,
+        "PUT",
+        "/ai/enrichment",
+        &f.key,
+        Some(enrichment_body(json!({"is_enabled": true}))),
+    )
+    .await;
+
+    // Something to describe, so this is the real case rather than the empty-library one.
+    let id = asset(&f, "one", None).await;
+    sqlx::query(
+        "INSERT INTO derivatives \
+            (id, asset_id, role, profile, op_hash, object_key, mime, bytes, width, height) \
+         VALUES ($1, $2, 'proxy', 'proxy_2048', $3, $4, 'image/jpeg', 17, 2048, 1365)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(id)
+    .bind(blake3::hash(b"one").to_hex().to_string())
+    .bind("proxy/one.jpg")
+    .execute(&f.acme)
+    .await
+    .expect("proxy row");
+
+    let (status, body) = json_call(&f, "POST", "/ai/backfill", &f.key, Some(json!({}))).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body.to_string().contains("Anthropic"), "{body}");
+    assert!(
+        body.to_string().to_lowercase().contains("individually"),
+        "{body}"
+    );
+
+    let jobs: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM dam_global.jobs WHERE kind = 'backfill_submit' AND dedupe_key = $1",
+    )
+    .bind(format!("backfill:{}", f.tenant_id))
+    .fetch_one(&f.global)
+    .await
+    .expect("count");
+    assert_eq!(jobs, 0, "no batch job queued for a non-Anthropic default");
+}
+
 /// The settings body, with every field the API expects.
 fn enrichment_body(overrides: serde_json::Value) -> Value {
     let mut body = json!({
