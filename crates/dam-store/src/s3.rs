@@ -198,6 +198,9 @@ impl S3Store {
             // checksum_mode on head — tracked, not done here.
             capabilities: Capabilities {
                 server_checksums: false,
+                // No reader for the S3 inventory manifest yet; the scrub uses the per-object path until one
+                // lands, at which point this flips to true.
+                object_inventory: false,
                 ..Capabilities::full()
             },
             latency_class: LatencyClass::Instant,
@@ -352,6 +355,8 @@ impl S3Store {
                 // scrub cannot verify without downloading. Declared honestly rather than
                 // assumed — see DECISIONS.md.
                 server_checksums: false,
+                // SeaweedFS publishes no inventory either.
+                object_inventory: false,
             },
             "seaweedfs",
         )

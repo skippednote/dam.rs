@@ -14,8 +14,8 @@
 //! `S3Store`, so it cannot drift from real S3 on anything they both do.
 
 use crate::{
-    BlobStore, ByteRange, Capabilities, Error, GetOutcome, Key, ObjectState, Placement,
-    RestoreTicket, Result,
+    BlobStore, ByteRange, Capabilities, Error, GetOutcome, InventoryEntry, Key, ObjectState,
+    Placement, RestoreTicket, Result,
 };
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -61,6 +61,9 @@ pub struct FakeS3Store {
     clock: Arc<dyn Clock>,
     /// Simulated retrieval cost, so the restore-budget path has something to assert on.
     retrieval_cost_per_gb_cents: u64,
+    /// Whether this fake claims and serves an object inventory. Opt-in, off by default, so the many tests
+    /// that scrub through the fake keep exercising the per-object `head` path unless they ask otherwise.
+    publishes_inventory: bool,
 }
 
 impl FakeS3Store {
@@ -76,7 +79,16 @@ impl FakeS3Store {
             uploads: Arc::new(Mutex::new(BTreeMap::new())),
             clock,
             retrieval_cost_per_gb_cents: 300,
+            publishes_inventory: false,
         }
+    }
+
+    /// Turns on the object inventory, so [`BlobStore::capabilities`] claims it and [`BlobStore::inventory`]
+    /// returns one row per stored object — the seam a reconciliation test drives.
+    #[must_use]
+    pub fn publishing_inventory(mut self) -> Self {
+        self.publishes_inventory = true;
+        self
     }
 
     /// How much a restore of this object would cost, in cents. Feeds the estimate the
@@ -171,6 +183,7 @@ impl BlobStore for FakeS3Store {
             presigned_urls: true,
             ranged_get: true,
             server_checksums: true,
+            object_inventory: self.publishes_inventory,
         }
     }
 
@@ -255,6 +268,27 @@ impl BlobStore for FakeS3Store {
             checksum: Some(checksum),
             last_modified: Some(obj.last_modified),
         })
+    }
+
+    async fn inventory(&self) -> Result<Vec<InventoryEntry>> {
+        if !self.publishes_inventory {
+            return Err(Error::Unsupported {
+                driver: "fake",
+                capability: "object inventory",
+            });
+        }
+        // One row per stored object, with the same size and blake3 checksum `head` reports — so a
+        // reconciliation reading the manifest reaches the same verdict it would object by object.
+        let objects = self.lock();
+        Ok(objects
+            .iter()
+            .map(|(key, obj)| InventoryEntry {
+                key: key.clone(),
+                size: obj.body.len() as u64,
+                storage_class: obj.storage_class,
+                checksum: Some(blake3::hash(&obj.body).to_hex().to_string()),
+            })
+            .collect())
     }
 
     async fn delete(&self, key: &Key) -> Result<()> {

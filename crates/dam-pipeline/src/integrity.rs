@@ -37,7 +37,8 @@
 use chrono::{DateTime, Utc};
 use dam_core::TenantSlug;
 use dam_db::integrity::{self, Verdict};
-use dam_store::{BlobStore, ByteRange, GetOutcome, Key};
+use dam_store::{BlobStore, ByteRange, GetOutcome, InventoryEntry, Key};
+use std::collections::HashMap;
 
 use crate::Result;
 
@@ -79,7 +80,27 @@ impl Scrubbed {
 }
 
 /// Checks one window of this tenant's placements against the store.
+///
+/// Two ways to learn what the store holds. A backend that publishes an inventory
+/// ([`dam_store::Capabilities::object_inventory`]) is asked once and the window is checked against the
+/// manifest; every other backend is asked a `head` per placement. The verdicts are identical — the manifest
+/// carries the same size and checksum a `head` returns — so the choice is a cost one, not a correctness one,
+/// and the first-byte probe runs either way because no manifest can tell a truncated object from a whole one.
 pub async fn scrub(
+    global: &sqlx::PgPool,
+    store: &dyn BlobStore,
+    slug: &TenantSlug,
+    now: DateTime<Utc>,
+) -> Result<Scrubbed> {
+    if store.capabilities().object_inventory {
+        scrub_via_inventory(global, store, slug, now).await
+    } else {
+        scrub_via_head(global, store, slug, now).await
+    }
+}
+
+/// The per-`head` pass: one round trip per placement, for a backend with no inventory.
+async fn scrub_via_head(
     global: &sqlx::PgPool,
     store: &dyn BlobStore,
     slug: &TenantSlug,
@@ -112,7 +133,8 @@ pub async fn scrub(
 
         match store.head(&key).await {
             Ok(state) => {
-                let (verdict, checksum) = verify(store, &key, &placement, &state).await;
+                let (verdict, checksum) =
+                    verify(store, &key, &placement, state.size, state.checksum.clone()).await;
                 match verdict {
                     Verdict::Present => scrubbed.verified += 1,
                     Verdict::Corrupt => {
@@ -167,6 +189,88 @@ pub async fn scrub(
     Ok(scrubbed)
 }
 
+/// The inventory pass: one manifest read, then the window checked against it.
+///
+/// The win at scale. The scrub that motivated this heads four hundred thousand placements a cycle; the
+/// manifest replaces those round trips with a read whose cost does not grow with the library. A key the
+/// manifest does not carry is one the store does not hold — the same `missing` a `head`'s `NotFound` reports —
+/// and the first-byte probe still runs per placement, because a manifest lists a size it cannot prove is
+/// readable.
+async fn scrub_via_inventory(
+    global: &sqlx::PgPool,
+    store: &dyn BlobStore,
+    slug: &TenantSlug,
+    now: DateTime<Utc>,
+) -> Result<Scrubbed> {
+    let manifest: HashMap<String, InventoryEntry> = store
+        .inventory()
+        .await?
+        .into_iter()
+        .map(|entry| (entry.key.clone(), entry))
+        .collect();
+
+    let mut conn = dam_db::TenantConn::begin(global, slug).await?;
+    let window = integrity::due(conn.executor(), WINDOW).await?;
+    conn.commit().await?;
+
+    let mut scrubbed = Scrubbed::default();
+    let mut verdicts = Vec::with_capacity(window.len());
+
+    for placement in window {
+        let key = match Key::new(placement.object_key.clone()) {
+            Ok(key) => key,
+            Err(_) => {
+                tracing::error!(
+                    key = %placement.object_key,
+                    "object_placements holds a key the store cannot parse",
+                );
+                scrubbed.unreachable += 1;
+                continue;
+            }
+        };
+
+        match manifest.get(&placement.object_key) {
+            Some(entry) => {
+                let (verdict, checksum) =
+                    verify(store, &key, &placement, entry.size, entry.checksum.clone()).await;
+                match verdict {
+                    Verdict::Present => scrubbed.verified += 1,
+                    Verdict::Corrupt => {
+                        scrubbed.corrupt += 1;
+                        tracing::warn!(
+                            key = %placement.object_key,
+                            recorded = placement.size_bytes,
+                            found = entry.size,
+                            "placement disagrees with the object the inventory lists",
+                        );
+                    }
+                    Verdict::Missing => scrubbed.missing += 1,
+                }
+                verdicts.push((placement.object_key, verdict, checksum));
+            }
+            None => {
+                scrubbed.missing += 1;
+                tracing::warn!(
+                    key = %placement.object_key,
+                    asset = ?placement.asset_id,
+                    "a placement's key is absent from the store inventory",
+                );
+                verdicts.push((placement.object_key, Verdict::Missing, None));
+            }
+        }
+    }
+
+    if !verdicts.is_empty() {
+        let mut conn = dam_db::TenantConn::begin(global, slug).await?;
+        for (key, verdict, checksum) in &verdicts {
+            integrity::record(conn.executor(), key, *verdict, checksum.as_deref(), now).await?;
+        }
+        conn.commit().await?;
+    }
+
+    Ok(scrubbed)
+}
+
 /// The verdict for one placement the store answered for, and the checksum worth remembering.
 ///
 /// Size first, because every backend reports it and a truncated object is the failure a killed writer
@@ -180,14 +284,15 @@ async fn verify(
     store: &dyn BlobStore,
     key: &Key,
     placement: &dam_db::integrity::Checkable,
-    state: &dam_store::ObjectState,
+    found_size: u64,
+    found_checksum: Option<String>,
 ) -> (Verdict, Option<String>) {
     let recorded = u64::try_from(placement.size_bytes).unwrap_or(0);
-    if state.size != recorded {
-        return (Verdict::Corrupt, state.checksum.clone());
+    if found_size != recorded {
+        return (Verdict::Corrupt, found_checksum);
     }
 
-    if let (Some(before), Some(now)) = (&placement.remote_checksum, &state.checksum)
+    if let (Some(before), Some(now)) = (&placement.remote_checksum, &found_checksum)
         && before != now
     {
         return (Verdict::Corrupt, Some(now.clone()));
@@ -196,7 +301,7 @@ async fn verify(
     // A zero-byte object is a legitimate thing to store and there is no first byte to ask for, so the
     // probe is skipped rather than reporting every empty object as damaged.
     if recorded == 0 {
-        return (Verdict::Present, state.checksum.clone());
+        return (Verdict::Present, found_checksum);
     }
 
     match store.get(key, Some(ByteRange::new(0, Some(0)))).await {
@@ -206,9 +311,9 @@ async fn verify(
                 recorded,
                 "the store lists an object at its recorded size and serves none of it",
             );
-            (Verdict::Corrupt, state.checksum.clone())
+            (Verdict::Corrupt, found_checksum)
         }
-        Ok(_) => (Verdict::Present, state.checksum.clone()),
+        Ok(_) => (Verdict::Present, found_checksum),
         // Weather. The metadata agreed, and one unreadable probe is not enough to overturn that —
         // leaving the verdict alone costs a pass, and getting it wrong costs the report's credibility.
         Err(error) => {
@@ -217,7 +322,7 @@ async fn verify(
                 %error,
                 "the first-byte probe could not be answered; keeping the metadata verdict",
             );
-            (Verdict::Present, state.checksum.clone())
+            (Verdict::Present, found_checksum)
         }
     }
 }
