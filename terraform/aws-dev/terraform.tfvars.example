@@ -1,0 +1,9 @@
+# Copy to terraform.tfvars (gitignored) and fill in. Only my_ip_cidr is required.
+#
+# The address inbound API/SSH is locked to — your own IP as a /32.
+my_ip_cidr = "203.0.113.7/32"
+
+# Optional overrides (defaults in variables.tf):
+# instance_type     = "t4g.medium"
+# db_instance_class = "db.t3.micro"
+# image_tag         = "latest"
