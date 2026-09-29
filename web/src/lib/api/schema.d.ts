@@ -2259,6 +2259,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/signing-identities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every identity this tenant has had, newest first. */
+        get: operations["list"];
+        put?: never;
+        /** Installs an identity and makes it the one that signs, standing the previous one down. */
+        post: operations["install"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/signing-identities/active": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Stands the active identity down; the tenant falls back to the deployment's identity rather than stopping
+         *     signing. 204 if there was one, 404 if there was not.
+         */
+        delete: operations["stand_down"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/upload-profiles": {
         parameters: {
             query?: never;
@@ -3874,6 +3912,22 @@ export interface components {
             /** @description The values that make this one apply. Compared as text, so `true` and `2026` work as written. */
             values: string[];
         };
+        /** @description One identity as an administrator sees it. The certificate is public and returned; the key never is. */
+        IdentityView: {
+            /** @description The C2PA signing algorithm, e.g. `es256`. */
+            algorithm: string;
+            /** @description The certificate chain, PEM. Public — every verifier of an asset signed with it already holds it. */
+            cert_pem: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: uuid */
+            id: string;
+            /** @description Whether this is the identity the tenant currently signs with. */
+            is_active: boolean;
+            label: string;
+            /** @description The RFC 3161 timestamp authority URL, if one was configured. */
+            timestamp_authority?: string | null;
+        };
         /** @description What pulling an asset would affect. */
         ImpactView: {
             /** Format: int64 */
@@ -4180,6 +4234,19 @@ export interface components {
             make_default?: boolean;
             /** @description `anthropic` or `openai_compatible`. */
             provider: string;
+        };
+        /** @description An identity to install. The key is plaintext on the way in and sealed before anything is stored. */
+        NewIdentityRequest: {
+            /** @description A C2PA signing algorithm: es256, es384, es512, ps256, ps384, ps512, ed25519. */
+            algorithm: string;
+            /** @description The certificate chain, PEM. Public. */
+            cert_pem: string;
+            /** @description A person's name for the identity, for the list. */
+            label: string;
+            /** @description The private key, PEM. Sealed before storage and never returned. */
+            private_key_pem: string;
+            /** @description Optional RFC 3161 timestamp authority URL, so signatures outlive the certificate. */
+            timestamp_authority?: string | null;
         };
         /** @description A portal to create. */
         NewPortalRequest: {
@@ -10957,6 +11024,101 @@ export interface operations {
             };
             /** @description Authenticated, and holds no manage scope */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdentityView"][];
+                };
+            };
+            /** @description Needs manage access */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    install: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewIdentityRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdentityView"];
+                };
+            };
+            /** @description Needs manage access */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The certificate and key cannot sign, or a field is empty */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    stand_down: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stood down; the deployment identity now applies */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Needs manage access */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The tenant had no identity of its own */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

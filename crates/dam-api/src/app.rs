@@ -284,6 +284,12 @@ pub fn router(cfg: &Config, deps: AppDeps) -> Router {
             prices: dam_ai::pricing::Prices::with_overrides(&cfg.ai.prices),
             transport: Arc::clone(&deps.model_transport),
         }))
+        // The same deployment sealing keyring the AI credentials use: a tenant's C2PA signing key is sealed
+        // and read back exactly as a provider key is.
+        .merge(crate::signing::router(crate::signing::SigningState {
+            global: deps.global.clone(),
+            keyring: cfg.ai.keyring(),
+        }))
         .merge(crate::shares::router(crate::shares::ShareState {
             global: deps.global.clone(),
             delivery: Arc::clone(&delivery),
