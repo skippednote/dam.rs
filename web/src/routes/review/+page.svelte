@@ -45,7 +45,7 @@
 	let loading = $state(true);
 	let deciding = $state<string | null>(null);
 
-	const pending = $derived(queue.reduce((total, row) => total + row.suggested.length, 0));
+	const pending = $derived(queue.reduce((n, r) => n + r.suggested.length + r.fields.length, 0));
 
 	async function load() {
 		loading = true;
@@ -152,8 +152,7 @@
 			</p>
 		{:else}
 			<p class="text-sm text-muted">
-				{pending} suggestion{pending === 1 ? '' : 's'} across {queue.length} asset{queue.length ===
-				1
+				{pending} proposal{pending === 1 ? '' : 's'} across {queue.length} asset{queue.length === 1
 					? ''
 					: 's'}.
 			</p>
