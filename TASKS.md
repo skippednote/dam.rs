@@ -1527,6 +1527,30 @@ cost guards, notifications/Paths (G9), saved searches (G15).
   in. That is why `delivery_tenant` survives: not for the token path, which now resolves itself, but for
   the eighteen `.pool()` reads on the visitor surface.
 
+  **The two URLs do not face the same problem, which halves the decision.** *Measured 2026-08-28; the
+  eighteen `.pool()` reads are still exactly eighteen, in `shares.rs`, `portals.rs` and `downloads.rs`.*
+
+  `share_links.token` is 256 bits from the OS CSPRNG. `portals.key` is a human-chosen slug —
+  `^[a-z0-9][a-z0-9-]{1,62}$`, commented in the migration as "the URL name, when public". That difference is
+  not cosmetic:
+
+  - **`/s/{token}` has no collision problem to solve.** Two tenants minting the same 256-bit token is not
+    something that happens, so a global token→tenant lookup in `dam_global` costs nothing in collisions and
+    changes no published URL. The trilemma below simply does not apply to shares.
+  - **`/p/{key}` is the whole of the problem.** Two customers will both want `spring-2026`, and a slug is
+    chosen precisely so it can be typed and remembered. Every cost in the three options — collision, URL
+    migration, length — lands here and only here.
+
+  So whatever is picked can be picked for portals alone, and shares can be resolved globally today. Worth
+  knowing before treating this as one uniform change to "the visitor surface".
+
+  **What a global registry actually costs, for either.** A row in `dam_global` written when a share or portal
+  is created, which is a cross-schema write on a path that currently touches one schema. D2's "no joins
+  across tenants" is about queries rather than about a lookup table, and the control plane already holds
+  `tenants` and `storage_pools` — but it is a second place a share exists, and a share deleted in a tenant
+  schema without its global row removed becomes a token that resolves to a tenant and then finds nothing.
+  That is a reconciliation job, not a constraint, because the two live in different schemas.
+
   **This is a decision about the public URL space rather than a refactor**, which is why it is its own
   item. Three shapes, and they are not equivalent: a globally unique key registry in `dam_global` (one
   lookup, but portal keys stop being per-tenant names and two customers can collide); a tenant in the
