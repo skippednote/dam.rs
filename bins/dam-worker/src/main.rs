@@ -140,13 +140,16 @@ async fn build_store(cfg: &Config) -> anyhow::Result<dam_store::S3Store> {
 async fn build_store_inner(cfg: &Config) -> anyhow::Result<dam_store::S3Store> {
     match cfg.storage.endpoint.as_deref() {
         None => {
-            let store = dam_store::S3Store::aws(&cfg.storage.bucket, &cfg.storage.region).await;
-            // Inventory is AWS-only, and the scrub runs here — so this is the wiring that actually makes
-            // the merged inventory path fire. See the note in damd's build_store_inner.
-            Ok(match cfg.storage.inventory_prefix.as_deref() {
-                Some(prefix) => store.with_inventory_prefix(prefix),
-                None => store,
-            })
+            let mut store = dam_store::S3Store::aws(&cfg.storage.bucket, &cfg.storage.region).await;
+            // Inventory and batch operations are AWS-only, and the scrub *and* the restore poll both run
+            // here — so this is the wiring that actually makes both paths fire. See damd's build_store_inner.
+            if let Some(prefix) = cfg.storage.inventory_prefix.as_deref() {
+                store = store.with_inventory_prefix(prefix);
+            }
+            if let Some(role) = cfg.storage.batch_role_arn.as_deref() {
+                store = store.with_batch_role(role);
+            }
+            Ok(store)
         }
         Some(endpoint) => {
             let (Some(access), Some(secret)) = (

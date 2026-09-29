@@ -425,12 +425,90 @@ data "aws_iam_policy_document" "app" {
     actions   = ["ecr:GetAuthorizationToken"]
     resources = ["*"]
   }
+  # Create and inspect S3 Batch Operations jobs (bulk restore). CreateJob is account-scoped and names no
+  # existing resource, so it is granted on `*`; the blast radius is bounded by PassRole below, since a job
+  # can only act through the one role this account will pass it.
+  statement {
+    sid       = "BatchJobs"
+    effect    = "Allow"
+    actions   = ["s3:CreateJob", "s3:DescribeJob"]
+    resources = ["*"]
+  }
+  # Hand the S3 Batch role to a job at creation time. Scoped to that one role and to S3 Batch as the consumer,
+  # so this cannot be used to pass any other role anywhere else.
+  statement {
+    sid       = "PassBatchRole"
+    effect    = "Allow"
+    actions   = ["iam:PassRole"]
+    resources = [aws_iam_role.s3_batch.arn]
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PassedToService"
+      values   = ["batchoperations.s3.amazonaws.com"]
+    }
+  }
 }
 
 resource "aws_iam_role_policy" "app" {
   name   = "${var.name_prefix}-app-policy"
   role   = aws_iam_role.app.id
   policy = data.aws_iam_policy_document.app.json
+}
+
+# ---------- S3 Batch Operations role (bulk restore) ----------
+# S3 Batch assumes this role to run a bulk restore job: read the manifest, initiate Glacier retrieval on each
+# object it lists, and write the completion report. Scoped to this one bucket and this one account.
+data "aws_iam_policy_document" "batch_assume" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["batchoperations.s3.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [data.aws_caller_identity.me.account_id]
+    }
+  }
+}
+
+resource "aws_iam_role" "s3_batch" {
+  name               = "${var.name_prefix}-s3-batch"
+  assume_role_policy = data.aws_iam_policy_document.batch_assume.json
+  tags               = { Name = "${var.name_prefix}-s3-batch" }
+}
+
+data "aws_iam_policy_document" "batch" {
+  # Read the manifest and initiate restore on the objects it lists.
+  statement {
+    sid       = "RestoreObjects"
+    effect    = "Allow"
+    actions   = ["s3:GetObject", "s3:RestoreObject"]
+    resources = ["${aws_s3_bucket.objects.arn}/*"]
+  }
+  # Write the completion report back to the bucket.
+  statement {
+    sid       = "WriteReport"
+    effect    = "Allow"
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.objects.arn}/batch-reports/*"]
+  }
+  # The objects, and the report written under the bucket's default encryption, are KMS-encrypted under the
+  # bucket CMK, so the job's role needs to use it.
+  statement {
+    sid       = "UseBucketKey"
+    effect    = "Allow"
+    actions   = ["kms:Decrypt", "kms:GenerateDataKey"]
+    resources = [aws_kms_key.objects.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "s3_batch" {
+  name   = "bulk-restore"
+  role   = aws_iam_role.s3_batch.id
+  policy = data.aws_iam_policy_document.batch.json
 }
 
 resource "aws_iam_instance_profile" "app" {
@@ -466,6 +544,7 @@ resource "aws_instance" "app" {
     image_tag         = var.image_tag
     bucket            = aws_s3_bucket.objects.bucket
     inventory_prefix  = "inventory/${aws_s3_bucket.objects.bucket}/${aws_s3_bucket_inventory.objects.name}"
+    batch_role_arn    = aws_iam_role.s3_batch.arn
     kms_key_arn       = aws_kms_key.objects.arn
     db_url_param      = aws_ssm_parameter.database_url.name
     signing_key_param = aws_ssm_parameter.url_signing_key.name

@@ -96,6 +96,7 @@ pub async fn run<S: BlobStore>(store: &S) -> Report {
     listing(store, &mut r).await;
     storage_classes(store, caps, &mut r).await;
     restore_lifecycle(store, caps, &mut r).await;
+    bulk_restore_lifecycle(store, caps, &mut r).await;
     r
 }
 
@@ -515,4 +516,55 @@ async fn restore_lifecycle<S: BlobStore>(store: &S, caps: Capabilities, r: &mut 
     r.pass("restore leaves the storage class alone");
 
     let _ = store.delete(&key).await;
+}
+
+/// Bulk restore: a store claiming [`Capabilities::batch_operations`] must begin a restore on every key in one
+/// call and hand back a job handle. Only the *creation* is checked here — completion is asynchronous and, on
+/// real S3, a billed Batch job needing an IAM role, so the deep path is `aws_conformance`'s to run.
+async fn bulk_restore_lifecycle<S: BlobStore>(store: &S, caps: Capabilities, r: &mut Report) {
+    if !caps.batch_operations {
+        r.skip(
+            "bulk restore",
+            "driver has no Batch Operations — bulk restore falls back to a RestoreObject per object, which \
+             the restore-lifecycle case already covers",
+        );
+        return;
+    }
+
+    let keys = [
+        Key::original(ns(), &digest(8)).expect("key"),
+        Key::original(ns(), &digest(9)).expect("key"),
+    ];
+    for key in &keys {
+        store
+            .put(key, Bytes::from_static(b"archived"), StorageClass::Glacier)
+            .await
+            .expect("put GLACIER");
+    }
+
+    let handle = store
+        .bulk_restore(&keys, RestoreTier::Bulk, Duration::from_secs(7 * 86400))
+        .await
+        .expect("bulk_restore");
+    assert!(
+        !handle.job_id.is_empty(),
+        "a bulk restore must return a non-empty job id"
+    );
+    r.pass("bulk restore returns a job handle");
+
+    // Every key must now be in flight, exactly as a single restore leaves its object: a promise, no bytes.
+    for key in &keys {
+        assert!(
+            matches!(
+                store.get(key, None).await.expect("get during bulk restore"),
+                GetOutcome::NotAvailable(_)
+            ),
+            "an in-progress bulk restore must not yield bytes"
+        );
+    }
+    r.pass("bulk restore puts every key in flight");
+
+    for key in &keys {
+        let _ = store.delete(key).await;
+    }
 }

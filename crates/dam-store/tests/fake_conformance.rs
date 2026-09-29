@@ -21,7 +21,10 @@ fn key() -> Key {
 
 #[tokio::test]
 async fn passes_the_shared_conformance_suite() {
+    // Batch operations opted in so the suite exercises the bulk-restore case rather than skipping it; the
+    // per-object restore path is covered by the same suite's restore-lifecycle case regardless.
     let (store, _clock) = FakeS3Store::with_test_clock();
+    let store = store.doing_batch_operations();
     let report = conformance::run(&store).await;
     // Printed so lost coverage is visible in CI output rather than hidden behind a
     // green tick.

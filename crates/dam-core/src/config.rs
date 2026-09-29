@@ -189,6 +189,15 @@ pub struct StorageConfig {
     /// It buys nothing against a non-AWS endpoint (SeaweedFS and the other gateways publish no inventory);
     /// setting it there is flagged as an advisory rather than refused, since a future gateway might.
     pub inventory_prefix: Option<String>,
+    /// The IAM role S3 Batch Operations assumes to run a bulk restore, or `None` when none is configured.
+    ///
+    /// When set (AWS only), a bulk restore of many archived objects becomes one server-side S3 Batch job
+    /// instead of a `RestoreObject` per object — see `dam_store::S3Store::with_batch_role`. `None`, and an
+    /// empty string also means `None`, for the same reason `endpoint` and `inventory_prefix` do.
+    ///
+    /// It buys nothing against a non-AWS endpoint (no Batch Operations control plane); setting it there is
+    /// flagged as an advisory rather than refused.
+    pub batch_role_arn: Option<String>,
 }
 
 /// Scanning uploads before they become assets (M1).
@@ -401,6 +410,8 @@ impl Default for StorageConfig {
             sse_kms_key_id: None,
             // No inventory. The scrub falls back to a HEAD per placement, which is correct if slower.
             inventory_prefix: None,
+            // No batch role. Bulk restore falls back to a RestoreObject per object.
+            batch_role_arn: None,
         }
     }
 }
@@ -524,6 +535,15 @@ impl Config {
             .filter(|value| !value.is_empty())
             .map(str::to_owned);
 
+        // Same escape hatch again, for the batch role ARN.
+        cfg.storage.batch_role_arn = cfg
+            .storage
+            .batch_role_arn
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned);
+
         cfg.validate()?;
         Ok(cfg)
     }
@@ -587,6 +607,20 @@ impl Config {
                 "storage.inventory_prefix ({prefix}) is set against a non-AWS endpoint ({endpoint}), which \
                  likely publishes no S3 Inventory report. The integrity scrub will read an empty inventory \
                  and verify nothing; unset it to fall back to the per-object HEAD path."
+            ));
+        }
+
+        // Same shape as the inventory advisory: a batch role means nothing without an S3 Batch Operations
+        // control plane, which a non-AWS endpoint does not have. Advisory, not a refusal — the store still
+        // degrades to the per-object restore loop.
+        if let (Some(_), Some(endpoint)) = (
+            self.storage.batch_role_arn.as_deref(),
+            self.storage.endpoint.as_deref(),
+        ) {
+            out.push(format!(
+                "storage.batch_role_arn is set against a non-AWS endpoint ({endpoint}), which has no S3 \
+                 Batch Operations. Bulk restore will fall back to a RestoreObject per object; unset it to \
+                 silence this."
             ));
         }
 

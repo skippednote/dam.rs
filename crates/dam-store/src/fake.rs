@@ -14,8 +14,8 @@
 //! `S3Store`, so it cannot drift from real S3 on anything they both do.
 
 use crate::{
-    BlobStore, ByteRange, Capabilities, Error, GetOutcome, InventoryEntry, Key, ObjectState,
-    Placement, RestoreTicket, Result,
+    BatchHandle, BlobStore, ByteRange, Capabilities, Error, GetOutcome, InventoryEntry, Key,
+    ObjectState, Placement, RestoreTicket, Result,
 };
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -64,6 +64,12 @@ pub struct FakeS3Store {
     /// Whether this fake claims and serves an object inventory. Opt-in, off by default, so the many tests
     /// that scrub through the fake keep exercising the per-object `head` path unless they ask otherwise.
     publishes_inventory: bool,
+    /// Whether this fake claims S3 Batch Operations. Opt-in, off by default, so restore tests exercise the
+    /// per-object path unless they ask for the batch one.
+    does_batch: bool,
+    /// The keys passed to each [`BlobStore::bulk_restore`] call, in order, so a test can assert that one
+    /// batch job covered many objects rather than one call per object.
+    batch_calls: Arc<Mutex<Vec<Vec<String>>>>,
 }
 
 impl FakeS3Store {
@@ -80,6 +86,8 @@ impl FakeS3Store {
             clock,
             retrieval_cost_per_gb_cents: 300,
             publishes_inventory: false,
+            does_batch: false,
+            batch_calls: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -89,6 +97,23 @@ impl FakeS3Store {
     pub fn publishing_inventory(mut self) -> Self {
         self.publishes_inventory = true;
         self
+    }
+
+    /// Turns on S3 Batch Operations, so [`BlobStore::capabilities`] claims it and [`BlobStore::bulk_restore`]
+    /// begins a restore on each key at once — the seam the pipeline's batch dispatch drives.
+    #[must_use]
+    pub fn doing_batch_operations(mut self) -> Self {
+        self.does_batch = true;
+        self
+    }
+
+    /// The keys of every [`BlobStore::bulk_restore`] call so far, oldest first. One inner `Vec` per call, so
+    /// a test can assert both how many jobs were created and which objects each covered.
+    pub fn batch_calls(&self) -> Vec<Vec<String>> {
+        match self.batch_calls.lock() {
+            Ok(g) => g.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
     }
 
     /// How much a restore of this object would cost, in cents. Feeds the estimate the
@@ -162,6 +187,55 @@ impl FakeS3Store {
             expires_at,
         }
     }
+
+    /// Applies a restore to one object: the class and tier checks, the already-in-flight no-op, and setting
+    /// the in-progress copy. Shared by `restore` (one object) and `bulk_restore` (many), so the two cannot
+    /// drift on what "restoring" means.
+    fn begin_restore(
+        &self,
+        obj: &mut Object,
+        tier: RestoreTier,
+        keep_for: Duration,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        if !obj.storage_class.requires_restore() {
+            return Err(Error::Unsupported {
+                driver: "fake",
+                capability: "restore of a non-archive object",
+            });
+        }
+        if !tier.is_available_for(obj.storage_class) {
+            // Deep Archive has no Expedited tier. Refusing here rather than at the
+            // provider means the error names the real reason.
+            return Err(Error::Backend(format!(
+                "{tier} retrieval is not available for {}",
+                obj.storage_class
+            )));
+        }
+
+        // A restore already in flight or live is a no-op, not a second charge.
+        if matches!(
+            self.restore_state_now(obj).0,
+            RestoreState::Ongoing | RestoreState::Available
+        ) {
+            return Ok(());
+        }
+
+        let wait = ChronoDuration::from_std(tier.expected_wait(obj.storage_class))
+            .unwrap_or_else(|_| ChronoDuration::hours(12));
+        let keep = ChronoDuration::from_std(keep_for).unwrap_or_else(|_| ChronoDuration::days(7));
+        let available_at = now + wait;
+
+        obj.restore = Some(Restore {
+            tier,
+            requested_at: now,
+            available_at,
+            // Measured from availability, not from the request — otherwise a 48-hour
+            // Bulk restore kept for 24 hours would expire before it arrived.
+            expires_at: available_at + keep,
+        });
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -184,6 +258,7 @@ impl BlobStore for FakeS3Store {
             ranged_get: true,
             server_checksums: true,
             object_inventory: self.publishes_inventory,
+            batch_operations: self.does_batch,
         }
     }
 
@@ -333,42 +408,42 @@ impl BlobStore for FakeS3Store {
         let obj = objects
             .get_mut(key.as_str())
             .ok_or_else(|| Error::NotFound(key.as_str().to_owned()))?;
+        self.begin_restore(obj, tier, keep_for, now)?;
+        Ok(self.ticket(obj))
+    }
 
-        if !obj.storage_class.requires_restore() {
+    async fn bulk_restore(
+        &self,
+        keys: &[Key],
+        tier: RestoreTier,
+        keep_for: Duration,
+    ) -> Result<BatchHandle> {
+        if !self.does_batch {
             return Err(Error::Unsupported {
                 driver: "fake",
-                capability: "restore of a non-archive object",
+                capability: "batch operations",
             });
         }
-        if !tier.is_available_for(obj.storage_class) {
-            // Deep Archive has no Expedited tier. Refusing here rather than at the
-            // provider means the error names the real reason.
-            return Err(Error::Backend(format!(
-                "{tier} retrieval is not available for {}",
-                obj.storage_class
-            )));
+        // Recorded before the work, so a test sees the call even if a key errors — and the keys are recorded
+        // whether or not each object exists, because that is what a real Batch job's manifest carries.
+        let recorded: Vec<String> = keys.iter().map(|k| k.as_str().to_owned()).collect();
+        match self.batch_calls.lock() {
+            Ok(mut g) => g.push(recorded),
+            Err(poisoned) => poisoned.into_inner().push(recorded),
         }
 
-        // A restore already in flight or live is a no-op, not a second charge.
-        let existing = self.restore_state_now(obj).0;
-        if matches!(existing, RestoreState::Ongoing | RestoreState::Available) {
-            return Ok(self.ticket(obj));
+        let now = self.clock.now();
+        let mut objects = self.lock();
+        for key in keys {
+            if let Some(obj) = objects.get_mut(key.as_str()) {
+                // A real S3 Batch job continues past a per-object failure and records it in the completion
+                // report; the fake mirrors that by starting what it can and ignoring the rest.
+                let _ = self.begin_restore(obj, tier, keep_for, now);
+            }
         }
-
-        let wait = ChronoDuration::from_std(tier.expected_wait(obj.storage_class))
-            .unwrap_or_else(|_| ChronoDuration::hours(12));
-        let keep = ChronoDuration::from_std(keep_for).unwrap_or_else(|_| ChronoDuration::days(7));
-        let available_at = now + wait;
-
-        obj.restore = Some(Restore {
-            tier,
-            requested_at: now,
-            available_at,
-            // Measured from availability, not from the request — otherwise a 48-hour
-            // Bulk restore kept for 24 hours would expire before it arrived.
-            expires_at: available_at + keep,
-        });
-        Ok(self.ticket(obj))
+        Ok(BatchHandle {
+            job_id: format!("fake-batch-{}", uuid::Uuid::new_v4()),
+        })
     }
 
     async fn copy(&self, from: &Key, to: &Key, size: u64, class: StorageClass) -> Result<()> {

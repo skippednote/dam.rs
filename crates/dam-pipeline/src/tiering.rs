@@ -266,22 +266,32 @@ pub async fn poll(
     // Claimed in one transaction and issued outside it. Holding the transaction across the S3 calls would
     // mean a slow vendor keeps rows locked, and a worker that died mid-batch would roll the claim back and
     // re-issue every restore in it — each one a real charge.
+    //
+    // A batch-capable store claims a bigger slice, because it can fold the whole slice into one S3 Batch job
+    // rather than one call per object.
+    let can_batch = store.capabilities().batch_operations;
+    let claim_limit = if can_batch {
+        BULK_CLAIM_BATCH
+    } else {
+        CLAIM_BATCH
+    };
     let mut conn = dam_db::TenantConn::begin(global, slug).await?;
-    let claimed = restore_db::claim_queued(conn.executor(), CLAIM_BATCH, now).await?;
+    let claimed = restore_db::claim_queued(conn.executor(), claim_limit, now).await?;
     conn.commit().await?;
 
-    for request in claimed {
-        match issue(store, &request).await {
-            Ok(()) => polled.issued += 1,
-            Err(error) => {
-                // Recorded on the row rather than only logged, because the person waiting is watching the
-                // request and not the worker's stderr.
-                tracing::error!(%error, id = %request.id, key = %request.object_key, "issuing a restore");
-                let mut conn = dam_db::TenantConn::begin(global, slug).await?;
-                restore_db::mark_failed(conn.executor(), request.id, &error.to_string(), now)
-                    .await?;
-                conn.commit().await?;
-                polled.failed += 1;
+    if can_batch && claimed.len() >= BULK_RESTORE_THRESHOLD {
+        issue_in_bulk(global, store, slug, claimed, now, &mut polled).await?;
+    } else {
+        for request in claimed {
+            match issue(store, &request).await {
+                Ok(()) => polled.issued += 1,
+                Err(error) => {
+                    // Recorded on the row rather than only logged, because the person waiting is watching the
+                    // request and not the worker's stderr.
+                    tracing::error!(%error, id = %request.id, key = %request.object_key, "issuing a restore");
+                    record_issue_failure(global, slug, request.id, &error, now).await?;
+                    polled.failed += 1;
+                }
             }
         }
     }
@@ -325,10 +335,7 @@ pub async fn poll(
             match issue(store, &request).await {
                 Ok(()) => polled.reissued += 1,
                 Err(error) => {
-                    let mut conn = dam_db::TenantConn::begin(global, slug).await?;
-                    restore_db::mark_failed(conn.executor(), request.id, &error.to_string(), now)
-                        .await?;
-                    conn.commit().await?;
+                    record_issue_failure(global, slug, request.id, &error, now).await?;
                     polled.failed += 1;
                 }
             }
@@ -366,11 +373,27 @@ pub async fn poll(
     Ok(polled)
 }
 
-/// How many requests one pass takes.
+/// How many requests one pass takes on the per-object path.
 ///
 /// Bounded so a queue of ten thousand does not become one job holding a connection for an hour; the next
 /// pass is two minutes away and picks up the rest.
 const CLAIM_BATCH: i64 = 32;
+
+/// How many requests one pass claims when the store can batch (S3 Batch Operations).
+///
+/// Larger than `CLAIM_BATCH` because the whole point of a batch job is to fold a big backlog into one
+/// server-side operation: claiming 32 at a time would create a job every two minutes and never realise the
+/// "hundreds of round trips become one job" win. Still bounded, so a queue of a million is drained over a
+/// handful of jobs rather than one that takes a day to build a manifest for.
+const BULK_CLAIM_BATCH: i64 = 1000;
+
+/// The claim size at or above which a batch-capable store issues an S3 Batch job instead of a
+/// `RestoreObject` per object.
+///
+/// Below this the per-object path is both cheaper and lower-latency: an S3 Batch job has a fixed setup cost
+/// and its own startup delay, which is not worth paying to restore a handful of objects. A collection restore
+/// — the case batch exists for — is hundreds, comfortably over the line.
+const BULK_RESTORE_THRESHOLD: usize = 100;
 
 /// Records on the placement that a temporary copy exists.
 async fn placement_restored(
@@ -419,10 +442,119 @@ async fn issue(store: &dyn BlobStore, request: &RestoreRequest) -> Result<()> {
         .tier
         .parse()
         .map_err(|_| Error::Permanent(format!("restore tier {:?} is not one", request.tier)))?;
-    let keep_for = std::time::Duration::from_secs(
-        u64::try_from(request.keep_warm_days.max(1)).unwrap_or(7) * 24 * 60 * 60,
-    );
-    store.restore(&key, tier, keep_for).await?;
+    store
+        .restore(&key, tier, keep_for_of(request.keep_warm_days))
+        .await?;
+    Ok(())
+}
+
+/// Marks one restore request failed, in its own transaction.
+///
+/// Recorded on the row rather than only logged, because the person waiting watches the request, not the
+/// worker's stderr. Shared by every issue path (per-object, re-issue, and each fallback within the bulk
+/// path) so they cannot drift on how a failure is surfaced.
+async fn record_issue_failure(
+    global: &sqlx::PgPool,
+    slug: &TenantSlug,
+    id: Uuid,
+    error: &Error,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    let mut conn = dam_db::TenantConn::begin(global, slug).await?;
+    restore_db::mark_failed(conn.executor(), id, &error.to_string(), now).await?;
+    conn.commit().await?;
+    Ok(())
+}
+
+/// The keep-warm window as a `Duration`, from a whole-days count that is at least one.
+fn keep_for_of(keep_warm_days: i32) -> std::time::Duration {
+    std::time::Duration::from_secs(u64::try_from(keep_warm_days.max(1)).unwrap_or(7) * 24 * 60 * 60)
+}
+
+/// Issues a large batch of claimed restores as S3 Batch jobs — one per (tier, keep-warm) group, because a
+/// job carries a single retrieval tier and a single expiry.
+///
+/// A group the backend cannot batch — an unparsable tier, or Expedited, which S3 Batch restore has no
+/// equivalent of — falls back to issuing its members one at a time, so nothing is dropped for being in the
+/// wrong shape. A key that will not parse is failed and left out of the manifest. On a job-creation failure
+/// the whole group is marked failed, matching the per-object path: recorded on the row, not just the log.
+async fn issue_in_bulk(
+    global: &sqlx::PgPool,
+    store: &dyn BlobStore,
+    slug: &TenantSlug,
+    claimed: Vec<RestoreRequest>,
+    now: DateTime<Utc>,
+    polled: &mut Polled,
+) -> Result<()> {
+    let mut groups: std::collections::HashMap<(String, i32), Vec<RestoreRequest>> =
+        std::collections::HashMap::new();
+    for request in claimed {
+        groups
+            .entry((request.tier.clone(), request.keep_warm_days))
+            .or_default()
+            .push(request);
+    }
+
+    for ((tier_raw, keep_warm_days), requests) in groups {
+        // Only Standard and Bulk batch; Expedited and an unknown tier go the per-object route.
+        let batchable_tier = match tier_raw.parse::<RestoreTier>() {
+            Ok(tier @ (RestoreTier::Standard | RestoreTier::Bulk)) => Some(tier),
+            _ => None,
+        };
+        let Some(tier) = batchable_tier else {
+            for request in &requests {
+                match issue(store, request).await {
+                    Ok(()) => polled.issued += 1,
+                    Err(error) => {
+                        tracing::error!(%error, id = %request.id, key = %request.object_key, "issuing a restore");
+                        record_issue_failure(global, slug, request.id, &error, now).await?;
+                        polled.failed += 1;
+                    }
+                }
+            }
+            continue;
+        };
+
+        // Parse keys; a request with an unusable key is failed and excluded, so one bad row cannot sink the
+        // whole job.
+        let mut keys = Vec::with_capacity(requests.len());
+        let mut batched = Vec::with_capacity(requests.len());
+        for request in requests {
+            match dam_store::Key::new(request.object_key.clone()) {
+                Ok(key) => {
+                    keys.push(key);
+                    batched.push(request);
+                }
+                Err(error) => {
+                    let error = Error::Permanent(error.to_string());
+                    tracing::error!(%error, id = %request.id, "a restore request holds an unusable key");
+                    record_issue_failure(global, slug, request.id, &error, now).await?;
+                    polled.failed += 1;
+                }
+            }
+        }
+        if keys.is_empty() {
+            continue;
+        }
+
+        match store
+            .bulk_restore(&keys, tier, keep_for_of(keep_warm_days))
+            .await
+        {
+            Ok(handle) => {
+                tracing::info!(job = %handle.job_id, count = keys.len(), %tier, "issued a bulk restore");
+                polled.issued += batched.len();
+            }
+            Err(error) => {
+                let error = Error::from(error);
+                tracing::error!(%error, count = keys.len(), "issuing a bulk restore");
+                for request in &batched {
+                    record_issue_failure(global, slug, request.id, &error, now).await?;
+                }
+                polled.failed += batched.len();
+            }
+        }
+    }
     Ok(())
 }
 

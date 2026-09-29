@@ -126,14 +126,18 @@ async fn build_store_inner(cfg: &Config) -> anyhow::Result<dam_store::S3Store> {
         // No endpoint means AWS, which takes its credentials from the environment's provider chain —
         // instance role, SSO, or web identity. Static keys are for the self-hosted case below.
         None => {
-            let store = dam_store::S3Store::aws(&cfg.storage.bucket, &cfg.storage.region).await;
-            // Inventory is AWS-only, so it is wired here rather than in `build_store` alongside the CMK:
-            // pointing the SeaweedFS branch at a prefix that never fills would make the scrub verify
-            // nothing. `config.advisories()` warns if a prefix is set against an endpoint anyway.
-            Ok(match cfg.storage.inventory_prefix.as_deref() {
-                Some(prefix) => store.with_inventory_prefix(prefix),
-                None => store,
-            })
+            let mut store = dam_store::S3Store::aws(&cfg.storage.bucket, &cfg.storage.region).await;
+            // Inventory and batch operations are AWS-only, so they are wired here rather than in
+            // `build_store` alongside the CMK: pointing the SeaweedFS branch at either would make the scrub
+            // verify nothing / bulk restore fall back silently. `config.advisories()` warns if either is set
+            // against an endpoint anyway.
+            if let Some(prefix) = cfg.storage.inventory_prefix.as_deref() {
+                store = store.with_inventory_prefix(prefix);
+            }
+            if let Some(role) = cfg.storage.batch_role_arn.as_deref() {
+                store = store.with_batch_role(role);
+            }
+            Ok(store)
         }
         Some(endpoint) => {
             let (Some(access), Some(secret)) = (
