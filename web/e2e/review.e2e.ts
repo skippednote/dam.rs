@@ -125,7 +125,7 @@ test('the queue says what kind of evidence each suggestion has', async ({ page }
 	// Agreement, not a self-reported number — the badge is the difference.
 	await expect(page.getByText('3 generators agree')).toBeVisible();
 	await expect(page.getByText('claimed 95%')).toBeVisible();
-	await expect(page.getByText('2 suggestions across 1 asset.')).toBeVisible();
+	await expect(page.getByText('3 proposals across 1 asset.')).toBeVisible();
 });
 
 test('what a model wrote is shown with the model that wrote it', async ({ page }) => {
@@ -160,11 +160,11 @@ test('a decided tag leaves the list without the rest reordering', async ({ page 
 		queue: [row({ suggested: [tag('footwear'), tag('outdoor'), tag('studio')] })]
 	});
 	await page.goto('/review');
-	await expect(page.getByText('3 suggestions across 1 asset.')).toBeVisible();
+	await expect(page.getByText('4 proposals across 1 asset.')).toBeVisible();
 
 	await page.getByRole('button', { name: /^Confirm Outdoor/ }).click();
 
-	await expect(page.getByText('2 suggestions across 1 asset.')).toBeVisible();
+	await expect(page.getByText('3 proposals across 1 asset.')).toBeVisible();
 	// Its buttons are gone, which is the assertion that means "left the list" — the word itself is still on
 	// screen in the confirmation message, and asserting on that would pass for the wrong reason.
 	await expect(page.getByRole('button', { name: /^Confirm Outdoor/ })).toBeHidden();
