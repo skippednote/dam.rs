@@ -1069,12 +1069,32 @@ pub async fn start_backfill(
         dam_ai::enrich::PIPELINE_VERSION,
     )
     .await?;
+    let credential = ai_credentials::current(conn.executor()).await?;
     conn.commit().await?;
 
     if !settings.is_enabled {
         return Err(Failure::Unprocessable(
             "enrichment is switched off for this tenant".to_owned(),
         ));
+    }
+    // Bulk backfill submits one provider Batch job, and only Anthropic offers that API. For any other
+    // provider the worker submits nothing, so refuse here rather than hand back a job id that describes
+    // nothing — the honest answer is to enrich these assets one at a time.
+    match credential.as_ref().and_then(Credential::provider) {
+        Some(Provider::Anthropic) => {}
+        Some(other) => {
+            return Err(Failure::Unprocessable(format!(
+                "bulk backfill uses the provider's Batch API, which only Anthropic offers; this \
+                 tenant's default credential is `{}`. Describe assets individually with \
+                 POST /assets/{{id}}/enrich, or add an Anthropic credential.",
+                other.as_str()
+            )));
+        }
+        None => {
+            return Err(Failure::Unprocessable(
+                "no active AI credential to run enrichment".to_owned(),
+            ));
+        }
     }
     if progress.outstanding == 0 {
         // Not an error worth a 500 and not a silent success: a tenant clicking "describe everything" on a

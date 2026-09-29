@@ -89,14 +89,20 @@ async fn fixture() -> Fixture {
     let indexes = std::sync::Arc::new(IndexPool::new(PoolConfig::new(index_dir.path())));
     // A signer on both, because "the grid and the search results agree" turned out to include the *picture*,
     // and with no keyring neither side can mint one — so the disagreement was unassertable here.
-    let delivery = std::sync::Arc::new(dam_api::delivery::DeliveryState::new(
-        acme.clone(),
-        std::sync::Arc::new(dam_store::FakeS3Store::with_test_clock().0),
-        dam_core::signed_url::Keyring::single(
-            "k1",
-            dam_core::Secret::new("a-signing-key".to_owned()),
-        ),
-    ));
+    let delivery = std::sync::Arc::new(
+        dam_api::delivery::DeliveryState::new(
+            acme.clone(),
+            std::sync::Arc::new(dam_store::FakeS3Store::with_test_clock().0),
+            dam_core::signed_url::Keyring::single(
+                "k1",
+                dam_core::Secret::new("a-signing-key".to_owned()),
+            ),
+        )
+        // A fixed clock, so every preview token this fixture mints uses the same `now`. The panel and the
+        // ranked-search path must produce byte-identical thumbnail URLs; on the system clock they mint
+        // microseconds apart and occasionally straddle a tick, which is the flake this removes.
+        .with_clock(std::sync::Arc::new(dam_core::TestClock::new())),
+    );
     let app = router(EngagementState {
         global: global.clone(),
         delivery: Some(std::sync::Arc::clone(&delivery)),
