@@ -152,8 +152,7 @@
 			</p>
 		{:else}
 			<p class="text-sm text-muted">
-				{pending} proposal{pending === 1 ? '' : 's'} across {queue.length} asset{queue.length ===
-				1
+				{pending} proposal{pending === 1 ? '' : 's'} across {queue.length} asset{queue.length === 1
 					? ''
 					: 's'}.
 			</p>
