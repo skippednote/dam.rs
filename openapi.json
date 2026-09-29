@@ -6382,6 +6382,88 @@
         }
       }
     },
+    "/signing-identities": {
+      "get": {
+        "tags": [
+          "signing"
+        ],
+        "summary": "Every identity this tenant has had, newest first.",
+        "operationId": "list",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/IdentityView"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Needs manage access"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "signing"
+        ],
+        "summary": "Installs an identity and makes it the one that signs, standing the previous one down.",
+        "operationId": "install",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewIdentityRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityView"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Needs manage access"
+          },
+          "422": {
+            "description": "The certificate and key cannot sign, or a field is empty"
+          }
+        }
+      }
+    },
+    "/signing-identities/active": {
+      "delete": {
+        "tags": [
+          "signing"
+        ],
+        "summary": "Stands the active identity down; the tenant falls back to the deployment's identity rather than stopping\nsigning. 204 if there was one, 404 if there was not.",
+        "operationId": "stand_down",
+        "responses": {
+          "204": {
+            "description": "Stood down; the deployment identity now applies"
+          },
+          "403": {
+            "description": "Needs manage access"
+          },
+          "404": {
+            "description": "The tenant had no identity of its own"
+          }
+        }
+      }
+    },
     "/upload-profiles": {
       "get": {
         "tags": [
@@ -10106,6 +10188,50 @@
           }
         }
       },
+      "IdentityView": {
+        "type": "object",
+        "description": "One identity as an administrator sees it. The certificate is public and returned; the key never is.",
+        "required": [
+          "id",
+          "label",
+          "algorithm",
+          "is_active",
+          "created_at",
+          "cert_pem"
+        ],
+        "properties": {
+          "algorithm": {
+            "type": "string",
+            "description": "The C2PA signing algorithm, e.g. `es256`."
+          },
+          "cert_pem": {
+            "type": "string",
+            "description": "The certificate chain, PEM. Public — every verifier of an asset signed with it already holds it."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "is_active": {
+            "type": "boolean",
+            "description": "Whether this is the identity the tenant currently signs with."
+          },
+          "label": {
+            "type": "string"
+          },
+          "timestamp_authority": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The RFC 3161 timestamp authority URL, if one was configured."
+          }
+        }
+      },
       "ImpactView": {
         "type": "object",
         "description": "What pulling an asset would affect.",
@@ -10757,6 +10883,41 @@
           "provider": {
             "type": "string",
             "description": "`anthropic` or `openai_compatible`."
+          }
+        }
+      },
+      "NewIdentityRequest": {
+        "type": "object",
+        "description": "An identity to install. The key is plaintext on the way in and sealed before anything is stored.",
+        "required": [
+          "label",
+          "cert_pem",
+          "private_key_pem",
+          "algorithm"
+        ],
+        "properties": {
+          "algorithm": {
+            "type": "string",
+            "description": "A C2PA signing algorithm: es256, es384, es512, ps256, ps384, ps512, ed25519."
+          },
+          "cert_pem": {
+            "type": "string",
+            "description": "The certificate chain, PEM. Public."
+          },
+          "label": {
+            "type": "string",
+            "description": "A person's name for the identity, for the list."
+          },
+          "private_key_pem": {
+            "type": "string",
+            "description": "The private key, PEM. Sealed before storage and never returned."
+          },
+          "timestamp_authority": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional RFC 3161 timestamp authority URL, so signatures outlive the certificate."
           }
         }
       },
