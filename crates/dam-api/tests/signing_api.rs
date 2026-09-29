@@ -23,9 +23,6 @@ use sqlx::PgPool;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-/// A distinctive sealed-key placeholder: the list view must never echo it.
-const SEALED_PLACEHOLDER: &str = "SEALED-KEY-MUST-NOT-LEAK-0xdeadbeef";
-
 struct Fixture {
     _pg: PostgresHarness,
     acme: PgPool,
@@ -153,9 +150,19 @@ async fn json_call(
 }
 
 /// Inserts an already-sealed identity straight into the tenant schema, bypassing the API — so the list and
-/// stand-down contracts can be exercised without a real certificate to install.
-async fn seed_identity(f: &Fixture, label: &str) -> Uuid {
+/// stand-down contracts can be exercised without a real certificate to install. Returns the row id and the
+/// sealed ciphertext, so a test can prove the list view never echoes the latter.
+async fn seed_identity(f: &Fixture, label: &str) -> (Uuid, String) {
     let id = Uuid::now_v7();
+    // A genuinely sealed value, so the `sealed_key` CHECK constraint (the `v1.<key>.<nonce>.<ct>` shape) is
+    // satisfied. Its plaintext is irrelevant — list and stand-down never open it — the point is that the
+    // ciphertext must never come back out.
+    let sealed = keyring()
+        .seal(
+            &Secret::new("not-a-real-signing-key".to_owned()),
+            &dam_db::signing_identities::associated_data("acme", id),
+        )
+        .expect("seal");
     sqlx::query(
         "INSERT INTO signing_identities \
          (id, label, cert_pem, sealed_key, sealing_key_id, algorithm, timestamp_authority) \
@@ -164,11 +171,11 @@ async fn seed_identity(f: &Fixture, label: &str) -> Uuid {
     .bind(id)
     .bind(label)
     .bind("-----BEGIN CERTIFICATE-----\npublic-and-fine\n-----END CERTIFICATE-----")
-    .bind(SEALED_PLACEHOLDER)
+    .bind(&sealed)
     .execute(&f.acme)
     .await
     .expect("seed identity");
-    id
+    (id, sealed)
 }
 
 #[tokio::test]
@@ -233,12 +240,12 @@ async fn a_certificate_that_cannot_sign_is_refused_on_the_way_in() {
 #[tokio::test]
 async fn an_installed_identity_lists_without_its_key_and_stands_down() {
     let f = fixture().await;
-    seed_identity(&f, "acme-2026").await;
+    let (_, sealed) = seed_identity(&f, "acme-2026").await;
 
     let (status, text) = call(&f, "GET", "/signing-identities", &f.key, None).await;
     assert_eq!(status, StatusCode::OK, "{text}");
     assert!(
-        !text.contains(SEALED_PLACEHOLDER),
+        !text.contains(&sealed),
         "the sealed key must never appear in a response: {text}"
     );
     let list: Value = serde_json::from_str(&text).expect("json");
