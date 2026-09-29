@@ -220,6 +220,18 @@ pub struct InventoryEntry {
     pub checksum: Option<String>,
 }
 
+/// A handle to an asynchronous bulk operation the backend runs on its own — an S3 Batch job.
+///
+/// Unlike [`RestoreTicket`], this is not the availability signal. A bulk restore's objects are still
+/// observed becoming readable through the ordinary per-object `head` reconciliation; the handle identifies
+/// the job for logging, audit and (later) cancellation, so a caller can tie a poll pass's issue step to the
+/// job it created rather than guessing.
+#[derive(Debug, Clone)]
+pub struct BatchHandle {
+    /// The backend's identifier for the job (an S3 Batch job id).
+    pub job_id: String,
+}
+
 /// The result of a successful `PUT`.
 #[derive(Debug, Clone)]
 pub struct Placement {
@@ -259,6 +271,12 @@ pub struct Capabilities {
     /// checksum — that reconciliation can read in one pass instead of a `head` per placement. AWS S3 does;
     /// SeaweedFS does not, which is why this is a capability with a per-object fallback rather than assumed.
     pub object_inventory: bool,
+    /// Runs a bulk operation server-side from a manifest — S3 Batch Operations — instead of the caller
+    /// looping one request per object. Used for bulk restore: one job with the backend's own retries,
+    /// throttling and completion report replaces hundreds of `RestoreObject` round trips. AWS S3 does;
+    /// SeaweedFS does not, so this is a capability with a per-object fallback (`restore` in a loop) rather
+    /// than assumed.
+    pub batch_operations: bool,
 }
 
 impl Capabilities {
@@ -273,6 +291,7 @@ impl Capabilities {
             ranged_get: false,
             server_checksums: false,
             object_inventory: false,
+            batch_operations: false,
         }
     }
 
@@ -287,6 +306,7 @@ impl Capabilities {
             ranged_get: true,
             server_checksums: true,
             object_inventory: true,
+            batch_operations: true,
         }
     }
 }
@@ -354,6 +374,30 @@ pub trait BlobStore: Send + Sync {
         tier: RestoreTier,
         keep_for: Duration,
     ) -> Result<RestoreTicket>;
+
+    /// Restore many archived objects in one server-side operation (S3 Batch Operations).
+    ///
+    /// One job — with the backend's own retries, throttling and completion report — in place of a
+    /// [`Self::restore`] per object, which at collection scale is hundreds of round trips. All the keys in
+    /// one call share a `tier` and `keep_for`, because an S3 Batch restore job carries one retrieval tier and
+    /// one expiry; a caller with mixed tiers issues one call per group.
+    ///
+    /// Returns as soon as the job is *created*, not when it finishes: the objects become readable
+    /// asynchronously, observed through the ordinary per-object `head` reconciliation exactly as a single
+    /// restore is. The default is [`Error::Unsupported`], so a driver that has no batch plane keeps the
+    /// per-object fallback; only a driver claiming [`Capabilities::batch_operations`] overrides it.
+    async fn bulk_restore(
+        &self,
+        keys: &[Key],
+        tier: RestoreTier,
+        keep_for: Duration,
+    ) -> Result<BatchHandle> {
+        let _ = (keys, tier, keep_for);
+        Err(Error::Unsupported {
+            driver: "this store",
+            capability: "batch operations",
+        })
+    }
 
     async fn presign_get(&self, key: &Key, ttl: Duration) -> Result<String>;
 

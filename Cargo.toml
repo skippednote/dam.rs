@@ -97,6 +97,11 @@ aws-config = { version = "1", default-features = false, features = [
 aws-sdk-s3 = { version = "1", default-features = false, features = [
     "behavior-version-latest", "rt-tokio", "default-https-client", "sigv4a",
 ] }
+# S3 Batch Operations (bulk restore) lives in a separate control-plane crate. Same feature discipline as
+# aws-sdk-s3 above, to keep the legacy TLS stack out.
+aws-sdk-s3control = { version = "1", default-features = false, features = [
+    "behavior-version-latest", "rt-tokio", "default-https-client",
+] }
 aws-credential-types = "1"
 aws-smithy-types = "1"
 # For a TLS-free HTTP client on plain-http:// endpoints. The SDK's default client loads the platform root

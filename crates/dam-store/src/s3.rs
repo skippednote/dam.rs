@@ -17,8 +17,8 @@
 //! Hence the explicit declaration rather than a probe.
 
 use crate::{
-    BlobStore, ByteRange, Capabilities, Error, GetOutcome, InventoryEntry, Key, ObjectState,
-    Placement, RestoreTicket, Result, inventory,
+    BatchHandle, BlobStore, ByteRange, Capabilities, Error, GetOutcome, InventoryEntry, Key,
+    ObjectState, Placement, RestoreTicket, Result, inventory,
 };
 use async_trait::async_trait;
 use aws_sdk_s3::{
@@ -28,6 +28,11 @@ use aws_sdk_s3::{
     presigning::PresigningConfig,
     primitives::ByteStream,
     types::{GlacierJobParameters, RestoreRequest, Tier},
+};
+use aws_sdk_s3control::types::{
+    JobManifest, JobManifestFieldName, JobManifestFormat, JobManifestLocation, JobManifestSpec,
+    JobOperation, JobReport, JobReportFormat, JobReportScope, S3GlacierJobTier,
+    S3InitiateRestoreObjectOperation,
 };
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
@@ -96,6 +101,19 @@ fn is_plain_http(endpoint: &str) -> bool {
     endpoint.len() >= 7 && endpoint[..7].eq_ignore_ascii_case("http://")
 }
 
+/// The account id embedded in an IAM role ARN (`arn:aws:iam::<account>:role/<name>`), or `None` if the ARN
+/// is not shaped like one.
+///
+/// S3 Batch `CreateJob` needs the account id separately from the role ARN it already carries; deriving it
+/// from the ARN avoids threading a second value (and a possible mismatch between the two) through the config.
+fn account_from_role_arn(arn: &str) -> Option<String> {
+    // arn : partition : service : region(empty for iam) : account : resource
+    arn.split(':')
+        .nth(4)
+        .filter(|account| !account.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 /// The retry and timeout policy, applied to both constructors.
 ///
 /// Stated on the AWS path too, rather than inherited from `aws_config::defaults()`. Two paths with
@@ -134,17 +152,22 @@ pub struct S3Store {
     /// when no inventory is configured. Set via [`Self::with_inventory_prefix`], which also flips the
     /// `object_inventory` capability — the two are kept in lockstep so the claim never outruns the data.
     inventory_prefix: Option<String>,
+    /// The IAM role S3 Batch Operations assumes to run a bulk job, or `None` when none is configured. Set via
+    /// [`Self::with_batch_role`], which also flips the `batch_operations` capability — kept in lockstep so the
+    /// claim never outruns the role a job cannot run without. The account the job is created in is parsed from
+    /// this ARN, so no separate account id is threaded through.
+    batch_role_arn: Option<String>,
 }
 
 /// Applies the store's encryption choice to a request that creates an object.
 ///
 /// A trait over the three builder types rather than the same two lines at each call site, because there are
-/// **seven** paths that create an object — `put`, the small promote copy, the large promote's multipart
+/// **eight** paths that create an object — `put`, the small promote copy, the large promote's multipart
 /// create, the self-copy that performs a storage-class transition, a second multipart create, the one real
-/// uploads go through in `multipart.rs`, and the presigned PUT — and a write that misses it does not fail. It
-/// silently lands under the bucket's default key, which looks exactly like success until somebody audits the
-/// bucket. One applicator, applied everywhere, is greppable in a way that seven remembered pairs of lines is
-/// not.
+/// uploads go through in `multipart.rs`, the presigned PUT, and the S3 Batch bulk-restore manifest upload —
+/// and a write that misses it does not fail. It silently lands under the bucket's default key, which looks
+/// exactly like success until somebody audits the bucket. One applicator, applied everywhere, is greppable in
+/// a way that eight remembered pairs of lines is not.
 pub(crate) trait Encrypted {
     fn encrypted_with(self, key_id: Option<&str>) -> Self;
 }
@@ -206,6 +229,10 @@ impl S3Store {
                 // because a store that claims `object_inventory` must have somewhere to read the manifest
                 // from; without a prefix `inventory()` has nothing to list and returns `Unsupported`.
                 object_inventory: false,
+                // Off until a batch role is configured. `with_batch_role` flips this to true, because a job
+                // cannot run without the IAM role S3 Batch assumes; without it `bulk_restore` has no role to
+                // hand `CreateJob` and returns `Unsupported`.
+                batch_operations: false,
                 ..Capabilities::full()
             },
             latency_class: LatencyClass::Instant,
@@ -214,6 +241,7 @@ impl S3Store {
             tls: true,
             sse_kms_key_id: None,
             inventory_prefix: None,
+            batch_role_arn: None,
         }
     }
 
@@ -303,6 +331,32 @@ impl S3Store {
         self.inventory_prefix.as_deref()
     }
 
+    /// Give this store the IAM role S3 Batch Operations assumes, and, in the same move, claim the
+    /// `batch_operations` capability (§20.2's claim-⇒-implement rule: the flag and the role flip together, so
+    /// a store can never advertise batch operations it has no role to run).
+    ///
+    /// `role_arn` is a full IAM role ARN; the account a job is created in is parsed from it. A blank ARN
+    /// clears both, matching `with_inventory_prefix`: an empty environment variable reads as "no batch role".
+    #[must_use]
+    pub fn with_batch_role(mut self, role_arn: impl Into<String>) -> Self {
+        let role_arn = role_arn.into();
+        let trimmed = role_arn.trim();
+        if trimmed.is_empty() {
+            self.batch_role_arn = None;
+            self.capabilities.batch_operations = false;
+        } else {
+            self.batch_role_arn = Some(trimmed.to_owned());
+            self.capabilities.batch_operations = true;
+        }
+        self
+    }
+
+    /// The batch role this store creates jobs with, if any. Exposed so it is assertable.
+    #[must_use]
+    pub fn batch_role_arn(&self) -> Option<&str> {
+        self.batch_role_arn.as_deref()
+    }
+
     /// Whether this store's HTTP client has TLS support.
     ///
     /// `false` for a plain-HTTP endpoint, where the client is built without it so the platform root store
@@ -362,6 +416,7 @@ impl S3Store {
             tls: !plain_http,
             sse_kms_key_id: None,
             inventory_prefix: None,
+            batch_role_arn: None,
         }
     }
 
@@ -395,6 +450,9 @@ impl S3Store {
                 server_checksums: false,
                 // SeaweedFS publishes no inventory either.
                 object_inventory: false,
+                // SeaweedFS has no Batch Operations control plane; bulk restore falls back to the per-object
+                // loop.
+                batch_operations: false,
             },
             "seaweedfs",
         )
@@ -486,6 +544,87 @@ impl S3Store {
             .await
             .map_err(|e| Error::Backend(format!("inventory read {key}: {e}")))?;
         Ok(body.into_bytes().to_vec())
+    }
+
+    /// Create the S3 Batch Operations job that restores the objects in an already-uploaded manifest.
+    ///
+    /// The control plane is a separate service (`s3control`), so it needs its own client. Built here from the
+    /// data-plane client's region and the ambient credential chain rather than held on the struct: a bulk
+    /// restore is rare (a poll pass creates at most a handful), so one config load per job is cheaper than a
+    /// second client on every store clone, of which `writing_under` makes many.
+    async fn create_batch_restore_job(
+        &self,
+        account_id: &str,
+        role_arn: &str,
+        manifest_arn: &str,
+        manifest_etag: &str,
+        expiration_in_days: i32,
+        glacier_tier: S3GlacierJobTier,
+    ) -> Result<String> {
+        let region = self.client.config().region().cloned();
+        let conf = aws_config::defaults(BehaviorVersion::latest())
+            .region(region)
+            .load()
+            .await;
+        let control = aws_sdk_s3control::Client::new(&conf);
+
+        let operation = JobOperation::builder()
+            .s3_initiate_restore_object(
+                S3InitiateRestoreObjectOperation::builder()
+                    .expiration_in_days(expiration_in_days)
+                    .glacier_job_tier(glacier_tier)
+                    .build(),
+            )
+            .build();
+
+        let manifest = JobManifest::builder()
+            .spec(
+                JobManifestSpec::builder()
+                    .format(JobManifestFormat::S3BatchOperationsCsv20180820)
+                    .fields(JobManifestFieldName::Bucket)
+                    .fields(JobManifestFieldName::Key)
+                    .build()
+                    .map_err(|e| Error::Backend(format!("job manifest spec: {e}")))?,
+            )
+            .location(
+                JobManifestLocation::builder()
+                    .object_arn(manifest_arn)
+                    .e_tag(manifest_etag)
+                    .build()
+                    .map_err(|e| Error::Backend(format!("job manifest location: {e}")))?,
+            )
+            .build();
+
+        // The completion report goes back to the same bucket; it is where a per-object failure is recorded,
+        // since the job itself succeeds even when individual restores do not.
+        let report = JobReport::builder()
+            .enabled(true)
+            .bucket(format!("arn:aws:s3:::{}", self.bucket))
+            .prefix("batch-reports")
+            .format(JobReportFormat::ReportCsv20180820)
+            .report_scope(JobReportScope::AllTasks)
+            .build();
+
+        let out = control
+            .create_job()
+            .account_id(account_id)
+            .operation(operation)
+            .manifest(manifest)
+            .report(report)
+            .role_arn(role_arn)
+            // Low, fixed priority: bulk restore is a background job and must not jump ahead of an operator's
+            // ad-hoc batch work sharing the account.
+            .priority(10)
+            // No console confirmation step — this runs unattended from the worker.
+            .confirmation_required(false)
+            .client_request_token(uuid::Uuid::new_v4().to_string())
+            .send()
+            .await
+            .map_err(|e| Error::Backend(format!("create batch job: {e:?}")))?;
+
+        out.job_id()
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| Error::Backend("create batch job returned no job id".to_owned()))
     }
 
     /// Refuses a call the backend cannot honour, before it reaches the wire.
@@ -999,6 +1138,83 @@ impl BlobStore for S3Store {
             ),
             expires_at: after.restore_expires_at,
         })
+    }
+
+    async fn bulk_restore(
+        &self,
+        keys: &[Key],
+        tier: RestoreTier,
+        keep_for: Duration,
+    ) -> Result<BatchHandle> {
+        let Some(role_arn) = self.batch_role_arn.as_deref() else {
+            return Err(Error::Unsupported {
+                driver: self.driver,
+                capability: "batch operations",
+            });
+        };
+        if keys.is_empty() {
+            return Err(Error::Backend(
+                "bulk_restore called with no keys".to_owned(),
+            ));
+        }
+
+        // S3 Batch restore runs at STANDARD or BULK only; Expedited is a single-object urgency the pipeline
+        // never routes here. Refused rather than silently downgraded — answering an Expedited request with a
+        // slower tier and no explanation is the §6.5 failure this avoids.
+        let glacier_tier = match tier {
+            RestoreTier::Standard => S3GlacierJobTier::Standard,
+            RestoreTier::Bulk => S3GlacierJobTier::Bulk,
+            RestoreTier::Expedited => {
+                return Err(Error::Unsupported {
+                    driver: self.driver,
+                    capability: "expedited batch restore",
+                });
+            }
+        };
+        // S3 counts keep-warm in whole days, minimum 1 — same rule as the single `restore`.
+        let days = i32::try_from(keep_for.as_secs() / 86_400)
+            .unwrap_or(1)
+            .max(1);
+        let account_id = account_from_role_arn(role_arn).ok_or_else(|| {
+            Error::Backend(format!("batch role ARN has no account id: {role_arn}"))
+        })?;
+
+        // The manifest is one `bucket,key` line per object. dam's keys are content-addressed under URL-safe
+        // prefixes, so they need neither CSV quoting nor URL-encoding; a key with a comma would need both,
+        // and none exist. Uploaded under a dedicated prefix so the lifecycle and the scrub can ignore it.
+        let manifest_body = keys
+            .iter()
+            .map(|k| format!("{},{}", self.bucket, k.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let manifest_key = format!("batch-manifests/restore-{}.csv", uuid::Uuid::new_v4());
+        let put = self
+            .client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(&manifest_key)
+            .body(ByteStream::from(Bytes::from(manifest_body)))
+            .encrypted_with(self.sse_kms_key_id())
+            .send()
+            .await
+            .map_err(|e| Error::Backend(format!("bulk_restore manifest put: {e:?}")))?;
+        let manifest_etag = put
+            .e_tag()
+            .ok_or_else(|| Error::Backend("bulk_restore manifest put returned no ETag".to_owned()))?
+            .to_owned();
+        let manifest_arn = format!("arn:aws:s3:::{}/{}", self.bucket, manifest_key);
+
+        let job_id = self
+            .create_batch_restore_job(
+                &account_id,
+                role_arn,
+                &manifest_arn,
+                &manifest_etag,
+                days,
+                glacier_tier,
+            )
+            .await?;
+        Ok(BatchHandle { job_id })
     }
 
     async fn copy(&self, from: &Key, to: &Key, size: u64, class: StorageClass) -> Result<()> {

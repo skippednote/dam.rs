@@ -71,9 +71,10 @@ fn every_call_that_creates_an_object_applies_the_customer_key() {
     // The count is asserted so that a refactor which *removes* a write path — or breaks this test's own
     // parsing, so it silently matches nothing — fails here rather than passing vacuously.
     assert_eq!(
-        checked, 7,
-        "expected seven object-creating calls across the S3 driver; found {checked}. If a path was added or \
-         removed deliberately, update this number and say why."
+        checked, 8,
+        "expected eight object-creating calls across the S3 driver; found {checked}. If a path was added or \
+         removed deliberately, update this number and say why. (The eighth is the S3 Batch bulk-restore \
+         manifest upload in `bulk_restore`.)"
     );
 }
 

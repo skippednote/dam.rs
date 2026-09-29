@@ -933,3 +933,87 @@ async fn the_estimate_reflects_the_tier(f: &Fixture) {
         "and it must be faster, which is what the extra buys: {costs:?}",
     );
 }
+
+/// A backlog past the threshold becomes one S3 Batch job, not a `RestoreObject` per object.
+///
+/// The whole point of item 3: at collection scale the per-object loop is hundreds of round trips. A
+/// batch-capable store folds a claim into a single job — asserted by the fake recording exactly one
+/// `bulk_restore` call covering every key, with every object left in flight and every request issued for the
+/// ordinary reconciliation to finish. The batch store shares its object map with the fixture's, so the
+/// objects `archived` put through `f.store` are the ones the batch job restores.
+#[tokio::test]
+async fn a_backlog_past_the_threshold_is_issued_as_one_batch_job() {
+    let f = fixture().await;
+    let batch_store = f.store.clone().doing_batch_operations();
+
+    // Matches BULK_RESTORE_THRESHOLD; a collection restore is comfortably this size.
+    const N: usize = 100;
+    let mut keys = Vec::with_capacity(N);
+    for i in 0..N {
+        let (key, asset_id) =
+            archived(&f, &format!("acme/o/bk/{i:03}/obj"), StorageClass::Glacier).await;
+        request_restore(&f, asset_id, RestoreTier::Standard).await;
+        keys.push(key);
+    }
+
+    let polled = dam_pipeline::tiering::poll(&f.global, &batch_store, &f.slug, f.clock.now())
+        .await
+        .expect("poll");
+    assert_eq!(
+        polled.issued, N,
+        "every request should be issued: {polled:?}"
+    );
+
+    let calls = batch_store.batch_calls();
+    assert_eq!(
+        calls.len(),
+        1,
+        "one tier and one keep-warm means exactly one job, not {} — nor one call per object",
+        calls.len(),
+    );
+    assert_eq!(calls[0].len(), N, "the one job must cover every object");
+
+    for key in &keys {
+        assert!(
+            matches!(
+                batch_store.head(key).await.expect("head").restore_state,
+                dam_core::RestoreState::Ongoing,
+            ),
+            "every object should be in flight after the batch job",
+        );
+    }
+}
+
+/// Below the threshold, a batch-capable store still issues per object — an S3 Batch job's setup cost and
+/// startup delay are not worth paying to restore a handful.
+#[tokio::test]
+async fn a_small_backlog_on_a_batch_store_stays_per_object() {
+    let f = fixture().await;
+    let batch_store = f.store.clone().doing_batch_operations();
+
+    let mut keys = Vec::new();
+    for i in 0..3 {
+        let (key, asset_id) =
+            archived(&f, &format!("acme/o/sm/{i}/obj"), StorageClass::Glacier).await;
+        request_restore(&f, asset_id, RestoreTier::Standard).await;
+        keys.push(key);
+    }
+
+    let polled = dam_pipeline::tiering::poll(&f.global, &batch_store, &f.slug, f.clock.now())
+        .await
+        .expect("poll");
+    assert_eq!(polled.issued, 3, "{polled:?}");
+    assert!(
+        batch_store.batch_calls().is_empty(),
+        "a handful must not spin up a batch job",
+    );
+    for key in &keys {
+        assert!(
+            matches!(
+                batch_store.head(key).await.expect("head").restore_state,
+                dam_core::RestoreState::Ongoing,
+            ),
+            "the per-object path should still have put each object in flight",
+        );
+    }
+}

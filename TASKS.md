@@ -35,7 +35,7 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M6** Workflow/proofing, annotations, analytics | **done** — annotations (M6a), proofing (M6b), analytics (M6c) |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | G19 **done**; G7 **done** (crosswalk, dry run, filesystem source, transfer); G10 **done** (audit chain, user administration, SCIM, BYOK) |
 
-**Next up, in order:** G7, G10, M3d·5, G22c (the public URL space) and G10·3b (per-tenant keys) are all complete, as is C2PA (task 1.9 — verify/preserve/re-sign on ingest and derivation — with the per-tenant signing identities that answer its parked certificate question, wired into the worker per job). What remains, in this order: the **AWS-native items** — locked sub-order was **4 S3 Inventory → 3 S3 Batch bulk restore → 2 Intelligent-Tiering**; **item 4 is now landed** (mechanism #48, activation this PR), so what remains is **3 S3 Batch bulk restore → 2 Intelligent-Tiering** (Intelligent-Tiering last, gated on the noncurrent-version decision — `object_placements` has no `version_id`; item 1 is closed); then a **management surface for `signing_identities`** — the repo and pipeline are wired but no API/CLI installs a tenant's certificate, so mirror `POST /ai/credentials`; then wiring the **per-tenant blob key to asset writes** — the BYOK gap G10·3b left open, where `finalise`/`derive` still `put` under the process key. M4b's model-distribution question stays parked.
+**Next up, in order:** G7, G10, M3d·5, G22c (the public URL space) and G10·3b (per-tenant keys) are all complete, as is C2PA (task 1.9 — verify/preserve/re-sign on ingest and derivation — with the per-tenant signing identities that answer its parked certificate question, wired into the worker per job). What remains, in this order: the **AWS-native items** — locked sub-order was **4 S3 Inventory → 3 S3 Batch bulk restore → 2 Intelligent-Tiering**; **items 4 and 3 are now landed** (4: mechanism #48 + activation #49; 3: this PR), so what remains is **2 Intelligent-Tiering**, gated on the noncurrent-version decision — `object_placements` has no `version_id`; item 1 is closed; then a **management surface for `signing_identities`** — the repo and pipeline are wired but no API/CLI installs a tenant's certificate, so mirror `POST /ai/credentials`; then wiring the **per-tenant blob key to asset writes** — the BYOK gap G10·3b left open, where `finalise`/`derive` still `put` under the process key. M4b's model-distribution question stays parked.
 M4b (local models) is parked on a distribution decision — see the M4 section.
 
 **`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
@@ -2417,8 +2417,23 @@ API that does not exist yet is a module written twice.
      frequent and infrequent tiers. Our engine's value is the **policy** — never tier the master proxy (D5),
      honour pins and legal hold, produce a reviewable plan — not guessing access. Hybrid: originals in
      Intelligent-Tiering, policy stays ours.
-  3. **S3 Batch Operations for 3.4's bulk restore.** Manifest-driven, with retries, throttling and a
-     completion report. Better than a job loop. Does **not** help 2.10, which is database-side.
+  3. ~~**S3 Batch Operations for 3.4's bulk restore.**~~ **Landed.** Manifest-driven, with the backend's own
+     retries, throttling and a completion report — better than a job loop. Does **not** help 2.10, which is
+     database-side.
+
+     A `Capabilities::batch_operations` flag, a `BlobStore::bulk_restore(keys, tier, keep_for) -> BatchHandle`
+     (default `Unsupported`, so a driver without a batch plane keeps the per-object fallback), and the
+     `FakeS3Store` seam that proves the pipeline half. `S3Store::bulk_restore` uploads a `bucket,key` CSV
+     manifest, then creates an S3 Batch `S3InitiateRestoreObject` job (via `aws-sdk-s3control`) whose account
+     is parsed from the batch role ARN; `with_batch_role` flips the flag and the role together. The restore
+     poll claims a larger slice when the store can batch and, past a threshold, groups the claim by
+     `(tier, keep-warm)` and issues one job per group — Expedited and unknown tiers fall back to per-object,
+     since S3 Batch restore has no Expedited. Terraform adds the S3 Batch IAM role (assume by
+     `batchoperations.s3.amazonaws.com`, restore + report + CMK use) and the app's `CreateJob`/`PassRole`
+     grants, wired through `DAMRS_STORAGE__BATCH_ROLE_ARN`. SeaweedFS claims none of this, so it stays on the
+     loop. The job runs asynchronously and its objects are still observed becoming readable through the
+     ordinary per-object `head` reconciliation, so real-S3 completion is an ops-verify follow-up; the manifest
+     grouping, the dispatch threshold and the fake path are unit-/integration-tested.
   4. ~~**S3 Inventory for reconciliation.**~~ **Landed.** *Re-costed 2026-09-01: not the cheap item this list
      implied.* The entry said "instead of LIST", but nothing reconciles by LIST — the integrity scrub asked
      `head` per placement, which at four hundred thousand assets is four hundred thousand round trips.
