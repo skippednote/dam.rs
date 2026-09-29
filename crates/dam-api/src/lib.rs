@@ -45,6 +45,7 @@ pub mod schema;
 pub mod scim;
 pub mod search;
 pub mod shares;
+pub mod signing;
 pub mod throttle;
 pub mod tus;
 pub mod upload_profiles;
