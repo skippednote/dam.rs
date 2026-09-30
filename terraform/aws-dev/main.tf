@@ -191,6 +191,42 @@ resource "aws_s3_bucket_versioning" "objects" {
   versioning_configuration { status = "Enabled" }
 }
 
+# ---------- Lifecycle: Intelligent-Tiering + noncurrent-version expiry (AWS-native item 2) ----------
+# Two concerns, one config. See DECISIONS.md (2026-09-30) for why this is bucket config rather than code, and
+# why it is bucket-wide rather than scoped to originals.
+resource "aws_s3_bucket_lifecycle_configuration" "objects" {
+  bucket = aws_s3_bucket.objects.id
+
+  # Current versions move to Intelligent-Tiering immediately. IT does access-based movement between its
+  # frequent and infrequent tiers with no retrieval fee and no latency, so dam's engine keeps the archive
+  # policy (Glacier / Deep Archive for cold originals, never for the master proxy) while IT handles the
+  # frequent/infrequent guessing dam deliberately does not. Bucket-wide because keys are tenant-first
+  # (`<tenant>/o/...`), so an S3 prefix filter cannot select originals across tenants; tiering the exempt
+  # namespaces (p/, t/, c2pa/) to IT is harmless because IT never archives — they stay instantly readable.
+  rule {
+    id     = "intelligent-tiering"
+    status = "Enabled"
+    filter {}
+    transition {
+      days          = 0
+      storage_class = "INTELLIGENT_TIERING"
+    }
+  }
+
+  # Noncurrent versions expire after 30 days. This is the reversible answer to the gate: object_placements
+  # carries no version_id, so dam tracks only the current object and cannot reconcile old versions — AWS
+  # expires them on a timer instead of dam managing them. 30 days is a generous window to recover from a bad
+  # overwrite before the old version is gone.
+  rule {
+    id     = "expire-noncurrent-versions"
+    status = "Enabled"
+    filter {}
+    noncurrent_version_expiration {
+      noncurrent_days = 30
+    }
+  }
+}
+
 resource "aws_s3_bucket_public_access_block" "objects" {
   bucket                  = aws_s3_bucket.objects.id
   block_public_acls       = true

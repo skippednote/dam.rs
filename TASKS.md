@@ -35,7 +35,7 @@ Updated with every slice. The detail is in the sections below; this is the part 
 | **M6** Workflow/proofing, annotations, analytics | **done** — annotations (M6a), proofing (M6b), analytics (M6c) |
 | **Pre-GA** Import G7, SCIM/BYOK/audit G10, DR G11, metering G19, quotas | G19 **done**; G7 **done** (crosswalk, dry run, filesystem source, transfer); G10 **done** (audit chain, user administration, SCIM, BYOK) |
 
-**Next up, in order:** G7, G10, M3d·5, G22c (the public URL space) and G10·3b (per-tenant keys) are all complete, as is C2PA (task 1.9 — verify/preserve/re-sign on ingest and derivation — with the per-tenant signing identities that answer its parked certificate question, wired into the worker per job). What remains, in this order: the **AWS-native items** — locked sub-order was **4 S3 Inventory → 3 S3 Batch bulk restore → 2 Intelligent-Tiering**; **items 4 and 3 are now landed** (4: mechanism #48 + activation #49; 3: this PR), so what remains is **2 Intelligent-Tiering**, gated on the noncurrent-version decision — `object_placements` has no `version_id`; item 1 is closed; then a **management surface for `signing_identities`** — the repo and pipeline are wired but no API/CLI installs a tenant's certificate, so mirror `POST /ai/credentials`; then wiring the **per-tenant blob key to asset writes** — the BYOK gap G10·3b left open, where `finalise`/`derive` still `put` under the process key. M4b's model-distribution question stays parked.
+**Next up, in order:** G7, G10, M3d·5, G22c (the public URL space) and G10·3b (per-tenant keys) are all complete, as is C2PA (task 1.9 — verify/preserve/re-sign on ingest and derivation — with the per-tenant signing identities that answer its parked certificate question, wired into the worker per job). What remains, in this order: the **AWS-native items** are now **all landed** (locked sub-order 4 S3 Inventory → 3 S3 Batch → 2 Intelligent-Tiering; 4: mechanism #48 + activation #49, 3: #50, 2: this PR — the noncurrent-version gate answered the reversible way, bucket lifecycle + `noncurrent_version_expiration`, no `version_id` column, see DECISIONS.md 2026-09-30; item 1 was already closed); then a **management surface for `signing_identities`** — the repo and pipeline are wired but no API/CLI installs a tenant's certificate, so mirror `POST /ai/credentials`; then wiring the **per-tenant blob key to asset writes** — the BYOK gap G10·3b left open, where `finalise`/`derive` still `put` under the process key. M4b's model-distribution question stays parked.
 M4b (local models) is parked on a distribution decision — see the M4 section.
 
 **`NEEDS-REVIEW.md` is empty.** Every parked question was answered on 2026-08-21 with the recommendation each
@@ -2412,11 +2412,19 @@ API that does not exist yet is a module written twice.
 
      The sweep runs beside the metering repair rather than as a job kind, for the reason that repair exists:
      the thing that forgets to enqueue a repair is the same class of bug the repair is for.
-  2. **Intelligent-Tiering for originals.** §19 lists access-pattern prediction as an unknown sitting on the
-     lifecycle engine. Intelligent-Tiering does access-based movement with no retrieval fee between the
-     frequent and infrequent tiers. Our engine's value is the **policy** — never tier the master proxy (D5),
-     honour pins and legal hold, produce a reviewable plan — not guessing access. Hybrid: originals in
-     Intelligent-Tiering, policy stays ours.
+  2. ~~**Intelligent-Tiering for originals.**~~ **Landed.** §19 lists access-pattern prediction as an unknown
+     sitting on the lifecycle engine. Intelligent-Tiering does access-based movement with no retrieval fee
+     between the frequent and infrequent tiers. Our engine's value is the **policy** — never archive the master
+     proxy (D5), honour pins and legal hold, produce a reviewable plan — not guessing access. Hybrid: originals
+     in Intelligent-Tiering, policy stays ours.
+
+     Delivered as bucket config, not code (this PR): a Terraform `aws_s3_bucket_lifecycle_configuration`
+     transitions current versions to `INTELLIGENT_TIERING` at day 0. The **noncurrent-version gate** — no
+     `version_id` on `object_placements`, so dam tracks only the current object and item 4's scrub reads
+     current versions only — is answered the reversible way, a `noncurrent_version_expiration` of 30 days,
+     rather than by adding a version column. The IT rule is bucket-wide because tenant-first keys block a
+     prefix filter for originals-only; tiering the exempt namespaces to IT is harmless since IT never archives.
+     All three choices, and the D5 letter-vs-spirit reasoning, are in DECISIONS.md (2026-09-30).
   3. ~~**S3 Batch Operations for 3.4's bulk restore.**~~ **Landed.** Manifest-driven, with the backend's own
      retries, throttling and a completion report — better than a job loop. Does **not** help 2.10, which is
      database-side.

@@ -2651,3 +2651,37 @@ knows to ask for. Reversible: yes.
 **Hiding a facet is presentation; `facetable` is a resource decision.** A field can be facetable and hidden — the
 box still accepts its clauses — and the rail's order is applied before counting, so a hidden facet costs no
 queries. Reversible: yes.
+
+## 2026-09-30 — AWS-native item 2: Intelligent-Tiering via bucket lifecycle
+
+**Intelligent-Tiering is a bucket lifecycle rule, not a write-path class.** §19 wanted access-pattern
+prediction off the lifecycle engine; IT gives it — frequent/infrequent movement with no retrieval fee and no
+latency — while dam keeps the part that is policy, not guessing: never archive the master proxy, honour pins and
+legal hold, produce a reviewable plan. Delivered as a Terraform `aws_s3_bucket_lifecycle_configuration` that
+transitions current versions to `INTELLIGENT_TIERING` at day 0, rather than by writing originals as IT in
+`finalise`, because the bucket rule is zero code and removing it is the whole of the rollback. Reversible: yes —
+delete the rule and objects keep whatever class they are in; nothing is rewritten.
+
+**The IT rule is bucket-wide, and that tiers the exempt namespaces too.** Keys are tenant-first
+(`<tenant>/o/...`, `<tenant>/p/...`), and an S3 lifecycle prefix filter matches from the start of the key, so no
+single rule can express "any tenant, then originals" — the same constraint that kept the staging-expiry rule out
+of a prefix (item 6). So the master proxy (`p/`), thumbnails (`t/`) and detached manifests (`c2pa/`), which
+`Key::is_tier_exempt` holds out of dam's own tiering, are moved to IT by this rule. Accepted because IT never
+introduces retrieval latency or a retrieval fee: those objects stay instantly readable, which is the actual
+thing D5 protects (the AI/preview substrate must never be slow). The letter of "never tier the master proxy" is
+relaxed to "never *archive* it", which dam still enforces — `permitted_class` clamps exempt keys to Standard, and
+an object only reaches Glacier through dam's engine, never through this rule. The cost is IT's monitoring fee
+(~$2.50 per million objects per month) on always-hot exempt objects that see no infrequent-tier benefit; small,
+and the way to remove it is a write-path tag plus a tag-scoped rule, which is code deferred until the fee
+justifies it. Reversible: yes.
+
+**Noncurrent versions expire on an AWS timer because dam does not track them.** `object_placements` carries no
+`version_id`, so dam models one placement per object and item 4's inventory scrub reads current versions only —
+a noncurrent version is invisible to dam and could accumulate forever on a versioned bucket. Rather than add a
+`version_id` column and teach the engine and the scrub about versions — a schema migration and a broad,
+hard-to-reverse change — a `noncurrent_version_expiration` of 30 days lets S3 reclaim them. 30 days is a generous
+window to recover from a bad overwrite before the old version is gone. The tradeoff is that dam cannot report or
+restore a noncurrent version; it never could, and nothing asks it to. Reversible: yes — remove the rule and
+versions stop expiring; only versions already past 30 days are unrecoverable, which is why the window is wide
+rather than tight. The versioned column remains the path to full version management if a requirement ever needs
+it.
