@@ -155,7 +155,7 @@ sha2 = "0.10"
 # Encryption at rest for a tenant's own provider credentials (M5). RustCrypto, like argon2/hmac/sha2 above,
 # so the dependency tree gains no new C and no new licence. ChaCha20-Poly1305 rather than AES-GCM because it
 # needs no hardware acceleration to be fast and has no timing-sensitive software fallback to get wrong.
-chacha20poly1305 = "0.10"
+chacha20poly1305 = "0.11"
 subtle = "2"            # constant-time comparison for signatures and passcodes
 
 # ── serialization + core types ────────────────────────────────────────────────
